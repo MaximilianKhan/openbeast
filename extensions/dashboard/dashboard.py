@@ -20,6 +20,7 @@ history) runs on background samplers started in __main__: /api/cluster and
 Bind + port come from OPENBEAST_BIND / DASHBOARD_PORT (see run.sh). This is an
 optional extension (extensions/dashboard) — the core stack does not depend on it.
 """
+import array
 import calendar
 import collections
 import contextlib
@@ -511,8 +512,13 @@ def status():
                "metrics": tool_metrics(top=True)}
         slot = slot_status()            # nested: reuses this batch's answers
         live = _serve.snapshot() if _serve else {}
-        gate = live.get("gate") or {"enabled": _EDGE_GATE}
+        gate = dict(live.get("gate") or {"enabled": _EDGE_GATE}, **(live.get("gate_window") or {}))
         out["service_list"] = service_list(svc, gate)
+    watch = _serve.watch.get() if _serve else {}
+    for row in out["service_list"]:
+        w = watch.get(row["name"])
+        if w:                           # v3, additive: as seen by the background watch
+            row.update(since=w["since"], last_change=w["last_change"], checked=w["checked"])
     cap = slot.get("capacity") or {}
     out["model"].update({"id": (slot.get("model") or {}).get("id"),
                          "ctx": (slot.get("model") or {}).get("ctx"),
@@ -526,11 +532,19 @@ def status():
                       "tok_s": live.get("tok_s"), "tok_s_source": live.get("tok_s_source"),
                       "prompt_tok_s": live.get("prompt_tok_s"),
                       "history": live.get("history") or {"tok_s": []},
-                      "interval_s": live.get("interval_s", SERVE_SAMPLE_S)}
+                      "interval_s": live.get("interval_s", SERVE_SAMPLE_S),
+                      # v3, additive
+                      "ctx_fill_pct": live.get("ctx_fill_pct"), "stalled_s": live.get("stalled_s"),
+                      "detail": live.get("detail"),
+                      "lifetime_gen_tokens": live.get("lifetime_gen_tokens")}
     out["gate"] = gate
     out["auth"] = slot.get("auth")
     out["host"] = {"name": _head.name if _head else _head_name()}
     out["events"] = events()
+    al = _alerts.snapshot()
+    out["alerts"] = al
+    out["health"] = health_verdict(svc.get("model"), al)
+    out["summary"] = summary_24h()
     out["generated_at"] = round(time.time())
     if smi is not None:             # nvidia-smi has its own 2 s timeout
         smi.join(max(0.1, GATHER_DEADLINE_S - (time.monotonic() - t0)))
@@ -1078,6 +1092,8 @@ _SMI_SHORT = "name,memory.used,memory.total,utilization.gpu,temperature.gpu,powe
 # power.draw sample every 5 s cannot (under bursty load it is off by half;
 # review 2026-11-22). Anything failing prints nothing: the rest of the probe
 # stands. No double quotes would survive the sh single quotes, so none.
+# The same read gives each GPU's SM / max SM / memory clocks and its active
+# clock-event (throttle) reasons bitmask (`clk|` lines): read-only NVML getters.
 _NVML_PY = "\n".join((
     "import ctypes as c,time",
     "try:",
@@ -1086,9 +1102,18 @@ _NVML_PY = "\n".join((
     "  k=c.c_uint();t=0;ok=n.nvmlDeviceGetCount_v2(c.byref(k))==0 and k.value>0",
     "  for i in range(k.value if ok else 0):",
     "   h=c.c_void_p();e=c.c_ulonglong()",
-    "   if n.nvmlDeviceGetHandleByIndex_v2(i,c.byref(h)) or n.nvmlDeviceGetTotalEnergyConsumption(h,c.byref(e)):",
+    "   if n.nvmlDeviceGetHandleByIndex_v2(i,c.byref(h)):",
     "    ok=False;break",
-    "   t+=e.value",
+    "   if n.nvmlDeviceGetTotalEnergyConsumption(h,c.byref(e)):ok=False",
+    "   else:t+=e.value",
+    "   try:",
+    "    v=[]",
+    "    for f,a in ((n.nvmlDeviceGetClockInfo,1),(n.nvmlDeviceGetMaxClockInfo,1),(n.nvmlDeviceGetClockInfo,2)):",
+    "     x=c.c_uint();v.append(str(x.value) if f(h,a,c.byref(x))==0 else '')",
+    "    r=c.c_ulonglong();g=getattr(n,'nvmlDeviceGetCurrentClocksEventReasons',None) or n.nvmlDeviceGetCurrentClocksThrottleReasons",
+    "    v.append(str(r.value) if g(h,c.byref(r))==0 else '')",
+    "    print('clk|%d|%s'%(i,'|'.join(v)))",
+    "   except Exception:pass",
     "  if ok:print('nrg|%d|%d|%.3f'%(t,k.value,time.monotonic()))",
     "  n.nvmlShutdown()",
     "except Exception:pass",
@@ -1221,6 +1246,11 @@ def parse_node(out):
                                     "util": _smi_int(p[3]), "temp": _smi_int(p[4]),
                                     "power": opt(5), "power_inst": opt(6), "power_avg": opt(7),
                                     "limit": opt(8)})
+        elif kind == "clk":
+            p = rest.split("|")
+            if len(p) >= 5 and len(raw.setdefault("clocks", [])) < 16:
+                raw["clocks"].append({"sm": _num(p[1], int), "sm_max": _num(p[2], int),
+                                      "mem": _num(p[3], int), "reasons": _num(p[4], int)})
         elif kind == "gpuerr":
             raw["gpu_error"] = _num(rest, int)
         elif kind == "nrg":
@@ -1301,6 +1331,7 @@ def node_view(raw, prev=None, dt=None):
                "power_instant_w": _r1(fold("power_inst", sum)),
                "power_avg_w": _r1(fold("power_avg", sum)),
                "power_limit_w": _r1(fold("limit", sum))}
+        gpu.update(gpu_clocks(raw.get("clocks") or []))
     cpu = {"load": raw.get("load"), "ncpu": raw.get("ncpu"), "util_pct": None}
     if prev and raw.get("cpu") and prev.get("cpu"):
         dtot = raw["cpu"][0] - prev["cpu"][0]
@@ -1331,6 +1362,46 @@ def node_view(raw, prev=None, dt=None):
            "power": power_now(gpu, raw.get("rails") or {})}
     if gpu is None and raw.get("gpu_error") is not None:
         out["gpu_error"] = raw["gpu_error"]
+    return out
+
+
+# NVML clock-event reasons (nvml.h nvmlClocksEventReason*). Idle and the
+# application / display clock settings are not slowdowns; the software power
+# cap is the card holding its own power limit (normal under full load, shown,
+# never an alert); the hardware and thermal ones are throttling.
+THROTTLE_BITS = ((0x1, "idle"), (0x2, "app clocks"), (0x4, "power cap"), (0x8, "hw slowdown"),
+                 (0x10, "sync boost"), (0x20, "sw thermal"), (0x40, "hw thermal"),
+                 (0x80, "power brake"), (0x100, "display clocks"))
+THROTTLE_ALERT_MASK = 0x8 | 0x20 | 0x40 | 0x80
+
+
+def gpu_clocks(clocks):
+    """The clk| readings of every GPU -> clocks and throttle fields (all
+    null when NVML gave none): the fastest SM clock, its max, the memory
+    clock, and the OR of every card's reasons."""
+    out = {"sm_clock_mhz": None, "sm_clock_max_mhz": None, "mem_clock_mhz": None, "throttle": None}
+    if not clocks:
+        return out
+
+    def top(key):
+        vals = [c[key] for c in clocks if c.get(key) is not None and 0 <= c[key] < 100000]
+        return max(vals) if vals else None
+    out.update(sm_clock_mhz=top("sm"), sm_clock_max_mhz=top("sm_max"), mem_clock_mhz=top("mem"))
+    masks = [c["reasons"] for c in clocks if c.get("reasons") is not None and 0 <= c["reasons"] < (1 << 63)]
+    if masks:
+        m = 0
+        for x in masks:
+            m |= x
+        known = 0
+        names = []
+        for bit, name in THROTTLE_BITS:
+            known |= bit
+            if m & bit:
+                names.append(name)
+        if m & ~known:
+            names.append("other 0x%x" % (m & ~known))
+        out["throttle"] = {"mask": m, "reasons": names, "slowdown": bool(m & THROTTLE_ALERT_MASK),
+                           "power_capped": bool(m & 0x4)}
     return out
 
 
@@ -1386,18 +1457,43 @@ def power_now(gpu, rails):
             "rails": parts + system}
 
 
-_events = collections.deque(maxlen=40)
+# The event log: newest first, bounded, persisted with the rest of the log
+# (.run/dashboard-log.json). /api/status carries the latest EVENTS_STATUS of
+# it (the v2 shape: t, level, text; `kind` and `id` are additive), /api/events
+# the whole log. `kind` is one of EVENT_KINDS, so the page can filter.
+EVENTS_MAX = 500
+EVENTS_STATUS = 40
+EVENT_KINDS = ("model", "swap", "node", "service", "gate", "island", "alert", "dashboard")
+EVENT_LEVELS = ("info", "warn", "crit")
+_events = collections.deque(maxlen=EVENTS_MAX)
+_log_dirty = threading.Event()     # the log has news to persist
 _events_lock = threading.Lock()
+_event_seq = [0]
 
 
-def event(text, level="info"):
+def event(text, level="info", kind="dashboard", now=None, tag=None):
+    """Log one event. `tag` marks an alert's "raise" (an incident) or
+    "clear", so a count never has to parse the text."""
+    level = level if level in EVENT_LEVELS else "info"
+    kind = kind if kind in EVENT_KINDS else "dashboard"
+    e = {"t": round(time.time() if now is None else now), "level": level, "text": str(text)[:160], "kind": kind}
+    if tag in ("raise", "clear"):
+        e["tag"] = tag
     with _events_lock:
-        _events.appendleft({"t": round(time.time()), "level": level, "text": text[:160]})
+        _event_seq[0] += 1
+        e["id"] = _event_seq[0]
+        _events.appendleft(e)
+    _log_dirty.set()
 
 
-def events():
+def events(limit=EVENTS_STATUS, kind=None, since=None):
     with _events_lock:
-        return list(_events)
+        out = list(_events)
+    if kind:
+        out = [e for e in out if e.get("kind") == kind]
+    if since is not None:
+        out = [e for e in out if e["t"] >= since]
+    return out[:limit]
 
 
 class _Ring:
@@ -1550,6 +1646,7 @@ class NodePower:
         self._prev = None          # (local monotonic, energy dict | None, gpu W | None, {rail: W}, system, wall)
         self._lock = threading.Lock()
         self.source = None         # "nvml-energy" | "power.draw" for the last interval
+        self.last_energy_j = None  # the last interval's measured energy
 
     def ingest(self, wall, mono, raw, view):
         """Turn this sample (and the previous one) into an interval."""
@@ -1598,6 +1695,7 @@ class NodePower:
             for tier in (self.fine, self.coarse):
                 tier.add(a, wall, p, pg)
                 tier.prune(wall)
+            self.last_energy_j = p * (wall - a)     # for the daily rollup
             return p
 
     def stats(self, now, w):
@@ -1859,6 +1957,1027 @@ def load_power(samplers, path=None, now=None):
     return n
 
 
+# ───────────────────────── v3: one history store, rollups, the log ─────────────────────────
+#
+# Every metric the detail pages chart goes into ONE store: wall-clock-aligned
+# slots in three tiers (HIST_TIERS: 5 s for the last hour, 1 min for 24 h,
+# 15 min for 7 days). Each tier of each metric is a fixed ring of slots in
+# typed arrays, so memory is bounded by construction (HIST_MAX_METRICS
+# metrics x 2832 slots x 28 bytes, about 10 MB at the cap; ~4 MB on the
+# Spark pair). A slot holds the sum, count, min and max of the readings in
+# it: a "gauge" metric is charted as the slot mean, a "sum" metric (a
+# counter's delta, e.g. tokens generated) as the slot total. A gap (a node
+# unreachable, the dashboard down) is a slot with no readings: null, never 0.
+# Persisted to .run/dashboard-history.json (temp file + fsync + rename, like
+# the power history), restored at start.
+
+HIST_TIERS = ((5, 720), (60, 1440), (900, 672))      # (step s, slots): 1 h, 24 h, 7 d
+HIST_WINDOWS = {"15m": 900, "1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800}
+HIST_MAX_METRICS = 128
+HIST_FILE = "dashboard-history.json"
+HIST_FILE_MAX = 12 << 20
+HIST_SAVE_S = 120.0
+HIST_VALUE_MAX = 1e15
+_METRIC_RE = re.compile(r"^[A-Za-z0-9_.:/@-]{1,96}$")
+
+
+class _HTier:
+    """One tier of one metric: a ring of `cap` slots `step` s wide."""
+
+    __slots__ = ("step", "cap", "ts", "s", "n", "lo", "hi")
+
+    def __init__(self, step, cap):
+        self.step, self.cap = step, cap
+        self.ts = array.array("q", [-1]) * cap
+        self.s = array.array("d", [0.0]) * cap
+        self.n = array.array("i", [0]) * cap
+        self.lo = array.array("f", [0.0]) * cap
+        self.hi = array.array("f", [0.0]) * cap
+
+    def _put(self, t0, s, n, lo, hi):
+        i = (t0 // self.step) % self.cap
+        cur = self.ts[i]
+        if cur != t0:
+            if cur > t0:
+                return False          # a newer slot owns this index (the clock went back)
+            self.ts[i], self.s[i], self.n[i], self.lo[i], self.hi[i] = t0, 0.0, 0, lo, hi
+        self.s[i] += s
+        self.n[i] = min(self.n[i] + n, 2 ** 31 - 1)
+        if lo < self.lo[i]:
+            self.lo[i] = lo
+        if hi > self.hi[i]:
+            self.hi[i] = hi
+        return True
+
+    def add(self, t, v):
+        self._put(int(t // self.step) * self.step, v, 1, v, v)
+
+    def slot(self, t0):
+        i = (t0 // self.step) % self.cap
+        return i if self.ts[i] == t0 and self.n[i] > 0 else None
+
+    def rows(self, now):
+        lo = now - self.step * self.cap
+        return sorted([int(self.ts[i]), self.s[i], self.n[i], self.lo[i], self.hi[i]]
+                      for i in range(self.cap) if self.n[i] > 0 and lo < self.ts[i] <= now + 300)
+
+
+def _g(v, digits=6):
+    """A float trimmed to `digits` significant digits for the history file."""
+    return float(f"{v:.{digits}g}")
+
+
+class HistoryStore:
+    """Named metrics, each with the HIST_TIERS rings (see above)."""
+
+    def __init__(self, tiers=HIST_TIERS, max_metrics=HIST_MAX_METRICS):
+        self.tiers, self.max_metrics = tiers, max_metrics
+        self._m = {}                   # name -> (kind, [_HTier...])
+        self._lock = threading.Lock()
+
+    def _get(self, name, kind):
+        m = self._m.get(name)
+        if m is None:
+            if len(self._m) >= self.max_metrics or not _METRIC_RE.match(name):
+                return None
+            m = self._m[name] = (kind, [_HTier(st, cap) for st, cap in self.tiers])
+        return m
+
+    def add(self, name, value, t=None, kind="gauge"):
+        """Record one reading (a gauge) or one counter delta (kind "sum").
+        A value that is not a finite number of sane size is no reading."""
+        v = _num(value)
+        if v is None or abs(v) > HIST_VALUE_MAX or kind not in ("gauge", "sum"):
+            return False
+        t = time.time() if t is None else t
+        with self._lock:
+            m = self._get(name, kind)
+            if m is None or m[0] != kind:
+                return False
+            for tier in m[1]:
+                tier.add(t, v)
+        return True
+
+    def names(self):
+        with self._lock:
+            return {k: v[0] for k, v in self._m.items()}
+
+    def tier_for(self, window):
+        for i, (st, cap) in enumerate(self.tiers):
+            if window <= st * cap:
+                return i
+        return len(self.tiers) - 1
+
+    def series(self, name, window, now=None, step_index=None):
+        """{t0, step, values} on the window's grid (the finest tier that
+        spans it): the slot mean of a gauge, the slot total of a sum; null
+        where no reading fell. None for an unknown metric."""
+        now = time.time() if now is None else now
+        ti = self.tier_for(window) if step_index is None else step_index
+        st, cap = self.tiers[ti]
+        n = max(1, min(cap, int(window // st)))
+        end = int(now // st) * st
+        with self._lock:
+            m = self._m.get(name)
+            if m is None:
+                return None
+            kind, tier = m[0], m[1][ti]
+            vals = []
+            for k in range(n - 1, -1, -1):
+                i = tier.slot(end - k * st)
+                if i is None:
+                    vals.append(None)
+                else:
+                    v = tier.s[i] / tier.n[i] if kind == "gauge" else tier.s[i]
+                    vals.append(round(v, 4 if abs(v) < 10 else 2 if abs(v) < 1e4 else 0))
+        return {"kind": kind, "t0": end - (n - 1) * st, "step": st, "values": vals}
+
+    def stats(self, name, window, now=None):
+        """{avg, min, max, total, covered} over a window: a gauge's average
+        is reading-weighted; a sum's total is the window's sum."""
+        now = time.time() if now is None else now
+        ti = self.tier_for(window)
+        st, cap = self.tiers[ti]
+        n = max(1, min(cap, int(window // st)))
+        end = int(now // st) * st
+        with self._lock:
+            m = self._m.get(name)
+            if m is None:
+                return None
+            kind, tier = m[0], m[1][ti]
+            tot = cnt = 0.0
+            lo, hi, slots = math.inf, -math.inf, 0
+            for k in range(n):
+                i = tier.slot(end - k * st)
+                if i is None:
+                    continue
+                slots += 1
+                tot += tier.s[i]
+                cnt += tier.n[i]
+                lo, hi = min(lo, tier.lo[i]), max(hi, tier.hi[i])
+        if not slots:
+            return {"kind": kind, "avg": None, "min": None, "max": None, "total": 0.0 if kind == "sum" else None,
+                    "covered": 0.0}
+        return {"kind": kind, "avg": round(tot / cnt, 4) if kind == "gauge" and cnt else None,
+                "min": round(lo, 4), "max": round(hi, 4), "total": round(tot, 4) if kind == "sum" else None,
+                "covered": round(slots / n, 3)}
+
+    def total(self, name, window, now=None):
+        st = self.stats(name, window, now)
+        return st["total"] if st and st["kind"] == "sum" else None
+
+    def mean(self, name, window, now=None):
+        st = self.stats(name, window, now)
+        return st["avg"] if st and st["kind"] == "gauge" else None
+
+    def buckets(self, name, window, bucket_s, now=None):
+        """A sum metric totalled per `bucket_s` (e.g. tokens per hour) over
+        the window, from the finest tier that spans it: [[start, total]]
+        oldest first (None where the bucket saw no reading)."""
+        now = time.time() if now is None else now
+        ti = self.tier_for(window)
+        st, _ = self.tiers[ti]
+        end = int(now // bucket_s) * bucket_s
+        nb = max(1, int(window // bucket_s))
+        out = []
+        with self._lock:
+            m = self._m.get(name)
+            if m is None:
+                return None
+            tier = m[1][ti]
+            for b in range(nb - 1, -1, -1):
+                b0 = end - b * bucket_s
+                tot, any_ = 0.0, False
+                for t0 in range(b0, b0 + bucket_s, st):
+                    i = tier.slot(t0)
+                    if i is not None:
+                        tot += tier.s[i]
+                        any_ = True
+                out.append([b0, round(tot, 1) if any_ else None])
+        return out
+
+    def dump(self, now=None, tiers=None):
+        now = time.time() if now is None else now
+        with self._lock:
+            out = {}
+            for name, (kind, ts) in self._m.items():
+                out[name] = {"k": kind, "t": {str(t.step): [[r[0], _g(r[1]), r[2], _g(r[3], 5), _g(r[4], 5)]
+                                                          for r in t.rows(now)]
+                                              for j, t in enumerate(ts) if tiers is None or j in tiers}}
+        return out
+
+    def load(self, doc, now=None):
+        """Restore a dump. Anything malformed is skipped, row by row."""
+        now = time.time() if now is None else now
+        if not isinstance(doc, dict):
+            return 0
+        steps = {st: j for j, (st, _) in enumerate(self.tiers)}
+        n = 0
+        for name, m in doc.items():
+            if not (isinstance(name, str) and isinstance(m, dict) and m.get("k") in ("gauge", "sum")
+                    and isinstance(m.get("t"), dict)):
+                continue
+            with self._lock:
+                mm = self._get(name, m["k"])
+                if mm is None or mm[0] != m["k"]:
+                    continue
+                for st_s, rows in m["t"].items():
+                    j = steps.get(_num(st_s, int))
+                    if j is None or not isinstance(rows, list):
+                        continue
+                    tier = mm[1][j]
+                    for r in rows:
+                        if not (isinstance(r, list) and len(r) == 5):
+                            continue
+                        t0, sm, cnt, lo, hi = (_num(x) for x in r)
+                        if None in (t0, sm, cnt, lo, hi) or t0 % tier.step or not 0 < cnt < 2 ** 31 \
+                                or lo > hi or max(abs(sm), abs(lo), abs(hi)) > HIST_VALUE_MAX * 1e3 \
+                                or not now - tier.step * tier.cap < t0 <= now + 300:
+                            continue
+                        tier._put(int(t0), sm, int(cnt), lo, hi)
+            n += 1
+        return n
+
+
+_store = HistoryStore()
+
+
+def record_node(store, name, view, wall):
+    """One node sample into the store: reachability always; the readings
+    when the node answered."""
+    p = f"node:{name}:"
+    store.add(p + "up", 0.0 if view is None else 1.0, wall)
+    if view is None:
+        return
+    g = view.get("gpu") or {}
+    pw = view.get("power") or {}
+    gpu_w = pw.get("gpu_w") if pw.get("gpu_w") is not None else g.get("power_w")
+    ram, disk = view.get("ram") or {}, view.get("disk") or {}
+    for k, v in (("gpu_util", g.get("util_pct")), ("gpu_mem", g.get("mem_pct")), ("gpu_temp", g.get("temp_c")),
+                 ("gpu_power", gpu_w), ("power", pw.get("total_w")), ("sm_clock", g.get("sm_clock_mhz")),
+                 ("cpu", (view.get("cpu") or {}).get("util_pct")), ("ram", ram.get("pct")),
+                 ("disk", disk.get("pct"))):
+        if v is not None:
+            store.add(p + k, v, wall)
+    ports = [f for f in view.get("fabric") or [] if str(f.get("state") or "").upper() == "ACTIVE"
+             and (f.get("tx_bps") is not None or f.get("rx_bps") is not None)]
+    for f in ports[:FABRIC_PORTS_MAX]:
+        key = f"fab:{name}:{f.get('hca')}/{f.get('port')}:"
+        for d in ("tx", "rx"):
+            if f.get(f"{d}_bps") is not None:
+                store.add(key + d, f[f"{d}_bps"], wall)
+
+
+FABRIC_PORTS_MAX = 8
+
+
+def _load_doc(path, cap):
+    """A JSON document from a dashboard state file, or None (missing, too
+    big, unreadable, corrupt)."""
+    try:
+        if os.path.getsize(path) > cap:
+            return None
+        with open(path, "rb") as fh:
+            return json.loads(fh.read().decode("utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+
+
+def _run_path(name):
+    run = os.path.join(REPO_DIR, ".run")
+    return os.path.join(run, name) if os.path.isdir(run) else None
+
+
+def save_history(store=None, path=None, now=None, lock_timeout=-1):
+    """Write the store to .run/dashboard-history.json, atomically. Over
+    HIST_FILE_MAX the 5 s tier is left out, and if still too big nothing is
+    written. Returns the bytes written (0: nothing)."""
+    store = _store if store is None else store
+    path = path or _run_path(HIST_FILE)
+    if not path:
+        return 0
+    now = time.time() if now is None else now
+    doc = {"v": 1, "saved_at": round(now), "tiers": [list(t) for t in store.tiers], "metrics": store.dump(now)}
+    body = json.dumps(doc, separators=(",", ":")).encode()
+    if len(body) > HIST_FILE_MAX:
+        doc["metrics"] = store.dump(now, tiers=range(1, len(store.tiers)))
+        body = json.dumps(doc, separators=(",", ":")).encode()
+        if len(body) > HIST_FILE_MAX:
+            return 0
+    if not _save_lock.acquire(timeout=lock_timeout):
+        return 0
+    try:
+        return _write_power(path, body)
+    finally:
+        _save_lock.release()
+
+
+def load_history(store=None, path=None, now=None):
+    """Restore what save_history wrote; a file of another tier layout, too
+    big or corrupt restores nothing (and the next save replaces it)."""
+    store = _store if store is None else store
+    path = path or _run_path(HIST_FILE)
+    doc = _load_doc(path, HIST_FILE_MAX) if path else None
+    if not (isinstance(doc, dict) and doc.get("v") == 1
+            and doc.get("tiers") == [list(t) for t in store.tiers]):
+        return 0
+    return store.load(doc.get("metrics"), now)
+
+
+# ── daily rollups: one row per local calendar day, last DAILY_KEEP days ──
+
+DAILY_KEEP = 90
+DAILY_FIELDS = ("gen_tokens", "prompt_tokens", "requests", "gate_requests", "gate_errors",
+                "up_s", "observed_s", "incidents", "energy_wh")
+
+
+def _day(t):
+    return time.strftime("%Y-%m-%d", time.localtime(t))
+
+
+class Daily:
+    """Per-day totals: tokens, requests, model uptime, incidents, and the
+    measured energy per node. Bounded to DAILY_KEEP days."""
+
+    def __init__(self):
+        self._d = {}
+        self._lock = threading.Lock()
+
+    def add(self, t, field, amount, node=None):
+        v = _num(amount)
+        if field not in DAILY_FIELDS or v is None or v < 0 or v > HIST_VALUE_MAX:
+            return
+        day = _day(t)
+        with self._lock:
+            row = self._d.get(day)
+            if row is None:
+                row = self._d[day] = {k: 0.0 for k in DAILY_FIELDS}
+                row["energy_by_node"] = {}
+                for k in sorted(self._d)[:-DAILY_KEEP]:
+                    del self._d[k]
+            row[field] += v
+            if node is not None and field == "energy_wh":
+                by = row["energy_by_node"]
+                if node in by or len(by) < 16:
+                    by[node] = by.get(node, 0.0) + v
+        _log_dirty.set()
+
+    def rows(self, n=DAILY_KEEP):
+        with self._lock:
+            out = []
+            for day in sorted(self._d, reverse=True)[:n]:
+                r = self._d[day]
+                obs = r["observed_s"]
+                out.append({"day": day, **{k: round(r[k], 1) if k in ("energy_wh",) else int(r[k])
+                                           for k in DAILY_FIELDS},
+                            "energy_by_node": {k: round(v, 1) for k, v in r["energy_by_node"].items()},
+                            "uptime_pct": round(100 * r["up_s"] / obs, 2) if obs > 0 else None})
+            return out
+
+    def dump(self):
+        with self._lock:
+            return {d: {**{k: round(r[k], 3) for k in DAILY_FIELDS},
+                        "energy_by_node": {k: round(v, 3) for k, v in r["energy_by_node"].items()}}
+                    for d, r in self._d.items()}
+
+    def load(self, doc):
+        if not isinstance(doc, dict):
+            return
+        with self._lock:
+            for day in sorted(doc)[-DAILY_KEEP:]:
+                r = doc[day]
+                if not (isinstance(day, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", day) and isinstance(r, dict)):
+                    continue
+                row = {k: v if (v := _num(r.get(k))) is not None and 0 <= v <= HIST_VALUE_MAX else 0.0
+                       for k in DAILY_FIELDS}
+                by = r.get("energy_by_node") if isinstance(r.get("energy_by_node"), dict) else {}
+                row["energy_by_node"] = {str(k)[:64]: x for k, raw in list(by.items())[:16]
+                                         if (x := _num(raw)) is not None and 0 <= x <= HIST_VALUE_MAX}
+                self._d[day] = row
+
+
+_daily = Daily()
+
+
+# ── model swaps: which unit / model served when ──
+
+SWAPS_MAX = 200
+
+
+class Swaps:
+    """The serving history: one row per (unit, model) stretch, newest
+    first. A model server that is down is not a swap: the row only changes
+    when a DIFFERENT model or unit is seen serving."""
+
+    def __init__(self):
+        self._rows = collections.deque(maxlen=SWAPS_MAX)
+        self._lock = threading.Lock()
+
+    def seen(self, now, model, unit, engine):
+        if not model:
+            return None
+        model, unit = str(model)[:120], (str(unit)[:64] if unit else None)
+        with self._lock:
+            cur = self._rows[0] if self._rows else None
+            if cur and cur["model"] == model and (cur["unit"] == unit or unit is None):
+                cur["last_seen"] = round(now)
+                return None
+            if cur:
+                cur["to"] = cur.get("last_seen") or round(now)
+            row = {"from": round(now), "to": None, "last_seen": round(now), "model": model, "unit": unit,
+                   "engine": engine}
+            self._rows.appendleft(row)
+        _log_dirty.set()
+        return cur
+
+    def rows(self):
+        with self._lock:
+            return [dict(r) for r in self._rows]
+
+    def load(self, rows):
+        if not isinstance(rows, list):
+            return
+        with self._lock:
+            for r in rows[:SWAPS_MAX][::-1]:
+                if not (isinstance(r, dict) and isinstance(r.get("model"), str) and _num(r.get("from")) is not None):
+                    continue
+                self._rows.appendleft({"from": int(r["from"]), "to": _num(r.get("to"), int),
+                                       "last_seen": _num(r.get("last_seen"), int),
+                                       "model": r["model"][:120],
+                                       "unit": r["unit"][:64] if isinstance(r.get("unit"), str) else None,
+                                       "engine": r["engine"][:24] if isinstance(r.get("engine"), str) else None})
+
+
+_swaps = Swaps()
+
+
+# ── the log file: events, swaps, daily rollups, service states ──
+
+LOG_FILE = "dashboard-log.json"
+LOG_FILE_MAX = 2 << 20
+LOG_SAVE_S = 30.0
+
+
+def save_log(path=None, now=None, lock_timeout=-1):
+    path = path or _run_path(LOG_FILE)
+    if not path:
+        return 0
+    now = time.time() if now is None else now
+    with _events_lock:
+        evs = list(_events)
+    svc = _serve.watch.dump() if _serve is not None else {}
+    doc = {"v": 1, "saved_at": round(now), "events": evs, "swaps": _swaps.rows(), "daily": _daily.dump(),
+           "services": svc}
+    body = json.dumps(doc, separators=(",", ":")).encode()
+    if len(body) > LOG_FILE_MAX:
+        doc["events"] = evs[:100]
+        body = json.dumps(doc, separators=(",", ":")).encode()
+        if len(body) > LOG_FILE_MAX:
+            return 0
+    if not _save_lock.acquire(timeout=lock_timeout):
+        return 0
+    try:
+        _log_dirty.clear()
+        return _write_power(path, body)
+    finally:
+        _save_lock.release()
+
+
+def load_log(path=None):
+    """Restore events, swaps, the daily rollups and the service states. A
+    missing or corrupt file restores nothing. Returns the doc's services
+    block for the ServiceWatch (or {})."""
+    path = path or _run_path(LOG_FILE)
+    doc = _load_doc(path, LOG_FILE_MAX) if path else None
+    if not (isinstance(doc, dict) and doc.get("v") == 1):
+        return {}
+    evs = doc.get("events") if isinstance(doc.get("events"), list) else []
+    with _events_lock:
+        for e in evs[:EVENTS_MAX][::-1]:
+            if not (isinstance(e, dict) and _num(e.get("t")) is not None and isinstance(e.get("text"), str)):
+                continue
+            _event_seq[0] += 1
+            row = {"t": int(e["t"]), "level": e.get("level") if e.get("level") in EVENT_LEVELS else "info",
+                   "text": e["text"][:160], "kind": e.get("kind") if e.get("kind") in EVENT_KINDS else "dashboard",
+                   "id": _event_seq[0]}
+            if e.get("tag") in ("raise", "clear"):
+                row["tag"] = e["tag"]
+            _events.appendleft(row)
+    _swaps.load(doc.get("swaps"))
+    _daily.load(doc.get("daily"))
+    return doc.get("services") if isinstance(doc.get("services"), dict) else {}
+
+
+# ───────────────────────── v3: engine detail (latency, spec decode, cache) ─────────────────────────
+#
+# Read from the /metrics body the serve sampler already fetches (no extra
+# request). vLLM exports Prometheus histograms (cumulative `_bucket{le=..}`
+# counts) for TTFT, end-to-end latency, inter-token latency and queue time;
+# a percentile over the last LAT_WINDOW_S is the quantile of the bucket
+# DELTA between two snapshots, interpolated inside the bucket exactly as
+# Prometheus' histogram_quantile does. llama.cpp exports no histograms: it
+# has per-request time counters instead, so the page gets mean prompt and
+# decode speeds per request. Both export speculative-decoding counters
+# (drafted / accepted tokens) under their own prefix.
+
+LAT_WINDOW_S = 300
+SNAP_S = 15.0                 # a counter snapshot every 15 s, kept for SNAP_KEEP
+SNAP_KEEP = 250               # ~1 h
+LAT_HISTS = (("ttft", ("time_to_first_token_seconds",)),
+             ("e2e", ("e2e_request_latency_seconds",)),
+             ("itl", ("inter_token_latency_seconds", "time_per_output_token_seconds")),
+             ("queue", ("request_queue_time_seconds",)))
+_LE_RE = re.compile(r'(?:^|[{,])le="([^"]*)"')
+ENGINE_PREFIXES = {"llama": ("llamacpp:",), "vllm": ("vllm:",),
+                   "tensorfold": ("tensorfold:", "tensorfold_", "vllm:")}
+
+
+def _sample_value(line):
+    """The value of one exposition line (after the label set; a trailing
+    timestamp is ignored), or None."""
+    rest = line[line.rindex("}") + 1:] if "}" in line else line.split(None, 1)[-1] if " " in line else ""
+    parts = rest.split()
+    v = _num(parts[0]) if parts else None
+    return v
+
+
+def prom_histogram(body, name):
+    """{upper bound: cumulative count} of one histogram, summed over every
+    label set (engines, models), or None when the body has none of it."""
+    pre = name + "_bucket{"
+    out = {}
+    for line in body.splitlines():
+        if not line.startswith(pre):
+            continue
+        m = _LE_RE.search(line[len(name) + 7:])
+        if not m:
+            continue
+        try:
+            le = float(m.group(1))            # "+Inf" -> inf
+        except ValueError:
+            continue
+        v = _sample_value(line)
+        if v is None or v < 0 or math.isnan(le):
+            continue
+        out[le] = out.get(le, 0.0) + v
+    return out or None
+
+
+def hist_quantile(q, b):
+    """Prometheus histogram_quantile over {le: cumulative count}: None
+    without a +Inf bucket or with no observations; the highest finite bound
+    when the rank falls in +Inf; linear inside a bucket (0 as the first
+    bucket's lower bound)."""
+    if not b or math.inf not in b or not 0 <= q <= 1:
+        return None
+    les = sorted(b)
+    total = b[math.inf]
+    if total <= 0:
+        return None
+    rank = q * total
+    prev_le, prev_c, run = 0.0, 0.0, 0.0
+    for le in les:
+        run = max(run, b[le])               # a non-monotonic scrape is clamped
+        if run >= rank:
+            if le == math.inf:
+                finite = [x for x in les if x != math.inf]
+                return finite[-1] if finite else None
+            if run == prev_c or le <= 0:
+                return le
+            return prev_le + (le - prev_le) * (rank - prev_c) / (run - prev_c)
+        prev_le, prev_c = le, run
+    return None
+
+
+def hist_delta(cur, old):
+    """cur - old, bucket by bucket; cur itself across a reset (a counter
+    went back, the bucket layout changed): then cur is all since the reset,
+    which is inside the window anyway."""
+    if not cur:
+        return None
+    if not old or set(old) != set(cur) or any(cur[k] < old[k] for k in cur):
+        return dict(cur)
+    return {k: cur[k] - old[k] for k in cur}
+
+
+def _pget(body, prefixes, name, by=None):
+    """The first prefix's summed metric (or {label: sum} with `by`) that
+    the body has, else None."""
+    for pre in prefixes:
+        v = _prom_by(body, pre + name, by) if by else _prom_sum(body, pre + name)
+        if v:
+            return v
+        if v is not None and not by:
+            return v
+    return None
+
+
+def engine_detail(backend, body):
+    """Gauges, counters and histograms of one /metrics body (all optional)."""
+    pre = ENGINE_PREFIXES.get(backend, ("vllm:",))
+    out = {"g": {}, "c": {}, "h": {}, "by": {}}
+    if not body:
+        return out
+    if backend == "llama":
+        g = {"running": "requests_processing", "waiting": "requests_deferred"}
+    else:
+        g = {"running": "num_requests_running", "waiting": "num_requests_waiting"}
+    for k, n in g.items():
+        v = _pget(body, pre, n)
+        if v is not None:
+            out["g"][k] = v
+    kv = []
+    for p in pre:
+        kv = _prom(body, p + "kv_cache_usage_perc") or _prom(body, p + "gpu_cache_usage_perc")
+        if kv:
+            break
+    if kv:
+        out["g"]["kv"] = max(kv)
+    for k, n in (("spec_draft", "spec_decode_num_draft_tokens_total"),
+                 ("spec_accepted", "spec_decode_num_accepted_tokens_total"),
+                 ("spec_drafts", "spec_decode_num_drafts_total"),
+                 ("prefix_hits", "prefix_cache_hits_total"), ("prefix_queries", "prefix_cache_queries_total"),
+                 ("prompt_cached", "prompt_tokens_cached_total"), ("prompt_tokens", "prompt_tokens_total"),
+                 ("prompt_s", "prompt_seconds_total"), ("gen_tokens", "tokens_predicted_total"),
+                 ("gen_s", "tokens_predicted_seconds_total"), ("preemptions", "num_preemptions_total")):
+        v = _pget(body, pre, n)
+        if v is not None:
+            out["c"][k] = v
+    ok = _pget(body, pre, "request_success_total", by="finished_reason")
+    if ok:
+        out["by"]["finished"] = {k[:24]: v for k, v in sorted(ok.items())[:12]}
+        out["c"]["requests"] = sum(ok.values())
+    pos = _pget(body, pre, "spec_decode_num_accepted_tokens_per_pos_total", by="position")
+    if pos:
+        out["by"]["spec_pos"] = {k[:4]: v for k, v in sorted(pos.items(), key=lambda kv: _num(kv[0]) or 0)[:16]}
+    for key, names in LAT_HISTS:
+        for n in names:
+            h = None
+            for p in pre:
+                h = prom_histogram(body, p + n)
+                if h:
+                    break
+            if h:
+                out["h"][key] = h
+                break
+    return out
+
+
+def llama_ctx_fill(status, body):
+    """The fullest busy llama.cpp slot's context fill (0..1) from /slots:
+    (prompt + decoded tokens) / n_ctx. None when /slots says nothing."""
+    if status != 200:
+        return None
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return None
+    best = None
+    for s in data if isinstance(data, list) else []:
+        if not isinstance(s, dict):
+            continue
+        n_ctx = s.get("n_ctx")
+        if not (isinstance(n_ctx, int) and n_ctx > 0):
+            continue
+        busy = s.get("is_processing") or s.get("state", 0) != 0
+        used = 0
+        if busy:
+            nt = s.get("next_token")
+            nt = nt[0] if isinstance(nt, list) and nt else nt
+            dec = (nt.get("n_decoded") if isinstance(nt, dict) else None) or s.get("n_decoded") or 0
+            pr = s.get("n_prompt_tokens") or 0
+            if isinstance(dec, (int, float)) and isinstance(pr, (int, float)):
+                used = max(0, int(dec) + int(pr))
+        f = min(1.0, used / n_ctx)
+        best = f if best is None else max(best, f)
+    return best
+
+
+def _ratio(a, b, scale=100.0, digits=1):
+    return round(scale * a / b, digits) if a is not None and b else None
+
+
+def detail_window(cur, old, span):
+    """What the page shows from two engine_detail snapshots `span` s apart
+    (old may be None: lifetime numbers only)."""
+    c, o = cur["c"], (old or {}).get("c", {})
+
+    def d(k):
+        if k not in c:
+            return None
+        if k in o and c[k] >= o[k]:
+            return c[k] - o[k]
+        return None if old else c[k]
+
+    lat = {}
+    for key, _ in LAT_HISTS:
+        h = cur["h"].get(key)
+        if not h:
+            continue
+        w = hist_delta(h, (old or {}).get("h", {}).get(key)) if old else None
+        n_w = w.get(math.inf) if w else None
+        q = lambda b, x: (round(v, 4) if (v := hist_quantile(x, b)) is not None else None)
+        lat[key] = {"p50": q(w, .5) if n_w else None, "p95": q(w, .95) if n_w else None,
+                    "p99": q(w, .99) if n_w else None, "count": int(n_w) if n_w is not None else None,
+                    "life_p50": q(h, .5), "life_p95": q(h, .95), "life_count": int(h.get(math.inf, 0))}
+    spec = None
+    if "spec_draft" in c:
+        dd, da, dn = d("spec_draft"), d("spec_accepted"), d("spec_drafts")
+        pos = cur["by"].get("spec_pos") or {}
+        opos = (old or {}).get("by", {}).get("spec_pos") or {}
+        if old and opos and set(opos) == set(pos) and all(pos[k] >= opos[k] for k in pos):
+            pos_w = {k: pos[k] - opos[k] for k in pos}
+        else:
+            pos_w = pos
+        drafts_w = dn if dn else c.get("spec_drafts")
+        spec = {"accept_pct": _ratio(da, dd), "mean_len": round(1 + da / dn, 2) if da is not None and dn else None,
+                "life_accept_pct": _ratio(c.get("spec_accepted"), c.get("spec_draft")),
+                "life_mean_len": round(1 + c["spec_accepted"] / c["spec_drafts"], 2)
+                if c.get("spec_drafts") and "spec_accepted" in c else None,
+                "per_pos_pct": [_ratio(pos_w[k], drafts_w) for k in pos_w] if drafts_w else [],
+                "drafted_w": int(dd) if dd is not None else None}
+    if "prefix_queries" in c:
+        hit = _ratio(d("prefix_hits"), d("prefix_queries"))
+        life = _ratio(c.get("prefix_hits"), c.get("prefix_queries"))
+    elif "prompt_cached" in c and "prompt_tokens" in c:
+        dc, dp = d("prompt_cached"), d("prompt_tokens")
+        hit = _ratio(dc, (dc or 0) + (dp or 0)) if dc is not None and dp is not None else None
+        life = _ratio(c["prompt_cached"], c["prompt_cached"] + c["prompt_tokens"])
+    else:
+        hit = life = None
+    per_req = {}
+    if "gen_s" in c:                       # llama.cpp: per-request speeds
+        gt, gs, pt, ps = d("gen_tokens"), d("gen_s"), d("prompt_tokens"), d("prompt_s")
+        per_req = {"decode_tok_s": round(gt / gs, 1) if gt is not None and gs and gs > 0.5 else None,
+                   "prefill_tok_s": round(pt / ps, 1) if pt is not None and ps and ps > 0.5 else None,
+                   "life_decode_tok_s": round(c["gen_tokens"] / c["gen_s"], 1)
+                   if c.get("gen_tokens") and c["gen_s"] > 0 else None}
+    elif lat.get("itl") and (lat["itl"]["p50"] or lat["itl"]["life_p50"]):
+        itl = lat["itl"]["p50"] or lat["itl"]["life_p50"]
+        per_req = {"decode_tok_s": round(1 / itl, 1) if itl > 0 else None, "from": "itl p50"}
+    req_w = d("requests")
+    return {"window_s": round(span) if old else None, "latency": lat or None, "spec": spec,
+            "prefix_hit_pct": hit, "life_prefix_hit_pct": life, "per_request": per_req or None,
+            "finished": {k: int(v) for k, v in (cur["by"].get("finished") or {}).items()} or None,
+            "requests_per_min": round(60 * req_w / span, 2) if req_w is not None and old and span > 0 else None,
+            "preemptions": int(c["preemptions"]) if "preemptions" in c else None}
+
+
+# ───────────────────────── v3: service watch and alerts ─────────────────────────
+
+class ServiceWatch:
+    """Each service's state as the serve sampler last saw it, and since
+    when (as seen by the dashboard; restored across a dashboard restart when
+    the state is unchanged). Transitions become events."""
+
+    def __init__(self):
+        self._s = {}
+        self._lock = threading.Lock()
+        self._restored = {}
+
+    def restore(self, doc):
+        if isinstance(doc, dict):
+            self._restored = {k[:32]: v for k, v in list(doc.items())[:32] if isinstance(v, dict)}
+
+    def update(self, name, label, state, now, quiet=False):
+        with self._lock:
+            cur = self._s.get(name)
+            if cur is None:
+                old = self._restored.pop(name, None) or {}
+                since = _num(old.get("since"), int) if old.get("state") == state else None
+                self._s[name] = cur = {"state": state, "since": since or round(now),
+                                       "last_change": _num(old.get("last_change"), int), "label": label,
+                                       "checked": round(now), "changes": 0}
+                if old.get("state") and old.get("state") != state and not quiet:
+                    cur["last_change"] = round(now)
+                    event(f"{label} {state} (was {old['state']} before the dashboard restarted)",
+                          "warn" if state == "down" else "info", kind="service")
+                return
+            cur["checked"] = round(now)
+            if cur["state"] != state:
+                was = cur["state"]
+                cur.update(state=state, since=round(now), last_change=round(now), changes=cur["changes"] + 1)
+                if not quiet:
+                    event(f"{label} {'DOWN' if state == 'down' else state} (was {was})",
+                          "warn" if state == "down" else "info", kind="service")
+
+    def get(self):
+        with self._lock:
+            return {k: dict(v) for k, v in self._s.items()}
+
+    def dump(self):
+        with self._lock:
+            return {k: {"state": v["state"], "since": v["since"], "last_change": v["last_change"]}
+                    for k, v in self._s.items()}
+
+
+# Alert thresholds: DASHBOARD_ALERT_<NAME> in the environment or
+# openbeast.conf (env OPENBEAST_DASHBOARD_ALERT_<NAME> too), read at start.
+# A value outside its range is ignored (the default stands).
+# DASHBOARD_ALERTS_OFF=temp,disk,... turns rules off by name.
+ALERT_SETTINGS = (
+    # name, default, lo, hi, what it is
+    ("GPU_TEMP_C", 85.0, 30, 125, "GPU temperature warning, degrees C"),
+    ("GPU_TEMP_CRIT_C", 92.0, 30, 130, "GPU temperature critical, degrees C"),
+    ("MEM_FLOOR_GIB", None, 0, 4096, "the memguard floor (default: HY4_MEMGUARD_GIB, else 2.5)"),
+    ("MEM_MARGIN_GIB", 2.5, 0, 4096, "warn this far above the floor (MemAvailable)"),
+    ("PEER_S", 10.0, 0, 3600, "a node unreachable this long"),
+    ("ENGINE_DOWN_S", 10.0, 0, 3600, "the model server unhealthy this long"),
+    ("STALL_S", 300.0, 10, 86400, "requests running and no token moving this long"),
+    ("THROTTLE_S", 20.0, 0, 3600, "a hardware / thermal clock slowdown this long"),
+    ("DISK_FREE_PCT", 10.0, 0, 100, "model volume free below this percent: warning"),
+    ("DISK_CRIT_PCT", 3.0, 0, 100, "model volume free below this percent: critical"),
+    ("GATE_ERRORS", 10.0, 1, 1e9, "gate errors in 5 min (and GATE_ERROR_PCT of requests)"),
+    ("GATE_ERROR_PCT", 20.0, 0, 100, "gate error share of requests in 5 min"),
+    ("KV_PCT", 98.0, 1, 100, "KV cache use with requests waiting, percent"),
+    ("KV_S", 60.0, 0, 86400, "...for this long"),
+    ("SERVICE_S", 30.0, 0, 86400, "a service down this long"),
+)
+ALERT_RULES = ("peer", "engine", "stall", "temp", "mem", "throttle", "disk", "gate", "kv", "service")
+ALERT_CLEAR_S = 10.0         # a condition must be gone this long to clear
+
+
+def alert_thresholds(conf=None):
+    conf = _kv_file(os.path.join(REPO_DIR, "openbeast.conf")) if conf is None else conf
+    th = {}
+    for name, default, lo, hi, _ in ALERT_SETTINGS:
+        v = _num(_setting("DASHBOARD_ALERT_" + name, conf))
+        th[name] = v if v is not None and lo <= v <= hi else default
+    if th["MEM_FLOOR_GIB"] is None:
+        v = _num(_setting("HY4_MEMGUARD_GIB", conf))
+        th["MEM_FLOOR_GIB"] = v if v is not None and 0 < v <= 4096 else 2.5
+    off = (_setting("DASHBOARD_ALERTS_OFF", conf) or "").lower()
+    th["off"] = sorted({r for r in re.split(r"[,\s]+", off) if r in ALERT_RULES})
+    return th
+
+
+def alert_conditions(th, nodes, serve, services, now):
+    """Every alert condition true NOW -> {key: (rule, level, title, detail,
+    hold s)}. Pure: nodes are /api/cluster node snapshots, serve the serve
+    sampler's snapshot, services the ServiceWatch states."""
+    out, off = {}, set(th.get("off") or ())
+
+    def put(rule, key, level, title, detail, hold):
+        if rule not in off:
+            out[key] = (rule, level, title[:80], detail[:160], hold)
+
+    for n in nodes:
+        name = str(n.get("name"))[:64]
+        if n.get("state") == "unreachable":
+            put("peer", f"peer:{name}", "crit" if n.get("role") == "peer" else "warn",
+                f"{name} unreachable" if n.get("role") == "peer" else f"{name}: probe failing",
+                str(n.get("error") or "no answer"), th["PEER_S"])
+            continue
+        if n.get("state") != "up":
+            continue
+        g = n.get("gpu") or {}
+        t = g.get("temp_c")
+        if isinstance(t, (int, float)) and t >= th["GPU_TEMP_C"]:
+            crit = t >= th["GPU_TEMP_CRIT_C"]
+            put("temp", f"temp:{name}", "crit" if crit else "warn", f"GPU hot on {name}",
+                f"{t:.0f} °C (warn {th['GPU_TEMP_C']:.0f}, critical {th['GPU_TEMP_CRIT_C']:.0f})", 15.0)
+        thr = g.get("throttle") or {}
+        if thr.get("slowdown"):
+            put("throttle", f"throttle:{name}", "warn", f"GPU throttling on {name}",
+                ", ".join(r for r in thr.get("reasons") or [] if r not in ("idle", "power cap")) or "slowdown",
+                th["THROTTLE_S"])
+        ram = n.get("ram") or {}
+        if ram.get("total_mib") and ram.get("used_mib") is not None:
+            avail = (ram["total_mib"] - ram["used_mib"]) / 1024
+            floor = th["MEM_FLOOR_GIB"]
+            if avail < floor + th["MEM_MARGIN_GIB"]:
+                put("mem", f"mem:{name}", "crit" if avail < floor else "warn",
+                    f"Memory near the memguard floor on {name}",
+                    f"{avail:.1f} GiB available (floor {floor:g} GiB, warn below {floor + th['MEM_MARGIN_GIB']:g})", 10.0)
+        disk = n.get("disk") or {}
+        if disk.get("total_b") and disk.get("free_b") is not None:
+            free = 100 * disk["free_b"] / disk["total_b"]
+            if free < th["DISK_FREE_PCT"]:
+                put("disk", f"disk:{name}", "crit" if free < th["DISK_CRIT_PCT"] else "warn",
+                    f"Disk low on {name}", f"model volume {free:.1f}% free ({disk['free_b'] / 1e9:.0f} GB)", 30.0)
+    if serve:
+        if serve.get("healthy") is False:
+            put("engine", "engine:down", "crit", "Model server down",
+                f"{serve.get('engine') or 'engine'} /health is not answering ok", th["ENGINE_DOWN_S"])
+        stall = serve.get("stalled_s")
+        if serve.get("healthy") and isinstance(stall, (int, float)) and stall >= th["STALL_S"]:
+            put("stall", "engine:stalled", "crit", "Engine stalled",
+                f"{serve.get('running') or 0} request(s) running, no token for {stall:.0f} s", 0.0)
+        kv, waiting = serve.get("kv_pct"), serve.get("waiting")
+        if isinstance(kv, (int, float)) and kv >= th["KV_PCT"] and (waiting or 0) > 0:
+            put("kv", "kv:full", "warn", "KV cache full, requests waiting",
+                f"KV {kv:.0f}% with {waiting} waiting", th["KV_S"])
+        gate = dict(serve.get("gate") or {}, **(serve.get("gate_window") or {}))
+        if gate.get("enabled") and gate.get("up") is False:
+            put("gate", "gate:down", "crit", "beast-gate down", "remote clients cannot reach the model",
+                th["ENGINE_DOWN_S"])
+        e5, r5 = gate.get("errors_5m"), gate.get("requests_5m")
+        if isinstance(e5, (int, float)) and e5 >= th["GATE_ERRORS"] and r5 and 100 * e5 / r5 >= th["GATE_ERROR_PCT"]:
+            put("gate", "gate:errors", "warn", "Gate error spike",
+                f"{e5:.0f} errors of {r5:.0f} requests in 5 min ({100 * e5 / r5:.0f}%)", 0.0)
+    for name, s in (services or {}).items():
+        if s.get("state") == "down" and name not in ("model", "gate"):
+            put("service", f"svc:{name}", "warn", f"{s.get('label') or name} down",
+                f"down since {time.strftime('%H:%M:%S', time.localtime(s.get('since') or now))}", th["SERVICE_S"])
+    return out
+
+
+_LEVEL_RANK = {"crit": 0, "warn": 1, "info": 2}
+
+
+class Alerts:
+    """Raise a condition that has held for its hold time; clear one that
+    has been gone ALERT_CLEAR_S. Raises and clears are events; a raise of a
+    warning or worse counts as an incident in the day's rollup."""
+
+    def __init__(self, th=None):
+        self.th = th or {k: d for k, d, *_ in ALERT_SETTINGS}
+        self.active, self._first, self._gone = {}, {}, {}
+        self._lock = threading.Lock()
+
+    def evaluate(self, conds, now):
+        with self._lock:
+            for key, (rule, level, title, detail, hold) in conds.items():
+                first = self._first.setdefault(key, now)
+                self._gone.pop(key, None)
+                a = self.active.get(key)
+                if a is not None:
+                    if _LEVEL_RANK[level] < _LEVEL_RANK[a["level"]]:
+                        event(f"{title}: now {level} · {detail}", level, kind="alert", now=now)
+                    a.update(level=level, title=title, detail=detail, updated=round(now))
+                elif now - first >= hold:
+                    self.active[key] = {"key": key, "rule": rule, "level": level, "title": title,
+                                        "detail": detail, "since": round(first), "updated": round(now)}
+                    event(f"{title} · {detail}", level, kind="alert", now=now, tag="raise")
+                    _daily.add(now, "incidents", 1)
+            for key in [k for k in self._first if k not in conds]:
+                if key not in self.active:
+                    del self._first[key]
+                    continue
+                gone = self._gone.setdefault(key, now)
+                if now - gone >= ALERT_CLEAR_S:
+                    a = self.active.pop(key)
+                    del self._first[key]
+                    del self._gone[key]
+                    event(f"cleared: {a['title']} (after {_dur(now - a['since'])})", "info", kind="alert", now=now,
+                          tag="clear")
+
+    def snapshot(self):
+        with self._lock:
+            act = sorted((dict(a) for a in self.active.values()),
+                         key=lambda a: (_LEVEL_RANK[a["level"]], -a["since"]))
+        counts = {lv: sum(1 for a in act if a["level"] == lv) for lv in ("crit", "warn", "info")}
+        return {"active": act, "counts": counts}
+
+
+def _dur(s):
+    s = max(0, int(s))
+    return f"{s // 3600}h {s % 3600 // 60}m" if s >= 3600 else f"{s // 60}m {s % 60}s" if s >= 60 else f"{s}s"
+
+
+_alerts = Alerts()
+
+
+def health_verdict(model_healthy, alerts):
+    """The one overall state the page leads with: down (the model server),
+    critical / degraded (an active crit / warn alert), else ok; with the
+    reason in words."""
+    act = alerts.get("active") or []
+    if model_healthy is False:
+        return {"state": "down", "reason": "model server down"}
+    crit = [a for a in act if a["level"] == "crit"]
+    warn = [a for a in act if a["level"] == "warn"]
+    if crit:
+        return {"state": "critical", "reason": "; ".join(a["title"] for a in crit[:2])
+                + (f" (+{len(crit) + len(warn) - 2} more)" if len(crit) + len(warn) > 2 else "")}
+    if warn:
+        return {"state": "degraded", "reason": "; ".join(a["title"] for a in warn[:2])
+                + (f" (+{len(warn) - 2} more)" if len(warn) > 2 else "")}
+    return {"state": "ok", "reason": "all systems nominal"}
+
+
+class AlertLoop:
+    """Evaluates the alert conditions every ALERT_EVAL_S from the samplers'
+    latest snapshots (never on a request)."""
+
+    def __init__(self, interval=5.0):
+        self.interval = interval
+
+    def tick(self, now=None):
+        now = time.time() if now is None else now
+        nodes = [n.snapshot() for n in ([_head] if _head else []) + _peers]
+        sv = _serve.snapshot() if _serve else {}
+        watch = _serve.watch.get() if _serve else {}
+        _alerts.evaluate(alert_conditions(_alerts.th, nodes, sv, watch, now), now)
+
+    def loop(self):
+        while True:
+            t0 = time.monotonic()
+            with contextlib.suppress(Exception):
+                self.tick()
+            time.sleep(max(1.0, self.interval - (time.monotonic() - t0)))
+
+
 def _run_node(target):
     """(stdout, error) of NODE_SCRIPT on `target` (None: this node)."""
     cmd = (["sh", "-s"] if target is None else
@@ -1911,13 +3030,17 @@ class NodeSampler:
             view = node_view(raw, prev[1] if prev else None, now - prev[0] if prev else None)
             self._prev = (now, raw)
             g = view["gpu"] or {}
+            self.power.last_energy_j = None
             self.power.ingest(wall, now, raw, view)
             self.history.add({"util": g.get("util_pct"), "mem": g.get("mem_pct"),
                               "power": g.get("power_w"), "cpu": view["cpu"]["util_pct"]}, wall)
+            if self.power.last_energy_j:
+                _daily.add(wall, "energy_wh", self.power.last_energy_j / 3600.0, node=self.name)
         else:
             # A failed sample is a GAP on the time axis, not a skipped one:
             # the sparkline breaks there and its "x ago" stays true.
             self.history.add({"util": None, "mem": None, "power": None, "cpu": None}, wall)
+        record_node(_store, self.name, view if err is None else None, wall)
         self._set_state(None if err is None else err, view if err is None else None)
 
     def _set_state(self, err, view=None):
@@ -1929,7 +3052,7 @@ class NodeSampler:
                 self.error, self.state = err, "unreachable"
         if was != self.state and not (was == "pending" and self.state == "up"):
             event(f"{self.name} {'is back' if self.state == 'up' else 'unreachable: ' + err}",
-                  "info" if self.state == "up" else "warn")
+                  "info" if self.state == "up" else "warn", kind="node")
 
     def snapshot(self):
         with self._lock:
@@ -2166,9 +3289,30 @@ def inference_unit(units=None):
     return {"name": None, "active": False, "uptime_s": None}
 
 
+SLOW_S = 15.0                 # model id, the service watch, the tool counters
+
+
+def _watch_requests():
+    """The fixed (name, label, url, needle) probes of the service watch."""
+    out = [("tools", "tool server", f"http://{H}:3001/health", "ok"),
+           ("webui", "Open WebUI", f"http://{H}:3000/api/version", "version"),
+           ("search", "SearXNG", f"http://{H}:8888/", "")]
+    if _bool_env("OPENBEAST_BEAST_CHAT", "BEAST_CHAT"):
+        out.append(("chat", "beast-chat", f"http://{H}:{_port_env('OPENBEAST_CHAT_PORT', 3003)}/api/chat/health", None))
+    if _bool_env("OPENBEAST_BEAST_ARTIFACT", "BEAST_ARTIFACT"):
+        out.append(("artifact", "beast-artifact",
+                    f"http://{H}:{_port_env('OPENBEAST_ARTIFACT_PORT', 3004)}/api/artifacts/health", None))
+    if _INSTINCT:
+        out.append(("instinct", "beast-instinct", f"http://{_LOOP}:{_INSTINCT_PORT}/health", None))
+    return out
+
+
 class ServeSampler:
     """The head's serving and gate counters on a timer: token rates and
-    request rates need two readings, and history needs a clock."""
+    request rates need two readings, and history needs a clock. v3 adds the
+    engine detail (latency percentiles, speculative decoding, prefix cache),
+    the history store, the daily rollups, the service watch and the model
+    swap log, all from this one background loop."""
 
     def __init__(self, interval=SERVE_SAMPLE_S):
         self.interval = interval
@@ -2177,23 +3321,48 @@ class ServeSampler:
         self.snap = {}
         self._unit_at = 0.0
         self._last = {}
+        self._slow_at = None
+        self._snaps = collections.deque(maxlen=SNAP_KEEP)   # (t, engine detail, gate by-reason)
+        self._prev_counts = None      # (gen, prompt, gate req, gate err, gate denied, requests)
+        self._progress_at = None
+        self._t_last = None
+        self.watch = ServiceWatch()
+        self.model_id = None
+        self._tools_prev = None
+
+    def _counter_delta(self, i, v):
+        p = self._prev_counts[i] if self._prev_counts else None
+        return v - p if v is not None and p is not None and v >= p else None
 
     def sample(self, now=None):
         now = time.time() if now is None else now
         gen = prm = None
         st, health = _get(f"{_INFER}/health")
+        healthy = _model_up((st, health))
         gen_done, live = None, None
+        mbody = ""
         if _BACKEND in ("llama", "vllm", "tensorfold"):
             mst, mbody = _get(f"{_INFER}/metrics", auth=True)
-            gen, prm = engine_counters(_BACKEND, mbody if mst == 200 else "",
-                                       health if st == 200 else "")
-        if _BACKEND == "llama" and gen is not None:
-            gen_done = gen
-            live = llama_inflight_tokens(*_get(f"{_INFER}/slots", auth=True))
-            if live is not None:
-                gen += live
+            mbody = mbody if mst == 200 else ""
+            gen, prm = engine_counters(_BACKEND, mbody, health if st == 200 else "")
+        det = engine_detail(_BACKEND, mbody)
+        fill = None
+        if _BACKEND == "llama":
+            sst, sbody = _get(f"{_INFER}/slots", auth=True)
+            fill = llama_ctx_fill(sst, sbody)
+            if gen is not None:
+                gen_done = gen
+                live = llama_inflight_tokens(sst, sbody)
+                if live is not None:
+                    gen += live
+        running, waiting, kv = det["g"].get("running"), det["g"].get("waiting"), det["g"].get("kv")
+        if _BACKEND == "tensorfold":
+            tf = _tf_health(health) if st == 200 else {}
+            running = tf.get("busy", running)
+            kv = tf.get("kv", kv)
         gate = {"enabled": _EDGE_GATE}
         g_req = g_err = g_comp = None
+        by_reason = {}
         if _EDGE_GATE:
             hst, hbody = _gate_get("/gate/health")
             gate["up"] = hst == 200
@@ -2201,25 +3370,26 @@ class ServeSampler:
                 h = json.loads(hbody) if hst == 200 else {}
             except ValueError:
                 h = {}
+            h = h if isinstance(h, dict) else {}
             gate["auth"] = h.get("auth") if isinstance(h.get("auth"), str) else None
             gate["devices"] = h.get("devices") if isinstance(h.get("devices"), int) else None
             gate["active_devices"] = _active_devices()   # wall clock: the file is
-            mst, mbody = _gate_get("/gate/metrics")
+            mst, gbody = _gate_get("/gate/metrics")
             if mst == 200:
-                by = _prom_by(mbody, "openbeast_edge_requests_total", "outcome")
+                by = _prom_by(gbody, "openbeast_edge_requests_total", "outcome")
                 g_req = sum(by.values())
                 g_err = sum(v for k, v in by.items() if k != "ok")
-                g_comp = _prom_sum(mbody, "openbeast_edge_completion_tokens_total")
+                g_comp = _prom_sum(gbody, "openbeast_edge_completion_tokens_total")
                 # denied_total counts EVERY refusal (rate limit, fanout,
                 # path, size...); only no_key / unknown_key / revoked are
                 # "no identity" (review 2026-11-22). Counts per reason only.
-                by_reason = _prom_by(mbody, "openbeast_edge_denied_total", "reason")
+                by_reason = _prom_by(gbody, "openbeast_edge_denied_total", "reason")
                 gate["denied_total"] = int(sum(by_reason.values()))
                 gate["denied_identity"] = int(sum(v for k, v in by_reason.items() if k in _IDENTITY_REASONS))
                 gate["denied_by_reason"] = {k[:32]: int(v) for k, v in sorted(by_reason.items())[:16]}
             gate["requests_total"] = int(g_req) if g_req is not None else None
             gate["errors_total"] = int(g_err) if g_err is not None else None
-        self.ring.add({"gen": gen, "prompt": prm, "greq": g_req, "gcomp": g_comp}, now)
+        self.ring.add({"gen": gen, "prompt": prm, "greq": g_req, "gcomp": g_comp, "gerr": g_err}, now)
         # llama.cpp prints counters past 1e6 with 6 significant digits (a
         # 10-token step at 1.8e6, 100 at 1e7): widen the window so the step
         # stays a small part of the rate (review 2026-11-22).
@@ -2235,6 +3405,7 @@ class ServeSampler:
             source = None
         rpm = _rate(self.ring, "greq", now, window=60.0)
         gate["req_per_min"] = round(rpm * 60, 1) if rpm is not None else None
+        epm = _rate(self.ring, "gerr", now, window=60.0)
         self.ring.set_last("tok_s", tok_s)
         if now - self._unit_at > 15 or "unit" not in self.snap:
             self._unit_at = now
@@ -2243,12 +3414,147 @@ class ServeSampler:
             unit = self.snap["unit"]
         island = island_state()
         prm_s = _rate(self.ring, "prompt", now, window=_counter_window(prm))
+
+        # ── v3: deltas, progress, history, rollups ──
+        req_c = det["c"].get("requests")
+        d_gen, d_prm = self._counter_delta(0, gen), self._counter_delta(1, prm)
+        d_greq, d_gerr = self._counter_delta(2, g_req), self._counter_delta(3, g_err)
+        den = sum(by_reason.values()) if by_reason else None
+        d_den, d_req = self._counter_delta(4, den), self._counter_delta(5, req_c)
+        self._prev_counts = (gen, prm, g_req, g_err, den, req_c)
+        moved = bool(d_gen) or bool(d_prm)
+        busy = (running or 0) > 0
+        if not busy or moved or self._progress_at is None or not healthy:
+            self._progress_at = now
+        stalled_s = round(now - self._progress_at, 1) if busy and healthy else None
+        dt = min(now - self._t_last, 3 * self.interval) if self._t_last is not None else 0.0
+        self._t_last = now
+        if dt > 0:
+            _daily.add(now, "observed_s", dt)
+            if healthy:
+                _daily.add(now, "up_s", dt)
+        for f, v in (("gen_tokens", d_gen), ("prompt_tokens", d_prm), ("requests", d_req),
+                     ("gate_requests", d_greq), ("gate_errors", d_gerr)):
+            if v:
+                _daily.add(now, f, v)
+        kv_pct = round(100 * kv, 2) if kv is not None else None
+        fill_pct = round(100 * fill, 2) if fill is not None else None
+        S = _store
+        S.add("serve:up", 1.0 if healthy else 0.0, now)
+        for k, v in (("serve:tok_s", tok_s), ("serve:prompt_tok_s", prm_s), ("serve:running", running),
+                     ("serve:waiting", waiting), ("serve:kv_pct", kv_pct), ("serve:ctx_fill_pct", fill_pct),
+                     ("gate:rpm", gate["req_per_min"])):
+            if v is not None:
+                S.add(k, v, now)
+        for k, v in (("serve:gen_tokens", d_gen), ("serve:prompt_tokens", d_prm), ("serve:requests", d_req),
+                     ("gate:requests", d_greq), ("gate:errors", d_gerr), ("gate:denied", d_den)):
+            if v is not None:
+                S.add(k, v, now, kind="sum")
+        # The engine detail over the last LAT_WINDOW_S, from the snapshots.
+        if not self._snaps or now - self._snaps[-1][0] >= SNAP_S:
+            self._snaps.append((now, det, dict(by_reason)))
+        old = self._snap_before(now, LAT_WINDOW_S)
+        win = detail_window(det, old[1] if old else None, now - old[0] if old else 0)
+        lat = win.get("latency") or {}
+        for key in ("ttft", "e2e", "itl", "queue"):
+            for q in ("p50", "p95"):
+                v = (lat.get(key) or {}).get(q)
+                if v is not None:
+                    S.add(f"serve:{key}_{q}", v, now)
+        if (win.get("spec") or {}).get("accept_pct") is not None:
+            S.add("serve:spec_accept_pct", win["spec"]["accept_pct"], now)
+        if win.get("prefix_hit_pct") is not None:
+            S.add("serve:prefix_hit_pct", win["prefix_hit_pct"], now)
+        gwin = self._gate_window(now, 300) if _EDGE_GATE else {}
+        if _EDGE_GATE:
+            gwin["err_per_min"] = round(epm * 60, 2) if epm is not None else None
+        if self._slow_at is None or now - self._slow_at >= SLOW_S:
+            self._slow_at = now
+            with contextlib.suppress(Exception):
+                self._slow(now, healthy, unit, gate)
         with self._lock:
             self.snap = {"tok_s": round(tok_s, 1) if tok_s is not None else None,
                          "tok_s_source": source,
                          "prompt_tok_s": round(prm_s, 1) if prm_s is not None else None,
-                         "gate": gate, "unit": unit, "interval_s": self.interval}
-        self._transitions(_model_up((st, health)), unit, island, gate)
+                         "gate": gate, "gate_window": gwin, "unit": unit, "interval_s": self.interval,
+                         "healthy": healthy, "running": int(running) if running is not None else None,
+                         "waiting": int(waiting) if waiting is not None else None, "kv_pct": kv_pct,
+                         "ctx_fill_pct": fill_pct, "stalled_s": stalled_s, "detail": win,
+                         "model_id": self.model_id, "engine": ENGINE_LABEL.get(_BACKEND, _BACKEND),
+                         "lifetime_gen_tokens": int(gen_done if gen_done is not None else gen) if gen is not None else None,
+                         "lifetime_prompt_tokens": int(prm) if prm is not None else None,
+                         "sampled_at": round(now, 1)}
+        self._transitions(healthy, unit, island, gate)
+
+    def _snap_before(self, now, age):
+        """The newest snapshot at least `age` s old; early on, the oldest
+        one if it is at least a minute old (the window then says how long)."""
+        best = None
+        for s in self._snaps:
+            if now - s[0] >= age:
+                best = s
+            else:
+                break
+        if best is None and self._snaps and now - self._snaps[0][0] >= 60:
+            best = self._snaps[0]
+        return best
+
+    def _gate_window(self, now, span):
+        """Gate requests / errors over the last `span` s from the store (the
+        alert's error-spike input), and the refusals by reason over the last
+        hour from the snapshots."""
+        out = {"requests_5m": _store.total("gate:requests", span, now),
+               "errors_5m": _store.total("gate:errors", span, now)}
+        old = self._snap_before(now, 3600)
+        cur = self._snaps[-1][2] if self._snaps else {}
+        if old is not None and cur:
+            o = old[2]
+            out["denied_window_s"] = round(now - old[0])
+            out["denied_by_reason_window"] = {k[:32]: int(v - o.get(k, 0)) for k, v in sorted(cur.items())[:16]
+                                              if v - o.get(k, 0) >= 0}
+        return out
+
+    def _slow(self, now, healthy, unit, gate):
+        """Every SLOW_S: the served model id, the service watch, the tool
+        server's counters."""
+        st, body = _get(f"{_INFER}/v1/models", auth=True)
+        mid = None
+        if st == 200:
+            try:
+                mid = json.loads(body)["data"][0].get("id") or None
+            except Exception:
+                mid = None
+        if mid:
+            self.model_id = str(mid)[:120]
+        if healthy and mid:
+            prev = _swaps.seen(now, mid, unit.get("name"), ENGINE_LABEL.get(_BACKEND, _BACKEND))
+            if prev is not None:
+                event(f"model swap: {prev['model']} -> {mid}" + (f" ({unit['name']})" if unit.get("name") else ""),
+                      kind="swap", now=now)
+        self.watch.update("model", ENGINE_LABEL.get(_BACKEND, _BACKEND), "up" if healthy else "down", now, quiet=True)
+        if _EDGE_GATE:
+            self.watch.update("gate", "beast-gate", "up" if gate.get("up") else "down", now, quiet=True)
+        for name, label, url, needle in _watch_requests():
+            s, b = _get(url)
+            ok = s == 200 if needle is None else bool(s and s < 500 and (needle in b if needle else True))
+            self.watch.update(name, label, "up" if ok else "down", now)
+        isl = island_state().get("state")
+        if isl:
+            self.watch.update("island", "beast-island", isl, now, quiet=True)
+        ts, tb = _get(f"http://{H}:3001/metrics")
+        if ts == 200:
+            calls = errs = 0.0
+            for line in tb.splitlines():
+                if line.startswith("openbeast_tool_calls_total"):
+                    v = _sample_value(line)
+                    if v is not None:
+                        calls += v
+                        if 'outcome="error"' in line:
+                            errs += v
+            if self._tools_prev and calls >= self._tools_prev[0] and errs >= self._tools_prev[1]:
+                _store.add("tools:calls", calls - self._tools_prev[0], now, kind="sum")
+                _store.add("tools:errors", errs - self._tools_prev[1], now, kind="sum")
+            self._tools_prev = (calls, errs)
 
     def _transitions(self, healthy, unit, island, gate):
         cur = {"healthy": healthy, "unit": unit.get("name"), "island": island.get("state"),
@@ -2260,13 +3566,14 @@ class ServeSampler:
             return
         if last["healthy"] != healthy:
             event("model server healthy" if healthy else "model server DOWN",
-                  "info" if healthy else "warn")
+                  "info" if healthy else "warn", kind="model")
         if last["unit"] != cur["unit"]:
-            event(f"inference unit: {cur['unit'] or 'none active'}")
+            event(f"inference unit: {cur['unit'] or 'none active'}", kind="model")
         if last["island"] != cur["island"] and cur["island"]:
-            event(f"beast-island: {cur['island']}", "warn" if cur["island"] == "islanded" else "info")
+            event(f"beast-island: {cur['island']}", "warn" if cur["island"] == "islanded" else "info", kind="island")
         if last["gate"] != cur["gate"] and cur["gate"] is not None:
-            event("beast-gate up" if cur["gate"] else "beast-gate DOWN", "info" if cur["gate"] else "warn")
+            event("beast-gate up" if cur["gate"] else "beast-gate DOWN", "info" if cur["gate"] else "warn",
+                  kind="gate")
 
     def snapshot(self):
         with self._lock:
@@ -2395,13 +3702,6 @@ def power_status(window):
     return power_chart([n.power_row() for n in nodes], window)
 
 
-def _power_saver(samplers):
-    while True:
-        time.sleep(POWER_SAVE_S)
-        with contextlib.suppress(Exception):
-            save_power(samplers)
-
-
 def start_samplers():
     """Build the fixed probe and start every background sampler (main only:
     importing this module — the tests — starts nothing)."""
@@ -2410,25 +3710,257 @@ def start_samplers():
     _head = NodeSampler(_head_name(), None, "head", 0 if discover_peers() else None)
     _peers = [NodeSampler(label, t, "peer", rank) for t, label, rank in discover_peers()]
     _serve = ServeSampler()
+    _alerts.th = alert_thresholds()
     nodes = [_head, *_peers]
     restored = load_power(nodes)
+    hist = load_history()
+    _serve.watch.restore(load_log())
     # One head sample before serving, so /api/status has a GPU reading from
     # the first request rather than null for ~5 s after a restart.
     with contextlib.suppress(Exception):
         _head.sample()
     if restored:
         event(f"power history restored for {restored} node{'s' if restored != 1 else ''}")
-    for s in [*nodes, _serve]:
+    if hist:
+        event(f"metric history restored ({hist} series)")
+    for s in [*nodes, _serve, AlertLoop()]:
         threading.Thread(target=s.loop, daemon=True).start()
-    threading.Thread(target=_power_saver, args=(nodes,), daemon=True).start()
+    threading.Thread(target=_sampler_saver, args=(nodes,), daemon=True).start()
 
     def _term(signum, frame):
-        # ext.sh restart / stop.sh: keep the power history across it.
+        # ext.sh restart / stop.sh: keep the power history, the metric
+        # history and the log across it.
         with contextlib.suppress(Exception):
             save_power(nodes, lock_timeout=2.0)
+        with contextlib.suppress(Exception):
+            save_log(lock_timeout=1.0)
+        with contextlib.suppress(Exception):
+            save_history(lock_timeout=1.0)
         os._exit(0)
     with contextlib.suppress(ValueError):
         signal.signal(signal.SIGTERM, _term)
+
+
+# ───────────────────────── v3: the detail documents ─────────────────────────
+#
+# Each reads the samplers' state and the history store; none probes
+# anything. Every parameter is looked up in a fixed table or among the
+# configured names: an unknown window is the default, an unknown metric or
+# node is reported as unknown, nothing from a query reaches a probe.
+
+DEFAULT_WINDOW = "1h"
+SERVE_SERIES = ("serve:tok_s", "serve:prompt_tok_s", "serve:running", "serve:waiting", "serve:kv_pct",
+                "serve:ctx_fill_pct", "serve:ttft_p50", "serve:ttft_p95", "serve:e2e_p50", "serve:e2e_p95",
+                "serve:itl_p50", "serve:queue_p95", "serve:spec_accept_pct", "serve:prefix_hit_pct", "serve:up",
+                "serve:gen_tokens", "serve:requests")
+NODE_SERIES = ("gpu_util", "gpu_mem", "gpu_temp", "gpu_power", "power", "sm_clock", "cpu", "ram", "disk", "up")
+HISTORY_MAX_METRICS = 8
+
+
+def _window(w):
+    return w if w in HIST_WINDOWS else DEFAULT_WINDOW
+
+
+def _series_doc(names, window, now):
+    """{t0, step, series: {name: values}} for the names the store has."""
+    w = HIST_WINDOWS[window]
+    out, t0, step = {}, None, None
+    for n in names:
+        s = _store.series(n, w, now)
+        if s is None:
+            continue
+        out[n] = s["values"]
+        t0, step = s["t0"], s["step"]
+    if t0 is None:
+        st, cap = _store.tiers[_store.tier_for(w)]
+        n = max(1, min(cap, int(w // st)))
+        step, t0 = st, int(now // st) * st - (n - 1) * st
+    return {"window": window, "window_s": w, "t0": t0, "step": step, "series": out}
+
+
+def summary_24h(now=None):
+    """The last 24 h in numbers (the home page's cards; /api/daily)."""
+    now = time.time() if now is None else now
+    day = 86400
+    up = _store.stats("serve:up", day, now) or {}
+    inc = [e for e in events(EVENTS_MAX, kind="alert", since=now - day) if e.get("tag") == "raise"]
+    gen = _store.total("serve:gen_tokens", day, now)
+    req = _store.total("serve:requests", day, now)
+    greq = _store.total("gate:requests", day, now)
+    return {"gen_tokens": int(gen) if gen is not None else None,
+            "prompt_tokens": int(v) if (v := _store.total("serve:prompt_tokens", day, now)) is not None else None,
+            "requests": int(req) if req else None, "gate_requests": int(greq) if greq is not None else None,
+            "gate_errors": int(v) if (v := _store.total("gate:errors", day, now)) is not None else None,
+            "uptime_pct": round(100 * up["avg"], 2) if up.get("avg") is not None else None,
+            "observed_pct": round(100 * up.get("covered", 0), 1),
+            "incidents": len(inc), "incidents_crit": sum(1 for e in inc if e["level"] == "crit")}
+
+
+def serving_status(window):
+    """/api/serving?window=: the engine's history and detail."""
+    now = time.time()
+    window = _window(window)
+    live = _serve.snapshot() if _serve else {}
+    doc = _series_doc(SERVE_SERIES, window, now)
+    gen_h = _store.buckets("serve:gen_tokens", 86400, 3600, now) or []
+    prm_h = _store.buckets("serve:prompt_tokens", 86400, 3600, now) or []
+    days = [{"day": r["day"], "gen_tokens": r["gen_tokens"], "prompt_tokens": r["prompt_tokens"],
+             "requests": r["requests"]} for r in _daily.rows(14)]
+    doc.update({"generated_at": round(now), "engine": ENGINE_LABEL.get(_BACKEND, _BACKEND), "backend": _BACKEND,
+                "model_id": live.get("model_id"), "unit": live.get("unit"),
+                "now": {k: live.get(k) for k in ("tok_s", "tok_s_source", "prompt_tok_s", "running", "waiting",
+                                                 "kv_pct", "ctx_fill_pct", "stalled_s", "healthy")},
+                "detail": live.get("detail"),
+                "tokens": {"hourly": [{"t": a[0], "gen": a[1], "prompt": b[1]} for a, b in zip(gen_h, prm_h)],
+                           "daily": days, "last_24h": summary_24h(now),
+                           "lifetime_gen": live.get("lifetime_gen_tokens"),
+                           "lifetime_prompt": live.get("lifetime_prompt_tokens")},
+                "latency_window_s": LAT_WINDOW_S})
+    return doc
+
+
+def _samplers():
+    return ([_head] if _head else []) + _peers
+
+
+def node_names():
+    return [n.name for n in _samplers()]
+
+
+def node_status(name, window):
+    """/api/node/<name>?window=: one node's snapshot and history, or None
+    for a name that is not a configured node."""
+    sm = next((n for n in _samplers() if n.name == name), None)
+    if sm is None:
+        return None
+    now = time.time()
+    window = _window(window)
+    doc = _series_doc([f"node:{name}:{k}" for k in NODE_SERIES], window, now)
+    doc["series"] = {k.rsplit(":", 1)[1]: v for k, v in doc["series"].items()}
+    fab = {}
+    pre = f"fab:{name}:"
+    for metric in sorted(m for m in _store.names() if m.startswith(pre)):
+        port, d = metric[len(pre):].rsplit(":", 1)
+        s = _store.series(metric, HIST_WINDOWS[window], now)
+        if s and (port in fab or len(fab) < FABRIC_PORTS_MAX):
+            fab.setdefault(port, {})[d] = s["values"]
+    snap = sm.snapshot()
+    snap.pop("history", None)
+    pw = {k: sm.power.stats(now, w) for k, w in POWER_WINDOWS}
+    up = _store.stats(f"node:{name}:up", 86400, now) or {}
+    al = [a for a in _alerts.snapshot()["active"] if a["key"].endswith(":" + name)]
+    doc.update({"generated_at": round(now), "node": snap, "fabric_series": fab, "power_windows": pw,
+                "power_trend": trend(pw), "reachable_24h_pct": round(100 * up["avg"], 2)
+                if up.get("avg") is not None else None, "alerts": al})
+    return doc
+
+
+def history_status(metrics, window):
+    """/api/history?metric=a,b&window=: up to HISTORY_MAX_METRICS series;
+    no metric: the catalogue."""
+    now = time.time()
+    known = _store.names()
+    if not metrics:
+        return {"metrics": [{"name": k, "kind": v} for k, v in sorted(known.items())],
+                "windows": list(HIST_WINDOWS), "tiers": [list(t) for t in _store.tiers]}
+    want = [m for m in metrics if m in known][:HISTORY_MAX_METRICS]
+    doc = _series_doc(want, _window(window), now)
+    doc["kinds"] = {m: known[m] for m in want}
+    doc["unknown"] = [m[:96] for m in metrics if m not in known][:HISTORY_MAX_METRICS]
+    doc["stats"] = {m: _store.stats(m, HIST_WINDOWS[doc["window"]], now) for m in want}
+    return doc
+
+
+def events_status(kind, limit):
+    kind = kind if kind in EVENT_KINDS else None
+    with _events_lock:
+        total = len(_events)
+    by = collections.Counter(e["kind"] for e in events(EVENTS_MAX))
+    return {"events": events(limit, kind=kind), "kind": kind, "total": total, "max": EVENTS_MAX,
+            "by_kind": dict(by), "kinds": list(EVENT_KINDS)}
+
+
+def alerts_status():
+    th = dict(_alerts.th)
+    off = th.pop("off", [])
+    return {**_alerts.snapshot(), "generated_at": round(time.time()),
+            "recent": events(50, kind="alert"),
+            "thresholds": [{"name": "DASHBOARD_ALERT_" + n, "value": th.get(n), "default": d, "about": about}
+                           for n, d, _, _, about in ALERT_SETTINGS],
+            "rules": list(ALERT_RULES), "off": off, "clear_s": ALERT_CLEAR_S}
+
+
+def daily_status():
+    """/api/daily: the last 24 h, the daily rollups, the serving history."""
+    now = time.time()
+    last = summary_24h(now)
+    ps = power_summary([n.power_row() for n in _samplers()], now=now)
+    w24 = ps["cluster"]["windows"]["24h"]
+    last.update(energy_wh=w24["energy_wh"], energy_coverage=w24["coverage"], avg_w=w24["avg_w"],
+                peak_w=w24["max_w"])
+    last["nodes"] = [{"name": n.name, "reachable_pct": round(100 * a, 2) if (a := _store.mean(f"node:{n.name}:up", 86400, now)) is not None else None}
+                     for n in _samplers()]
+    last["tokens_hourly"] = [{"t": t, "gen": v} for t, v in (_store.buckets("serve:gen_tokens", 86400, 3600, now) or [])]
+    last["incident_list"] = [e for e in events(EVENTS_MAX, kind="alert", since=now - 86400) if e.get("tag") == "raise"][:50]
+    return {"generated_at": round(now), "last_24h": last, "days": _daily.rows(30), "swaps": _swaps.rows()[:60],
+            "keep_days": DAILY_KEEP}
+
+
+class _Lru:
+    """At most `cap` _Cached answers, one per (validated) parameter set."""
+
+    def __init__(self, cap=48, ttl=2.0):
+        self.cap, self.ttl = cap, ttl
+        self._d = collections.OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, key, fn):
+        with self._lock:
+            c = self._d.get(key)
+            if c is None:
+                c = self._d[key] = _Cached(fn, ttl=self.ttl)
+                while len(self._d) > self.cap:
+                    self._d.popitem(last=False)
+            else:
+                self._d.move_to_end(key)
+        return c.get()
+
+
+_v3_cache = _Lru()
+
+
+def _query(raw):
+    """The query string as {name: first value}, at most 8 fields and 2 KiB;
+    anything else reads as no query."""
+    if len(raw) > 2048:
+        return {}
+    try:
+        q = urllib.parse.parse_qs(raw, max_num_fields=8)
+    except ValueError:
+        return {}
+    return {k: v[0][:512] for k, v in q.items() if v}
+
+
+def _int_param(v, default, lo, hi):
+    n = _num(v, int)
+    return default if n is None else max(lo, min(hi, n))
+
+
+def _sampler_saver(samplers):
+    """Power every POWER_SAVE_S, the log every LOG_SAVE_S when it changed,
+    the history every HIST_SAVE_S."""
+    t_hist = time.monotonic()
+    while True:
+        time.sleep(min(POWER_SAVE_S, LOG_SAVE_S))
+        with contextlib.suppress(Exception):
+            save_power(samplers)
+        if _log_dirty.is_set():
+            with contextlib.suppress(Exception):
+                save_log()
+        if time.monotonic() - t_hist >= HIST_SAVE_S:
+            t_hist = time.monotonic()
+            with contextlib.suppress(Exception):
+                save_history()
 
 
 # The page and its assets: a fixed allowlist of files in static/, never a
@@ -2526,6 +4058,36 @@ def _json(doc):
         return json.dumps(_finite(doc), allow_nan=False).encode()
 
 
+_V3_ROUTES = ("/api/serving", "/api/history", "/api/events", "/api/alerts", "/api/daily")
+
+
+def _v3_doc(path, q):
+    """One v3 document for a GET, from validated parameters (see above),
+    or None for a node that is not configured."""
+    w = _window(q.get("window"))
+    if path == "/api/serving":
+        return _v3_cache.get(("serving", w), lambda: serving_status(w))
+    if path == "/api/history":
+        names = tuple(dict.fromkeys(m for m in re.split(r"[,\s]+", q.get("metric", "")) if m))[:HISTORY_MAX_METRICS]
+        known = _store.names()
+        names = tuple(m if m in known else m[:96] for m in names)
+        return _v3_cache.get(("history", tuple(m for m in names if m in known), w,
+                              tuple(m for m in names if m not in known)[:2]),
+                             lambda: history_status(list(names), w))
+    if path == "/api/events":
+        kind = q.get("kind") if q.get("kind") in EVENT_KINDS else None
+        limit = _int_param(q.get("limit"), 200, 1, EVENTS_MAX)
+        return _v3_cache.get(("events", kind, limit), lambda: events_status(kind, limit))
+    if path == "/api/alerts":
+        return _v3_cache.get(("alerts",), alerts_status)
+    if path == "/api/daily":
+        return _v3_cache.get(("daily",), daily_status)
+    name = urllib.parse.unquote(path[len("/api/node/"):])
+    if name not in node_names():
+        return None
+    return _v3_cache.get(("node", name, w), lambda: node_status(name, w))
+
+
 class Handler(BaseHTTPRequestHandler):
     timeout = SOCKET_TIMEOUT_S
     header_deadline = HEADER_DEADLINE_S
@@ -2593,6 +4155,17 @@ class Handler(BaseHTTPRequestHandler):
             w = (q.get("window") or ["15m"])[0]
             body = _json(_power_cached.get(w, _power_cached["15m"]).get())
             self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+        elif path.startswith("/api/") and path in _V3_ROUTES or path.startswith("/api/node/"):
+            q = _query(self.path.split("?", 1)[1] if "?" in self.path else "")
+            doc = _v3_doc(path, q)
+            if doc is None:
+                body = _json({"error": "unknown", "path": path[:80]})
+                self.send_response(404)
+            else:
+                body = _json(doc)
+                self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-store")
         elif path in ("/", "/index.html"):

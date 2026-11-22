@@ -13,155 +13,418 @@
 <script src="/static/app.js" defer></script>
 </head>
 <body>
-<a class="skip-link" href="#main">Skip to the status</a>
+<a class="skip-link" href="#main">Skip to the content</a>
 <header class="topbar">
-  <div class="brand">
-    <span class="brand-mark" aria-hidden="true">OB</span>
-    <span class="brand-name">OPENBEAST</span>
-    <span class="brand-sub">command center</span>
+  <div class="topbar-row">
+    <a class="brand" href="#/" aria-label="OpenBeast command center: overview">
+      <span class="brand-mark" aria-hidden="true">OB</span>
+      <span class="brand-name">OPENBEAST</span>
+      <span class="brand-sub">command center</span>
+    </a>
+    <div class="topbar-meta">
+      <span class="chip host-chip" id="host-chip" title="This node">—</span>
+      <a class="chip chip-health" id="health-chip" data-state="unknown" href="#/events" role="status"><i class="dot" aria-hidden="true"></i><span id="health-text">connecting…</span></a>
+      <span class="live" id="live" data-state="wait"><i class="dot" aria-hidden="true"></i><span id="live-text">waiting for data</span></span>
+    </div>
   </div>
-  <div class="topbar-meta">
-    <span class="chip" id="host-chip" title="This node">—</span>
-    <span class="chip chip-health" id="health-chip" data-state="unknown" role="status"><i class="dot" aria-hidden="true"></i><span id="health-text">connecting…</span></span>
-    <span class="live" id="live" data-state="wait"><i class="dot" aria-hidden="true"></i><span id="live-text">waiting for data</span></span>
-  </div>
+  <nav class="nav" aria-label="Dashboard pages">
+    <ul>
+      <li><a href="#/" data-route="home">Overview</a></li>
+      <li><a href="#/serving" data-route="serving">Serving</a></li>
+      <li><a href="#/nodes" data-route="nodes">Nodes</a></li>
+      <li><a href="#/power" data-route="power">Power</a></li>
+      <li><a href="#/gate" data-route="gate">Gate</a></li>
+      <li><a href="#/services" data-route="services">Services</a></li>
+      <li><a href="#/tools" data-route="tools">Tools</a></li>
+      <li><a href="#/events" data-route="events">Events<span class="nav-badge" id="nav-alerts" hidden></span></a></li>
+      <li><a href="#/history" data-route="history">History</a></li>
+    </ul>
+  </nav>
 </header>
 
 <main id="main" tabindex="-1">
-  <h1 class="sr-only">OpenBeast status</h1>
 
-  <section class="hero panel edge" aria-labelledby="h-model">
-    <div class="hero-model">
-      <p class="eyebrow"><i class="dot" id="model-dot" aria-hidden="true"></i><span id="h-model">Serving</span></p>
-      <p class="model-id" id="model-id">—</p>
-      <ul class="chips" aria-label="Engine">
-        <li class="chip" id="chip-engine">—</li>
-        <li class="chip" id="chip-unit">—</li>
-        <li class="chip" id="chip-endpoint">—</li>
+  <!-- ═══════════════════════════ OVERVIEW ═══════════════════════════ -->
+  <section class="page" data-page="home" aria-labelledby="h-home">
+    <h1 class="sr-only" id="h-home" tabindex="-1">Overview</h1>
+    <div class="hero panel edge">
+      <div class="hero-state">
+        <p class="verdict" id="verdict" data-state="unknown"><i class="dot" aria-hidden="true"></i><span id="verdict-text">Connecting</span></p>
+        <p class="verdict-reason" id="verdict-reason">waiting for the first reading</p>
+        <p class="eyebrow"><i class="dot" id="model-dot" aria-hidden="true"></i><span id="h-model">Serving</span></p>
+        <p class="model-id" id="model-id">—</p>
+        <ul class="chips" aria-label="Engine">
+          <li class="chip" id="chip-engine">—</li>
+          <li class="chip" id="chip-unit">—</li>
+          <li class="chip chip-dim" id="chip-endpoint">—</li>
+        </ul>
+      </div>
+      <ul class="kpis" aria-label="Now">
+        <li><a class="kpi" href="#/serving"><span class="kpi-k">tokens / s</span><span class="kpi-v" id="sig-toks">—</span><span class="spark-wrap"><svg class="spark" id="spark-toks" viewBox="0 0 120 28" preserveAspectRatio="none" role="img" aria-label="tokens per second, last 15 minutes"></svg><span class="spark-read" id="spark-toks-read"></span></span></a></li>
+        <li><a class="kpi" href="#/serving"><span class="kpi-k">requests</span><span class="kpi-v" id="sig-reqs">—</span><span class="kpi-s" id="sig-reqs-sub">running · waiting</span></a></li>
+        <li><a class="kpi" href="#/serving"><span class="kpi-k" id="sig-kv-k">KV cache</span><span class="kpi-v" id="sig-kv">—</span><span class="meter" aria-hidden="true"><i id="sig-kv-bar"></i></span><span class="kpi-s" id="sig-kv-sub">—</span></a></li>
+        <li><a class="kpi" href="#/serving"><span class="kpi-k" id="sig-lat-k">latency</span><span class="kpi-v" id="sig-lat">—</span><span class="kpi-s" id="sig-lat-sub">—</span></a></li>
+        <li><a class="kpi" href="#/power"><span class="kpi-k">power</span><span class="kpi-v" id="sig-pow">—</span><span class="kpi-s" id="sig-pow-sub">—</span></a></li>
+        <li><a class="kpi" href="#/gate"><span class="kpi-k">gate</span><span class="kpi-v" id="sig-gate">—</span><span class="kpi-s" id="sig-gate-sub">—</span></a></li>
+        <li><a class="kpi" href="#/services"><span class="kpi-k">services</span><span class="kpi-v" id="sig-svc">—</span><span class="kpi-s" id="sig-svc-sub">—</span></a></li>
+        <li><a class="kpi" href="#/events" id="kpi-alerts" data-level="none"><span class="kpi-k">alerts</span><span class="kpi-v" id="sig-alerts">—</span><span class="kpi-s" id="sig-alerts-sub">—</span></a></li>
       </ul>
     </div>
-    <ul class="signal" aria-label="Serving now">
-      <li><span class="sig-k">tokens / s</span><span class="sig-v" id="sig-toks">—</span><span class="spark-wrap"><svg class="spark" id="spark-toks" viewBox="0 0 120 28" preserveAspectRatio="none" role="img" aria-label="tokens per second, last 15 minutes"></svg><span class="spark-read" id="spark-toks-read"></span></span></li>
-      <li><span class="sig-k">requests</span><span class="sig-v" id="sig-reqs">—</span><small id="sig-reqs-sub">running · waiting</small></li>
-      <li><span class="sig-k">KV cache</span><span class="sig-v" id="sig-kv">—</span><span class="meter" aria-hidden="true"><i id="sig-kv-bar"></i></span></li>
-      <li><span class="sig-k">context</span><span class="sig-v" id="sig-ctx">—</span><small id="sig-ctx-sub">tokens per request</small></li>
-    </ul>
+
+    <section class="alerts panel" id="alerts-strip" aria-labelledby="h-alerts" hidden>
+      <div class="block-head"><h2 id="h-alerts">Active alerts</h2><a class="more" href="#/events">Events &amp; rules →</a></div>
+      <ul class="alert-list" id="alert-list"></ul>
+    </section>
+
+    <section class="block" aria-labelledby="h-home-nodes">
+      <div class="block-head"><h2 id="h-home-nodes">Nodes</h2><p class="block-note" id="home-nodes-note">—</p><a class="more" href="#/nodes">All nodes →</a></div>
+      <ul class="tiles" id="home-nodes"></ul>
+    </section>
+
+    <section class="block" aria-labelledby="h-areas">
+      <div class="block-head"><h2 id="h-areas">At a glance</h2><p class="block-note">open a card for the detail</p></div>
+      <ul class="cards">
+        <li><a class="card panel" href="#/serving">
+          <span class="card-h">Serving <span class="go" aria-hidden="true">→</span></span>
+          <span class="card-stats">
+            <span><b id="c-sv-a">—</b><small id="c-sv-a-k">TTFT p95</small></span>
+            <span><b id="c-sv-b">—</b><small>spec. acceptance</small></span>
+            <span><b id="c-sv-c">—</b><small>tokens · 24 h</small></span>
+          </span>
+          <span class="card-foot" id="c-sv-foot">—</span>
+        </a></li>
+        <li><a class="card panel" href="#/power">
+          <span class="card-h">Power <span class="go" aria-hidden="true">→</span></span>
+          <span class="card-stats">
+            <span><b id="c-pw-a">—</b><small>avg · 1 h</small></span>
+            <span><b id="c-pw-b">—</b><small>energy · 24 h</small></span>
+            <span><b id="c-pw-c">—</b><small>trend</small></span>
+          </span>
+          <span class="card-foot" id="c-pw-foot">—</span>
+        </a></li>
+        <li><a class="card panel" href="#/gate">
+          <span class="card-h">beast-gate <span class="go" aria-hidden="true">→</span></span>
+          <span class="card-stats">
+            <span><b id="c-gt-a">—</b><small>devices · active</small></span>
+            <span><b id="c-gt-b">—</b><small>errors · 5 min</small></span>
+            <span><b id="c-gt-c">—</b><small>refused · total</small></span>
+          </span>
+          <span class="card-foot" id="c-gt-foot">—</span>
+        </a></li>
+        <li><a class="card panel" href="#/services">
+          <span class="card-h">Services <span class="go" aria-hidden="true">→</span></span>
+          <span class="svc-dots" id="c-svc-dots"></span>
+          <span class="card-foot" id="c-svc-foot">—</span>
+        </a></li>
+        <li><a class="card panel" href="#/tools">
+          <span class="card-h">Tools <span class="go" aria-hidden="true">→</span></span>
+          <span class="card-stats">
+            <span><b id="c-tl-a">—</b><small>tool calls</small></span>
+            <span><b id="c-tl-b">—</b><small>error rate</small></span>
+            <span><b id="c-tl-c">—</b><small>top tool</small></span>
+          </span>
+          <span class="card-foot">identity tool server · :3001</span>
+        </a></li>
+        <li><a class="card panel" href="#/history">
+          <span class="card-h">Last 24 h <span class="go" aria-hidden="true">→</span></span>
+          <span class="card-stats">
+            <span><b id="c-hs-a">—</b><small>model uptime</small></span>
+            <span><b id="c-hs-b">—</b><small>incidents</small></span>
+            <span><b id="c-hs-c">—</b><small>requests</small></span>
+          </span>
+          <span class="card-foot" id="c-hs-foot">daily rollups and the serving history</span>
+        </a></li>
+        <li class="card-wide"><a class="card panel" href="#/events">
+          <span class="card-h">Recent events <span class="go" aria-hidden="true">→</span></span>
+          <ol class="events events-mini" id="events"></ol>
+          <span class="empty" id="events-empty">Nothing has changed yet.</span>
+        </a></li>
+      </ul>
+    </section>
   </section>
 
-  <section class="block panel power" id="power" aria-labelledby="h-power">
-    <div class="block-head">
-      <h2 id="h-power">Power</h2>
-      <p class="block-note" id="power-note">—</p>
+  <!-- ═══════════════════════════ SERVING ═══════════════════════════ -->
+  <section class="page" data-page="serving" aria-labelledby="h-serving" hidden>
+    <div class="page-head">
+      <div><p class="crumb"><a href="#/">Overview</a> / Serving</p><h1 id="h-serving" tabindex="-1">Serving</h1></div>
+      <p class="page-note" id="serving-note">—</p>
     </div>
-    <div class="pw-lead">
-      <div class="pw-now">
-        <p class="pw-now-k" id="pw-now-k">measured now</p>
-        <p class="pw-now-v"><span id="pw-now">—</span><span class="pw-unit">W</span></p>
-        <p class="pw-trend" id="pw-trend" data-dir="none"><span class="pw-arrow" id="pw-arrow" aria-hidden="true">·</span><span id="pw-trend-text">trend: collecting</span></p>
-      </div>
-      <ol class="pw-windows" id="pw-windows" aria-label="Average power over trailing windows"></ol>
+    <ul class="stat-grid" id="sv-tiles" aria-label="Serving now"></ul>
+    <div class="toolbar">
+      <h2 class="sub-h">History</h2>
+      <div class="seg" id="sv-range" role="group" aria-label="Chart window"></div>
     </div>
-    <p class="pw-cost" id="pw-cost" hidden></p>
-    <ul class="pw-nodes" id="pw-nodes" aria-label="Power per node"></ul>
-    <div class="pw-chart">
-      <div class="pw-chart-head">
-        <h3 class="sub-h">Power over time</h3>
-        <div class="seg" id="pw-range" role="group" aria-label="Chart window">
-          <button type="button" data-w="15m" aria-pressed="true">15 m</button>
-          <button type="button" data-w="1h" aria-pressed="false">1 h</button>
-          <button type="button" data-w="6h" aria-pressed="false">6 h</button>
-          <button type="button" data-w="24h" aria-pressed="false">24 h</button>
-        </div>
-      </div>
-      <div class="pw-plot" id="pw-plot">
-        <svg id="pw-svg" tabindex="0" role="img" aria-label="Power over the last 15 minutes"></svg>
-        <div class="pw-read" id="pw-read" hidden></div>
-      </div>
-      <ul class="pw-legend" id="pw-legend"></ul>
+    <div class="charts" id="sv-charts"></div>
+    <div class="duo">
+      <section class="block panel" aria-labelledby="h-tok-h">
+        <div class="block-head"><h2 id="h-tok-h">Tokens generated per hour</h2><p class="block-note" id="tok-h-note">last 24 h</p></div>
+        <ol class="vbars" id="tok-hourly" aria-label="Tokens generated per hour, last 24 hours"></ol>
+      </section>
+      <section class="block panel" aria-labelledby="h-tok-d">
+        <div class="block-head"><h2 id="h-tok-d">Tokens generated per day</h2><p class="block-note" id="tok-d-note">last 14 days</p></div>
+        <ol class="vbars" id="tok-daily" aria-label="Tokens generated per day, last 14 days"></ol>
+      </section>
     </div>
-    <p class="pw-foot" id="pw-foot"></p>
+    <div class="duo">
+      <section class="block panel" aria-labelledby="h-engine">
+        <div class="block-head"><h2 id="h-engine">Engine</h2><p class="block-note" id="engine-note">—</p></div>
+        <dl class="kv" id="serving-kv">
+          <div><dt>model</dt><dd id="sv-model">—</dd></div>
+          <div><dt>context per request</dt><dd id="sig-ctx">—</dd></div>
+          <div><dt>slots busy / total</dt><dd id="sv-slots">—</dd></div>
+          <div><dt>queue</dt><dd id="sv-queue">—</dd></div>
+          <div><dt>running</dt><dd id="sv-running">—</dd></div>
+          <div><dt>waiting</dt><dd id="sv-waiting">—</dd></div>
+          <div><dt>KV usage</dt><dd id="sv-kv">—</dd></div>
+          <div><dt>token pool</dt><dd id="sv-pool">—</dd></div>
+          <div><dt>prompt tok/s</dt><dd id="sv-prompt">—</dd></div>
+          <div><dt>gen tok/s</dt><dd id="sv-gen">—</dd></div>
+          <div><dt>profile</dt><dd id="sv-profile">—</dd></div>
+          <div><dt>per device</dt><dd id="sv-admission">—</dd></div>
+          <div><dt>backend</dt><dd id="sv-backend">—</dd></div>
+          <div><dt>unit uptime</dt><dd id="sv-uptime">—</dd></div>
+          <div><dt>tokens since engine start</dt><dd id="sv-life">—</dd></div>
+          <div><dt>preemptions</dt><dd id="sv-preempt">—</dd></div>
+        </dl>
+      </section>
+      <section class="block panel" aria-labelledby="h-spec">
+        <div class="block-head"><h2 id="h-spec">Speculative decoding &amp; cache</h2><p class="block-note" id="spec-note">—</p></div>
+        <dl class="kv kv-tight" id="spec-kv">
+          <div><dt>acceptance (window)</dt><dd id="sp-acc">—</dd></div>
+          <div><dt>mean accepted length</dt><dd id="sp-len">—</dd></div>
+          <div><dt>acceptance since start</dt><dd id="sp-life">—</dd></div>
+          <div><dt>prefix cache hit</dt><dd id="sp-prefix">—</dd></div>
+        </dl>
+        <h3 class="sub-h">Acceptance by draft position</h3>
+        <ol class="bars" id="spec-pos"></ol>
+        <p class="empty" id="spec-empty">This engine reports no speculative decoding.</p>
+        <h3 class="sub-h">Finished requests by reason</h3>
+        <ol class="bars" id="finished"></ol>
+        <p class="empty" id="finished-empty">Not reported by this engine.</p>
+      </section>
+    </div>
   </section>
 
-  <section class="block" aria-labelledby="h-cluster">
-    <div class="block-head">
-      <h2 id="h-cluster">Cluster</h2>
-      <p class="block-note" id="cluster-note">—</p>
+  <!-- ═══════════════════════════ NODES ═══════════════════════════ -->
+  <section class="page" data-page="nodes" aria-labelledby="h-nodes" hidden>
+    <div class="page-head">
+      <div><p class="crumb"><a href="#/">Overview</a> / Nodes</p><h1 id="h-nodes" tabindex="-1">Nodes</h1></div>
+      <p class="page-note" id="cluster-note">—</p>
     </div>
     <div class="nodes" id="nodes"></div>
   </section>
 
-  <div class="duo">
-    <section class="block panel" aria-labelledby="h-serving">
-      <div class="block-head"><h2 id="h-serving">Serving</h2><p class="block-note" id="serving-note">—</p></div>
-      <dl class="kv" id="serving-kv">
-        <div><dt>slots busy / total</dt><dd id="sv-slots">—</dd></div>
-        <div><dt>queue</dt><dd id="sv-queue">—</dd></div>
-        <div><dt>running</dt><dd id="sv-running">—</dd></div>
-        <div><dt>waiting</dt><dd id="sv-waiting">—</dd></div>
-        <div><dt>KV usage</dt><dd id="sv-kv">—</dd></div>
-        <div><dt>token pool</dt><dd id="sv-pool">—</dd></div>
-        <div><dt>prompt tok/s</dt><dd id="sv-prompt">—</dd></div>
-        <div><dt>gen tok/s</dt><dd id="sv-gen">—</dd></div>
-        <div><dt>profile</dt><dd id="sv-profile">—</dd></div>
-        <div><dt>per device</dt><dd id="sv-admission">—</dd></div>
-        <div><dt>backend</dt><dd id="sv-backend">—</dd></div>
-        <div><dt>unit uptime</dt><dd id="sv-uptime">—</dd></div>
-      </dl>
+  <!-- ═══════════════════════════ NODE DETAIL ═══════════════════════════ -->
+  <section class="page" data-page="node" aria-labelledby="nd-name" hidden>
+    <div class="page-head">
+      <div><p class="crumb"><a href="#/">Overview</a> / <a href="#/nodes">Nodes</a> / <span id="nd-crumb">—</span></p>
+        <h1 id="nd-name" tabindex="-1">—</h1><p class="page-sub" id="nd-sub">—</p></div>
+      <span class="chip chip-state" id="nd-state" data-state="pending"><i class="dot" aria-hidden="true"></i><span id="nd-state-text">connecting</span></span>
+    </div>
+    <p class="node-error" id="nd-error" hidden></p>
+    <ul class="alert-list" id="nd-alerts"></ul>
+    <p class="notfound panel" id="nd-missing" hidden>No node of that name is configured here. <a href="#/nodes">All nodes →</a></p>
+    <ul class="stat-grid" id="nd-tiles" aria-label="This node now"></ul>
+    <div class="toolbar">
+      <h2 class="sub-h">History</h2>
+      <div class="seg" id="nd-range" role="group" aria-label="Chart window"></div>
+    </div>
+    <div class="charts" id="nd-charts"></div>
+    <section class="block" aria-labelledby="h-nd-fab" id="nd-fab-block">
+      <div class="block-head"><h2 id="h-nd-fab">Fabric throughput per port</h2><p class="block-note" id="nd-fab-note">—</p></div>
+      <div class="charts" id="nd-fab"></div>
+      <p class="empty" id="nd-fab-empty">No linked RDMA / RoCE port on this node.</p>
     </section>
-
-    <section class="block panel" aria-labelledby="h-gate">
-      <div class="block-head"><h2 id="h-gate">beast-gate</h2><p class="block-note" id="gate-note">—</p></div>
-      <div class="stats">
-        <div class="stat"><span class="stat-v" id="gt-devices">—</span><span class="stat-k">devices enrolled</span></div>
-        <div class="stat"><span class="stat-v" id="gt-active">—</span><span class="stat-k">active · 15 min</span></div>
-        <div class="stat"><span class="stat-v" id="gt-rpm">—</span><span class="stat-k">requests / min</span></div>
-        <div class="stat"><span class="stat-v" id="gt-errors">—</span><span class="stat-k">errors (total)</span></div>
-      </div>
-      <dl class="kv kv-tight">
-        <div><dt>auth</dt><dd id="gt-auth">—</dd></div>
-        <div><dt>requests (total)</dt><dd id="gt-total">—</dd></div>
-        <div><dt>refused, no identity</dt><dd id="gt-denied-id">—</dd></div>
-        <div><dt>refused (all reasons)</dt><dd id="gt-denied">—</dd></div>
-      </dl>
+    <section class="block panel" aria-labelledby="h-nd-pw">
+      <div class="block-head"><h2 id="h-nd-pw">Power windows</h2><a class="more" href="#/power">Cluster power →</a></div>
+      <ol class="pw-windows" id="nd-pw"></ol>
     </section>
-  </div>
-
-  <section class="block" aria-labelledby="h-services">
-    <div class="block-head"><h2 id="h-services">Services</h2><p class="block-note" id="services-note">—</p></div>
-    <ul class="services" id="services"></ul>
   </section>
 
-  <div class="duo">
-    <section class="block panel" aria-labelledby="h-tools">
-      <div class="block-head"><h2 id="h-tools">Tool activity</h2><p class="block-note">identity tool server · :3001</p></div>
-      <div class="stats stats-3">
-        <div class="stat"><span class="stat-v" id="tl-calls">—</span><span class="stat-k">tool calls</span></div>
-        <div class="stat"><span class="stat-v" id="tl-errors">—</span><span class="stat-k">errors</span></div>
-        <div class="stat"><span class="stat-v" id="tl-rate">—</span><span class="stat-k">error rate</span></div>
+  <!-- ═══════════════════════════ POWER ═══════════════════════════ -->
+  <section class="page" data-page="power" aria-labelledby="h-power" hidden>
+    <div class="page-head">
+      <div><p class="crumb"><a href="#/">Overview</a> / Power</p><h1 id="h-power" tabindex="-1">Power</h1></div>
+      <p class="page-note" id="power-note">—</p>
+    </div>
+    <section class="block panel power" id="power" aria-label="Power now and over time">
+      <div class="pw-lead">
+        <div class="pw-now">
+          <p class="pw-now-k" id="pw-now-k">measured now</p>
+          <p class="pw-now-v"><span id="pw-now">—</span><span class="pw-unit">W</span></p>
+          <p class="pw-trend" id="pw-trend" data-dir="none"><span class="pw-arrow" id="pw-arrow" aria-hidden="true">·</span><span id="pw-trend-text">trend: collecting</span></p>
+        </div>
+        <ol class="pw-windows" id="pw-windows" aria-label="Average power over trailing windows"></ol>
       </div>
-      <h3 class="sub-h">Top tools</h3>
+      <p class="pw-cost" id="pw-cost" hidden></p>
+      <ul class="pw-nodes" id="pw-nodes" aria-label="Power per node"></ul>
+      <div class="pw-chart">
+        <div class="pw-chart-head">
+          <h2 class="sub-h">Power over time</h2>
+          <div class="seg" id="pw-range" role="group" aria-label="Chart window">
+            <button type="button" data-w="15m" aria-pressed="true">15 m</button>
+            <button type="button" data-w="1h" aria-pressed="false">1 h</button>
+            <button type="button" data-w="6h" aria-pressed="false">6 h</button>
+            <button type="button" data-w="24h" aria-pressed="false">24 h</button>
+          </div>
+        </div>
+        <div class="pw-plot" id="pw-plot">
+          <svg id="pw-svg" tabindex="0" role="img" aria-label="Power over the last 15 minutes"></svg>
+          <div class="pw-read" id="pw-read" hidden></div>
+        </div>
+        <ul class="pw-legend" id="pw-legend"></ul>
+      </div>
+      <p class="pw-foot" id="pw-foot"></p>
+    </section>
+  </section>
+
+  <!-- ═══════════════════════════ GATE ═══════════════════════════ -->
+  <section class="page" data-page="gate" aria-labelledby="h-gate" hidden>
+    <div class="page-head">
+      <div><p class="crumb"><a href="#/">Overview</a> / Gate</p><h1 id="h-gate" tabindex="-1">beast-gate</h1></div>
+      <p class="page-note" id="gate-note">—</p>
+    </div>
+    <ul class="stat-grid" id="gt-tiles" aria-label="Gate now"></ul>
+    <div class="toolbar">
+      <h2 class="sub-h">History</h2>
+      <div class="seg" id="gt-range" role="group" aria-label="Chart window"></div>
+    </div>
+    <div class="charts" id="gt-charts"></div>
+    <div class="duo">
+      <section class="block panel" aria-labelledby="h-refused">
+        <div class="block-head"><h2 id="h-refused">Refusals by reason</h2><p class="block-note" id="refused-note">since the gate started</p></div>
+        <ol class="bars" id="refused"></ol>
+        <p class="empty" id="refused-empty">No refusals.</p>
+      </section>
+      <section class="block panel" aria-labelledby="h-gate-kv">
+        <div class="block-head"><h2 id="h-gate-kv">Totals</h2><p class="block-note">counts only, never a device name</p></div>
+        <dl class="kv kv-tight">
+          <div><dt>auth</dt><dd id="gt-auth">—</dd></div>
+          <div><dt>devices enrolled</dt><dd id="gt-devices">—</dd></div>
+          <div><dt>active · 15 min</dt><dd id="gt-active">—</dd></div>
+          <div><dt>requests / min</dt><dd id="gt-rpm">—</dd></div>
+          <div><dt>requests (total)</dt><dd id="gt-total">—</dd></div>
+          <div><dt>errors (total)</dt><dd id="gt-errors">—</dd></div>
+          <div><dt>refused, no identity</dt><dd id="gt-denied-id">—</dd></div>
+          <div><dt>refused (all reasons)</dt><dd id="gt-denied">—</dd></div>
+        </dl>
+      </section>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════ SERVICES ═══════════════════════════ -->
+  <section class="page" data-page="services" aria-labelledby="h-services" hidden>
+    <div class="page-head">
+      <div><p class="crumb"><a href="#/">Overview</a> / Services</p><h1 id="h-services" tabindex="-1">Services</h1></div>
+      <p class="page-note" id="services-note">—</p>
+    </div>
+    <ul class="services" id="services"></ul>
+    <p class="foot-note">State since: as seen by the dashboard's background watch (every 15 s), kept across a dashboard restart while the state is unchanged.</p>
+  </section>
+
+  <!-- ═══════════════════════════ TOOLS ═══════════════════════════ -->
+  <section class="page" data-page="tools" aria-labelledby="h-tools" hidden>
+    <div class="page-head">
+      <div><p class="crumb"><a href="#/">Overview</a> / Tools</p><h1 id="h-tools" tabindex="-1">Tool activity</h1></div>
+      <p class="page-note">identity tool server · :3001</p>
+    </div>
+    <ul class="stat-grid stat-grid-3" aria-label="Tool calls">
+      <li class="stat"><span class="stat-v" id="tl-calls">—</span><span class="stat-k">tool calls (since start)</span></li>
+      <li class="stat"><span class="stat-v" id="tl-errors">—</span><span class="stat-k">errors</span></li>
+      <li class="stat"><span class="stat-v" id="tl-rate">—</span><span class="stat-k">error rate</span></li>
+    </ul>
+    <div class="toolbar">
+      <h2 class="sub-h">History</h2>
+      <div class="seg" id="tl-range" role="group" aria-label="Chart window"></div>
+    </div>
+    <div class="charts" id="tl-charts"></div>
+    <section class="block panel" aria-labelledby="h-top-tools">
+      <div class="block-head"><h2 id="h-top-tools">Top tools</h2><p class="block-note">calls · errors, summed over profiles</p></div>
       <ol class="bars" id="tools"></ol>
       <p class="empty" id="tools-empty">No tool calls since the tool server started.</p>
     </section>
+  </section>
 
-    <section class="block panel" aria-labelledby="h-events">
-      <div class="block-head"><h2 id="h-events">Recent events</h2><p class="block-note">since the dashboard started</p></div>
-      <ol class="events" id="events"></ol>
-      <p class="empty" id="events-empty">Nothing has changed yet.</p>
+  <!-- ═══════════════════════════ EVENTS ═══════════════════════════ -->
+  <section class="page" data-page="events" aria-labelledby="h-events" hidden>
+    <div class="page-head">
+      <div><p class="crumb"><a href="#/">Overview</a> / Events</p><h1 id="h-events" tabindex="-1">Events &amp; alerts</h1></div>
+      <p class="page-note" id="events-note">—</p>
+    </div>
+    <section class="block panel" aria-labelledby="h-ev-active">
+      <div class="block-head"><h2 id="h-ev-active">Active alerts</h2><p class="block-note" id="ev-active-note">—</p></div>
+      <ul class="alert-list" id="ev-alerts"></ul>
+      <p class="empty" id="ev-alerts-empty">No active alert.</p>
     </section>
-  </div>
+    <div class="toolbar">
+      <h2 class="sub-h">Timeline</h2>
+      <div class="seg seg-wrap" id="ev-kind" role="group" aria-label="Show events of kind"></div>
+    </div>
+    <ol class="timeline" id="ev-timeline"></ol>
+    <p class="empty" id="ev-empty">No events of this kind.</p>
+    <section class="block panel" aria-labelledby="h-rules">
+      <div class="block-head"><h2 id="h-rules">Alert rules</h2><p class="block-note" id="rules-note">DASHBOARD_ALERT_* in openbeast.conf or the environment</p></div>
+      <div class="table-wrap"><table class="table" id="rules"><thead><tr><th scope="col">setting</th><th scope="col">value</th><th scope="col">what it is</th></tr></thead><tbody></tbody></table></div>
+    </section>
+  </section>
+
+  <!-- ═══════════════════════════ HISTORY ═══════════════════════════ -->
+  <section class="page" data-page="history" aria-labelledby="h-history" hidden>
+    <div class="page-head">
+      <div><p class="crumb"><a href="#/">Overview</a> / History</p><h1 id="h-history" tabindex="-1">History</h1></div>
+      <p class="page-note" id="history-note">—</p>
+    </div>
+    <h2 class="sub-h sub-h-top">The last 24 hours</h2>
+    <ul class="stat-grid" id="hs-tiles" aria-label="The last 24 hours"></ul>
+    <div class="duo">
+      <section class="block panel" aria-labelledby="h-hs-tok">
+        <div class="block-head"><h2 id="h-hs-tok">Tokens per hour</h2><p class="block-note">generated, last 24 h</p></div>
+        <ol class="vbars" id="hs-hourly" aria-label="Tokens generated per hour"></ol>
+      </section>
+      <section class="block panel" aria-labelledby="h-hs-inc">
+        <div class="block-head"><h2 id="h-hs-inc">Incidents</h2><p class="block-note">alerts raised, last 24 h</p></div>
+        <ol class="events" id="hs-incidents"></ol>
+        <p class="empty" id="hs-incidents-empty">No incident in the last 24 hours.</p>
+      </section>
+    </div>
+    <section class="block panel" aria-labelledby="h-days">
+      <div class="block-head"><h2 id="h-days">Daily rollups</h2><p class="block-note" id="days-note">local days</p></div>
+      <div class="table-wrap"><table class="table table-num" id="days"><thead><tr><th scope="col">day</th><th scope="col">energy</th><th scope="col">tokens gen.</th><th scope="col">prompt</th><th scope="col">requests</th><th scope="col">uptime</th><th scope="col">incidents</th></tr></thead><tbody></tbody></table></div>
+      <p class="empty" id="days-empty">No day recorded yet.</p>
+    </section>
+    <section class="block panel" aria-labelledby="h-swaps">
+      <div class="block-head"><h2 id="h-swaps">What served when</h2><p class="block-note">model swaps, as seen by the dashboard</p></div>
+      <div class="table-wrap"><table class="table" id="swaps"><thead><tr><th scope="col">model</th><th scope="col">unit</th><th scope="col">engine</th><th scope="col">from</th><th scope="col">to</th><th scope="col">for</th></tr></thead><tbody></tbody></table></div>
+      <p class="empty" id="swaps-empty">No model seen serving yet.</p>
+    </section>
+  </section>
+
 </main>
 
 <footer class="foot">
   <span>Read-only · GET only · refreshes every 3 s</span>
-  <span>beast-slot contract: <code>/api/slot</code> · detail: <code>/api/status</code>, <code>/api/cluster</code>, <code>/api/power</code></span>
+  <span>API: <code>/api/slot</code> (contract) · <code>/api/status</code> · <code>/api/cluster</code> · <code>/api/power</code> · <code>/api/serving</code> · <code>/api/node/&lt;name&gt;</code> · <code>/api/history</code> · <code>/api/events</code> · <code>/api/alerts</code> · <code>/api/daily</code></span>
 </footer>
+
+<template id="t-tile">
+  <li><a class="tile panel" href="#/nodes">
+    <span class="tile-head"><span class="tile-name" data-f="name">—</span><span class="chip chip-state" data-f="state" data-state="pending"><i class="dot" aria-hidden="true"></i><span data-f="state-text">connecting</span></span></span>
+    <span class="tile-sub" data-f="sub">—</span>
+    <span class="tile-grid">
+      <span class="tm"><small data-f="mem-k">memory</small><b data-f="mem">—</b><span class="meter" aria-hidden="true"><i data-f="mem-bar"></i></span></span>
+      <span class="tm"><small>GPU util</small><b data-f="util">—</b><span class="meter" aria-hidden="true"><i data-f="util-bar"></i></span></span>
+      <span class="tm"><small>temp</small><b data-f="temp">—</b><span class="meter" aria-hidden="true"><i data-f="temp-bar"></i></span></span>
+      <span class="tm"><small>GPU power</small><b data-f="power">—</b><span class="meter" aria-hidden="true"><i data-f="power-bar"></i></span></span>
+    </span>
+    <span class="tile-err" data-f="error" hidden></span>
+  </a></li>
+</template>
 
 <template id="t-node">
   <article class="node panel edge">
     <header class="node-head">
       <div>
-        <h3 class="node-name" data-f="name">—</h3>
+        <h2 class="node-name"><a data-f="link" href="#/nodes"><span data-f="name">—</span></a></h2>
         <p class="node-sub" data-f="sub">—</p>
       </div>
       <span class="chip chip-state" data-f="state" data-state="pending"><i class="dot" aria-hidden="true"></i><span data-f="state-text">pending</span></span>
@@ -178,6 +441,7 @@
         <div><dt>utilization</dt><dd data-f="util">—</dd></div>
         <div><dt>temperature</dt><dd data-f="temp">—</dd></div>
         <div><dt>GPU power</dt><dd data-f="power">—</dd></div>
+        <div><dt>SM clock</dt><dd data-f="clock">—</dd></div>
       </dl>
     </div>
     <div class="node-sparks" data-f="sparks">
@@ -193,11 +457,12 @@
       <div class="wide"><dt>model volume</dt><dd data-f="disk">—</dd></div>
     </dl>
     <div class="fabric">
-      <h4 class="sub-h">Fabric</h4>
+      <h3 class="sub-h">Fabric</h3>
       <ul class="ports" data-f="ports"></ul>
       <p class="ports-down" data-f="ports-down" hidden></p>
       <p class="empty" data-f="ports-empty">No RDMA / RoCE ports on this node.</p>
     </div>
+    <a class="more node-more" data-f="more" href="#/nodes">History and every metric →</a>
   </article>
 </template>
 </body>
