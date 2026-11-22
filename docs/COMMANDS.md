@@ -112,6 +112,17 @@ ss -ltn | grep -E ':(3000|3001|3002|3003|3004|8000|8090|8443|8888) '
 free -m | sed -n 2p                                     # unified memory: watch "available"
 ```
 
+The status dashboard, read-only, from any tailnet device:
+`https://spark-1.tail4109f9.ts.net:8447` (spark-1 and spark-2: model,
+tok/s, both nodes' GPU / memory / fabric, gate, services, events). Its JSON:
+
+```bash
+curl -s http://127.0.0.1:3002/api/cluster | python3 -m json.tool   # head + spark-2 (unreachable if ssh to it fails)
+curl -s http://127.0.0.1:3002/api/status  | python3 -m json.tool   # serving, gate, services, events
+curl -s http://127.0.0.1:3002/api/slot                             # the beast-slot contract clients read
+~/openbeast/scripts/ext.sh restart dashboard   # CHANGES STATE, but only the dashboard: safe during evals
+```
+
 `beaststatus` (= `~/.local/bin/beast-spark status`, installed on spark-1
 since 2026-11-17) shows the selected model and pack, the three units, what
 `:8000` serves, and the DeepSeek pack `beastds` would select, in one go.

@@ -1,18 +1,27 @@
 #!/usr/bin/env python3
-"""OpenBeast status dashboard — a read-only GPU / model / services view.
+"""OpenBeast status dashboard: a read-only view of the command center.
 
-Stdlib only (no new dependency): http.server + subprocess + urllib. Gathers
-live status from nvidia-smi, the model server (:8080), the identity tool server
-(:3001, incl. its Prometheus /metrics), Open WebUI (:3000), and SearXNG (:8888),
-and serves a self-refreshing HTML page plus a /api/status JSON endpoint.
+Stdlib only (no new dependency): http.server + subprocess + urllib. Routes:
+
+  /               the page (static/: index.html, app.css, app.js, Geist fonts)
+  /api/status     this node: model, serving, gate, services, tools, events
+  /api/cluster    this node and every peer (DASHBOARD_PEERS / cluster.env)
+  /api/slot       the beast-slot contract (docs/BEAST_SLOT.md), unchanged
+
+GET only. Per-request work is the same bounded, cached upstream gather as
+before; everything that needs a clock or another machine (peer metrics over
+ssh, token and request rates, history) runs on background samplers started
+in __main__, and a request only reads their latest snapshot.
 
 Bind + port come from OPENBEAST_BIND / DASHBOARD_PORT (see run.sh). This is an
 optional extension (extensions/dashboard) — the core stack does not depend on it.
 """
+import collections
 import contextlib
 import importlib.util
 import json
 import os
+import re
 import socket
 import subprocess
 import threading
@@ -234,7 +243,12 @@ def _prefetched(reqs, deadline=None):
     overall, and serve those answers to _fetch for the duration. A key some
     other gather is already probing is joined, not re-asked and not skipped."""
     deadline = GATHER_DEADLINE_S if deadline is None else deadline
-    reqs = list(dict.fromkeys(reqs))
+    prev = getattr(_memo, "answers", None)
+    # Nested inside another gather (/api/status builds the slot document in
+    # its own batch): a key the outer batch already answered is reused, so one
+    # status document still costs the inference server ONE /health.
+    known = {k: prev[k] for k in reqs if prev is not None and k in prev}
+    reqs = [k for k in dict.fromkeys(reqs) if k not in known]
     probes = {}
     for k in reqs:
         with _inflight_lock:
@@ -248,10 +262,11 @@ def _prefetched(reqs, deadline=None):
     end = time.monotonic() + deadline
     for p in probes.values():
         p.done.wait(max(0.0, end - time.monotonic()))
-    prev = getattr(_memo, "answers", None)
     # A probe still out at the deadline reads as no answer (down / null).
-    _memo.answers = {k: (p.result if p.done.is_set() else (None, ""))
-                     for k, p in probes.items()}
+    answers = dict(prev or {})
+    answers.update({k: (p.result if p.done.is_set() else (None, ""))
+                    for k, p in probes.items()})
+    _memo.answers = answers
     try:
         yield
     finally:
@@ -424,11 +439,12 @@ def services_status(health=None):
     return out
 
 
-def tool_metrics():
+def tool_metrics(top=False):
     # Pull a few headline counters from the tool server's Prometheus text.
     st, body = _fetch(f"http://{H}:3001/metrics")
     if st != 200:
         return {}
+    extra = {"top_tools": tool_breakdown(body)} if top else {}
     calls, errors = 0, 0
     for line in body.splitlines():
         if line.startswith("openbeast_tool_calls_total"):
@@ -439,19 +455,47 @@ def tool_metrics():
                     errors += v
             except Exception:
                 pass
-    return {"tool_calls": int(calls), "tool_errors": int(errors)}
+    return {"tool_calls": int(calls), "tool_errors": int(errors), **extra}
 
 
 def status():
+    """/api/status: the v1 keys (gpu, model, services, metrics) unchanged, plus
+    the v2 detail the page shows — serving (the slot document's numbers and
+    the sampler's token rates), gate, service_list, host, events."""
     gpu = {}
     smi = threading.Thread(target=lambda: gpu.update(v=gpu_status()), daemon=True)
     smi.start()
-    reqs = [(f"{_INFER}/health", False), (f"{_INFER}/v1/models", True),
-            (f"http://{H}:3001/metrics", False)] + _service_requests()
+    reqs = ([(f"{_INFER}/health", False), (f"{_INFER}/v1/models", True),
+             (f"http://{H}:3001/metrics", False)] + _service_requests()
+            + _slot_requests() + _extra_service_requests())
     with _prefetched(reqs):
         health = _fetch(f"{_INFER}/health")
-        out = {"model": model_status(health), "services": services_status(health),
-               "metrics": tool_metrics()}
+        svc = services_status(health)
+        out = {"model": model_status(health), "services": svc,
+               "metrics": tool_metrics(top=True)}
+        slot = slot_status()            # nested: reuses this batch's answers
+        live = _serve.snapshot() if _serve else {}
+        gate = live.get("gate") or {"enabled": _EDGE_GATE}
+        out["service_list"] = service_list(svc, gate)
+    cap = slot.get("capacity") or {}
+    out["model"].update({"id": (slot.get("model") or {}).get("id"),
+                         "ctx": (slot.get("model") or {}).get("ctx"),
+                         "engine": ENGINE_LABEL.get(_BACKEND, _BACKEND),
+                         "unit": live.get("unit")})
+    out["serving"] = {"slots": slot.get("slots"), "capacity": cap,
+                      "requests_running": (slot.get("slots") or {}).get("busy"),
+                      "requests_waiting": cap.get("queue_deferred"),
+                      "kv_usage": cap.get("kv_usage"),
+                      "admission": slot.get("admission"),
+                      "tok_s": live.get("tok_s"), "tok_s_source": live.get("tok_s_source"),
+                      "prompt_tok_s": live.get("prompt_tok_s"),
+                      "history": live.get("history") or {"tok_s": []},
+                      "interval_s": live.get("interval_s", SERVE_SAMPLE_S)}
+    out["gate"] = gate
+    out["auth"] = slot.get("auth")
+    out["host"] = {"name": _head.name if _head else _head_name()}
+    out["events"] = events()
+    out["generated_at"] = round(time.time())
     smi.join(6)                     # nvidia-smi has its own 5 s timeout
     return {"gpu": gpu.get("v"), **out}
 
@@ -827,65 +871,798 @@ def _tf_health(body):
     return out
 
 
-PAGE = """<!doctype html><html><head><meta charset=utf-8>
-<title>OpenBeast Status</title><meta name=viewport content="width=device-width,initial-scale=1">
-<style>
- body{background:#0c0f14;color:#d6dbe4;font:14px/1.5 system-ui,sans-serif;margin:0;padding:24px}
- h1{font-size:20px;margin:0 0 4px}.sub{color:#7c8598;margin-bottom:20px}
- .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
- .card{background:#141922;border:1px solid #232b38;border-radius:10px;padding:16px}
- .card h2{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#7c8598;margin:0 0 12px}
- .big{font-size:26px;font-weight:600}.row{display:flex;justify-content:space-between;padding:3px 0}
- .k{color:#7c8598}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px}
- .up{background:#3fb950}.down{background:#f85149}
- .bar{height:8px;background:#232b38;border-radius:4px;overflow:hidden;margin-top:8px}
- .bar>i{display:block;height:100%;background:linear-gradient(90deg,#3fb950,#d29922)}
- a{color:#58a6ff}
-</style></head><body>
-<h1>🦁 OpenBeast Status</h1><div class=sub id=ts>loading…</div>
-<div class=grid id=grid></div>
-<script>
-async function tick(){
- let s; try{s=await (await fetch('/api/status')).json()}catch(e){return}
- const g=s.gpu,m=s.model,sv=s.services,mt=s.metrics||{};
- // Every value below came from another server (the model id is whatever the
- // inference server says it is): escape it before it meets innerHTML.
- const esc=v=>String(v??'').replace(/[&<>"'`]/g,c=>'&#'+c.charCodeAt(0)+';');
- const num=v=>Number(v)||0;
- // The tool server's metrics on the host this page was opened on, not the
- // viewer's own localhost. (location.hostname keeps an IPv6 literal's [].)
- const mlink='http://'+(globalThis.location?.hostname||'127.0.0.1')+':3001/metrics';
- const svc=Object.entries(sv).map(([k,v])=>`<div class=row><span><span class="dot ${v?'up':'down'}"></span>${esc(k)}</span><span class=k>${v?'up':'down'}</span></div>`).join('');
- // null = not reported (GB10 unified memory with host RAM unreadable): show
- // a dash, never a made-up 0. g.unified: the memory is the host's.
- const has=v=>v!==null&&v!==undefined&&v!=='';
- const gb=(v,d)=>has(v)?(num(v)/1024).toFixed(d):'—';
- const pct=v=>has(v)?num(v)+'%':'—';
- const deg=v=>has(v)?num(v)+'°C':'—';
- const mem=g?`<div class=big>${pct(g.used_pct)} <span class=k style=font-size:14px>${gb(g.used_mib,1)}/${gb(g.total_mib,0)} GB</span></div>
-   <div class=bar><i style=width:${num(g.used_pct)}%></i></div>
-   <div class=row><span class=k>free</span><span>${gb(g.free_mib,1)} GB</span></div>`:'';
- const unk=g&&!has(g.total_mib)?'<div class=k>memory not reported</div>':'';
- const uni=g&&g.unified?'<div class=row><span class=k>memory</span><span>unified (host RAM)</span></div>':'';
- const gpu=g?`${mem}${unk}${uni}
-   <div class=row><span class=k>GPU util</span><span>${pct(g.util_pct)}</span></div>
-   <div class=row><span class=k>temp</span><span>${deg(g.temp_c)}</span></div>
-   <div class=row><span class=k>card</span><span>${esc(g.name)}</span></div>`:'<div class=k>no GPU detected</div>';
- document.getElementById('grid').innerHTML=`
-  <div class=card><h2>GPU / VRAM</h2>${gpu}</div>
-  <div class=card><h2>Model</h2>
-    <div class=big style=font-size:18px><span class="dot ${m.healthy?'up':'down'}"></span>${esc(m.alias||m.serve_script||'—')}</div>
-    <div class=row><span class=k>serve script</span><span>${esc(m.serve_script||'—')}</span></div>
-    <div class=row><span class=k>API</span><span>${esc(m.endpoint||'')} ${m.healthy?'healthy':'down'}</span></div></div>
-  <div class=card><h2>Services</h2>${svc}</div>
-  <div class=card><h2>Tool activity</h2>
-    <div class=big>${esc(mt.tool_calls??'—')}</div><div class=k>total tool calls</div>
-    <div class=row><span class=k>errors</span><span>${esc(mt.tool_errors??'—')}</span></div>
-    <div class=row><span class=k>raw</span><span><a href="${esc(mlink)}">:3001/metrics</a></span></div></div>`;
- document.getElementById('ts').textContent='updated '+new Date().toLocaleTimeString();
-}
-tick();setInterval(tick,3000);
-</script></body></html>"""
+# ───────────────────────── v2: cluster, serving, gate, history ─────────────────────────
+#
+# Everything below is READ-ONLY and runs on background timers, never on an
+# HTTP request: a request only reads the latest snapshot. Peer metrics come
+# from one FIXED shell script (NODE_SCRIPT, built once at startup from config)
+# run over `ssh -o BatchMode=yes` — no request can trigger, schedule or
+# parameterise it. A peer that does not answer within PEER_TIMEOUT_S reads
+# "unreachable"; the page never errors over it.
+
+ENGINE_LABEL = {"llama": "llama.cpp", "vllm": "vLLM", "tensorfold": "TensorFold"}
+# The Spark pair's inference units (systemd --user), in the order shown.
+INFERENCE_UNITS = ("deepseek-v41-inference", "hy4-vllm-inference", "spark-hydra-inference")
+SAMPLE_S = 5.0            # node samplers (head and peers)
+SERVE_SAMPLE_S = 3.0      # engine / gate counters (tok/s, req/min)
+PEER_TIMEOUT_S = 6.0      # one peer run, whole (ssh connect is capped at 3 s)
+HISTORY_S = 15 * 60       # sparklines: the last 15 minutes
+ACTIVE_DEVICE_S = 15 * 60 # a device seen by the gate within this is "active"
+_TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@-]*$")
+_PATH_RE = re.compile(r"^~?[A-Za-z0-9._/-]+$")
+
+
+def _kv_file(path):
+    """KEY=value pairs of a shell-style config file (last one wins), quotes
+    stripped; never sourced, never executed. {} when unreadable."""
+    out = {}
+    try:
+        with open(path) as fh:
+            for ln in fh:
+                ln = ln.strip()
+                if not ln or ln.startswith("#") or "=" not in ln:
+                    continue
+                k, _, v = ln.partition("=")
+                k = k.strip()
+                if k.startswith("export "):
+                    k = k[7:].strip()
+                v = v.split(" #", 1)[0].strip()
+                if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+                    v = v[1:-1]
+                if re.match(r"^[A-Z_][A-Z0-9_]*$", k):
+                    out[k] = v
+    except OSError:
+        pass
+    return out
+
+
+def _setting(name, conf=None):
+    """A dashboard setting: env OPENBEAST_<name>, env <name>, then the conf
+    key <name> in openbeast.conf. None when none of them sets it."""
+    for k in (f"OPENBEAST_{name}", name):
+        v = os.environ.get(k)
+        if v is not None and v.strip():
+            return v.strip()
+    conf = _kv_file(os.path.join(REPO_DIR, "openbeast.conf")) if conf is None else conf
+    v = conf.get(name, "").strip()
+    return v or None
+
+
+def _ssh_aliases(path=None):
+    """{hostname: alias} from ~/.ssh/config, so a cluster.env node written as
+    max@10.100.216.2 is shown by the name the operator uses (spark-2)."""
+    path = path or os.path.expanduser("~/.ssh/config")
+    out, hosts = {}, []
+    try:
+        with open(path) as fh:
+            for ln in fh:
+                parts = ln.strip().split(None, 1)
+                if len(parts) != 2 or parts[0].startswith("#"):
+                    continue
+                key, val = parts[0].lower(), parts[1].strip()
+                if key == "host":
+                    hosts = [h for h in val.split() if not any(c in h for c in "*?!")]
+                elif key == "hostname" and hosts:
+                    out.setdefault(val, hosts[0])
+    except OSError:
+        pass
+    return out
+
+
+def discover_peers(repo=None, conf=None, aliases=None):
+    """The peer nodes to show beside this one: [(ssh target, label, rank)].
+
+    DASHBOARD_PEERS (env or openbeast.conf), comma/space separated ssh
+    targets, wins; `none` (or `off`) shows this node alone. Unset: the pair's
+    own config, scripts/backends/cluster.env CLUSTER_NODES (rank order, the
+    `local` entry being this node), which exists only on a Spark head — so a
+    single-node rig shows itself and nothing else.
+    """
+    repo = REPO_DIR if repo is None else repo
+    raw = _setting("DASHBOARD_PEERS", conf)
+    aliases = _ssh_aliases() if aliases is None else aliases
+    if raw is not None:
+        if raw.lower() in ("none", "off", "false", "0"):
+            return []
+        targets = [(t, None) for t in re.split(r"[,\s]+", raw) if t]
+    else:
+        nodes = _kv_file(os.path.join(repo, "scripts", "backends", "cluster.env")).get("CLUSTER_NODES", "")
+        targets = [(t, i) for i, t in enumerate(nodes.split()) if t != "local"]
+    out, seen = [], set()
+    for t, rank in targets:
+        if not _TARGET_RE.match(t) or t in seen:
+            continue                 # never an ssh option, never a duplicate
+        seen.add(t)
+        host = t.rsplit("@", 1)[-1]
+        out.append((t, aliases.get(host, host), rank))
+    return out
+
+
+def _head_name():
+    """This node's label: its tailnet name's first label (spark-1), else the
+    hostname."""
+    for p in (os.path.join(REPO_DIR, ".run", "webui-tailnet-name"),):
+        try:
+            v = open(p).read().strip().split(".", 1)[0]
+            if re.match(r"^[A-Za-z0-9-]{1,63}$", v):
+                return v
+        except OSError:
+            pass
+    return (os.environ.get("OPENBEAST_TS_HOSTNAME") or socket.gethostname().split(".", 1)[0]
+            or "this node")
+
+
+def _disk_path(conf=None):
+    """The model volume: DASHBOARD_DISK_PATH, WEIGHTS_DIR (the rig's
+    weights), the Spark's MODELS_DIR (spark.env), else the checkout."""
+    conf = _kv_file(os.path.join(REPO_DIR, "openbeast.conf")) if conf is None else conf
+    spark = _kv_file(os.path.join(REPO_DIR, "scripts", "backends", "spark.env"))
+    for v in (_setting("DASHBOARD_DISK_PATH", conf), conf.get("WEIGHTS_DIR"),
+              spark.get("MODELS_DIR")):
+        if v and _PATH_RE.match(v) and ".." not in v:
+            return v
+    w = os.path.join(REPO_DIR, "weights")
+    return w if os.path.isdir(w) else os.path.abspath(REPO_DIR)
+
+
+def node_script(disk_path):
+    """The one fixed, read-only probe a node runs (locally, or on a peer over
+    ssh as `sh -s` on stdin). Each line is `kind|fields`; a missing tool or
+    file is just a missing line. disk_path comes from config at startup and
+    is charset-checked; it is never a request value."""
+    if not _PATH_RE.match(disk_path) or ".." in disk_path:
+        disk_path = "~"
+    d = '"$HOME' + disk_path[1:] + '"' if disk_path.startswith("~") else '"' + disk_path + '"'
+    return "\n".join((
+        "export LC_ALL=C",
+        f"D={d}; [ -d \"$D\" ] || D=\"$HOME\"",
+        "echo \"host|$(hostname 2>/dev/null)\"",
+        "if command -v nvidia-smi >/dev/null 2>&1; then nvidia-smi --query-gpu=name,memory.used,"
+        "memory.total,utilization.gpu,temperature.gpu,power.draw --format=csv,noheader,nounits "
+        "2>/dev/null | sed 's/^/gpu|/'; fi",
+        "[ -r /proc/loadavg ] && echo \"load|$(cat /proc/loadavg)\"",
+        "echo \"ncpu|$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null)\"",
+        "[ -r /proc/stat ] && head -1 /proc/stat | sed 's/^/stat|/'",
+        "[ -r /proc/meminfo ] && grep -E '^(MemTotal|MemAvailable):' /proc/meminfo | sed 's/^/mem|/'",
+        "[ -r /proc/uptime ] && echo \"uptime|$(cut -d' ' -f1 /proc/uptime)\"",
+        "df -P -k \"$D\" 2>/dev/null | tail -1 | sed 's/^/disk|/'",
+        "for p in /sys/class/infiniband/*/ports/*; do [ -r \"$p/state\" ] || continue",
+        "  h=${p%/ports/*}; h=${h##*/}; n=${p##*/}",
+        "  nd=$(ls \"/sys/class/infiniband/$h/device/net\" 2>/dev/null | head -1)",
+        "  mtu=$(cat \"/sys/class/net/$nd/mtu\" 2>/dev/null)",
+        "  echo \"ib|$h|$n|$(cat \"$p/state\")|$(cat \"$p/counters/port_xmit_data\" 2>/dev/null)|"
+        "$(cat \"$p/counters/port_rcv_data\" 2>/dev/null)|$nd|$mtu|$(cat \"$p/rate\" 2>/dev/null)\"",
+        "done",
+        "exit 0",
+        ""))
+
+
+def _num(v, cast=float):
+    try:
+        return cast(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_node(out):
+    """NODE_SCRIPT's output -> raw readings (no rates yet)."""
+    raw = {"gpus": [], "ib": []}
+    for ln in out.splitlines():
+        kind, _, rest = ln.partition("|")
+        if kind == "host":
+            raw["hostname"] = rest.strip()[:64] or None
+        elif kind == "gpu":
+            p = [x.strip() for x in rest.split(",")]
+            if len(p) >= 5 and p[0]:
+                raw["gpus"].append({"name": p[0][:80], "used": _smi_int(p[1]), "total": _smi_int(p[2]),
+                                    "util": _smi_int(p[3]), "temp": _smi_int(p[4]),
+                                    "power": _num(p[5]) if len(p) > 5 else None})
+        elif kind == "load":
+            p = rest.split()
+            if len(p) >= 3:
+                raw["load"] = [_num(x) for x in p[:3]]
+        elif kind == "ncpu":
+            raw["ncpu"] = _num(rest, int)
+        elif kind == "stat":
+            p = rest.split()
+            if len(p) > 4 and p[0] == "cpu":
+                vals = [_num(x, int) or 0 for x in p[1:]]
+                idle = vals[3] + (vals[4] if len(vals) > 4 else 0)
+                raw["cpu"] = (sum(vals), idle)
+        elif kind == "mem":
+            k, _, v = rest.partition(":")
+            n = _num(v.split()[0] if v.split() else None, int)
+            if n is not None:
+                raw[k.strip()] = n // 1024          # MiB
+        elif kind == "uptime":
+            raw["uptime"] = _num(rest)
+        elif kind == "disk":
+            p = rest.split()
+            if len(p) >= 4:
+                tot, used, avail = (_num(x, int) for x in p[1:4])
+                if tot:
+                    raw["disk"] = (tot * 1024, (used or 0) * 1024, (avail or 0) * 1024)
+        elif kind == "ib":
+            p = rest.split("|")
+            if len(p) >= 8:
+                state = p[2].split(":", 1)[-1].strip()
+                raw["ib"].append({"hca": p[0][:32], "port": p[1][:4], "state": state[:16],
+                                  "tx": _num(p[3], int), "rx": _num(p[4], int),
+                                  "netdev": p[5][:32] or None, "mtu": _num(p[6], int),
+                                  "rate": p[7].strip()[:40] or None})
+    return raw
+
+
+def node_view(raw, prev=None, dt=None):
+    """Raw readings (+ the previous sample, for rates) -> the node object
+    /api/cluster serves. Any reading missing is null, never a guess."""
+    gpus = raw.get("gpus") or []
+    ram_t, ram_a = raw.get("MemTotal"), raw.get("MemAvailable")
+    ram = None
+    if ram_t and ram_a is not None:
+        ram = {"used_mib": ram_t - ram_a, "total_mib": ram_t,
+               "pct": round(100 * (ram_t - ram_a) / ram_t, 1)}
+    gpu = None
+    if gpus:
+        names = [g["name"] for g in gpus]
+        name = names[0] if len(set(names)) == 1 else " + ".join(names)
+
+        def fold(key, how):
+            vals = [g[key] for g in gpus]
+            return None if any(v is None for v in vals) else how(vals)
+        unified = all(g["used"] is None and g["total"] is None for g in gpus)
+        if unified:
+            used, total = (ram["used_mib"], ram["total_mib"]) if ram else (None, None)
+        else:
+            used, total = fold("used", sum), fold("total", sum)
+        gpu = {"name": name, "count": len(gpus), "unified": unified,
+               "mem_used_mib": used, "mem_total_mib": total,
+               "mem_pct": round(100 * used / total, 1) if used is not None and total else None,
+               "util_pct": fold("util", max), "temp_c": fold("temp", max),
+               "power_w": round(fold("power", sum), 1) if fold("power", sum) is not None else None}
+    cpu = {"load": raw.get("load"), "ncpu": raw.get("ncpu"), "util_pct": None}
+    if prev and raw.get("cpu") and prev.get("cpu"):
+        dtot = raw["cpu"][0] - prev["cpu"][0]
+        didle = raw["cpu"][1] - prev["cpu"][1]
+        if dtot > 0 and 0 <= didle <= dtot:
+            cpu["util_pct"] = round(100 * (1 - didle / dtot), 1)
+    disk = None
+    if raw.get("disk"):
+        tot, used, avail = raw["disk"]
+        disk = {"total_b": tot, "used_b": used, "free_b": avail,
+                "pct": round(100 * used / tot, 1) if tot else None}
+    prev_ib = {(p["hca"], p["port"]): p for p in (prev or {}).get("ib", [])}
+    fabric = []
+    for p in raw.get("ib", []):
+        row = {k: p[k] for k in ("hca", "port", "state", "netdev", "mtu", "rate")}
+        row["tx_bps"] = row["rx_bps"] = None
+        q = prev_ib.get((p["hca"], p["port"]))
+        if q and dt and dt > 0:
+            for k in ("tx", "rx"):
+                if p[k] is not None and q[k] is not None and p[k] >= q[k]:
+                    # port_*_data counts 4-octet words (IB spec), so x4 for bytes.
+                    row[f"{k}_bps"] = round((p[k] - q[k]) * 4 * 8 / dt)
+        fabric.append(row)
+    return {"hostname": raw.get("hostname"), "gpu": gpu, "cpu": cpu, "ram": ram,
+            "disk": disk, "uptime_s": raw.get("uptime"), "fabric": fabric}
+
+
+_events = collections.deque(maxlen=40)
+_events_lock = threading.Lock()
+
+
+def event(text, level="info"):
+    with _events_lock:
+        _events.appendleft({"t": round(time.time()), "level": level, "text": text[:160]})
+
+
+def events():
+    with _events_lock:
+        return list(_events)
+
+
+class _Ring:
+    """Timestamped samples for the last HISTORY_S seconds."""
+
+    def __init__(self, span=HISTORY_S):
+        self.span, self._d, self._lock = span, collections.deque(), threading.Lock()
+
+    def add(self, sample, now=None):
+        now = time.time() if now is None else now
+        with self._lock:
+            self._d.append((now, sample))
+            while self._d and now - self._d[0][0] > self.span:
+                self._d.popleft()
+
+    def series(self, key, digits=1):
+        with self._lock:
+            return [None if s.get(key) is None else round(s[key], digits) for _, s in self._d]
+
+    def items(self):
+        with self._lock:
+            return list(self._d)
+
+
+def _run_node(target):
+    """(stdout, error) of NODE_SCRIPT on `target` (None: this node)."""
+    cmd = (["sh", "-s"] if target is None else
+           ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "-o", "ServerAliveInterval=2",
+            "-o", "ServerAliveCountMax=1", "-o", "LogLevel=ERROR", "-T", "--", target, "sh -s"])
+    try:
+        r = subprocess.run(cmd, input=NODE_SCRIPT, capture_output=True, text=True,
+                           timeout=PEER_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return None, f"no answer within {PEER_TIMEOUT_S:.0f} s"
+    except OSError as e:
+        return None, "ssh not available" if target else f"probe failed ({e.__class__.__name__})"
+    if target is not None and r.returncode == 255:
+        return None, "ssh failed (unreachable, or key login refused)"
+    if not r.stdout.strip():
+        return None, f"empty answer (exit {r.returncode})"
+    return r.stdout, None
+
+
+class NodeSampler:
+    """One node's metrics on a timer: the head runs NODE_SCRIPT locally, a
+    peer over ssh. Only the background thread ever runs it."""
+
+    def __init__(self, name, target=None, role="head", rank=None, interval=SAMPLE_S):
+        self.name, self.target, self.role, self.rank = name, target, role, rank
+        self.interval = interval
+        self.history = _Ring()
+        self._lock = threading.Lock()
+        self._prev = None           # (monotonic, raw)
+        self.view, self.error, self.ok_at, self.state = None, None, None, "pending"
+
+    def sample(self, run=_run_node):
+        out, err = run(self.target)
+        now = time.monotonic()
+        if err is None:
+            raw = parse_node(out)
+            prev = self._prev
+            view = node_view(raw, prev[1] if prev else None, now - prev[0] if prev else None)
+            self._prev = (now, raw)
+            g = view["gpu"] or {}
+            self.history.add({"util": g.get("util_pct"), "mem": g.get("mem_pct"),
+                              "power": g.get("power_w"), "cpu": view["cpu"]["util_pct"]})
+        was = self.state
+        with self._lock:
+            if err is None:
+                self.view, self.error, self.ok_at, self.state = view, None, time.time(), "up"
+            else:
+                self.error, self.state = err, "unreachable"
+        if was != self.state and not (was == "pending" and self.state == "up"):
+            event(f"{self.name} {'is back' if self.state == 'up' else 'unreachable: ' + err}",
+                  "info" if self.state == "up" else "warn")
+
+    def snapshot(self):
+        with self._lock:
+            view, err, ok_at, state = self.view, self.error, self.ok_at, self.state
+        out = {"name": self.name, "role": self.role, "rank": self.rank, "state": state,
+               "error": err, "last_ok_age_s": round(time.time() - ok_at, 1) if ok_at else None,
+               "interval_s": self.interval}
+        out.update(view or {"hostname": None, "gpu": None, "cpu": None, "ram": None,
+                            "disk": None, "uptime_s": None, "fabric": []})
+        out["history"] = {k: self.history.series(k) for k in ("util", "mem", "power", "cpu")}
+        return out
+
+    def loop(self):
+        while True:
+            t0 = time.monotonic()
+            try:
+                self.sample()
+            except Exception as e:             # never let one bad parse end the loop
+                with self._lock:
+                    self.error, self.state = f"probe error ({e.__class__.__name__})", "unreachable"
+            time.sleep(max(1.0, self.interval - (time.monotonic() - t0)))
+
+
+def _prom_sum(body, name):
+    v = _prom(body, name)
+    return sum(v) if v else None
+
+
+def _prom_by(body, name, label):
+    """{label value: summed sample} for one metric."""
+    out = {}
+    pat = re.compile(r'%s="((?:[^"\\]|\\.)*)"' % re.escape(label))
+    for line in body.splitlines():
+        if not line.startswith(name + "{"):
+            continue
+        m = pat.search(line)
+        try:
+            v = float(line.rsplit(" ", 1)[1])
+        except (IndexError, ValueError):
+            continue
+        k = m.group(1) if m else ""
+        out[k] = out.get(k, 0) + v
+    return out
+
+
+def _gate_get(path):
+    """A rig-local beast-gate introspection read: the same locality token
+    doctor.sh presents (.run/edge-local.token, 0600, re-minted per gate
+    start). Counts only ever leave this function — never a device name."""
+    try:
+        tok = open(os.path.join(REPO_DIR, ".run", "edge-local.token")).read().strip()
+    except OSError:
+        tok = ""
+    port = os.environ.get("OPENBEAST_EDGE_PORT", "").strip() or "8090"
+    if not port.isdigit():
+        return None, ""
+    try:
+        req = urllib.request.Request(f"http://{H}:{port}{path}")
+        if tok:
+            req.add_unredirected_header("X-OpenBeast-Local", tok)
+        with _OPENER.open(req, timeout=2) as r:
+            return r.status, r.read(1 << 20).decode("utf-8", "replace")
+    except Exception:
+        return None, ""
+
+
+def _active_devices(now=None):
+    """How many devices beast-gate saw within ACTIVE_DEVICE_S (from
+    .run/clients-lastseen.json; the names are read and dropped here)."""
+    try:
+        seen = json.load(open(os.path.join(REPO_DIR, ".run", "clients-lastseen.json")))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(seen, dict):
+        return None
+    now = time.time() if now is None else now
+    n = 0
+    for ts in seen.values():
+        try:
+            t = time.mktime(time.strptime(str(ts), "%Y-%m-%dT%H:%M:%SZ")) - time.timezone
+        except (ValueError, OverflowError):
+            continue
+        if now - t <= ACTIVE_DEVICE_S:
+            n += 1
+    return n
+
+
+def engine_counters(backend, metrics_body, health_body=""):
+    """(generated, prompt) token counters of the engine, either None."""
+    if backend == "vllm":
+        return (_prom_sum(metrics_body, "vllm:generation_tokens_total"),
+                _prom_sum(metrics_body, "vllm:prompt_tokens_total"))
+    if backend == "llama":
+        return (_prom_sum(metrics_body, "llamacpp:tokens_predicted_total"),
+                _prom_sum(metrics_body, "llamacpp:prompt_tokens_total"))
+    gen = prm = None
+    for n in ("tensorfold:generation_tokens_total", "tensorfold_generation_tokens_total",
+              "vllm:generation_tokens_total"):
+        gen = gen if gen is not None else _prom_sum(metrics_body, n)
+    for n in ("tensorfold:prompt_tokens_total", "tensorfold_prompt_tokens_total",
+              "vllm:prompt_tokens_total"):
+        prm = prm if prm is not None else _prom_sum(metrics_body, n)
+    try:
+        h = json.loads(health_body) if health_body else {}
+    except ValueError:
+        h = {}
+    if isinstance(h, dict):
+        for k in ("generation_tokens_total", "tokens_generated_total", "completion_tokens_total",
+                  "generated_tokens", "tokens_generated"):
+            if gen is None and isinstance(h.get(k), (int, float)) and not isinstance(h.get(k), bool):
+                gen = float(h[k])
+        for k in ("prompt_tokens_total", "prompt_tokens"):
+            if prm is None and isinstance(h.get(k), (int, float)) and not isinstance(h.get(k), bool):
+                prm = float(h[k])
+    return gen, prm
+
+
+def _rate(ring, key, now, window=10.0):
+    """Per-second rate of a counter over about `window` s of ring samples;
+    None across a reset or with too little history."""
+    items = ring.items()
+    if not items or items[-1][1].get(key) is None:
+        return None
+    t1, s1 = items[-1]
+    for t0, s0 in reversed(items[:-1]):
+        if s0.get(key) is None:
+            return None
+        if t1 - t0 >= window or t0 == items[0][0]:
+            if t1 - t0 <= 0 or s1[key] < s0[key]:
+                return None
+            return (s1[key] - s0[key]) / (t1 - t0)
+    return None
+
+
+def _systemctl_units(units=INFERENCE_UNITS):
+    """{unit: (active_state, active_since_monotonic_s)} via one read-only
+    `systemctl --user show`; {} without systemd."""
+    try:
+        r = subprocess.run(["systemctl", "--user", "show", "-p", "Id", "-p", "ActiveState",
+                            "-p", "ActiveEnterTimestampMonotonic", *[u + ".service" for u in units]],
+                           capture_output=True, text=True, timeout=4)
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    out = {}
+    for block in r.stdout.strip().split("\n\n"):
+        kv = dict(ln.split("=", 1) for ln in block.splitlines() if "=" in ln)
+        uid = kv.get("Id", "").removesuffix(".service")
+        if uid:
+            out[uid] = (kv.get("ActiveState", ""), _num(kv.get("ActiveEnterTimestampMonotonic"), int))
+    return out
+
+
+def _proc_uptime():
+    try:
+        return float(open("/proc/uptime").read().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _pid_age(pidfile):
+    """Seconds the recorded process has run, from /proc/<pid>/stat; None."""
+    try:
+        pid = int(open(pidfile).read().split()[0])
+        stat = open(f"/proc/{pid}/stat").read()
+        start = int(stat.rsplit(")", 1)[1].split()[19]) / os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError, IndexError):
+        return None
+    up = _proc_uptime()
+    return None if up is None else max(0.0, up - start)
+
+
+def inference_unit(units=None):
+    """{name, active, uptime_s} of what serves the model on this node."""
+    if _BACKEND == "llama":
+        age = _pid_age(os.path.join(REPO_DIR, ".run", "llama.pid"))
+        return {"name": "llama-server" if age is not None else None, "active": age is not None,
+                "uptime_s": round(age) if age is not None else None}
+    units = _systemctl_units() if units is None else units
+    up = _proc_uptime()
+    for u in INFERENCE_UNITS:
+        state, since = units.get(u, ("", None))
+        if state == "active":
+            age = up - since / 1e6 if up is not None and since else None
+            return {"name": u, "active": True, "uptime_s": round(age) if age and age > 0 else None}
+    return {"name": None, "active": False, "uptime_s": None}
+
+
+class ServeSampler:
+    """The head's serving and gate counters on a timer: token rates and
+    request rates need two readings, and history needs a clock."""
+
+    def __init__(self, interval=SERVE_SAMPLE_S):
+        self.interval = interval
+        self.ring = _Ring()
+        self._lock = threading.Lock()
+        self.snap = {}
+        self._unit_at = 0.0
+        self._last = {}
+
+    def sample(self, now=None):
+        now = time.time() if now is None else now
+        gen = prm = None
+        st, health = _get(f"{_INFER}/health")
+        if _BACKEND in ("llama", "vllm", "tensorfold"):
+            mst, mbody = _get(f"{_INFER}/metrics", auth=True)
+            gen, prm = engine_counters(_BACKEND, mbody if mst == 200 else "",
+                                       health if st == 200 else "")
+        gate = {"enabled": _EDGE_GATE}
+        g_req = g_err = g_comp = None
+        if _EDGE_GATE:
+            hst, hbody = _gate_get("/gate/health")
+            gate["up"] = hst == 200
+            try:
+                h = json.loads(hbody) if hst == 200 else {}
+            except ValueError:
+                h = {}
+            gate["auth"] = h.get("auth") if isinstance(h.get("auth"), str) else None
+            gate["devices"] = h.get("devices") if isinstance(h.get("devices"), int) else None
+            gate["active_devices"] = _active_devices()   # wall clock: the file is
+            mst, mbody = _gate_get("/gate/metrics")
+            if mst == 200:
+                by = _prom_by(mbody, "openbeast_edge_requests_total", "outcome")
+                g_req = sum(by.values())
+                g_err = sum(v for k, v in by.items() if k != "ok")
+                g_comp = _prom_sum(mbody, "openbeast_edge_completion_tokens_total")
+                gate["denied_total"] = int(sum(_prom_by(mbody, "openbeast_edge_denied_total", "reason").values()))
+            gate["requests_total"] = int(g_req) if g_req is not None else None
+            gate["errors_total"] = int(g_err) if g_err is not None else None
+        self.ring.add({"gen": gen, "prompt": prm, "greq": g_req, "gcomp": g_comp}, now)
+        tok_s = _rate(self.ring, "gen", now)
+        source = "engine"
+        if tok_s is None and gen is None:
+            tok_s, source = _rate(self.ring, "gcomp", now, window=30.0), "gate"
+        if tok_s is None:
+            source = None
+        rpm = _rate(self.ring, "greq", now, window=60.0)
+        gate["req_per_min"] = round(rpm * 60, 1) if rpm is not None else None
+        items = self.ring.items()
+        items[-1][1]["tok_s"] = tok_s
+        if now - self._unit_at > 15 or "unit" not in self.snap:
+            self._unit_at = now
+            unit = inference_unit()
+        else:
+            unit = self.snap["unit"]
+        island = island_state()
+        prm_s = _rate(self.ring, "prompt", now)
+        with self._lock:
+            self.snap = {"tok_s": round(tok_s, 1) if tok_s is not None else None,
+                         "tok_s_source": source,
+                         "prompt_tok_s": round(prm_s, 1) if prm_s is not None else None,
+                         "gate": gate, "unit": unit, "interval_s": self.interval}
+        self._transitions(st == 200, unit, island, gate)
+
+    def _transitions(self, healthy, unit, island, gate):
+        cur = {"healthy": healthy, "unit": unit.get("name"), "island": island.get("state"),
+               "gate": gate.get("up")}
+        last, self._last = self._last, cur
+        if not last:
+            event(f"dashboard started: model {'healthy' if healthy else 'down'}"
+                  + (f", {unit['name']}" if unit.get("name") else ""))
+            return
+        if last["healthy"] != healthy:
+            event("model server healthy" if healthy else "model server DOWN",
+                  "info" if healthy else "warn")
+        if last["unit"] != cur["unit"]:
+            event(f"inference unit: {cur['unit'] or 'none active'}")
+        if last["island"] != cur["island"] and cur["island"]:
+            event(f"beast-island: {cur['island']}", "warn" if cur["island"] == "islanded" else "info")
+        if last["gate"] != cur["gate"] and cur["gate"] is not None:
+            event("beast-gate up" if cur["gate"] else "beast-gate DOWN", "info" if cur["gate"] else "warn")
+
+    def snapshot(self):
+        with self._lock:
+            out = dict(self.snap)
+        out["history"] = {"tok_s": self.ring.series("tok_s")}
+        return out
+
+    def loop(self):
+        while True:
+            t0 = time.monotonic()
+            try:
+                self.sample()
+            except Exception:
+                pass
+            time.sleep(max(1.0, self.interval - (time.monotonic() - t0)))
+
+
+def island_state():
+    """beast-island from its state file: online / islanded, or stale."""
+    try:
+        s = json.load(open(os.path.join(REPO_DIR, ".run", "island.json")))
+    except (OSError, ValueError):
+        return {"state": None}
+    if not isinstance(s, dict):
+        return {"state": None}
+    state = s.get("state") if isinstance(s.get("state"), str) else None
+    upd, stale = s.get("updated_at"), s.get("stale_after")
+    if isinstance(upd, (int, float)) and isinstance(stale, (int, float)) and time.time() - upd > stale:
+        state = "stale"
+    return {"state": state, "mode": s.get("mode") if isinstance(s.get("mode"), str) else None}
+
+
+def _bool_env(*names):
+    return any(os.environ.get(n, "").strip().lower() == "true" for n in names)
+
+
+def _port_env(name, default):
+    v = os.environ.get(name, "").strip()
+    return int(v) if v.isdigit() else default
+
+
+def _extra_service_requests():
+    reqs = []
+    if _bool_env("OPENBEAST_BEAST_CHAT", "BEAST_CHAT"):
+        reqs.append((f"http://{H}:{_port_env('OPENBEAST_CHAT_PORT', 3003)}/api/chat/health", False))
+    if _bool_env("OPENBEAST_BEAST_ARTIFACT", "BEAST_ARTIFACT"):
+        reqs.append((f"http://{H}:{_port_env('OPENBEAST_ARTIFACT_PORT', 3004)}/api/artifacts/health", False))
+    return reqs
+
+
+def service_list(svc, gate):
+    """Every service with its port and state, for the page. state: up,
+    down, off (not enabled here), online / islanded / stale (beast-island)."""
+    def row(name, label, port, state, detail=None):
+        return {"name": name, "label": label, "port": port, "state": state, "detail": detail}
+    model_port = _endpoint(_INFER).rsplit(":", 1)[-1]
+    out = [row("model", ENGINE_LABEL.get(_BACKEND, _BACKEND), int(model_port) if model_port.isdigit() else None,
+               "up" if svc.get("model") else "down")]
+    gate_on = _EDGE_GATE
+    out.append(row("gate", "beast-gate", _port_env("OPENBEAST_EDGE_PORT", 8090),
+                   "off" if not gate_on else ("up" if gate.get("up") else "down" if gate.get("up") is False
+                                              else "unknown")))
+    out += [row("tools", "tool server", 3001, "up" if svc.get("tools") else "down"),
+            row("webui", "Open WebUI", 3000, "up" if svc.get("webui") else "down"),
+            row("search", "SearXNG", 8888, "up" if svc.get("search") else "down")]
+    isl = island_state()
+    out.append(row("island", "beast-island", None, isl["state"] or "unknown", isl.get("mode")))
+    for name, label, env, port_env, port, path in (
+            ("chat", "beast-chat", ("OPENBEAST_BEAST_CHAT", "BEAST_CHAT"), "OPENBEAST_CHAT_PORT", 3003,
+             "/api/chat/health"),
+            ("artifact", "beast-artifact", ("OPENBEAST_BEAST_ARTIFACT", "BEAST_ARTIFACT"),
+             "OPENBEAST_ARTIFACT_PORT", 3004, "/api/artifacts/health")):
+        p = _port_env(port_env, port)
+        if not _bool_env(*env):
+            out.append(row(name, label, p, "off"))
+            continue
+        st, _ = _fetch(f"http://{H}:{p}{path}")
+        out.append(row(name, label, p, "up" if st == 200 else "down"))
+    if _INSTINCT:
+        out.append(row("instinct", "beast-instinct", _INSTINCT_PORT, "up" if svc.get("instinct") else "down"))
+    out.append(row("dashboard", "dashboard", PORT, "up"))
+    return out
+
+
+def tool_breakdown(body):
+    """Top tools by calls (summed over profiles; no per-user label exists or
+    is kept), errors alongside."""
+    calls, errs = {}, {}
+    for line in body.splitlines():
+        if not line.startswith("openbeast_tool_calls_total{"):
+            continue
+        m = re.search(r'tool="((?:[^"\\]|\\.)*)"', line)
+        try:
+            v = float(line.rsplit(" ", 1)[1])
+        except (IndexError, ValueError):
+            continue
+        t = (m.group(1) if m else "?")[:48]
+        calls[t] = calls.get(t, 0) + v
+        if 'outcome="error"' in line:
+            errs[t] = errs.get(t, 0) + v
+    top = sorted(calls.items(), key=lambda kv: (-kv[1], kv[0]))[:8]
+    return [{"tool": t, "calls": int(n), "errors": int(errs.get(t, 0))} for t, n in top]
+
+
+_head = None
+_peers = []
+_serve = None
+NODE_SCRIPT = ""
+
+
+def cluster_status():
+    """/api/cluster: this node and every peer, from the samplers' latest
+    readings (a request never runs a probe)."""
+    nodes = ([_head] if _head else []) + _peers
+    name = _kv_file(os.path.join(REPO_DIR, "scripts", "backends", "cluster.env")).get("CLUSTER_NAME") if _peers else None
+    return {"cluster": name or None, "generated_at": round(time.time()),
+            "nodes": [n.snapshot() for n in nodes], "peers_configured": len(_peers)}
+
+
+def start_samplers():
+    """Build the fixed probe and start every background sampler (main only:
+    importing this module — the tests — starts nothing)."""
+    global _head, _peers, _serve, NODE_SCRIPT
+    NODE_SCRIPT = node_script(_disk_path())
+    _head = NodeSampler(_head_name(), None, "head", 0 if discover_peers() else None)
+    _peers = [NodeSampler(label, t, "peer", rank) for t, label, rank in discover_peers()]
+    _serve = ServeSampler()
+    for s in [_head, *_peers, _serve]:
+        threading.Thread(target=s.loop, daemon=True).start()
+
+
+# The page and its assets: a fixed allowlist of files in static/, never a
+# path built from the request.
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+STATIC = {"/static/app.css": ("app.css", "text/css; charset=utf-8", "no-cache"),
+          "/static/app.js": ("app.js", "text/javascript; charset=utf-8", "no-cache"),
+          "/static/geist.woff2": ("Geist-Variable.woff2", "font/woff2", "max-age=604800"),
+          "/static/geist-mono.woff2": ("GeistMono-Variable.woff2", "font/woff2", "max-age=604800"),
+          "/static/favicon.svg": ("favicon.svg", "image/svg+xml", "max-age=86400")}
+CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; "
+       "img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; "
+       "frame-ancestors 'none'")
+
+
+def _read_static(name):
+    try:
+        with open(os.path.join(STATIC_DIR, name), "rb") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+# Read once at startup: a request never touches the filesystem for them.
+_STATIC_BODIES = {path: _read_static(name) for path, (name, _, _) in STATIC.items()}
+
+
+PAGE = (_read_static("index.html") or b"<!doctype html><title>OpenBeast</title>"
+        b"<p>dashboard static/ files missing</p>").decode("utf-8")
+
 
 
 # /api/slot is published to the tailnet unauthenticated (--publish-slot) and
@@ -931,6 +1708,7 @@ class _Cached:
 # that swaps one is seen).
 _slot_cached = _Cached(lambda: slot_status())
 _status_cached = _Cached(lambda: status())
+_cluster_cached = _Cached(lambda: cluster_status())
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -978,25 +1756,55 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        path = self.path.split("?", 1)[0]
         if self.path.startswith("/api/slot"):
             body = json.dumps(_slot_cached.get()).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
-        elif self.path.startswith("/api/status"):
+        elif path == "/api/status":
             body = json.dumps(_status_cached.get()).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
-        elif self.path in ("/", "/index.html"):
+            self.send_header("Cache-Control", "no-store")
+        elif path == "/api/cluster":
+            body = json.dumps(_cluster_cached.get()).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+        elif path in ("/", "/index.html"):
             body = PAGE.encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Security-Policy", CSP)
+        elif path in STATIC and _STATIC_BODIES.get(path) is not None:
+            body = _STATIC_BODIES[path]
+            self.send_response(200)
+            self.send_header("Content-Type", STATIC[path][1])
+            self.send_header("Cache-Control", STATIC[path][2])
         else:
             self.send_response(404)
+            self.send_header("Content-Length", "0")
             self.end_headers()
             return
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _read_only(self):
+        # GET (and HEAD's absence) only: the dashboard changes nothing, so
+        # every other method is refused before any route runs.
+        body = b"read-only: GET only\n"
+        self.send_response(405)
+        self.send_header("Allow", "GET")
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = do_HEAD = _read_only
 
 
 _BUSY = (b"HTTP/1.0 503 Service Unavailable\r\nRetry-After: 1\r\n"
@@ -1038,4 +1846,7 @@ class BoundedServer(ThreadingHTTPServer):
 
 if __name__ == "__main__":
     print(f"OpenBeast dashboard on http://{BIND}:{PORT}", flush=True)
+    start_samplers()
+    if _peers:
+        print("  peers: " + ", ".join(f"{p.name} ({p.target})" for p in _peers), flush=True)
     BoundedServer((BIND, PORT), Handler).serve_forever()

@@ -168,6 +168,18 @@
 # The dashboard extension's loopback port (healthcheck and --publish-slot
 # follow it). Env override: $OPENBEAST_DASHBOARD_PORT.
 #DASHBOARD_PORT=3002
+# The dashboard's cluster view: the OTHER nodes it shows beside this one, as
+# ssh targets (comma or space separated), each read every 5 s by one fixed,
+# read-only script over `ssh -o BatchMode=yes -o ConnectTimeout=3` (key login,
+# no prompt; a peer that does not answer reads "unreachable"). Unset = the
+# pair's own config, scripts/backends/cluster.env CLUSTER_NODES (spark-1 ->
+# spark-2; nothing on a single-node rig). `none` shows this node alone.
+# Env override: $OPENBEAST_DASHBOARD_PEERS.
+#DASHBOARD_PEERS=spark-2
+# The model volume whose used/free the cluster view shows on every node.
+# Unset = WEIGHTS_DIR, else spark.env MODELS_DIR, else the checkout.
+# Env override: $OPENBEAST_DASHBOARD_DISK_PATH.
+#DASHBOARD_DISK_PATH=~/openbeast-models
 
 # ---------------------------------------------------------------------------
 # Inference backend  (see docs/DGX_SPARK_PLAN.md)

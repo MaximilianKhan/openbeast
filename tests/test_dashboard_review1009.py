@@ -12,8 +12,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import re
-import shutil
 import subprocess
 import threading
 import time
@@ -533,101 +531,10 @@ def test_model_status_names_the_real_inference_endpoint(monkeypatch):
 
 # ───────────────────────── S13: upstream strings never reach innerHTML raw ─────────────────────────
 
-def _script(d):
-    return re.search(r"<script>(.*)</script>", d.PAGE, re.S).group(1)
-
-
-def test_every_interpolation_is_escaped_or_local(monkeypatch):
-    """Static pin: an interpolation is either wrapped in esc()/num(), a
-    two-literal ternary, or one of the fragments built just above it."""
-    d = load(monkeypatch)
-    exprs = re.findall(r"\$\{([^}]*)\}", _script(d))
-    assert len(exprs) >= 15
-    ok = re.compile(r"""^(?:esc\(.*\)|num\([\w.]+\)|\(num\([\w.]+\)/1024\)\.toFixed\(\d\)
-                         |(?:pct|deg)\([\w.]+\)|gb\([\w.]+,\d\)
-                         |[\w.]+\?'[^'<]*':'[^'<]*'|gpu|svc|mem|unk|uni)$""", re.X)
-    bad = [e for e in exprs if not ok.match(e)]
-    assert not bad, bad
-    # the control: the pre-fix spellings are exactly what this refuses
-    for raw in ("m.alias||m.serve_script||'—'", "g.name", "k", "g.used_pct"):
-        assert not ok.match(raw)
-
-
-_XSS = "<img src=x onerror=alert(1)>"
-_HARNESS = r"""
-const els = {grid: {innerHTML: ''}, ts: {textContent: ''}};
-globalThis.document = {getElementById: id => els[id]};
-globalThis.setInterval = () => 0;
-globalThis.fetch = async () => ({json: async () => JSON.parse(process.env.STATUS)});
-%s
-setTimeout(() => process.stdout.write(els.grid.innerHTML), 50);
-"""
-
-
-@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
-def test_a_hostile_model_id_renders_as_text(monkeypatch, tmp_path):
-    d = load(monkeypatch)
-    status = {"gpu": {"name": _XSS, "used_mib": 1024, "total_mib": 2048, "free_mib": 1024,
-                      "util_pct": _XSS, "temp_c": 50, "used_pct": "1 onmouseover=alert(1)"},
-              "model": {"healthy": True, "alias": _XSS, "serve_script": _XSS},
-              "services": {_XSS: True, "tools": False},
-              "metrics": {"tool_calls": _XSS, "tool_errors": 0}}
-    js = tmp_path / "page.js"
-    js.write_text(_HARNESS % _script(d))
-    r = subprocess.run(["node", str(js)], capture_output=True, text=True, timeout=30,
-                       env={"PATH": os.environ["PATH"], "STATUS": json.dumps(status)})
-    assert r.returncode == 0, r.stderr
-    html = r.stdout
-    assert "<h2>Model</h2>" in html, html                 # the page did render
-    assert "<img" not in html and "onmouseover" not in html, html
-    assert "&#60;img src=x onerror=alert(1)&#62;" in html
-    # the control: honest values still show
-    status["model"]["alias"] = "qwen38-27b"
-    r = subprocess.run(["node", str(js)], capture_output=True, text=True, timeout=30,
-                       env={"PATH": os.environ["PATH"], "STATUS": json.dumps(status)})
-    assert ">qwen38-27b</div>" in r.stdout
-
-
-@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
-def test_unreported_gpu_memory_renders_as_a_dash_not_zero(monkeypatch, tmp_path):
-    d = load(monkeypatch)
-    status = {"gpu": {"name": "NVIDIA GB10", "used_mib": None, "total_mib": None, "free_mib": None,
-                      "util_pct": 0, "temp_c": 44, "used_pct": None},
-              "model": {"healthy": True, "alias": "m", "serve_script": "s"},
-              "services": {"tools": True}, "metrics": {}}
-    js = tmp_path / "page.js"
-    js.write_text(_HARNESS % _script(d))
-    r = subprocess.run(["node", str(js)], capture_output=True, text=True, timeout=30,
-                       env={"PATH": os.environ["PATH"], "STATUS": json.dumps(status)})
-    assert r.returncode == 0, r.stderr
-    html = r.stdout
-    assert "no GPU detected" not in html and "NVIDIA GB10" in html, html
-    assert "<div class=big>— " in html and "—/— GB" in html and "<span>44°C</span>" in html, html
-    assert "<span>0%</span>" in html            # a real 0 utilisation is still 0
-
-
-@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
-@pytest.mark.parametrize("mem", [{"used_mib": 40000, "total_mib": 121000, "free_mib": 81000,
-                                  "used_pct": 33, "unified": True},
-                                 {"used_mib": None, "total_mib": None, "free_mib": None,
-                                  "used_pct": None, "unified": True}])
-def test_page_renders_a_unified_memory_gpu(monkeypatch, tmp_path, mem):
-    d = load(monkeypatch)
-    status = {"gpu": dict(name="NVIDIA GB10", util_pct=0, temp_c=43, **mem),
-              "model": {"healthy": True, "alias": "m", "serve_script": "s",
-                        "backend": "tensorfold", "endpoint": "127.0.0.1:8000"},
-              "services": {"model": True}, "metrics": {}}
-    js = tmp_path / "page.js"
-    js.write_text(_HARNESS % _script(d))
-    r = subprocess.run(["node", str(js)], capture_output=True, text=True, timeout=30,
-                       env={"PATH": os.environ["PATH"], "STATUS": json.dumps(status)})
-    assert r.returncode == 0, r.stderr
-    html = r.stdout
-    assert "no GPU detected" not in html and "NVIDIA GB10" in html and "43°C" in html, html
-    assert "unified (host RAM)" in html
-    assert ("memory not reported" in html) == (mem["total_mib"] is None)
-    assert "127.0.0.1:8000 healthy" in html and ":8080" not in html
-    assert 'href="http://127.0.0.1:3001/metrics"' in html
+# The v2 page (static/app.js) writes every server value with textContent and
+# never touches innerHTML: pinned, with a hostile model id rendered through a
+# fake DOM, in tests/test_dashboard_v2.py (test_page_never_writes_html,
+# test_hostile_strings_render_as_text, test_node_fields_*).
 
 
 # ───────────── review 2026-11-16: overlapping gathers, redirected probes ─────────────

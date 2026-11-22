@@ -106,6 +106,7 @@ an `--unpublish-*` twin that reads no config, keyed by the published port):
 | `:8445` | beast-chat `:3003` (`CHAT_PORT`), or `unix:$CHAT_SOCKET` when `CHAT_LOGIN_FROM=unix` | `--publish-chat` | reads: a tailnet login on `CHAT_OPERATORS`; writes: a device key with the `chat` scope |
 | `:8446` | beast-artifact `:3004` (`ARTIFACT_PORT`) | `--publish-artifact` | reads: a tailnet login on `ARTIFACT_OPERATORS` (falls back to `CHAT_OPERATORS`); publishing never leaves loopback; lifecycle writes (pin, tags, visibility, rollback, delete) also accept a device key with the `artifact` scope |
 | `:8447` | ntfy extension `:3005` (`NTFY_PORT`) | `--publish-ntfy` | whatever `NTFY_DEFAULT_ACCESS` says: open to the tailnet by default |
+| `:8447` (spark-1, the rig) | the whole dashboard `:3002` (page, `/api/status`, `/api/cluster`) | by hand: `tailscale serve --bg --https=8447 http://127.0.0.1:3002` ([below](#the-status-dashboard-8447)); a host running ntfy uses another port | any tailnet device (read-only; GET only) |
 | `:8889` | SearXNG `:8888` | `--publish-searxng` | any tailnet device, unauthenticated |
 
 `:8445` and `:8446` are the two surfaces that are *not* inference-shaped and
@@ -162,6 +163,44 @@ answer within 5 s is reported as such. On a rig whose `backend` is not
 llama, it also flags an opencode default that is not the id the rig
 serves. `refresh-config` pins the id `/api/slot` reports whenever
 `/v1/models` cannot be read.
+
+### The status dashboard (`:8447`)
+
+The dashboard extension that serves `/api/slot` also serves a read-only
+status page for the operator. spark-1 and the rig publish it whole,
+tailnet-only, on `:8447`:
+
+```bash
+tailscale serve --bg --https=8447 http://127.0.0.1:3002   # once; persists
+# then, from any tailnet device:
+#   https://spark-1.tail4109f9.ts.net:8447   (the Spark pair: spark-1 + spark-2)
+#   https://beast.tail4109f9.ts.net:8447     (the RTX 5090 rig, one node)
+```
+
+(`--publish-ntfy` also uses `:8447`; a host that runs ntfy mounts the
+dashboard on another port.)
+
+It shows the served model and engine, the active inference unit, tokens/s,
+requests, KV cache and context; a **cluster** card per node (the head plus
+every peer: GPU, unified memory or VRAM, utilization, temperature, power,
+CPU, RAM, the model volume, uptime, the RoCE fabric ports with link speed
+and throughput, 15-minute sparklines); beast-gate (devices enrolled and
+active, requests/min, errors: counts only); every service with its port;
+tool activity with the top tools; and recent events. Two more JSON routes
+feed it, both Host-pinned like the page: `GET /api/status` (its v1 keys
+unchanged, plus `serving`, `gate`, `service_list`, `events`) and
+`GET /api/cluster`.
+
+Peers come from `DASHBOARD_PEERS` (openbeast.conf, ssh targets), or, unset,
+from `scripts/backends/cluster.env` `CLUSTER_NODES`, so spark-1 shows
+spark-2 with no setting and the rig shows itself alone. A background thread
+reads each peer every 5 s with one fixed read-only script over `ssh -o
+BatchMode=yes -o ConnectTimeout=3`, capped at 6 s; no request can trigger
+or shape it, and a silent peer reads **unreachable**. The page is
+self-contained (vendored Geist fonts, no CDN; a strict CSP), works offline,
+answers only GET (405 otherwise) and has no controls. Restart it alone, for
+example after a pull, with `./scripts/ext.sh restart dashboard`: nothing
+else restarts. Detail: [`extensions/README.md`](../extensions/README.md).
 
 ### The `/api/slot` discovery contract (version 2)
 
