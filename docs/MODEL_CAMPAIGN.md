@@ -143,6 +143,12 @@ Don't touch the system packages. Run the harness in the image instead:
 ./scripts/eval-host-container.sh shell     # look around (as the harness user)
 ```
 
+A leading `python3` (or `python`) after `run --` runs the eval venv's interpreter
+(`/opt/openbeast-eval/venv/bin/python`): the image's bare cpython has no agent
+dependencies, and the profile preflight refuses it (`No module named 'openai'`).
+Add `-u` for an unbuffered log when redirecting output.
+
+
 What the image holds:
 
 - **The toolchains.** `scripts/eval-host.sh setup` installs, as root, into
@@ -792,6 +798,64 @@ ADOPTED or REJECTED) and [RESULTS.md](RESULTS.md).
 - **Infra is never a verdict, a pass is always one.** That is the rule in
   run_eval's cache (a server error is not banked), in profile.py (a budget
   skip is not a failure), and in campaign.py (lost units).
+
+### 7a. The board row and its weights
+
+A board row is a model **and** its exact weights, engine and harness. When
+an arm goes on the board, record which weights it measured, every time:
+
+1. **Find the entry, or add one**, in `evals/boards/v5/weights.json`. Reuse
+   an entry only when the run served the same file set (the same Hub
+   revision, or the same local pack revision), the same engine build and
+   the same drafter. Anything else is a new entry with its own id and a
+   label that tells it apart (`EXL3 3.5 bpw · <variant> · stock`). The
+   fields: `repo` + full `revision` (`revision_kind` `hub`), or `repo` null
+   + `local_id` + the pack's local revision (`local`, a pack that is not on
+   the Hub, e.g. one `spark-deepseek-pack.sh` staged); `format`, `bpw`,
+   `variant`, `abliterated`, `engine`, `engine_version`, `image`, `recipe`,
+   `drafter`, `kv_dtype`, `context`, `hosts`, and `evidence`. `v5_board.py`
+   validates them.
+2. **Prove it from a record of the run's window**, not from what the host
+   serves today: the inference unit's journal start lines (`Ready: … @ REV`,
+   the rank command lines) between the run's first and last row, the pack
+   selection (`spark-deepseek-pack.sh list`, `local.sh`'s mtime), a
+   `models/*.lock`. Write the source in `evidence`. A value you cannot
+   prove is `"unverified"`; never guess one.
+3. **Add the run** with its weights:
+
+   ```bash
+   python3 evals/v5_board.py --add DS-X --model "DeepSeek-V4.1-Flash (Mia EXL3)" \
+       --weights-id dsv41f-mia-exl3-2.9bpw-eaq1.1-v2 \
+       --config "campaign arm X: ..." --campaign-arm "v5-thinking-first X" \
+       --host "DGX Spark pair, TensorFold, Mia EXL3 (2.9 bpw)" \
+       evals/results/eval-<slug>-<ts>.json
+   ```
+
+   `--add` refuses a run without `--weights-id`, and `--check` (CI) fails on
+   a run whose `weights_id` is missing or names another model's weights.
+
+The board picks the best configuration per (model, weights), so a second
+quantization of a model (another bpw on three Sparks, another pack) becomes
+its own row and never replaces the first. A campaign report compares arms on
+one quantization: `evals/v5_report.py --weights-id <id>`. The generated
+"Weights used" block in [RESULTS.md](RESULTS.md#weights-used) shows every
+entry a board run uses.
+
+**Token usage comes with every row.** `--add` needs nothing more: the board
+sums each unit row's `tokens_prompt` and `tokens_completion` (the server's
+`usage`, added up over every request of the unit) and publishes, per run, the
+prompt and completion totals, the mean per unit, the **tokens per pass** (the
+total over the scored passes: the efficiency figure) and the units that
+recorded no usage, in the generated "Token usage" block of
+[RESULTS.md](RESULTS.md#token-usage) (and `--json`, `tokens`). Read it with
+its caveats: prompt tokens re-count the whole context every turn (a cache hit
+still counts), completion includes thinking (verified on TensorFold and
+llama.cpp from capped turns), and each model has its own tokenizer, so
+compare totals across arms of one model, and only roughly across models. A
+run with many "No usage" units (wall-killed before 2026-11-18's partial-stats
+file) is an undercount; say so beside any comparison. For an ablation, quote
+the per-pass figure next to the pass count: an arm that ties on passes and
+spends fewer tokens per pass is the cheaper one.
 
 ## 8. Worked example: GLM-5.3-Flash, 2026-11-16
 

@@ -15,7 +15,9 @@
 #         run CMD inside, from the checkout, e.g.
 #           run -- python3 evals/profile.py --model <slug> ...
 #           run -- python3 evals/campaign.py run --model <slug> ...
-#         (python3 is re-executed under the eval venv by the harness itself)
+#         (a leading python3/python runs the eval venv's interpreter,
+#          /opt/openbeast-eval/venv/bin/python: the image's bare cpython has
+#          no agent dependencies)
 #
 # WHY. The harness runs agents' tools, compilers and validators where it runs.
 # evals/vlib.py pins root-owned compilers first, so a host whose distro ships
@@ -48,6 +50,7 @@
 # tag), OPENBEAST_EVAL_CONTAINER_CPUS (docker --cpus, e.g. 12; unset = no
 # limit), DOCKER (the client, default docker).
 set -euo pipefail
+EVAL_VENV_PY=/opt/openbeast-eval/venv/bin/python   # OPENBEAST_EVAL_PY in the image (evals/host/Containerfile)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
@@ -203,6 +206,10 @@ case "$CMD" in
       esac
     done
     [ $# -gt 0 ] || die "run -- CMD..."
+    # A bare python3/python is the image's pinned cpython, which has no agent
+    # dependencies: the profile preflight refuses it ("No module named
+    # 'openai'"). The harness runs under the eval venv, so map it there.
+    case "$1" in python|python3|python3.12) set -- "$EVAL_VENV_PY" "${@:2}" ;; esac
     in_container "$@" ;;
   *) die "unknown command '$CMD' (build | save | load | check | shell | run | tag; --help)" ;;
 esac

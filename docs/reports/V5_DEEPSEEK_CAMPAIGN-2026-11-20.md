@@ -106,11 +106,34 @@ An arm not yet on the board can be read from its result file with
 | Piece | What |
 |---|---|
 | Inference | Two NVIDIA DGX Sparks (spark-1, spark-2) as one tensor-parallel pair, one rank per Spark over two RoCE rails ([SPARK_HYDRA.md](../SPARK_HYDRA.md)) |
-| Model | DeepSeek-V4.1-Flash (Mia EXL3), served as `DeepSeek-V4.1-Flash-1017`: the stock Mia EXL3 2.9 bpw pack, TP2, 524,288-token window, 4 streams (`deepseek-v41-inference` unit; [DeepSeek deployment](../SPARK_HYDRA.md#deepseek-deployment)) |
+| Model | DeepSeek-V4.1-Flash (Mia EXL3), served as `DeepSeek-V4.1-Flash-1017`: Mia's EAQ v1.1 "-v2" EXL3 pack at 2.9 bpw (stock weights, not abliterated; a local pack, local revision `04c13f12`, not on the Hub), TP2, 524,288-token window, 4 streams (`deepseek-v41-inference` unit; [DeepSeek deployment](../SPARK_HYDRA.md#deepseek-deployment)). Every arm ran on this one pack: §2.1a |
 | Engine | TensorFold in the image built from Mia's two-Spark recipe at `c7f2b85` (`tensorfold-dsv41:exl3-tp2-8a98ae503d85`), a forked engine separate from the native `~/.local/bin/tensorfold` (§7) |
 | Front door | beast-gate on spark-1, which every eval request goes through (`https://spark-1…:8443/v1`). `--served-model DeepSeek-V4.1-Flash-1017` is checked at the start of each run and around every unit, so a swapped model stops the run |
 | Harness host | The Mac. The agents' tools, compilers and validators run there. Only chat calls go to the Sparks ([MODEL_CAMPAIGN.md](../MODEL_CAMPAIGN.md)) |
 | Decode | About 30 tok/s per stream with 4 streams (measured during arm T; `evals/campaigns/v5-thinking-first.json`, arm T_j2 note). A capped 16K thinking turn therefore takes about 9 minutes, an 8K one about 4.5 |
+
+### 2.1a The weights behind every arm
+
+All ten arms (T through UPA_8k) measured the same weights; the generated
+Arms table in §4 names them per arm, from the board's
+[`weights.json`](../../evals/boards/v5/weights.json) (`weights_id`
+`dsv41f-mia-exl3-2.9bpw-eaq1.1-v2`; the full record is in
+[RESULTS.md, Weights used](../RESULTS.md#weights-used)).
+
+| Field | Value |
+|---|---|
+| Weights | Mia's experimental EAQ v1.1 "-v2" pack, cache id `Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1.1-2.9-bpw-v2`, local revision `04c13f12b83d57487912d87d0f1677b076810954` (OpenBeast's content id; the pack came from a drive and is not a Hub commit) |
+| Derived from | [`Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw` @ `45ee5d0f`](https://huggingface.co/Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw/tree/45ee5d0fd106c94a3d77f721e09cbb2f50e5a16b): shards 1-10 and 35-39 identical, 11-34 rewritten. **Not** the Hub's `Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1.1-2.9-bpw` (@ `aee640e2`), whose shard sizes and index differ |
+| Base | `deepseek-ai/DeepSeek-V4.1-Flash-1017` @ `1bae0e10` (Engram tables, shards 47 and 48, unquantized) |
+| Format | EXL3, 2.9 bpw average (head 6 bits, MTP / DSpark 4 bits), exllamav3 1.6.1 + EAQ; stock (not abliterated) |
+| Engine | TensorFold, Zig engine (`bertholomus/TensorFold` @ `fbbc971` + the recipe's patches `8a98ae503d85`), image `tensorfold-dsv41:exl3-tp2-8a98ae503d85`, Mia's recipe @ `c7f2b85` |
+| Drafter | DSpark, in the checkpoint (`--drafts 1`) |
+| KV cache | unverified (the start log does not name it) |
+| Evidence | spark-1's `deepseek-v41-inference` journal: arm T ran on the start of 2026-11-18 01:49 (its file 01:51 to 08:36; stopped 08:37), T2 to UPA_8k on the start of 2026-11-18 22:30 (stopped 2026-11-21 22:17), and both starts log `EAQ-v1.1-2.9-bpw-v2 @ 04c13f12`. The stock EAQ v1 pack last served on 2026-11-17 before 22:59, before any arm |
+
+A higher-bpw build (for example on three Sparks) would be a different
+`weights_id` and a different board row, with its own report: the numbers
+here belong to these weights only.
 
 ### 2.2 The harness
 
@@ -277,20 +300,20 @@ The tables below are the output of the command at the top, run on
 
 **Arms**
 
-| Arm | Run | On the board | Era | Turn cap | Passed | SCORE | SOLVE | LANG |
-|---|---|---|---|---:|---:|---:|---:|---:|
-| T | DS-T | yes | 06c82c4335dd6a0c | 16384 | 61/71 | 88.5 | 84.6 | 100.0 |
-| T2 | DS-T2 | yes | 036638ddd68698ce | 8192 | 65/71 | 94.9 | 96.9 | 88.9 |
-| T_s1 | DS-Ts1 | yes | 036638ddd68698ce | 16384 | 61/71 | 85.7 | 84.6 | 88.9 |
-| T3 | DS-T3 | yes | 036638ddd68698ce | 4096 | 65/71 | 91.5 | 90.8 | 93.9 |
-| U | DS-U | yes | 9bcd5aa6030836d1 | 16384 | 59/71 | 85.5 | 81.5 | 97.4 |
-| UP | DS-UP | yes | 9bcd5aa6030836d1 | 16384 | 62/71 | 88.0 | 87.7 | 88.9 |
-| UPA | DS-UPA | yes | 9bcd5aa6030836d1 | 16384 | 59/71 | 83.8 | 78.5 | 100.0 |
-| U_8k | DS-U8k | yes | 9bcd5aa6030836d1 | 8192 | 63/71 | 88.5 | 87.7 | 91.1 |
-| UP_8k | DS-UP8k | yes | 9bcd5aa6030836d1 | 8192 | 65/71 | 91.4 | 90.8 | 93.3 |
-| UPA_8k | DS-UPA8k | yes | 9bcd5aa6030836d1 | 8192 | 62/71 | 88.0 | 87.7 | 88.9 |
-| GLM-5.3-Flash: C | GLM-C | yes | 8eaa5e5f61638a1d | — | 51/71 (54 raw) | 76.7 | 75.4 | 80.5 |
-| Claude Opus 5.5: OPUS-REF | OPUS-REF | yes | — | — | 71/71 | 100.0 | 100.0 | 100.0 |
+| Arm | Run | Weights | On the board | Era | Turn cap | Passed | SCORE | SOLVE | LANG |
+|---|---|---|---|---|---:|---:|---:|---:|---:|
+| T | DS-T | EXL3 2.9 bpw · Mia EAQ v1.1 -v2 · stock | yes | 06c82c4335dd6a0c | 16384 | 61/71 | 88.5 | 84.6 | 100.0 |
+| T2 | DS-T2 | EXL3 2.9 bpw · Mia EAQ v1.1 -v2 · stock | yes | 036638ddd68698ce | 8192 | 65/71 | 94.9 | 96.9 | 88.9 |
+| T_s1 | DS-Ts1 | EXL3 2.9 bpw · Mia EAQ v1.1 -v2 · stock | yes | 036638ddd68698ce | 16384 | 61/71 | 85.7 | 84.6 | 88.9 |
+| T3 | DS-T3 | EXL3 2.9 bpw · Mia EAQ v1.1 -v2 · stock | yes | 036638ddd68698ce | 4096 | 65/71 | 91.5 | 90.8 | 93.9 |
+| U | DS-U | EXL3 2.9 bpw · Mia EAQ v1.1 -v2 · stock | yes | 9bcd5aa6030836d1 | 16384 | 59/71 | 85.5 | 81.5 | 97.4 |
+| UP | DS-UP | EXL3 2.9 bpw · Mia EAQ v1.1 -v2 · stock | yes | 9bcd5aa6030836d1 | 16384 | 62/71 | 88.0 | 87.7 | 88.9 |
+| UPA | DS-UPA | EXL3 2.9 bpw · Mia EAQ v1.1 -v2 · stock | yes | 9bcd5aa6030836d1 | 16384 | 59/71 | 83.8 | 78.5 | 100.0 |
+| U_8k | DS-U8k | EXL3 2.9 bpw · Mia EAQ v1.1 -v2 · stock | yes | 9bcd5aa6030836d1 | 8192 | 63/71 | 88.5 | 87.7 | 91.1 |
+| UP_8k | DS-UP8k | EXL3 2.9 bpw · Mia EAQ v1.1 -v2 · stock | yes | 9bcd5aa6030836d1 | 8192 | 65/71 | 91.4 | 90.8 | 93.3 |
+| UPA_8k | DS-UPA8k | EXL3 2.9 bpw · Mia EAQ v1.1 -v2 · stock | yes | 9bcd5aa6030836d1 | 8192 | 62/71 | 88.0 | 87.7 | 88.9 |
+| GLM-5.3-Flash: C | GLM-C | EXL3 4 bpw · Mia TensorFold-Ablit · abliterated | yes | 8eaa5e5f61638a1d | — | 51/71 (54 raw) | 76.7 | 75.4 | 80.5 |
+| Claude Opus 5.5: OPUS-REF | OPUS-REF | Anthropic API · hosted, weights not public | yes | — | — | 71/71 | 100.0 | 100.0 | 100.0 |
 
 **Per language** (passed / units of that language; an in-progress arm's passes are over the units done so far)
 
@@ -635,9 +658,11 @@ below it.
 - **The reference uses a different scaffold.** Claude Opus 5.5 ran with
   Claude Code's own tools, no turn cap, and over the API. It is a ceiling
   for the suite, not a same-harness peer, and is never ranked.
-- **One host, one quantization.** Every row is the Mia EXL3 2.9 bpw pack on
-  the Spark pair at `--jobs 4`. A different pack, engine or concurrency is a
-  different configuration.
+- **One host, one quantization.** Every row is the same Mia EXL3 2.9 bpw
+  pack (EAQ v1.1 "-v2", local revision `04c13f12`; §2.1a) on the Spark pair
+  at `--jobs 4`. A different pack, bpw, engine or concurrency is a different
+  configuration and a different board row. The stock EAQ v1 pack was never
+  measured on v5, so the v1-vs-v1.1 quality difference is unknown.
 - **The wall is doubled** (`--wall-scale 2`) for every thinking arm, so
   these rows are experiment arms on the board, not the L0 protocol.
 - **The 8K planning-line result is 2 units.** U_8k → UP_8k (+2) sits

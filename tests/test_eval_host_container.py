@@ -97,7 +97,15 @@ def test_run_passes_key_names_never_values_and_loosens_nothing(fake_docker):
     for bad in ("--privileged", "seccomp=unconfined", "apparmor=unconfined", "--cap-add",
                 "--pid host", "--userns host", "--user root", "docker.sock"):
         assert bad not in argv, bad
-    assert argv.endswith("python3 -V")
+    assert argv.endswith("/opt/openbeast-eval/venv/bin/python -V")   # python3 maps to the eval venv
+
+
+def test_bare_python_runs_the_eval_venv(fake_docker):
+    docker, log = fake_docker
+    r = _run(["run", "--", "python", "evals/profile.py", "--help"], docker=docker)
+    assert r.returncode == 0, r.stderr
+    argv = [ln for ln in log.read_text().splitlines() if ln.startswith("run ")][-1]
+    assert argv.endswith("/opt/openbeast-eval/venv/bin/python evals/profile.py --help")
 
 
 def test_pass_takes_a_name_only(fake_docker):
