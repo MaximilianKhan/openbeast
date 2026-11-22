@@ -1934,6 +1934,72 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# review 2026-11-22: `ext.sh restart <name>` waits for the old process (the
+# dashboard saves its power history on SIGTERM) and reports the health route.
+# A fake process extension whose server takes a second to exit on SIGTERM,
+# and a curl stub that answers only while a server says it is healthy.
+# ---------------------------------------------------------------------------
+echo ""
+echo "ext.sh restart waits for the old process and checks the health route:"
+_R="$_T/restart"; _sandbox "$_R"
+for _e in fake quiet; do
+  mkdir -p "$_R/extensions/$_e"
+  printf 'NAME=%s\nKIND=process\nHEALTH_PORT_VAR=DASHBOARD_PORT\nHEALTH_PATH=/api/slot\n' "$_e" > "$_R/extensions/$_e/manifest"
+  printf '#!/bin/bash\nexec python3 "$(cd "$(dirname "$0")" && pwd)/server.py"\n' > "$_R/extensions/$_e/run.sh"
+  chmod +x "$_R/extensions/$_e/run.sh"
+done
+cat > "$_R/extensions/fake/server.py" <<PY
+import os, signal, sys, time
+ev, ok = "$_R/events", "$_R/healthy"
+def log(m):
+    with open(ev, "a") as fh: fh.write(m + " %d\n" % os.getpid())
+def term(*_):
+    time.sleep(1.0)                 # flushing state, as the dashboard does
+    log("flushed")
+    try: os.unlink(ok)
+    except OSError: pass
+    os._exit(0)
+signal.signal(signal.SIGTERM, term)
+log("start")
+open(ok, "w").close()
+time.sleep(300)
+PY
+printf 'import time\ntime.sleep(300)\n' > "$_R/extensions/quiet/server.py"
+printf '#!/bin/bash\nfor a in "$@"; do [[ "$a" == *":39417/api/slot" ]] && [[ -e "%s/healthy" ]] && exit 0; done\nexit 7\n' \
+  "$_R" > "$_R/bin/curl"
+chmod +x "$_R/bin/curl"
+printf 'EXTENSIONS="fake quiet"\nDASHBOARD_PORT=39417\n' > "$_R/openbeast.conf"
+_rx() { _run "$_R" "$_R/scripts/ext.sh" "$@"; }
+_O="$(_rx restart fake)"
+_P1="$(cat "$_R/.run/ext-fake.pid" 2>/dev/null || true)"; [[ "$_P1" =~ ^[0-9]+$ ]] && _PIDS="$_PIDS $_P1"
+if [[ "$_O" == *"Restarted 'fake' (pid $_P1), answering /api/slot"* ]]; then
+  pass "restart with no process running launches it and reports the health route answering"
+else
+  fail "ext.sh restart fake (first) -> $(tr '\n' ' ' <<< "$_O")"
+fi
+_O="$(_rx restart fake)"
+_P2="$(cat "$_R/.run/ext-fake.pid" 2>/dev/null || true)"; [[ "$_P2" =~ ^[0-9]+$ ]] && _PIDS="$_PIDS $_P2"
+_FL="$(grep -n "^flushed $_P1\$" "$_R/events" | cut -d: -f1)"
+_ST="$(grep -n "^start $_P2\$" "$_R/events" | cut -d: -f1)"
+if [[ "$_O" == *"Restarted 'fake' (pid $_P2), answering /api/slot"* && "$_P2" != "$_P1" \
+      && -n "$_FL" && -n "$_ST" && "$_FL" -lt "$_ST" ]] && ! kill -0 "$_P1" 2>/dev/null; then
+  pass "…a second restart waits for the old process to flush and exit before the new one starts"
+else
+  fail "ext.sh restart fake (second) -> $(tr '\n' ' ' <<< "$_O") events: $(tr '\n' ' ' < "$_R/events")"
+fi
+[[ "$_P2" =~ ^[0-9]+$ ]] && kill "$_P2" 2>/dev/null || true
+for _ in $(seq 1 30); do [[ -e "$_R/healthy" ]] || break; sleep 0.1; done
+rm -f "$_R/healthy"
+_RC=0; _O="$(env -i HOME="$_R/home" PATH="$_R/bin:/usr/bin:/bin" bash "$_R/scripts/ext.sh" restart quiet 2>&1)" || _RC=$?
+_P3="$(cat "$_R/.run/ext-quiet.pid" 2>/dev/null || true)"; [[ "$_P3" =~ ^[0-9]+$ ]] && _PIDS="$_PIDS $_P3"
+if [[ $_RC -eq 1 && "$_O" == *"is running (pid $_P3) but /api/slot did not answer within 10 s"* ]]; then
+  pass "a process whose health route never answers: exit 1 with the log tail"
+else
+  fail "ext.sh restart quiet (rc=$_RC) -> $(tr '\n' ' ' <<< "$_O")"
+fi
+[[ "$_P3" =~ ^[0-9]+$ ]] && kill "$_P3" 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
 echo ""
 echo "================================"
 echo "Lifecycle: $PASS passed, $FAIL failed"

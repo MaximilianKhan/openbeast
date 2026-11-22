@@ -400,6 +400,7 @@
   // ------------------------------------------------------------ power
   // The trend chip's words: "rising 8.2% · 5 min avg vs 15 min".
   function trendText(t) {
+    if (t && t.partial) return { dir: 'none', arrow: '·', text: 'trend: partial (a node is not measured now)' };
     if (!t || !t.dir) return { dir: 'none', arrow: '·', text: 'trend: collecting (needs 5 min)' };
     const p = isNum(t.pct) ? (t.pct > 0 ? '+' : '') + t.pct.toFixed(1) + '%' : '';
     return { dir: t.dir, arrow: ARROW[t.dir] || '·', text: t.dir + ' ' + p + ' · 5 min avg ' + watts(t.now_avg_w) + ' vs ' + (WIN_LABEL[t.vs] || t.vs) + ' ' + watts(t.base_avg_w) };
@@ -411,9 +412,10 @@
     const cov = isNum(w.coverage) ? w.coverage : 0;
     return {
       key: k, label: (WIN_LABEL[k] || k) + ' avg',
-      value: isNum(w.avg_w) ? watts(w.avg_w) : cov > 0 ? 'collecting' : DASH,
+      value: isNum(w.avg_w) ? watts(w.avg_w) : w.partial ? 'partial' : cov > 0 ? 'collecting' : DASH,
       range: isNum(w.min_w) && isNum(w.max_w) ? 'range ' + wnum(w.min_w) + '–' + wnum(w.max_w) + '\u00a0W' : 'range —',
-      energy: energy(w.energy_wh, k === '24h') + ' · ' + Math.round(cov * 100) + '% covered',
+      energy: w.partial && !isNum(w.avg_w) ? 'measured nodes only: ' + energy(w.energy_wh, k === '24h')
+        : energy(w.energy_wh, k === '24h') + ' · ' + Math.round(cov * 100) + '% covered',
       low: cov < 0.95,
       title: 'Time-weighted average over the last ' + (WIN_LABEL[k] || k) + '; the range is the lowest to the highest '
         + (w.peak_resolution_s === 60 ? '1 min' : '~5 s') + ' mean; energy is what was measured in the covered time',
@@ -440,8 +442,9 @@
     return {
       key: str(n.name, 64), name: str(n.name, 64), state,
       now: now ? watts(now.total_w) : last ? watts(last.total_w) : DASH,
-      label: state === 'up' ? str(p.label || 'no power sensor', 60) : state === 'unreachable' ? 'unreachable · last reading' : 'connecting',
-      rails: parts.length ? parts.join(' · ') : 'no readable power sensor',
+      label: state === 'up' ? str(p.label || 'no power sensor', 60)
+        : state === 'unreachable' ? (last ? 'unreachable · last reading' : 'unreachable · no reading since the dashboard started') : 'connecting',
+      rails: parts.length ? parts.join(' · ') : state === 'up' ? 'no readable power sensor' : DASH,
       avg: 'avg ' + ['5m', '1h', '24h'].map(k => (WIN_SHORT[k] + ' ' + (isNum((ws[k] || {}).avg_w) ? watts(ws[k].avg_w) : DASH)).replace(/ /g, '\u00a0')).join(' · '),
       trendDir: tr.dir, trend: tr.dir === 'none' ? '' : tr.arrow + ' ' + (isNum(n.trend.pct) ? (n.trend.pct > 0 ? '+' : '') + n.trend.pct.toFixed(1) + '%' : ''),
       limitPct: lim, limitText: isNum(lim) ? lim.toFixed(0) + '% of the ' + watts(p.gpu_limit_w) + ' board limit' : '',
@@ -473,7 +476,13 @@
     const c = pw.cluster, nodes = Array.isArray(pw.nodes) ? pw.nodes : [];
     const multi = c.nodes > 1;
     setId('pw-now', isNum(c.now_w) ? wnum(c.now_w) : DASH);
-    setId('pw-now-k', (multi ? 'cluster · ' : str(nodes[0] && nodes[0].name, 64) + ' · ') + str(c.label || 'power', 60) + ' now');
+    // A node down: the figure is a partial sum, and the label names what it sums.
+    const partial = multi && isNum(c.now_w) && c.nodes_measured < c.nodes;
+    const names = Array.isArray(c.measured) ? c.measured.map(n => str(n, 64)).join(', ') : '';
+    setId('pw-now-k', (partial ? (names ? names + ' only' : 'partial') + ' · ' + c.nodes_measured + ' of ' + c.nodes + ' nodes · '
+      : multi ? 'cluster · ' : str(nodes[0] && nodes[0].name, 64) + ' · ') + str(c.label || 'power', 60) + ' now');
+    const nv = $('pw-now'); const nvp = nv && nv.parentNode;
+    if (nvp && nvp.dataset) { const v = partial ? 'partial' : ''; if (nvp.dataset.partial !== v) nvp.dataset.partial = v; }
     setId('power-note', (multi ? c.nodes_measured + ' of ' + c.nodes + ' nodes measured' : c.nodes_measured ? 'measured' : 'not measured')
       + ' · sampled every ' + (pw.sample_s || 5) + ' s');
     const tr = trendText(c.trend);
@@ -602,9 +611,15 @@
         svgEl('line', { class: 'avg ' + (s.cls === 'ln-total' ? 'ln-total' : s.cls), x1: L, x2: W - R, y1: yy, y2: yy }, g.avg);
       }
     }
-    if (m.marked && isNum(m.marked.avg)) {
+    if (m.marked && isNum(m.marked.avg) && W >= 480) {
       const t = svgEl('text', { class: 'avg-label', x: W - R - 4, y: Math.max(T + fs, y(m.marked.avg) - 5), 'text-anchor': 'end' }, g.avg);
       t.textContent = 'avg ' + watts(m.marked.avg);
+      // A panel-coloured backing behind the label, so the lines under it never cut through it.
+      try {
+        const bb = t.getBBox();
+        if (bb && bb.width) g.avg.insertBefore(svgEl('rect', { class: 'avg-bg', x: (bb.x - 4).toFixed(1), y: (bb.y - 2).toFixed(1),
+          width: (bb.width + 8).toFixed(1), height: (bb.height + 4).toFixed(1), rx: 4 }), t);
+      } catch (e) { /* no layout (tests) */ }
     }
     svg.setAttribute('aria-label', 'Power over the last ' + (WIN_LABEL[chartWin] || chartWin) + (m.marked && isNum(m.marked.avg) ? ', average ' + watts(m.marked.avg) : ''));
     const lg = $('pw-legend');
@@ -652,10 +667,20 @@
       const px = (ev.clientX - r.left) / r.width * G.W;
       showRead(Math.round((px - G.L) / (G.W - G.L - G.R) * (G.n - 1)));
     };
-    svg.addEventListener('pointermove', pick);
-    svg.addEventListener('pointerdown', pick);
-    svg.addEventListener('pointerleave', hideRead);
-    svg.addEventListener('blur', hideRead);
+    // Touch and pen: pointerleave follows pointerup at once, so the readout of a tap stays
+    // for a few seconds (or until a tap elsewhere) instead of vanishing with the finger.
+    let readTimer = null;
+    const holdRead = ev => {
+      if (readTimer) { clearTimeout(readTimer); readTimer = null; }
+      if (ev && (ev.pointerType === 'touch' || ev.pointerType === 'pen')) readTimer = setTimeout(hideRead, 4000);
+    };
+    svg.addEventListener('pointermove', ev => { pick(ev); holdRead(ev); });
+    svg.addEventListener('pointerdown', ev => { pick(ev); holdRead(ev); });
+    svg.addEventListener('pointerleave', ev => { if (ev.pointerType === 'touch' || ev.pointerType === 'pen') return; holdRead(); hideRead(); });
+    svg.addEventListener('blur', () => { holdRead(); hideRead(); });
+    document.addEventListener('pointerdown', ev => {
+      if (chartIdx !== null && ev.target && !svg.contains(ev.target)) { holdRead(); hideRead(); }
+    });
     svg.addEventListener('keydown', ev => {
       const G = svg._geom; if (!G || !G.n) return;
       const stepK = ev.shiftKey ? 12 : 1;
@@ -672,6 +697,7 @@
         b.addEventListener('click', () => {
           if (!CHART_WINDOWS.includes(b.dataset.w)) return;
           chartWin = b.dataset.w;
+          chartAt = 0;
           try { localStorage.setItem('obdash.powerWindow', chartWin); } catch (e) { /* private mode */ }
           for (const o of Array.from(seg.querySelectorAll('button'))) o.setAttribute('aria-pressed', String(o === b));
           hideRead();
@@ -683,17 +709,20 @@
     else globalThis.addEventListener('resize', drawChart);
   }
 
-  let chartBusy = false;
+  // A sequence number, not a busy flag: a window change (force) always fetches, even with
+  // a tick's fetch in flight, and only the latest reply for the window shown is drawn
+  // (review 2026-11-22: a click during a fetch was dropped for up to 30 s).
+  let chartSeq = 0, chartInflight = 0;
   async function refreshChart(force) {
     const every = chartWin === '15m' || chartWin === '1h' ? POLL_MS - 200 : 30000;
-    if (chartBusy || (!force && Date.now() - chartAt < every)) return;
-    chartBusy = true;
-    const want = chartWin;
+    if (!force && (chartInflight || Date.now() - chartAt < every)) return;
+    const seq = ++chartSeq, want = chartWin;
+    chartInflight++;
     try {
       const d = await getJSON('/api/power?window=' + encodeURIComponent(want));
-      if (want === chartWin && d) { chart = d; chartAt = Date.now(); guard(drawChart); }
+      if (seq === chartSeq && want === chartWin && d) { chart = d; chartAt = Date.now(); guard(drawChart); }
     } catch (e) { /* the next tick retries; the page's stale marker covers it */ }
-    finally { chartBusy = false; }
+    finally { chartInflight--; }
   }
 
   // ------------------------------------------------------------ polling

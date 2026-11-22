@@ -40,12 +40,12 @@
         <li class="chip" id="chip-endpoint">—</li>
       </ul>
     </div>
-    <dl class="signal">
-      <div><dt>tokens / s</dt><dd id="sig-toks">—</dd><span class="spark-wrap"><svg class="spark" id="spark-toks" viewBox="0 0 120 28" preserveAspectRatio="none" role="img" aria-label="tokens per second, last 15 minutes"></svg><span class="spark-read" id="spark-toks-read"></span></span></div>
-      <div><dt>requests</dt><dd id="sig-reqs">—</dd><small id="sig-reqs-sub">running · waiting</small></div>
-      <div><dt>KV cache</dt><dd id="sig-kv">—</dd><span class="meter" aria-hidden="true"><i id="sig-kv-bar"></i></span></div>
-      <div><dt>context</dt><dd id="sig-ctx">—</dd><small id="sig-ctx-sub">tokens per request</small></div>
-    </dl>
+    <ul class="signal" aria-label="Serving now">
+      <li><span class="sig-k">tokens / s</span><span class="sig-v" id="sig-toks">—</span><span class="spark-wrap"><svg class="spark" id="spark-toks" viewBox="0 0 120 28" preserveAspectRatio="none" role="img" aria-label="tokens per second, last 15 minutes"></svg><span class="spark-read" id="spark-toks-read"></span></span></li>
+      <li><span class="sig-k">requests</span><span class="sig-v" id="sig-reqs">—</span><small id="sig-reqs-sub">running · waiting</small></li>
+      <li><span class="sig-k">KV cache</span><span class="sig-v" id="sig-kv">—</span><span class="meter" aria-hidden="true"><i id="sig-kv-bar"></i></span></li>
+      <li><span class="sig-k">context</span><span class="sig-v" id="sig-ctx">—</span><small id="sig-ctx-sub">tokens per request</small></li>
+    </ul>
   </section>
 
   <section class="block panel power" id="power" aria-labelledby="h-power">

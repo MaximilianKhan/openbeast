@@ -771,12 +771,20 @@ def test_windows_peak_and_energy(monkeypatch):
 
 def test_trend_rising_falling_steady_and_collecting(monkeypatch):
     d = load(monkeypatch)
-    mk = lambda a, b, c=None: {"5m": {"avg_w": a}, "15m": {"avg_w": b}, "1h": {"avg_w": c}}
+    def mk(a, b, c=None, c5=300, cb=900, c1=3600):
+        return {"5m": {"avg_w": a, "covered_s": c5, "coverage": c5 / 300},
+                "15m": {"avg_w": b, "covered_s": cb, "coverage": cb / 900},
+                "1h": {"avg_w": c, "covered_s": c1, "coverage": c1 / 3600}}
     assert d.trend(mk(110, 100))["dir"] == "rising" and d.trend(mk(110, 100))["pct"] == 10.0
     assert d.trend(mk(90, 100))["dir"] == "falling"
     assert d.trend(mk(104, 100))["dir"] == "steady"              # inside the ±5 % deadband
     assert d.trend(mk(None, 100))["dir"] is None
     assert d.trend(mk(120, None, 100))["vs"] == "1h"             # no 15 min yet: the hour
+    # a cold start: ~90 s in both windows is no comparison, so "collecting", not "steady 0 %"
+    assert d.trend(mk(100, 100, None, c5=90, cb=90, c1=90))["dir"] is None
+    # the 5 min window full, but the baseline barely more: still collecting
+    assert d.trend(mk(100, 100, None, c5=300, cb=330, c1=330))["dir"] is None
+    assert d.trend(mk(100, 100, None, c5=300, cb=450))["dir"] == "steady"
 
 
 def _sampler_with(d, name, watts, T, outage=()):
@@ -804,9 +812,13 @@ def test_cluster_total_is_the_sum_and_says_n_of_m(monkeypatch):
     assert c["windows"]["15m"]["avg_w"] == 70.0                    # each node over its own covered time
     assert c["windows"]["15m"]["coverage"] < 1                     # b's outage shows
     assert c["windows"]["15m"]["max_w"] == 70.0                    # peak only of slots both measured
+    assert c["trend"]["dir"] == "steady" and c["measured"] == ["a", "b"]
     b.state = "unreachable"
     ps = d.power_summary([a.power_row(), b.power_row()], now=now)
     assert ps["cluster"]["now_w"] == 30.0 and ps["cluster"]["nodes_measured"] == 1
+    # a partial sum: no cluster trend over a node set the now figure does not have
+    assert ps["cluster"]["measured"] == ["a"] and ps["cluster"]["trend"]["partial"] is True
+    assert ps["cluster"]["trend"]["dir"] is None
     assert ps["nodes"][1]["now"] is None and ps["nodes"][1]["last"]["total_w"] == 40.0
     ch = d.power_chart([a.power_row(), b.power_row()], "15m", now=now)
     assert ch["step_s"] == 5 and len(ch["nodes"][0]["values"]) == 180
@@ -846,6 +858,60 @@ def test_power_persistence_round_trip_cap_and_corruption(monkeypatch, tmp_path):
     monkeypatch.setattr(d, "POWER_FILE_MAX", 4 << 20)
     open(path, "w").write(" " * (5 << 20))
     assert d.load_power([d.NodeSampler("a")], path, now=T) == 0
+
+
+def test_jittered_wall_stamps_never_overcover_a_slot_and_survive_a_restore(monkeypatch, tmp_path):
+    """review 2026-11-22: the counter's dt and our wall gap differ by ms, so
+    intervals overlapped, slots summed past their step, and load dropped
+    about half of them after every restart."""
+    import random
+    d = load(monkeypatch)
+    rng = random.Random(7)
+    T = 1_800_000_000 - (1_800_000_000 % 60)
+    s = d.NodeSampler("a")
+    e = 0
+    for i in range(721):                       # 1 h at 40 W, 5 s cadence
+        e += 40 * 5 * 1000
+        mono = 5.0 * (i + 1)
+        wall = T + mono + rng.uniform(0, 0.4)  # the probe-to-stamp latency
+        raw = d.parse_node(f"gpu|NVIDIA GB10, [N/A], [N/A], 1, 40, 40, 40, 40, [N/A]\nnrg|{e}|1|{mono}\n")
+        s.power.ingest(wall, mono, raw, d.node_view(raw))
+    now = T + 5 * 722
+    for tier in (s.power.fine, s.power.coarse):
+        assert max(v[0] for v in tier.slots.values()) <= tier.step + 1e-9
+    before = {k: s.power.stats(now, w) for k, w in d.POWER_WINDOWS}
+    assert before["1h"]["covered_s"] > 3500 and before["1h"]["avg_w"] == 40.0
+    path = str(tmp_path / "p.json")
+    assert d.save_power([s], path, now=now) > 0
+    r = d.NodeSampler("a")
+    assert d.load_power([r], path, now=now) == 1
+    after = {k: r.power.stats(now, w) for k, w in d.POWER_WINDOWS}
+    for k in before:
+        assert after[k]["covered_s"] == pytest.approx(before[k]["covered_s"], abs=0.5), k
+        assert after[k]["energy_wh"] == pytest.approx(before[k]["energy_wh"], rel=1e-3), k
+    # a file from 4205caef (slots a hair over their step) is clamped on load, not dropped
+    doc = json.load(open(path))
+    bumped = 0
+    for row in doc["nodes"]["a"]["fine"]:
+        if row[1] >= 5 - 1e-6:              # a full slot, written a hair over its step
+            row[1], row[2], row[3], row[4] = 5.013, row[2] * 1.0026, 5.013, row[4] * 1.0026
+            bumped += 1
+    assert bumped > 300
+    json.dump(doc, open(path, "w"))
+    o = d.NodeSampler("a")
+    d.load_power([o], path, now=now)
+    assert o.power.stats(now, 3600)["covered_s"] == pytest.approx(before["1h"]["covered_s"], abs=1)
+    assert o.power.stats(now, 3600)["avg_w"] == 40.0
+
+
+def test_save_power_is_serialised(monkeypatch, tmp_path):
+    d = load(monkeypatch)
+    T = 1_800_000_000 - (1_800_000_000 % 60)
+    a = _sampler_with(d, "a", [30] * 12, T)
+    path = str(tmp_path / "p.json")
+    with d._save_lock:                          # the saver thread mid-write
+        assert d.save_power([a], path, now=T + 60, lock_timeout=0.05) == 0
+    assert d.save_power([a], path, now=T + 60) > 0
 
 
 def test_cost_shows_only_when_a_price_is_set(monkeypatch, tmp_path):
@@ -900,6 +966,9 @@ def test_api_status_gpu_comes_from_the_head_sampler_never_nvidia_smi(monkeypatch
     g = d.status()["gpu"]
     assert time.monotonic() - t0 < 3.5
     assert g["name"] == "NVIDIA GB10" and g["unified"] is True and g["util_pct"] == 95 and g["power_w"] == 31.3
+    # the head's whole probe failing: no last-good reading served as current
+    head.sample(run=lambda t: (None, "no answer within 6 s"))
+    assert d.status()["gpu"] is None
 
 
 def test_a_hung_nvidia_smi_is_killed_not_orphaned(monkeypatch, tmp_path):
@@ -917,7 +986,7 @@ def test_a_hung_nvidia_smi_is_killed_not_orphaned(monkeypatch, tmp_path):
     left = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True).stdout.split()
     assert not left, "the hung nvidia-smi was left behind"
     # ...and the probe bounds nvidia-smi itself where coreutils timeout exists
-    assert "timeout -k 1 4" in d.NODE_SCRIPT and "gpuerr|" in d.NODE_SCRIPT
+    assert "timeout -k 1 3" in d.NODE_SCRIPT and "timeout -k 0.5 1" in d.NODE_SCRIPT and "gpuerr|" in d.NODE_SCRIPT
 
 
 def test_active_devices_is_right_in_summer_time(monkeypatch, tmp_path):

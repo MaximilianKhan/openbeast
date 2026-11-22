@@ -492,7 +492,11 @@ def status():
     gpu = {}
     smi = None
     if _head is not None:
-        gpu["v"] = _v1_gpu(_head.snapshot().get("gpu"))
+        # Only a reading from a probe that is answering now: while the head's
+        # whole probe fails, the last good one would read as current with
+        # no age (review 2026-11-22). None reads "GPU not readable".
+        hs = _head.snapshot()
+        gpu["v"] = _v1_gpu(hs.get("gpu")) if hs.get("state") == "up" else None
     else:
         smi = threading.Thread(target=lambda: gpu.update(v=gpu_status()), daemon=True)
         smi.start()
@@ -1098,7 +1102,8 @@ def node_script(disk_path):
     is charset-checked; it is never a request value.
 
     nvidia-smi and the NVML read each run under coreutils `timeout -k`, well
-    inside PEER_TIMEOUT_S: a wedged driver costs the GPU lines, not the whole
+    inside PEER_TIMEOUT_S (nvidia-smi at most 4 s, NVML 1.5 s: 5.5 s, less
+    than the 6 s a peer run gets): a wedged driver costs the GPU lines, not the whole
     node, and the hung process is killed instead of orphaned (review
     2026-11-22: one leaked per sample). Power rails beyond the GPU are every
     readable hwmon power*_input / power*_average, by name and label (hwmon
@@ -1110,7 +1115,7 @@ def node_script(disk_path):
     return "\n".join((
         "export LC_ALL=C",
         f"D={d}; [ -d \"$D\" ] || D=\"$HOME\"",
-        "T=; T2=; if command -v timeout >/dev/null 2>&1; then T='timeout -k 1 4'; T2='timeout -k 1 2'; fi",
+        "T=; T2=; if command -v timeout >/dev/null 2>&1; then T='timeout -k 1 3'; T2='timeout -k 0.5 1'; fi",
         "echo \"host|$(hostname 2>/dev/null)\"",
         "if command -v nvidia-smi >/dev/null 2>&1; then",
         f"  o=$($T {smi % _SMI_LONG}); rc=$?",
@@ -1476,11 +1481,18 @@ class _Tier:
             s = self.slots.get(t0)
             if s is None:
                 s = self.slots[t0] = [0.0, 0.0, 0.0, 0.0, p, p]
-            s[_COV] += dur
-            s[_E] += p * dur
+            # A slot never covers more than its own step: an interval that
+            # overlaps one already here (clock jitter between samples)
+            # adds only the room that is left, so _Tier.load accepts every
+            # slot a save wrote (review 2026-11-22: half the history was
+            # dropped on restore).
+            use = max(0.0, min(dur, self.step - s[_COV]))
+            s[_COV] += use
+            s[_E] += p * use
             if pg is not None:
-                s[_COVG] += dur
-                s[_EG] += pg * dur
+                useg = max(0.0, min(dur, self.step - s[_COVG]))
+                s[_COVG] += useg
+                s[_EG] += pg * useg
             s[_MAX], s[_MIN] = max(s[_MAX], p), min(s[_MIN], p)
             t = end
 
@@ -1511,8 +1523,18 @@ class _Tier:
             if any(v is None for v in vals):
                 continue
             k, cov, e, covg, eg, mx, mn = vals
-            if k % self.step or not (0 <= cov <= self.step + 1e-6) or not (0 <= covg <= cov + 1e-6) \
+            # Up to 5 % over the step is clock jitter from a file written
+            # before add() capped coverage (4205caef): clamp it, scaling the
+            # energy with it, rather than drop the slot.
+            lim = self.step * 1.05
+            if k % self.step or not (0 <= cov <= lim) or not (0 <= covg <= lim) \
                     or e < 0 or eg < 0 or mn > mx:
+                continue
+            if cov > self.step:
+                e, cov = e * self.step / cov, float(self.step)
+            if covg > self.step:
+                eg, covg = eg * self.step / covg, float(self.step)
+            if covg > cov + 1e-6:
                 continue
             self.slots[int(k)] = [cov, e, covg, eg, mx, mn]
         self.prune(now)
@@ -1525,7 +1547,7 @@ class NodePower:
         self.gap = gap
         self.fine = _Tier(POWER_FINE_S, POWER_FINE_SPAN)
         self.coarse = _Tier(POWER_COARSE_S, POWER_COARSE_SPAN)
-        self._prev = None          # (local monotonic, energy dict | None, gpu W | None, {rail: W})
+        self._prev = None          # (local monotonic, energy dict | None, gpu W | None, {rail: W}, system, wall)
         self._lock = threading.Lock()
         self.source = None         # "nvml-energy" | "power.draw" for the last interval
 
@@ -1535,7 +1557,7 @@ class NodePower:
         pw = (view or {}).get("power") or {}
         rails = {r["key"]: r["w"] for r in pw.get("rails", []) if r["key"] != "gpu"}
         system = any(r["kind"] == "system" for r in pw.get("rails", []))
-        cur = (mono, (raw or {}).get("energy"), g.get("power_w"), rails, system)
+        cur = (mono, (raw or {}).get("energy"), g.get("power_w"), rails, system, wall)
         with self._lock:
             prev, self._prev = self._prev, cur
             if prev is None:
@@ -1565,8 +1587,16 @@ class NodePower:
             else:
                 p = (pg or 0.0) + sum(others)
             self.source = src
+            # The interval is [wall - dt, wall], but never before the last
+            # sample's wall stamp: the counter's dt (the node's clock at its
+            # NVML read) and our wall gap (ssh and probe latency) differ by
+            # milliseconds, and successive intervals must not overlap. The
+            # mean stays the counter's; only its placement is clipped.
+            a = max(wall - dt, prev[5])
+            if a >= wall:
+                return None
             for tier in (self.fine, self.coarse):
-                tier.add(wall - dt, wall, p, pg)
+                tier.add(a, wall, p, pg)
                 tier.prune(wall)
             return p
 
@@ -1610,13 +1640,27 @@ class NodePower:
             self.coarse.load(doc.get("coarse"), now)
 
 
+TREND_MIN_5M_COVERAGE = 0.8   # the 5 min side needs most of its window
+TREND_MIN_BASE_RATIO = 1.5    # and the baseline this much more covered time
+
+
 def trend(stats):
     """5 min average against the 15 min one (or the hour's, when 15 min is
-    not there yet): rising / falling / steady within TREND_DEADBAND."""
-    a = (stats.get("5m") or {}).get("avg_w")
+    not there yet): rising / falling / steady within TREND_DEADBAND. No
+    verdict ("collecting") until the 5 min window is mostly covered and the
+    baseline covers clearly more time than it: right after a cold start
+    both windows average the same seconds, and "steady 0.0 %" would claim
+    a comparison that is not there (review 2026-11-22)."""
+    s5 = stats.get("5m") or {}
+    a = s5.get("avg_w")
+    c5 = s5.get("covered_s")
+    ready = a is not None and c5 is not None and (s5.get("coverage") or 0) >= TREND_MIN_5M_COVERAGE
     for base in ("15m", "1h"):
-        b = (stats.get(base) or {}).get("avg_w")
-        if a is not None and b:
+        sb = stats.get(base) or {}
+        b = sb.get("avg_w")
+        if b and (sb.get("covered_s") or 0) < TREND_MIN_BASE_RATIO * (c5 or 0):
+            continue
+        if ready and b:
             pct = (a - b) / b
             d = "rising" if pct > TREND_DEADBAND else "falling" if pct < -TREND_DEADBAND else "steady"
             return {"dir": d, "pct": round(100 * pct, 1), "vs": base, "now_avg_w": a, "base_avg_w": b}
@@ -1664,17 +1708,31 @@ def power_summary(nodes, now=None, price=None, currency=None):
         full = all(a is not None for a in avgs) and m > 0
         cl_windows[k] = {
             "avg_w": round(sum(avgs), 1) if full else None,
+            # Some nodes have an average and some not: the sum would not be
+            # the cluster's, and the page says "partial" instead.
+            "partial": not full and any(a is not None for a in avgs),
             "min_w": round(min(sums), 1) if full and sums else None,
             "max_w": round(max(sums), 1) if full and sums else None,
             "energy_wh": round(sum(p["energy_wh"] for p in per), 3),
             "coverage": round(min((p["coverage"] for p in per), default=0.0), 3),
+            "covered_s": round(min((p["covered_s"] for p in per), default=0.0), 1),
             "peak_resolution_s": step}
     labels = {n["now"]["label"] if n["now"] else (n["last"] or {}).get("label") for n in out_nodes}
     labels.discard(None)
+    # A node down now: the windows still hold its earlier readings, so a
+    # cluster trend would compare a different node set from the "now"
+    # figure. No trend then ("partial"), and the page names the nodes that
+    # the now figure sums (review 2026-11-22).
+    partial = 0 < len(totals) < m or (m > 0 and not totals)
+    cl_trend = trend(cl_windows)
+    if partial:
+        cl_trend = {"dir": None, "pct": None, "vs": None, "now_avg_w": None, "base_avg_w": None,
+                    "partial": True}
     cluster = {"now_w": round(sum(totals), 1) if totals else None,
                "nodes_measured": len(totals), "nodes": m,
+               "measured": [n["name"] for n in out_nodes if n["now"]],
                "label": labels.pop() if len(labels) == 1 else "measured power" if labels else None,
-               "windows": cl_windows, "trend": trend(cl_windows)}
+               "windows": cl_windows, "trend": cl_trend}
     cost = None
     if price:
         basis, day_avg = next(((k, cl_windows[k]["avg_w"]) for k in ("24h", "1h", "15m")
@@ -1725,7 +1783,10 @@ def _power_path():
     return os.path.join(run, POWER_FILE) if os.path.isdir(run) else None
 
 
-def save_power(samplers, path=None, now=None):
+_save_lock = threading.Lock()
+
+
+def save_power(samplers, path=None, now=None, lock_timeout=-1):
     """Write every node's tiers to .run/dashboard-power.json: a temp file in
     the same directory, fsynced, then renamed over the old one, so a crash
     mid-write leaves the previous file whole. A document over
@@ -1744,7 +1805,19 @@ def save_power(samplers, path=None, now=None):
         body = json.dumps(doc, separators=(",", ":")).encode()
         if len(body) > POWER_FILE_MAX:
             return 0
-    tmp = f"{path}.tmp.{os.getpid()}"
+    # One writer at a time: the SIGTERM handler and the 30 s saver thread
+    # both save, and shared the temp name (review 2026-11-22). The handler
+    # waits briefly; if the saver holds the lock, its save is the one kept.
+    if not _save_lock.acquire(timeout=lock_timeout):
+        return 0
+    try:
+        return _write_power(path, body)
+    finally:
+        _save_lock.release()
+
+
+def _write_power(path, body):
+    tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
     try:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "wb") as fh:
@@ -2339,6 +2412,10 @@ def start_samplers():
     _serve = ServeSampler()
     nodes = [_head, *_peers]
     restored = load_power(nodes)
+    # One head sample before serving, so /api/status has a GPU reading from
+    # the first request rather than null for ~5 s after a restart.
+    with contextlib.suppress(Exception):
+        _head.sample()
     if restored:
         event(f"power history restored for {restored} node{'s' if restored != 1 else ''}")
     for s in [*nodes, _serve]:
@@ -2348,7 +2425,7 @@ def start_samplers():
     def _term(signum, frame):
         # ext.sh restart / stop.sh: keep the power history across it.
         with contextlib.suppress(Exception):
-            save_power(nodes)
+            save_power(nodes, lock_timeout=2.0)
         os._exit(0)
     with contextlib.suppress(ValueError):
         signal.signal(signal.SIGTERM, _term)
