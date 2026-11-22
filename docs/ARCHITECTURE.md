@@ -438,6 +438,10 @@ scripts/                     # Server, ops, and feature CLIs
   engines/                   # one adapter per engine: llama / vllm / tensorfold / maya (opt-in, gated);
                              #   maya/ = its requirements.lock, profiles/, prepare.sh
   engine.sh, engine-gate.sh  # swap / pin / roll back the engine (docs/ENGINES.md); the 1.5x tok/s gate
+  beast-recipe.sh            # beast-recipe: any model + a Spark count -> verdict, plan, recipe, applied end to end
+                             #   (init/plan/engine/stage/up/check/adopt/rollback/list/show; dry run unless --run;
+                             #   docs/BEAST_RECIPE.md); its python is backends/pylib/recipe.py, the engine/family
+                             #   matrix backends/data/recipe-engines.json
   tokps.py                   # decode / prefill tok/s of an endpoint, acceptance checks, gate verdicts
   backends/                  # DGX Spark inference (docs/DGX_SPARK_PLAN.md): {vllm,tensorfold}/spark-node.sh
                              #   rank launchers (--profile), spark.env.example (host settings),
@@ -505,6 +509,7 @@ evals/                       # Eval harness — v5 suite (suites/v5.json) over a
   suites/ · tasks/ · results/ · leaderboard.json
 
 docs/                        # the documents — the map is docs/README.md; commands: docs/COMMANDS.md
+recipes/                     # beast-recipe's recipes: <name>/recipe.env (+ SHA256SUMS, the rendered unit), seven worked examples
 skills/                      # 27 skills: 18 in-house + 9 imported (skills/README.md)
 system-prompt.md             # Soul file (persona, applied to all frontends)    [era-hashed]
 system-prompt-tools.md       # Tool guidance (Open WebUI only; not era-hashed)

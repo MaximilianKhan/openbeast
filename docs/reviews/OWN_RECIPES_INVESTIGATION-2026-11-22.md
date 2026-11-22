@@ -33,7 +33,7 @@ Hy4), [ENGINES.md](../ENGINES.md), [MODEL_CAMPAIGN.md](../MODEL_CAMPAIGN.md),
   campaign. Hy4 is the proof that a non-Mia recipe works: we built it, and it
   is serving on spark-1 right now. On our installed native 1.2.10 the EXL3
   families are GLM-5.3-Flash (TP2-16), MiniMax-M3.1-Flash (TP2 only) and
-  Qwen3.8 dense (TP1). Upstream 1.3.4 adds more (VERIFIED, CHANGELOG):
+  Qwen3.8 dense (TP1). Upstream adds more (VERIFIED, CHANGELOG; *correction, 2026-11-22, beast-recipe review: 1.3.4 is the README's install pin but has no release, `releases/tags/v1.3.4` is a 404; the latest release is 1.3.3, which carries the entries below, and the recipes pin it*):
   - GLM EXL3 at any whole bit width from 1 to 8 (1.3.3);
   - `--tp` from 1 to 64 (1.3.2);
   - Hy4-flash EXL3 loading on one GB10 (1.3.2);
@@ -60,7 +60,7 @@ Hy4), [ENGINES.md](../ENGINES.md), [MODEL_CAMPAIGN.md](../MODEL_CAMPAIGN.md),
 **Recommended next step.** After the Hy4 eval, take one pair-down window
 (half a day) to serve the GLM checkpoint we already have through D2 on native
 TensorFold, with no Mia image (candidate 1, §5.5). Build `beast-recipe init` /
-`plan` off the Sparks in parallel. Then stage native 1.3.4 offline and run
+`plan` off the Sparks in parallel. Then stage native 1.3.3 (the latest release; see the correction above) offline and run
 candidates 2 (Qwen3.8-27B on one Spark) and 3 (MiniMax-M3.1-Flash EXL3,
 TP2).
 
@@ -157,7 +157,7 @@ and one of them (Qwen3.8 dense) only on one Spark.
 
 ### 3.1b Upstream TensorFold since 1.2.10 (what an upgrade buys)
 
-Upstream is `ashhart/TensorFold`, Apache-2.0. Its install script pins `V=1.3.4`.
+Upstream is `ashhart/TensorFold`, Apache-2.0. Its install script pins `V=1.3.4`, which has no release (corrected 2026-11-22: the latest release is v1.3.3, 2026-11-21).
 The Python engine is frozen at `v0.6.6`, and the Zig native engine is the main
 line (VERIFIED by fetch, 2026-11-22: <https://github.com/ashhart/TensorFold>,
 `CONTRIBUTING.md`, `docs/supported-models.md`, `CHANGELOG.md`). Entries that

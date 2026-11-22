@@ -43,6 +43,22 @@ center reaches it at `http://127.0.0.1:8000`). Switch between them only with
 [DeepSeek deployment](SPARK_HYDRA.md#deepseek-deployment) and
 [D1](SPARK_HYDRA.md#d1-the-glm-recipe-the-alternative-deployment)).
 
+**Which engine serves a given model on the Sparks** (and at how many ranks)
+is answered by beast-recipe, not by this plane: `scripts/beast-recipe.sh plan
+<recipe>` evaluates every engine in `scripts/backends/data/recipe-engines.json`
+(native TensorFold releases, the dsv41 fork image, Mia's GLM image, the Hy4
+vLLM kit, NGC vLLM, ExLlamaV3) for the checkpoint's model_type, format, EXL3
+layout and rank count, with sources, and picks the best path with a verdict.
+Its `engine <recipe>` step checks each Spark's engine and prints the
+`engine.sh stage` / `install --from` / `rollback` commands above when a release
+must be staged ([BEAST_RECIPE.md](BEAST_RECIPE.md#the-engine-and-family-matrix)).
+Native TensorFold, 2026-11-22: 1.2.10 is installed on both Sparks; the latest
+upstream release is **1.3.3**. The upstream README's install script pins 1.3.4,
+which has no release (`releases/tags/v1.3.4` is a 404), so the matrix records
+it as `unreleased` and recipes pin 1.3.3. `~/.local/bin/tensorfold` is one link
+per Spark: a recipe on another release needs `engine.sh install` (and
+`rollback`) on every Spark before its switch.
+
 **Host class** comes from `scripts/lib/hardware.sh`. A GPU that reports
 `memory.total` as `[N/A]` (`OB_GPU_UNIFIED=1`) makes this host a `spark`; macOS
 is `mac` (llama or tensorfold `macos-arm64`); everything else is a `rig`.
