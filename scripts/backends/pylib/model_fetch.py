@@ -32,6 +32,7 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -184,6 +185,35 @@ def artifacts(p: obprofile.Profile) -> list[dict]:
     return out
 
 
+class _Stalled(OSError):
+    """The connection still delivers, but too slowly (or not at all): reconnect and resume."""
+
+
+def _num_env(key: str, default: float) -> float:
+    raw = os.environ.get(key, "").strip()
+    if not raw:
+        return default
+    try:
+        v = float(raw)
+    except ValueError:
+        raise FetchError(f"{key}={raw!r}: a number, please") from None
+    if v < 0:
+        raise FetchError(f"{key}={raw!r}: must not be negative")
+    return v
+
+
+def stall_settings() -> tuple[float, float, int, float]:
+    """(min bytes per window, window s, restarts, per-read socket timeout s).
+
+    A Hub connection can crawl (~1 MB/s for hours) while a fresh one is fast at once, so a
+    file that grows less than FETCH_STALL_MB (50) MB in FETCH_STALL_SECS (180) s is dropped
+    and requested again from where it stopped (Range), up to FETCH_STALL_RESTARTS (5) times
+    per file. A read that returns nothing for FETCH_READ_TIMEOUT (120) s counts as a stall
+    too. FETCH_STALL_SECS=0 turns the stall check off."""
+    return (_num_env("FETCH_STALL_MB", 50) * 1024 * 1024, _num_env("FETCH_STALL_SECS", 180),
+            int(_num_env("FETCH_STALL_RESTARTS", 5)), _num_env("FETCH_READ_TIMEOUT", 120) or 120)
+
+
 def _download(repo: str, rev: str, e: dict, dest: Path) -> None:
     """One file into dest, resuming a partial; verified by the caller."""
     size = int(e.get("size") or 0)
@@ -193,28 +223,49 @@ def _download(repo: str, rev: str, e: dict, dest: Path) -> None:
         have = 0
     if have == size and size > 0:
         return
+    min_bytes, window, restarts, read_timeout = stall_settings()
     mode = "ab" if have else "wb"
     rng = (have, None) if have else None
-    tries = 0
+    tries = stalls = 0
     while True:
         try:
-            with hfapi.open_file(repo, rev, e["path"], rng, timeout=300) as r:
+            with hfapi.open_file(repo, rev, e["path"], rng, timeout=read_timeout) as r:
                 if rng and getattr(r, "status", 206) == 200:
                     mode, have = "wb", 0          # server ignored Range: start over
+                read = getattr(r, "read1", None) or r.read   # read1: what has arrived, so a trickle is seen
+                pos, t0 = have, time.monotonic()
+                win_pos = pos
                 with open(dest, mode) as f:
                     while True:
-                        b = r.read(CHUNK)
+                        try:
+                            b = read(CHUNK)
+                        except socket.timeout:
+                            raise _Stalled(f"nothing received for {read_timeout:g} s") from None
                         if not b:
                             break
                         f.write(b)
+                        pos += len(b)
+                        now = time.monotonic()
+                        if window and now - t0 >= window:
+                            got = pos - win_pos
+                            if got < min(min_bytes, size - win_pos):
+                                raise _Stalled(f"{got / 1e6:.1f} MB in {now - t0:.0f} s "
+                                               f"(under {min_bytes / 1e6:g} MB per {window:g} s)")
+                            t0, win_pos = now, pos
             return
+        except _Stalled as err:
+            stalls += 1
+            if stalls > restarts:
+                raise FetchError(f"{e['path']}: stalled {stalls} times (last: {err}); "
+                                 "re-run the same command to resume") from None
+            log(f"  stalled {e['path']}: {err}: reconnecting, restart {stalls} of {restarts} (it resumes)")
         except (hfapi.HubError, OSError) as err:
             tries += 1
             if tries >= 3 or isinstance(err, hfapi.Offline):
                 raise FetchError(f"{e['path']}: {err}") from None
             time.sleep(2 * tries)
-            have = dest.stat().st_size if dest.exists() else 0
-            mode, rng = ("ab", (have, None)) if have else ("wb", None)
+        have = dest.stat().st_size if dest.exists() else 0
+        mode, rng = ("ab", (have, None)) if have else ("wb", None)
 
 
 def _verify_entry(p: Path, e: dict) -> str:

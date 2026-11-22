@@ -13,7 +13,9 @@
 # Steps (--only takes these names):
 #   weights  hf download atakans/Hy4-flash-NVFP4 at 30f201ac into
 #            ~/Documents/atakans-Hy4-flash-NVFP4 (offline: --weights-from DIR copies a
-#            drive's copy instead)
+#            drive's copy instead). A stall watchdog restarts a crawling download (it
+#            resumes): under HY4_STALL_MB (50) MB on disk in HY4_STALL_SECS (180) s,
+#            the download is killed and started again, up to HY4_STALL_RESTARTS (5) times
 #   verify   every file of the revision present at its Hub size (FILES.hub), every LFS
 #            file's sha256 equal to the Hub's (SHA256SUMS.hub-lfs, vendored beside this
 #            script and written into the folder); then .hy4-verified
@@ -57,7 +59,7 @@ while [[ $# -gt 0 ]]; do
     --weights-from)  WEIGHTS_FROM="${2:?--weights-from needs a folder}"; shift ;;
     --image-from)    IMAGE_FROM="${2:?--image-from needs a tar}"; shift ;;
     --while-serving) WHILE_SERVING=1 ;;
-    -h|--help)       sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)       sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)               die "unknown argument: $1 (see --help)" ;;
   esac
   shift
@@ -121,6 +123,53 @@ image_id() { dk image inspect -f '{{.Id}}' "$1" 2>/dev/null; }
 image_id_there() { on_worker "docker image inspect -f '{{.Id}}' $(q "$1")" 2>/dev/null; }
 free_gb() { df -Pk "$1" 2>/dev/null | awk 'NR == 2 { printf "%d\n", $4 / 1000000 }'; }
 
+# ---- the download stall watchdog. A Hub download can crawl (~1 MB/s for hours) on one
+# bad connection; a fresh one is fast at once, and hf download resumes. So: while the
+# download runs, every HY4_STALL_SECS the bytes under its folder must have grown by
+# HY4_STALL_MB, or it is killed and started again, up to HY4_STALL_RESTARTS times.
+STALL_MB=${HY4_STALL_MB:-50} STALL_SECS=${HY4_STALL_SECS:-180} STALL_RESTARTS=${HY4_STALL_RESTARTS:-5}
+STALL_POLL=${HY4_STALL_POLL:-10}   # seconds between liveness checks (a test seam)
+for v in STALL_MB STALL_SECS STALL_RESTARTS; do
+  [[ "${!v}" =~ ^[0-9]+$ ]] || die "HY4_${v}=${!v}: a whole number, please"
+done
+disk_kb() { du -sk "$1" 2>/dev/null | awk '{ print $1 + 0 }'; }
+kill_tree() {  # PID: TERM it and every descendant, children first
+  local c
+  for c in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$c"; done
+  kill -TERM "$1" 2>/dev/null || true
+}
+# watched_download DIR CMD...: run CMD (a resumable download into DIR) under the watchdog
+watched_download() {
+  local dir=$1 restarts=0 pid rc t0 b0 b stalled grown; shift
+  while :; do
+    "$@" & pid=$!
+    # shellcheck disable=SC2064  # this pid, now
+    trap "kill_tree $pid; exit 130" INT TERM
+    stalled=0 t0=$SECONDS b0=$(disk_kb "$dir")
+    while kill -0 "$pid" 2>/dev/null; do
+      sleep "$STALL_POLL"
+      kill -0 "$pid" 2>/dev/null || break
+      (( STALL_SECS > 0 && SECONDS - t0 >= STALL_SECS )) || continue
+      b=$(disk_kb "$dir")
+      if (( b - b0 < STALL_MB * 1024 )); then stalled=1 grown=$(( (b - b0) / 1024 )); break; fi
+      t0=$SECONDS b0=$b
+    done
+    if (( stalled == 0 )); then
+      rc=0; wait "$pid" || rc=$?
+      trap - INT TERM
+      (( rc == 0 )) || die "weights: the download failed (exit $rc); re-run (it resumes), or offline: --weights-from DIR"
+      return 0
+    fi
+    kill_tree "$pid"; wait "$pid" 2>/dev/null || true
+    trap - INT TERM
+    restarts=$((restarts + 1))
+    if (( restarts > STALL_RESTARTS )); then
+      die "weights: the download stalled $restarts times (each under $STALL_MB MB in ${STALL_SECS} s); gave up. Re-run later (it resumes), or offline: --weights-from DIR"
+    fi
+    log "weights: stalled: ${grown} MB in ${STALL_SECS} s (under $STALL_MB MB): killed; restart $restarts of $STALL_RESTARTS (it resumes)"
+  done
+}
+
 # ---- the steps
 step_weights() {
   hy4_refuse_protected "$HY4_MODEL_DIR" "download into"
@@ -135,7 +184,7 @@ step_weights() {
   else
     [[ -x "$HF" ]] || command -v "$HF" >/dev/null 2>&1 || die "weights: no hf CLI ($HF); offline: --weights-from DIR"
     log "weights: $HF download $HY4_REPO --revision $HY4_REVISION --local-dir $HY4_MODEL_DIR (capped scope; resumable)"
-    capped "$HF" download "$HY4_REPO" --revision "$HY4_REVISION" --local-dir "$HY4_MODEL_DIR"
+    watched_download "$HY4_MODEL_DIR" capped "$HF" download "$HY4_REPO" --revision "$HY4_REVISION" --local-dir "$HY4_MODEL_DIR"
   fi
 }
 step_verify() {
