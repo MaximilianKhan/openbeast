@@ -142,11 +142,15 @@
   function serviceFields(s, now) {
     const state = Object.prototype.hasOwnProperty.call(SVC_TEXT, s.state) ? s.state : 'unknown';
     now = isNum(now) ? now : Date.now() / 1000;
-    const since = isNum(s.since) && state !== 'off' ? (SVC_TEXT[state] + ' for ' + dur(now - s.since)) : '';
+    // `since` is exact only once the dashboard saw the state change (last_change);
+    // before that it is when the dashboard first saw this state: a lower bound.
+    const exact = isNum(s.last_change);
+    const since = isNum(s.since) && state !== 'off'
+      ? SVC_TEXT[state] + (exact ? ' for ' : ' ≥ ') + dur(now - s.since) + (exact ? '' : ' (since dashboard start)') : '';
     return { key: str(s.name, 32), state, name: str(s.label || s.name, 40),
       port: isNum(s.port) ? ':' + s.port : (s.name === 'island' ? 'mode ' + str(s.detail, 16) : ''),
       text: SVC_TEXT[state], since,
-      change: isNum(s.last_change) ? 'last change ' + when(s.last_change) : isNum(s.since) ? 'no change seen' : '' };
+      change: exact ? 'last change ' + when(s.last_change) : isNum(s.since) ? 'no change seen' : '' };
   }
 
   // Overall health. The server's verdict (alerts with hold times) leads; on top of it, at once:
@@ -1311,9 +1315,10 @@
     ];
     if (lat.ttft) {
       const n = isNum(lat.ttft.p50) ? lat.ttft.count : lat.ttft.life_count;
-      items.push({ key: 'ttft', k: 'TTFT p50 · p95', v: secs(L(lat.ttft, 'p50')) + ' · ' + secs(L(lat.ttft, 'p95')), s: W(lat.ttft, 'p50') + (isNum(n) ? ' · ' + int(n) + ' req' : '') });
+      // p50 as the value, p95 on the line below: a "p50 · p95" pair broke mid-pair in a tile.
+      items.push({ key: 'ttft', k: 'TTFT p50', v: secs(L(lat.ttft, 'p50')), s: 'p95 ' + secs(L(lat.ttft, 'p95')) + ' · ' + W(lat.ttft, 'p50') + (isNum(n) ? ' · ' + int(n) + ' req' : '') });
     }
-    if (lat.e2e) items.push({ key: 'e2e', k: 'end-to-end p50 · p95', v: secs(L(lat.e2e, 'p50')) + ' · ' + secs(L(lat.e2e, 'p95')), s: W(lat.e2e, 'p50') });
+    if (lat.e2e) items.push({ key: 'e2e', k: 'end-to-end p50', v: secs(L(lat.e2e, 'p50')), s: 'p95 ' + secs(L(lat.e2e, 'p95')) + ' · ' + W(lat.e2e, 'p50') });
     if (isNum(pr.decode_tok_s) || isNum(pr.life_decode_tok_s)) items.push({ key: 'dec', k: 'decode per request', v: unit(isNum(pr.decode_tok_s) ? pr.decode_tok_s : pr.life_decode_tok_s, toks, ' tok/s'),
       s: (isNum(pr.decode_tok_s) ? '' : 'since engine start · ') + (pr.from ? 'from ' + pr.from : isNum(pr.prefill_tok_s) ? 'prefill ' + toks(pr.prefill_tok_s) + ' tok/s' : 'mean, per stream') });
     if (spc) {

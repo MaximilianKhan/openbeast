@@ -181,14 +181,14 @@ The `dashboard` slot API established the sanctioned pattern. Follow it:
   |---|---|---|---|
   | node unreachable | critical (a peer), warning (this node's probe) | the node probe fails | `PEER_S` (10 s) |
   | model server down | critical | `/health` not ok (a stalled TensorFold pair included) | `ENGINE_DOWN_S` (10 s) |
-  | engine stalled | critical | requests running and neither token counter moving | `STALL_S` (300 s; a long prefill moves no counter) |
+  | engine stalled | critical | requests running and neither token counter moving | `STALL_S` (300 s; a long prefill moves no counter). TensorFold: its own `pair_busy_ms` (engine busy without progress), since its token counters move only when a request finishes |
   | GPU hot | warning / critical | GPU temperature at or above | `GPU_TEMP_C` (85), `GPU_TEMP_CRIT_C` (92); held 15 s |
   | memory near the memguard floor | warning / critical | MemAvailable under floor + margin / under the floor | `MEM_FLOOR_GIB` (`HY4_MEMGUARD_GIB`, else 2.5), `MEM_MARGIN_GIB` (2.5); held 10 s |
   | GPU throttling | warning | NVML reports a hardware, thermal or power-brake slowdown (the software power cap is shown, not alerted) | `THROTTLE_S` (20 s) |
   | disk low | warning / critical | model volume free under | `DISK_FREE_PCT` (10), `DISK_CRIT_PCT` (3); held 30 s |
   | gate error spike | warning | upstream failures (error, timeout, bad status) in 5 min at least N and at least P % of requests; refusals and client disconnects are not errors | `GATE_ERRORS` (10), `GATE_ERROR_PCT` (20) |
   | gate down | critical | beast-gate on but not answering | `ENGINE_DOWN_S` |
-  | KV cache full | warning | KV use at or above P % with requests waiting | `KV_PCT` (98), `KV_S` (60 s) |
+  | KV cache full | warning | KV use at or above P % with requests waiting (TensorFold: pool use from `/health` only; its per-stream ratio is context fill, shown, not alerted) | `KV_PCT` (98), `KV_S` (60 s) |
   | service down | warning | tools, WebUI, search, chat, artifact or instinct down | `SERVICE_S` (30 s) |
 
   **Logs and rollups (v3).** `.run/dashboard-log.json` (every 30 s when

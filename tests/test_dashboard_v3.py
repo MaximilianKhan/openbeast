@@ -874,8 +874,8 @@ def test_serving_labels_lifetime_fallbacks_as_such(tmp_path):
           "process.stdout.write(JSON.stringify({t, note: document.getElementById('spec-note').textContent}));")
     o = json.loads(_node(js, tmp_path, doc))
     t = dict(o["t"])
-    assert t["TTFT p50 · p95"] == "since engine start · 90 req"
-    assert t["end-to-end p50 · p95"] == "last 5m"
+    assert t["TTFT p50"] == "p95 2.30 s · since engine start · 90 req"
+    assert t["end-to-end p50"] == "p95 9.00 s · last 5m"
     assert t["spec. acceptance"].startswith("since engine start") and "3.20" in t["spec. acceptance"]
     assert o["note"] == "since engine start"
 
@@ -888,3 +888,165 @@ def test_a_flapping_node_does_not_flood_the_event_log(monkeypatch):
         n._set_state("ssh failed" if k % 2 == 0 else None, view={} if k % 2 else None)
     ev = d.events(d.EVENTS_MAX, kind="node")
     assert len(ev) < 20 and any("flapping" in e["text"] for e in ev)
+
+
+# ───────────────────────── TensorFold: its real exposition (spark-1, read 2026-11-22, read-only) ─────────────────────────
+
+TF_BODY = """tensorfold:requests_running 0
+tensorfold:requests_waiting 0
+tensorfold:generation_tokens_running 0
+tensorfold:prompt_tokens_total 2380
+tensorfold:prompt_tokens_cached_total 0
+tensorfold:generation_tokens_total 228
+tensorfold:kv_cache_usage_ratio{pool="0"} 0
+tensorfold:mtp_drafted_total 224
+tensorfold:mtp_accepted_total 172
+tensorfold:request_latency_seconds_sum 6.029779
+tensorfold:request_latency_seconds_count 8
+tensorfold:time_to_first_token_seconds_sum 3.618703
+tensorfold:time_to_first_token_seconds_count 8
+tensorfold:request_decode_seconds_sum 2.411076
+tensorfold:request_decode_seconds_count 8
+tensorfold:request_time_per_output_token_seconds_sum 0.139129
+tensorfold:request_time_per_output_token_seconds_count 7
+tensorfold:decode_rounds_total 53
+tensorfold:request_prefill_seconds_sum 3.219377
+tensorfold:request_prefill_seconds_count 8
+tensorfold:device_memory_bytes 111758518308
+tensorfold:device_memory_peak_bytes 111758518308
+tensorfold:num_requests_running 0
+tensorfold:num_requests_waiting 0
+tensorfold:kv_cache_usage_perc{stream="0"} 0
+tensorfold:spec_decode_num_draft_tokens_total 224
+tensorfold:spec_decode_num_accepted_tokens_total 172
+tensorfold:e2e_request_latency_seconds_sum 6.029779
+tensorfold:e2e_request_latency_seconds_count 8
+tensorfold:request_decode_time_seconds_sum 2.411076
+tensorfold:request_decode_time_seconds_count 8
+tensorfold:request_prefill_time_seconds_sum 3.219377
+tensorfold:request_prefill_time_seconds_count 8
+tensorfold:prefix_cache_queries_total 2380
+tensorfold:prefix_cache_hits_total 0
+tensorfold:client_disconnections_total 0
+tensorfold:preemptions_total 0
+tensorfold:service_refused 0
+tensorfold:pair_failed 0
+tensorfold:pair_busy_ms 0
+tensorfold:pair_stall_ms 120000
+tensorfold:pair_stalled 0
+tensorfold:pair_broken 0
+tensorfold:request_time_per_output_token_seconds_bucket{le="0.0025"} 0
+tensorfold:request_time_per_output_token_seconds_bucket{le="0.005"} 0
+tensorfold:request_time_per_output_token_seconds_bucket{le="0.0075"} 0
+tensorfold:request_time_per_output_token_seconds_bucket{le="0.01"} 3
+tensorfold:request_time_per_output_token_seconds_bucket{le="0.015"} 5
+tensorfold:request_time_per_output_token_seconds_bucket{le="0.02"} 6
+tensorfold:request_time_per_output_token_seconds_bucket{le="0.025"} 6
+tensorfold:request_time_per_output_token_seconds_bucket{le="0.03"} 6
+tensorfold:request_time_per_output_token_seconds_bucket{le="0.04"} 6
+tensorfold:request_time_per_output_token_seconds_bucket{le="0.05"} 6
+tensorfold:request_time_per_output_token_seconds_bucket{le="0.075"} 7
+tensorfold:request_time_per_output_token_seconds_bucket{le="0.1"} 7
+tensorfold:request_time_per_output_token_seconds_bucket{le="0.15"} 7
+tensorfold:request_time_per_output_token_seconds_bucket{le="0.2"} 7
+tensorfold:request_time_per_output_token_seconds_bucket{le="0.3"} 7
+tensorfold:request_time_per_output_token_seconds_bucket{le="0.5"} 7
+tensorfold:request_time_per_output_token_seconds_bucket{le="1"} 7
+tensorfold:request_time_per_output_token_seconds_bucket{le="+Inf"} 7
+"""
+
+
+def _tf_sampler(monkeypatch, body_of, health=None):
+    d = load(monkeypatch, **_SLOT_ENV["tensorfold"])
+    h = health or {"status": "ok"}
+    d._get = lambda url, timeout=2, auth=False: (
+        (200, json.dumps(h)) if url.endswith("/health") else
+        (200, body_of()) if url.endswith("/metrics") else (None, ""))
+    d._gate_get = lambda path: (None, "")
+    d.inference_unit = lambda units=None: {"name": "tensorfold-inference", "active": True, "uptime_s": 60}
+    return d, d.ServeSampler()
+
+
+def test_tensorfold_counters_detail_and_names_from_its_real_exposition(monkeypatch):
+    d = load(monkeypatch, **_SLOT_ENV["tensorfold"])
+    body = TF_BODY.replace("prompt_tokens_cached_total 0", "prompt_tokens_cached_total 380")
+    # Computed prefill: its total counts restored prompt states too.
+    assert d.engine_counters("tensorfold", body) == (228.0, 2000.0)
+    assert d.tf_inflight_tokens(body) == 0.0 and d.tf_inflight_tokens("") is None
+    det = d.engine_detail("tensorfold", body)
+    c = det["c"]
+    assert c["req_gen_tokens"] == 228.0 and c["req_decode_s"] == pytest.approx(2.411076)
+    assert c["spec_drafts"] == 53.0 and c["requests"] == 8.0
+    # The per-stream ratio is context fill, never KV pressure.
+    assert "kv" not in det["g"] and det["g"]["ctx_fill"] == 0.0
+    w = d.detail_window(det, None, 0)
+    assert w["per_request"]["life_decode_tok_s"] == pytest.approx(228 / 2.411076, abs=0.1)
+    assert w["spec"]["life_mean_len"] == pytest.approx(1 + 172 / 53, abs=0.01)
+    assert w["latency"]["itl"]["life_count"] == 7 and w["latency"]["itl"]["life_p50"] is not None
+    later = d.engine_detail("tensorfold", body.replace("generation_tokens_total 228", "generation_tokens_total 1228")
+                            .replace("_seconds_sum 2.411076", "_seconds_sum 12.411076")
+                            .replace("e2e_request_latency_seconds_count 8", "e2e_request_latency_seconds_count 18"))
+    w2 = d.detail_window(later, det, 300)
+    assert w2["per_request"]["decode_tok_s"] == 100.0 and w2["requests_per_min"] == 2.0
+
+
+def test_tensorfold_long_stream_is_live_and_never_a_false_stall(monkeypatch):
+    """A 400 s turn with no finished request: tok/s comes from the live
+    streams, the stall clock stays off (TensorFold's own busy-without-
+    progress gauge is 0), and no alert rises."""
+    live = {"n": 0}
+    body_of = lambda: (TF_BODY.replace("num_requests_running 0", "num_requests_running 1")
+                       .replace("generation_tokens_running 0", f"generation_tokens_running {live['n']}"))
+    d, s = _tf_sampler(monkeypatch, body_of, {"status": "ok", "requests_running": 1})
+    for k in range(0, 400, 3):
+        s.sample(now=T0 + k)
+        live["n"] += 90
+    snap = s.snapshot()
+    assert snap["running"] == 1 and snap["tok_s"] == 30.0 and snap["tok_s_source"] == "engine"
+    assert snap["stalled_s"] is None
+    assert snap["lifetime_prompt_tokens_incl_cache"] == 2380
+    assert "engine:stalled" not in d.alert_conditions(d.alert_thresholds(conf={}), [], snap, {}, T0 + 400)
+    # A stream that does not move for 400 s, nothing finished: still no
+    # dashboard-made stall (the counters only move at completion).
+    live["n"] = 5000
+    d, s = _tf_sampler(monkeypatch, body_of, {"status": "ok", "requests_running": 1})
+    for k in range(0, 400, 3):
+        s.sample(now=T0 + k)
+    snap = s.snapshot()
+    assert snap["stalled_s"] is None
+    assert "engine:stalled" not in d.alert_conditions(d.alert_thresholds(conf={}), [], snap, {}, T0 + 400)
+    # TensorFold's own gauge says busy without progress: that is the stall.
+    body2 = lambda: body_of().replace("pair_busy_ms 0", "pair_busy_ms 400000")
+    d, s = _tf_sampler(monkeypatch, body2, {"status": "ok", "requests_running": 1})
+    s.sample(now=T0)
+    assert s.snapshot()["stalled_s"] == 400.0
+    assert "engine:stalled" in d.alert_conditions(d.alert_thresholds(conf={}), [], s.snapshot(), {}, T0)
+
+
+def test_tensorfold_without_running_counter_says_completed_only(monkeypatch):
+    n = {"g": 228}
+    body_of = lambda: (TF_BODY.replace("tensorfold:generation_tokens_running 0\n", "")
+                       .replace("generation_tokens_total 228", f"generation_tokens_total {n['g']}"))
+    d, s = _tf_sampler(monkeypatch, body_of)
+    for k in range(5):
+        s.sample(now=T0 + k * 3)
+        n["g"] += 30
+    assert s.snapshot()["tok_s_source"] == "engine-completed"
+
+
+def test_tensorfold_lane_wait_with_a_full_stream_is_not_kv_full(monkeypatch):
+    """One conversation at 98% of its window, all lanes busy, one queued:
+    a lane wait, not KV pressure. Only the pool (/health) is KV."""
+    body_of = lambda: (TF_BODY.replace('kv_cache_usage_perc{stream="0"} 0', 'kv_cache_usage_perc{stream="0"} 0.98')
+                       .replace("num_requests_waiting 0", "num_requests_waiting 1"))
+    d, s = _tf_sampler(monkeypatch, body_of, {"status": "ok", "requests_running": 4})
+    for k in range(3):
+        s.sample(now=T0 + k * 3)
+    snap = s.snapshot()
+    assert snap["kv_pct"] is None and snap["ctx_fill_pct"] == 98.0 and snap["waiting"] == 1
+    assert "kv:full" not in d.alert_conditions(d.alert_thresholds(conf={}), [], snap, {}, T0)
+    d, s = _tf_sampler(monkeypatch, body_of, {"status": "ok", "requests_running": 4,
+                                              "pool_tokens": 1000, "pool_free_tokens": 10})
+    s.sample(now=T0)
+    assert s.snapshot()["kv_pct"] == 99.0
+    assert "kv:full" in d.alert_conditions(d.alert_thresholds(conf={}), [], s.snapshot(), {}, T0)

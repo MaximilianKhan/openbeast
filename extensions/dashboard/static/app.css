@@ -248,9 +248,11 @@ a.alert:hover .a-title { text-decoration: underline; text-underline-offset: 2px;
 .card-h { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font: 650 1rem/1.2 var(--sans); letter-spacing: -.01em; }
 .go { color: var(--phosphor); font-family: var(--mono); transition: transform .2s ease; }
 .card:hover .go { transform: translateX(3px); }
-.card-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+/* auto tracks (the cells have min-width 0): a short value keeps only its own width and a
+   word such as a tool name gets the rest, instead of three equal columns cutting it off. */
+.card-stats { display: grid; grid-template-columns: repeat(3, auto); gap: 8px; }
 .card-stats > span { display: grid; gap: 3px; min-width: 0; }
-.card-stats b { font: 600 1.1rem/1.1 var(--mono); color: var(--phosphor-bright); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-stats b { font: 600 1.1rem/1.1 var(--mono); color: var(--phosphor-bright); font-variant-numeric: tabular-nums; min-width: 0; overflow-wrap: anywhere; }
 .card-stats small { color: var(--muted); font: 500 .6875rem/1.3 var(--mono); overflow-wrap: anywhere; }
 .card-foot { color: var(--phosphor-dim); font: 500 .6875rem/1.4 var(--mono); overflow-wrap: anywhere; }
 .svc-dots { display: flex; flex-wrap: wrap; gap: 6px 12px; }
@@ -324,6 +326,7 @@ a.alert:hover .a-title { text-decoration: underline; text-underline-offset: 2px;
 .svc .s-state { font: 700 .6875rem/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--phosphor); }
 .svc .s-meta { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 2px 12px; color: var(--muted); font: 500 .6875rem/1.4 var(--mono); }
 .svc .s-meta:empty, .svc .s-meta > span:empty { display: none; }
+.svc .s-since:not(:empty) + .s-change:not(:empty)::before { content: '· '; }
 .svc[data-state="down"] .s-state { color: var(--red); }
 .svc:is([data-state="off"], [data-state="unknown"]) .s-state { color: var(--muted); }
 .svc:is([data-state="islanded"], [data-state="stale"]) .s-state { color: var(--amber); }

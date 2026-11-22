@@ -2543,7 +2543,9 @@ SNAP_S = 15.0                 # a counter snapshot every 15 s, kept for SNAP_KEE
 SNAP_KEEP = 250               # ~1 h
 LAT_HISTS = (("ttft", ("time_to_first_token_seconds",)),
              ("e2e", ("e2e_request_latency_seconds",)),
-             ("itl", ("inter_token_latency_seconds", "time_per_output_token_seconds")),
+             # TensorFold: request_time_per_output_token_seconds (per-request TPOT).
+             ("itl", ("inter_token_latency_seconds", "time_per_output_token_seconds",
+                      "request_time_per_output_token_seconds")),
              ("queue", ("request_queue_time_seconds",)))
 _LE_RE = re.compile(r'(?:^|[{,])le="([^"]*)"')
 ENGINE_PREFIXES = {"llama": ("llamacpp:",), "vllm": ("vllm:",),
@@ -2667,6 +2669,27 @@ def engine_detail(backend, body):
     if ok:
         out["by"]["finished"] = {k[:24]: v for k, v in sorted(ok.items())[:12]}
         out["c"]["requests"] = sum(ok.values())
+    if backend == "tensorfold":
+        # TensorFold's own names (checked on the live exposition, review
+        # 2026-11-22): every counter is of FINISHED requests. Decode speed is
+        # generation_tokens_total over request_decode_seconds_sum (its HELP),
+        # finished requests are the e2e histogram's count, and one decode
+        # round is one draft verification (tokens per round = 1 + accepted
+        # per round). Its per-stream kv_cache_usage is a stream's CONTEXT
+        # fill, not pool pressure: kept as ctx_fill, never as kv.
+        c = out["c"]
+        for k, names in (("req_gen_tokens", ("generation_tokens_total",)),
+                         ("req_decode_s", ("request_decode_seconds_sum", "request_decode_time_seconds_sum")),
+                         ("spec_drafts", ("decode_rounds_total",)),
+                         ("requests", ("e2e_request_latency_seconds_count", "request_latency_seconds_count"))):
+            for n in names:
+                if k in c:
+                    break
+                v = _pget(body, ("tensorfold:", "tensorfold_"), n)
+                if v is not None:
+                    c[k] = v
+        if "kv" in out["g"]:
+            out["g"]["ctx_fill"] = out["g"].pop("kv")
     pos = _pget(body, pre, "spec_decode_num_accepted_tokens_per_pos_total", by="position")
     if pos:
         out["by"]["spec_pos"] = {k[:4]: v for k, v in sorted(pos.items(), key=lambda kv: _num(kv[0]) or 0)[:16]}
@@ -3304,8 +3327,14 @@ def engine_counters(backend, metrics_body, health_body=""):
     for n in ("tensorfold:generation_tokens_total", "tensorfold_generation_tokens_total",
               "vllm:generation_tokens_total"):
         gen = gen if gen is not None else _prom_sum(metrics_body, n)
-    for n in ("tensorfold:prompt_tokens_total", "tensorfold_prompt_tokens_total"):
-        prm = prm if prm is not None else _prom_sum(metrics_body, n)
+    for pre in ("tensorfold:", "tensorfold_"):
+        tot = _prom_sum(metrics_body, pre + "prompt_tokens_total")
+        if tot is not None:
+            # Its total counts prompt states restored from the cache too
+            # (prompt_tokens_cached_total, "counted in prompt_tokens_total
+            # too"): computed prefill is the rest, as on vLLM.
+            prm = max(0.0, tot - (_prom_sum(metrics_body, pre + "prompt_tokens_cached_total") or 0.0))
+            break
     if prm is None:
         prm = vllm_prompt_computed(metrics_body)
     try:
@@ -3335,6 +3364,18 @@ def _counter_window(v, base=10.0):
         return base
     step = 10 ** (math.floor(math.log10(v)) - 5)
     return min(120.0, max(base, 2 * step))
+
+
+def tf_inflight_tokens(body):
+    """TensorFold's tokens generated so far by live streams
+    (generation_tokens_running), or None when it does not export it. Its
+    generation_tokens_total moves only when a request finishes; the sum of
+    the two is live and continuous, as llama_inflight_tokens is for llama."""
+    for n in ("tensorfold:generation_tokens_running", "tensorfold_generation_tokens_running"):
+        v = _prom_sum(body, n)
+        if v is not None and v >= 0:
+            return v
+    return None
 
 
 def llama_inflight_tokens(status, body):
@@ -3534,10 +3575,24 @@ class ServeSampler:
                 if lp is not None:
                     prm, prm_src = prm + lp, "engine"
         running, waiting, kv = det["g"].get("running"), det["g"].get("waiting"), det["g"].get("kv")
+        tf_busy_s = None
         if _BACKEND == "tensorfold":
+            if gen is not None:
+                gen_done = gen
+                live = tf_inflight_tokens(mbody)
+                if live is not None:
+                    gen += live
+            if prm is not None:
+                prm_done, prm_src = prm, "engine-completed"   # no live prefill counter
             tf = _tf_health(health) if st == 200 else {}
             running = tf.get("busy", running)
-            kv = tf.get("kv", kv)
+            # KV pressure only from the pool (/health pool_free_tokens); the
+            # per-stream ratio is a stream's context fill (a lane wait with one
+            # long conversation is not a full KV cache).
+            kv = tf.get("kv")
+            fill = det["g"].get("ctx_fill")
+            pb = _pget(mbody, ("tensorfold:", "tensorfold_"), "pair_busy_ms")
+            tf_busy_s = round(pb / 1000.0, 1) if pb is not None and pb >= 0 else None
         gate = {"enabled": _EDGE_GATE}
         g_req = g_err = g_comp = None
         by_reason = {}
@@ -3616,6 +3671,14 @@ class ServeSampler:
         # with unmatched names): its own /health stall check covers it.
         counted = gen is not None or prm is not None
         stalled_s = round(now - self._progress_at, 1) if busy and healthy and counted else None
+        if _BACKEND == "tensorfold":
+            # TensorFold's counters move only at request completion and a long
+            # prefill shows no live counter at all, so the dashboard's own
+            # no-progress clock would call a healthy 10-min turn stalled
+            # (review 2026-11-22). Its engine thread's busy-without-progress
+            # time (pair_busy_ms, its stall monitor's input) is the measure;
+            # without it, none.
+            stalled_s = tf_busy_s if busy and healthy and tf_busy_s else None
         dt = min(now - self._t_last, 3 * self.interval) if self._t_last is not None else 0.0
         self._t_last = now
         if dt > 0:
@@ -3665,7 +3728,7 @@ class ServeSampler:
             self.snap = {"tok_s": round(tok_s, 1) if tok_s is not None else None,
                          "tok_s_source": source,
                          "prompt_tok_s": round(prm_s, 1) if prm_s is not None else None,
-                         "prompt_tok_s_source": prm_src if prm_s is not None and _BACKEND == "llama" else
+                         "prompt_tok_s_source": prm_src if prm_s is not None and _BACKEND in ("llama", "tensorfold") else
                          ("engine" if prm_s is not None else None),
                          "gate": gate, "gate_window": gwin, "unit": unit, "interval_s": self.interval,
                          "healthy": healthy, "running": int(running) if running is not None else None,
@@ -3675,7 +3738,8 @@ class ServeSampler:
                          "lifetime_gen_tokens": int(gen_done if gen_done is not None else gen) if gen is not None else None,
                          "lifetime_prompt_tokens": int(prm_c) if prm_c is not None else None,
                          "lifetime_prompt_tokens_incl_cache": int(det["c"]["prompt_tokens"])
-                         if _BACKEND == "vllm" and det["c"].get("prompt_tokens") is not None else None,
+                         if _BACKEND in ("vllm", "tensorfold") and det["c"].get("prompt_tokens") is not None
+                         else None,
                          "sampled_at": round(now, 1)}
         self._transitions(healthy, unit, island, gate)
 
