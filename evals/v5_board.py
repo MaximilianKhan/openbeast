@@ -30,8 +30,17 @@ its own row and never replaces or merges with the first.
 
 The board is generated between markers in README.md and docs/RESULTS.md
 (<!-- v5-board:start --> / <!-- v5-board:end -->); docs/RESULTS.md also holds
-every run of every model (<!-- v5-runs:start --> / <!-- v5-runs:end -->) and
+every run of every model (<!-- v5-runs:start --> / <!-- v5-runs:end -->),
+each run's token usage (<!-- v5-tokens:start --> / <!-- v5-tokens:end -->) and
 the weights behind them (<!-- v5-weights:start --> / <!-- v5-weights:end -->).
+
+TOKENS. Each result row carries the runner's usage sums (tokens_prompt,
+tokens_completion): the server's `usage` added up over every request of the
+unit (agents/runner.py). A run's totals are summed over the board's merged rows
+(a superseded infrastructure attempt is not counted); a row with no usage
+(wall-killed before the partial-stats sidecar of 2026-11-18, or a reference
+ledger) is counted as missing, and a wall-killed row with the sidecar
+(stats_partial) is counted to its last reply. See token_stats().
 
 Usage:
   python3 evals/v5_board.py              # print the board (markdown)
@@ -79,7 +88,7 @@ MANIFEST = os.path.join(EVALS_DIR, "suites", "v5.json")
 # Docs that hold a generated block, and the path prefix from that doc to the
 # repo root (for links to the result files).
 DOCS = {"README.md": "", os.path.join("docs", "RESULTS.md"): "../"}
-BLOCKS = {"v5-board": "board", "v5-runs": "runs", "v5-weights": "weights"}
+BLOCKS = {"v5-board": "board", "v5-runs": "runs", "v5-tokens": "tokens", "v5-weights": "weights"}
 # Where a weights cell links when the weights have no Hub revision (the
 # generated "Weights used" block), relative to the repo root.
 WEIGHTS_ANCHOR = "docs/RESULTS.md#weights-used"
@@ -235,6 +244,35 @@ def load_reference(path: str) -> tuple[dict, dict]:
     return {"timestamp": ts, "model": next(iter(led.values()), {}).get("model")}, rows
 
 
+# --- tokens ---------------------------------------------------------------------------
+
+def token_stats(rows: dict, manifest: dict, passed: int, reference: bool = False) -> dict:
+    """A run's token usage over the manifest's units. prompt / completion are the
+    sums of the rows' tokens_prompt / tokens_completion (each the server's usage
+    summed over every request of the unit, so the prompt re-counts the whole
+    context every turn). A row with neither is `missing` (no usage recorded);
+    `partial` rows were wall-killed and count to their last reply (a lower bound).
+    per_unit is over the units with data; per_pass is the total over the scored
+    passes (the tokens spent for each pass). A reference ledger has no usage."""
+    prompt = completion = with_data = partial = 0
+    for uid in manifest:
+        r = None if reference else rows.get(uid)
+        tp = (r or {}).get("tokens_prompt") or 0
+        tc = (r or {}).get("tokens_completion") or 0
+        if not (isinstance(tp, int) and isinstance(tc, int)) or tp + tc <= 0:
+            continue
+        prompt += tp
+        completion += tc
+        with_data += 1
+        partial += bool(r.get("stats_partial"))
+    total = prompt + completion
+    return {"prompt": prompt, "completion": completion, "total": total,
+            "units_with_data": with_data, "missing": len(manifest) - with_data,
+            "partial": partial,
+            "per_unit": round(total / with_data) if with_data else None,
+            "per_pass": round(total / passed) if with_data and passed else None}
+
+
 # --- scoring --------------------------------------------------------------------------
 
 def experiment_reasons(header: dict, rows: dict) -> list[str]:
@@ -298,6 +336,7 @@ def score_run(run: dict, manifest: dict, base_dir: str = BOARD_DIR,
         "validator_notes": {u: n for u, n in vnotes.items() if u in manifest},
         "experiment": [] if run.get("reference") else experiment_reasons(header, rows),
     }
+    out["tokens"] = token_stats(rows, manifest, out["passed"], bool(run.get("reference")))
     if run.get("reference"):
         out["passed_strict_wall"] = sum(1 for u in manifest if rows.get(u, {}).get("passed")
                                         and not rows[u].get("over_budget"))
@@ -520,7 +559,56 @@ def render_weights(b: dict, prefix: str = "") -> str:
     return "\n".join(lines)
 
 
-RENDER = {"board": render_board, "runs": render_runs, "weights": render_weights}
+def _n(x: int | None) -> str:
+    return "—" if x is None else f"{x:,}"
+
+
+TOKENS_NOTE = """\
+How to read it. **Prompt** and **completion** are what the serving engine reported
+in each response's `usage`, added up over every request of every unit
+(`agents/runner.py`; each result row's `tokens_prompt` and `tokens_completion`).
+The agent re-sends its whole conversation every turn, so **prompt tokens re-count
+the context on every turn**: they measure what the server was asked to read, not
+unique text. A prompt-cache hit is still counted: every run's per-turn prompt is
+full-context sized (medians 7.5K to 15K, never under ~4K, the system prompt and
+task), and the runner keeps no cached count. **Completion includes thinking**: every turn in the kept agent logs that
+hit the output cap with reasoning and no answer text reports exactly the cap in
+`completion_tokens` (DeepSeek on TensorFold, and Qwen3.8 on llama.cpp), so the
+reasoning is in the count. GLM's thinking arms predate that log field: same
+engine, unverified. **Per unit** is the total over the units with usage;
+**per pass** is the total over the scored passes (tokens spent for each solved
+unit, lower is more efficient). **No usage**: units whose row recorded none
+(wall-killed before the runner's partial-stats file of 2026-11-18; the reference
+ledger records none at all), so that run's totals are an undercount. **Partial**:
+wall-killed units counted to their last reply (the reply in flight is lost).
+Only the board's merged rows count: a superseded infrastructure attempt is not
+in the total. Each model counts with its own tokenizer and each engine reports its own
+`usage`, so totals compare cleanly across runs of one model on one engine and
+only roughly across models or engines. Single seed."""
+
+
+def render_tokens(b: dict, prefix: str = "") -> str:
+    """Every run's token usage, in the runs table's order."""
+    lines = ["<!-- generated by evals/v5_board.py: do not hand-edit -->", "",
+             "| Model | Run | Prompt | Completion | Total | Units with usage | Per unit | Passed | Per pass | No usage | Partial |",
+             "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    ordered = sorted(b["runs"], key=lambda r: (r["reference"], r["model"], r["weights_id"],
+                                               r["timestamp"], r["id"]))
+    for r in ordered:
+        t = r["tokens"]
+        run = r["id"] + (f" ({r['campaign_arm']})" if r["campaign_arm"] else "")
+        if not t["units_with_data"]:
+            lines.append(f"| {r['model']} | {run} | — | — | — | 0/{r['units']} | — | "
+                         f"{r['passed']}/{r['units']} | — | {t['missing']} | 0 |")
+            continue
+        lines.append(f"| {r['model']} | {run} | {_n(t['prompt'])} | {_n(t['completion'])} | "
+                     f"{_n(t['total'])} | {t['units_with_data']}/{r['units']} | {_n(t['per_unit'])} | "
+                     f"{r['passed']}/{r['units']} | {_n(t['per_pass'])} | {t['missing']} | {t['partial']} |")
+    return "\n".join(lines + ["", TOKENS_NOTE])
+
+
+RENDER = {"board": render_board, "runs": render_runs, "tokens": render_tokens,
+          "weights": render_weights}
 
 
 def splice(text: str, name: str, body: str) -> str | None:
@@ -552,6 +640,8 @@ def update_docs(b: dict, write: bool, root: str = REPO_ROOT) -> list[str]:
             continue
         if rel == os.path.join("docs", "RESULTS.md") and "<!-- v5-weights:start -->" not in text:
             stale.append(f"{rel}: no v5-weights block (the weights behind every row)")
+        if rel == os.path.join("docs", "RESULTS.md") and "<!-- v5-tokens:start -->" not in text:
+            stale.append(f"{rel}: no v5-tokens block (the token usage of every run)")
         if new != text:
             stale.append(rel)
             if write:
