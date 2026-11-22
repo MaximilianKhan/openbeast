@@ -122,6 +122,87 @@ Never run an arm from a scratch or temp interpreter. `campaign.py` takes
 interpreter before every arm and every rerun, and refuses to start if the
 import fails.
 
+### Eval host in a container (Linux)
+
+A Linux box whose distro ships another `go` or `rustc` in `/usr/bin` cannot
+be a native harness host. The RTX 5090 rig (Arch) has go 1.27.3 and rustc
+1.99.1 there. `vlib.pin_toolchain` prefers root-owned compilers on purpose
+(a measured agent cannot plant one), so those copies win, and
+`eval-host.sh check` reports them `blocked`. Only removing them would help.
+Don't touch the system packages. Run the harness in the image instead:
+
+```bash
+./scripts/eval-host-container.sh build     # evals/host/Containerfile; the tag hashes the pins
+./scripts/eval-host-container.sh check     # eval-host.sh check + evals/host/probe.py, inside: all ok
+./scripts/eval-host-container.sh run -- python3 evals/profile.py --model-name "<Model>" \
+    --base-url http://127.0.0.1:8091/v1 --api-key-env OPENBEAST_RIG_API_KEY \
+    --slots 1 --jobs 1 --budget-h 4 --plan-only
+./scripts/eval-host-container.sh run -- python3 evals/campaign.py run --campaign v5-thinking-first \
+    --model-name "<Model>" --base-url https://spark-1.tail4109f9.ts.net:8443/v1 \
+    --api-key-env OPENBEAST_SPARK_API_KEY --jobs 4 --slots 4 --dry-run
+./scripts/eval-host-container.sh shell     # look around (as the harness user)
+```
+
+What the image holds:
+
+- **The toolchains.** `scripts/eval-host.sh setup` installs, as root, into
+  `/opt/openbeast-eval`: zig, go, rust (the standalone installer), and the
+  prefix's cpython plus the eval venv. Every file is sha256-checked against
+  `evals/toolchains.lock`, and the venv is built from
+  `agents/requirements.lock` with `--require-hashes`. The links in
+  `/usr/local/bin` include `python3`, which points at the prefix's cpython
+  (fixture setups run `python3`). So the pinned copies are the root-owned
+  ones, and no other go, rustc or zig exists.
+- **The distro tools.** Debian (`debian:trixie-slim`, pinned by digest)
+  supplies gcc/g++ 14, git, make, shellcheck, sqlite3, bc, file and procps.
+  Their versions are listed in `/opt/openbeast-eval/PACKAGES.txt`.
+- **The harness user.** It is the non-root user `eval`, with the
+  operator's uid/gid, baked in at build.
+- **No checkout.** The image does not contain the repository. `run` mounts
+  the checkout read-write at its own path. A worktree's main `.git` is
+  mounted too, so git works. The harness that runs is the mounted tree's:
+  its era hashes, its tasks, its `evals/results`.
+
+How it runs: `--network host`, so a model URL means the same as on the
+host. From the rig, its own model is `http://127.0.0.1:8091/v1` through
+beast-gate with a device key (`OPENBEAST_RIG_API_KEY` above is only a
+name: export the key under any `*_API_KEY` name and pass that name), and
+the Sparks are reached over the tailnet.
+The container also gets `--init`, `--cap-drop ALL`,
+`--security-opt no-new-privileges` and docker's default seccomp profile.
+**Nothing is loosened.** The harness's Linux confinement is landlock (ABI
+10 on the rig's 7.2 kernel), plus its own seccomp socket filter. Both work
+unprivileged inside the container. `check` proves it with the harness's own
+code (`evals/host/probe.py`):
+
+- the pins resolve to the root-owned prefix;
+- a fake `go`/`gcc`/`rustc` planted first on PATH is not pinned, and one
+  planted after pinning is caught by `check_toolchain` (the review 1116
+  attack);
+- the prefix is read-only to the harness user;
+- a confined solution cannot read outside its allowlist, write outside its
+  dir, or open a TCP, UDP or IPv6 socket.
+
+Compared with a native Linux host, the agent can also write less: the
+checkout, its HOME and the container's private `/tmp`, and nothing else on
+the host.
+
+The `run` environment carries no secrets in an argv. Each exported
+`*_API_KEY`, and each `--pass NAME`, is forwarded by name (`docker run -e
+NAME`), so the value never appears in an argv. `OPENBEAST_EVAL_NO_PROVISION=1`
+is set in the image, so a check that fails refuses the run instead of
+trying to install into the read-only prefix. A changed `toolchains.lock`
+or `requirements.lock` means `build` again; the old tag simply stops
+matching. Set `OPENBEAST_EVAL_CONTAINER_CPUS=12` to keep a busy box
+responsive.
+
+**Offline.** On a connected box, `./scripts/eval-host-container.sh save
+/media/ark/openbeast-eval-host.tar.gz` writes the image (731 MB for
+`8d1e28442569`; 3.3 GB unpacked) and its `.sha256`. On the offline box, `./scripts/eval-host-container.sh
+load /media/ark/openbeast-eval-host.tar.gz` checks the sha256 and loads it.
+The image's tag must match the offline checkout's pins: `eval-host-container.sh
+tag` prints the tag the checkout expects.
+
 **1c. The gate admits `--jobs` concurrent requests.** Nothing to run by
 hand: `profile.py` and `campaign.py run` both call
 `evals/profile.py:admission_check` before anything is scored. It sends
