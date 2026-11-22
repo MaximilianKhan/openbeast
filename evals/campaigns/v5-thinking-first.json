@@ -159,7 +159,15 @@
      "model": "Hy4-flash (NVFP4)",
      "served_model": "Hy4-flash-NVFP4",
      "note": "Only with --only H_T2 (or a campaign run whose --model-name starts with Hy4-flash: recommend.composite_by_model); needs a harness9 tree, as T2. A public-interest measurement: Tencent's Hy4-flash (atakans/Hy4-flash-NVFP4 @ 30f201ac, vLLM TP2 + expert parallel over the pair, DFly drafter 5; docs/SPARK_HYDRA.md 'Hy4-flash (NVFP4, vLLM TP2): staged'), served with `beast-spark hy4`. Compare with DeepSeek's DS-T2 (65/71) under the same harness: H_T2 is T2 exactly (the 8,192-token per-turn cap declared as --reasoning-budget 8192, the act nudge, every T switch), so the two rows differ in the model only. Thinking: the runner sends chat_template_kwargs.enable_thinking=true for --thinking on (agents/runner.py, era-hashed, unchanged); Hy4's chat template ignores enable_thinking and defaults reasoning_effort to 'high' when the request names none, and vLLM's hy_v4 reasoning parser defaults to the same 'high', so this arm thinks at reasoning_effort high with no per-model mapping. Thinking OFF is NOT reachable this way (enable_thinking=false is ignored too: Hy4 needs reasoning_effort no_think), so N, N0 and the U arms' forced-act turn would still think on Hy4; they are not Hy4 arms until the runner can send reasoning_effort (an era change). served_model: preflight refuses this arm unless the server serves Hy4-flash-NVFP4. ETA UNVERIFIED: Hy4 decodes ~15 tok/s plain, 17-38 with DFly for one stream (CLAIMED), against DeepSeek's ~30 per stream at 4 (T2 took 6.2 h); budget 8-12 h.",
-     "time_x": 2.3}
+     "time_x": 2.3},
+    {"id": "H_C", "label": "GLM's best (arm C) for Hy4-flash (NVFP4): thinking on, wall-scaled turns, wall x2, no assists, no per-turn cap",
+     "optional": true,
+     "jobs": 4, "slots": 4,
+     "model": "Hy4-flash (NVFP4)",
+     "served_model": "Hy4-flash-NVFP4",
+     "note": "Max 2026-11-21: run after H_T2, as an ablation. GLM-5.3-Flash's best configuration (v5-harness arm C: runner v2 + wall-scaled turns (B) + thinking on at wall x2), with every T assist off (the common block's defaults: no diagnostics, edit hint, verify-done, packs, env block or wall warnings) and no per-turn cap or act nudge (the 16,384 eval turn cap only, as GLM-C). Run it on the same harness9 tree as H_T2 (--arm-tree H_C=<harness9 checkout>), so H_T2 vs H_C on Hy4 isolates the T2 additions (assists + 8K cap + nudge) on one model and one harness. Thinking as H_T2: reasoning_effort high by Hy4's default. Only with --only H_C. ETA as H_T2.",
+     "time_x": 2.3,
+     "args": ["--turns-per-wall-s", "15", "--thinking", "on", "--wall-scale", "2", "--reasoning-budget", "16384"]}
   ],
   "recommend": {
     "composite": "T",
