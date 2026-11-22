@@ -245,28 +245,45 @@ def test_committed_board_numbers():
     assert b["units"] == 71 and b["bases"] == 34
     assert {k: runs[k]["passed"] for k in runs} == {
         "GLM-L0": 26, "GLM-A": 31, "GLM-B": 36, "GLM-C": 51, "GLM-E": 50, "DS-T": 61, "DS-T2": 65, "DS-Ts1": 61, "DS-T3": 65,
-        "DS-U": 59, "DS-UP": 62, "DS-UPA": 59, "DS-U8k": 63, "DS-UP8k": 65, "DS-UPA8k": 62, "OPUS-REF": 71}
+        "DS-U": 59, "DS-UP": 62, "DS-UPA": 59, "DS-U8k": 63, "DS-UP8k": 65, "DS-UPA8k": 62, "HY4-T2": 60, "Q38U-L0": 39, "OPUS-REF": 71}
     assert runs["GLM-C"]["passed_raw"] == 54  # 122 b/d/e excluded: contaminated (G25 scan)
     assert runs["GLM-E"]["passed_raw"] == 50  # scan clean; 122_c is a noted validator false FAIL
     assert runs["DS-T"]["passed_raw"] == 61  # scan clean (2026-11-18); first run under review 1118
     assert runs["DS-UP"]["passed_raw"] == 62  # main file (55 units) + resume file (16), scan clean 2026-11-21
+    assert runs["HY4-T2"]["passed_raw"] == 60  # scan clean 2026-11-22; same harness9 tree as DS-T2
+    assert runs["Q38U-L0"]["passed_raw"] == 40  # 126 (a pass), 163_e, 192 excluded: the shell reached the network
+    assert sorted(runs["Q38U-L0"]["excluded"]) == ["126_hmac_scratch", "163_bigint_divmod_e", "192_pike_regex"]
     assert runs["OPUS-REF"]["passed_strict_wall"] == 68
-    assert all(not r["lost"] for r in runs.values())
+    # the 5090's 4 units lost to llama-server's HTTP 500 on a truncated tool call
+    assert runs["Q38U-L0"]["lost"] == {u: "server_error" for u in (
+        "122_gemm_blocked_c", "122_gemm_blocked_d", "124_rkf45", "173_taskgroup_cancel")}
+    assert all(not r["lost"] for k, r in runs.items() if k != "Q38U-L0")
     best = {r["model"]: r["id"] for r in b["best"]}
-    assert best == {"GLM-5.3-Flash": "GLM-C", "DeepSeek-V4.1-Flash (Mia EXL3)": "DS-T2", "Claude Opus 5.5": "OPUS-REF"}
+    assert best == {"GLM-5.3-Flash": "GLM-C", "DeepSeek-V4.1-Flash (Mia EXL3)": "DS-T2", "Claude Opus 5.5": "OPUS-REF",
+                    "Hy4-flash (NVFP4)": "HY4-T2", "Qwen3.8 27B Uncensored MTP (the shipped default)": "Q38U-L0"}
+    # the ranking, by SCORE; the reference last and unranked
+    assert [(r["id"], round(r["score"], 1)) for r in b["best"]] == [
+        ("DS-T2", 94.9), ("HY4-T2", 83.4), ("GLM-C", 76.7), ("Q38U-L0", 63.3), ("OPUS-REF", 100.0)]
+    assert b["not_yet_run"] == ["Qwen3.6 27B (v4 #1)"]
     # every run names its exact weights; one weights entry per model today
     ds, glm = "dsv41f-mia-exl3-2.9bpw-eaq1.1-v2", "glm53f-mia-exl3-4bpw-tf-ablit"
+    hy4, q38 = "hy4-flash-nvfp4-atakans", "qwen38-27b-uncensored-mtp-q5km"
     assert {k: runs[k]["weights_id"] for k in runs} == {
         **{k: ds for k in runs if k.startswith("DS-")}, **{k: glm for k in runs if k.startswith("GLM-")},
-        "OPUS-REF": "anthropic-api-claude-opus-5-5"}
-    assert [r["weights_id"] for r in b["best"]] == [ds, glm, "anthropic-api-claude-opus-5-5"]
+        "HY4-T2": hy4, "Q38U-L0": q38, "OPUS-REF": "anthropic-api-claude-opus-5-5"}
+    assert [r["weights_id"] for r in b["best"]] == [ds, hy4, glm, q38, "anthropic-api-claude-opus-5-5"]
     w = b["weights"][ds]
     assert (w["format"], w["bpw"], w["abliterated"], w["revision_kind"]) == ("EXL3", 2.9, False, "local")
     assert w["revision"] == "04c13f12b83d57487912d87d0f1677b076810954" and w["repo"] is None
     g = b["weights"][glm]
     assert (g["repo"], g["revision"], g["bpw"], g["abliterated"]) == (
         "Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit", "57edefd2f5d9b371c8345883304d5af68b52fa24", 4, True)
-    assert "hy4-flash-nvfp4-atakans" not in b["weights"]
+    h = b["weights"][hy4]
+    assert (h["repo"], h["revision"], h["format"], h["abliterated"]) == (
+        "atakans/Hy4-flash-NVFP4", "30f201acf0b4f9ba178817bcbc04ccfa3ec473f9", "NVFP4", False)
+    q = b["weights"][q38]
+    assert (q["revision_kind"], q["file_sha256"], q["abliterated"]) == (
+        "file-sha256", "24780644a95f759a9aeeb228c3d852028f2fd40ce0b74d68134246ec4a959547", True)
     # token usage (prompt, completion, units without usage), exact
     assert {k: (runs[k]["tokens"]["prompt"], runs[k]["tokens"]["completion"], runs[k]["tokens"]["missing"])
             for k in runs} == {
@@ -275,8 +292,10 @@ def test_committed_board_numbers():
         "DS-T": (16187228, 1232335, 16), "DS-T2": (28140397, 2636448, 0), "DS-Ts1": (18833187, 2868308, 0),
         "DS-T3": (38279928, 2260595, 0), "DS-U": (23588215, 2792411, 0), "DS-UP": (24624938, 2878231, 0),
         "DS-UPA": (28279120, 3264679, 0), "DS-U8k": (30429276, 2519544, 0), "DS-UP8k": (26876212, 2456141, 0),
-        "DS-UPA8k": (27402927, 2520048, 0), "OPUS-REF": (0, 0, 71)}
-    assert runs["DS-T2"]["tokens"]["per_pass"] == 473490 and runs["DS-T2"]["tokens"]["total"] == 30776845  # registered, but no board run yet
+        "DS-UPA8k": (27402927, 2520048, 0), "HY4-T2": (47921687, 1605430, 0),
+        "Q38U-L0": (15413787, 3452557, 0), "OPUS-REF": (0, 0, 71)}
+    assert runs["DS-T2"]["tokens"]["per_pass"] == 473490 and runs["DS-T2"]["tokens"]["total"] == 30776845
+    assert runs["HY4-T2"]["tokens"]["per_pass"] == 825452 and runs["HY4-T2"]["tokens"]["total"] == 49527117
 
 
 def test_two_quantizations_of_one_model_are_two_rows(tmp_path):

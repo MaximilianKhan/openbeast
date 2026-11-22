@@ -1,6 +1,6 @@
 # hy4-vllm-inference: Hy4-flash (NVFP4) on vLLM, TP 2 + expert parallel over
 # spark-1 (head, API on 127.0.0.1:8000) + spark-2 (headless rank 1). A user
-# service on spark-1. docs/SPARK_HYDRA.md "Hy4-flash (NVFP4, vLLM TP2): staged"
+# service on spark-1. docs/SPARK_HYDRA.md "Hy4-flash (NVFP4, vLLM TP2): measured"
 #
 # STAGED, NOT A BOOT DEFAULT. There is no [Install] section, so this unit
 # cannot be enabled (systemctl reports it "static"), never starts at boot and

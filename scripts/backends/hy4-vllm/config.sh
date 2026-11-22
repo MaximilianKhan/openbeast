@@ -1,7 +1,7 @@
 # shellcheck shell=bash disable=SC2034  # every setting here is read by the scripts that source it
 # Hy4-flash (NVFP4) on vLLM, tensor parallel 2 over spark-1 (head) + spark-2
 # (worker): the pins and settings start.sh, stop.sh and spark-hy4-stage.sh
-# share. Sourced, never run. docs/SPARK_HYDRA.md "Hy4-flash (NVFP4, vLLM TP2): staged"
+# share. Sourced, never run. docs/SPARK_HYDRA.md "Hy4-flash (NVFP4, vLLM TP2): measured"
 #
 # A setting comes from the first of:
 #   1. the environment (HY4_PORT=8001 ./start.sh)

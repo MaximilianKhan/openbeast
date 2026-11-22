@@ -130,7 +130,7 @@ copy.
    become a default. The EXL3 pack we hold **cannot span two Sparks**; the
    NVFP4 build on vLLM TP2 is staged in code, and nothing is on the Sparks
    yet ([review](reviews/HY4_FLASH_ENGINES-2026-11-19.md),
-   [SPARK_HYDRA.md](SPARK_HYDRA.md#hy4-flash-nvfp4-vllm-tp2-staged)).
+   [SPARK_HYDRA.md](SPARK_HYDRA.md#hy4-flash-nvfp4-vllm-tp2-measured)).
 8. **Native TensorFold 1.2.10 is installed on both Sparks** (signed,
    `~/.local/bin/tensorfold`), not serving: it does not yet support the
    default model's architecture (`deepseek_v41`) or Hy4-flash's, so the pair
@@ -448,7 +448,7 @@ prefers no new URL, the same content is a section at the end of
 site); [HY4_FLASH_ENGINES-2026-11-19.md](reviews/HY4_FLASH_ENGINES-2026-11-19.md)
 "Verdict" (the EXL3 limits, VERIFIED in code); [EXL3_PLAYBOOK.md case
 (c)](EXL3_PLAYBOOK.md#c-an-architecture-no-build-supports);
-[SPARK_HYDRA.md "Hy4-flash (NVFP4, vLLM TP2): staged"](SPARK_HYDRA.md#hy4-flash-nvfp4-vllm-tp2-staged)
+[SPARK_HYDRA.md "Hy4-flash (NVFP4, vLLM TP2): measured"](SPARK_HYDRA.md#hy4-flash-nvfp4-vllm-tp2-measured)
 (state, arm `H_T2`, "a public-interest measurement");
 [TODO.md "Run `H_T2`"](TODO.md) ("compared with DS-T2 under the same
 harness").

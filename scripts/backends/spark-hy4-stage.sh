@@ -2,7 +2,7 @@
 # spark-hy4-stage: stage Hy4-flash (NVFP4) for vLLM TP2 on the spark-hydra
 # pair, offline-capable, without disturbing the model that serves. Run on
 # spark-1 (the head) from a checkout, as the deployment's account.
-# docs/SPARK_HYDRA.md "Hy4-flash (NVFP4, vLLM TP2): staged"
+# docs/SPARK_HYDRA.md "Hy4-flash (NVFP4, vLLM TP2): measured"
 #
 #   scripts/backends/spark-hy4-stage.sh                    # = --dry-run: the plan, and what is staged
 #   scripts/backends/spark-hy4-stage.sh --run              # every step below, in order (resumable)

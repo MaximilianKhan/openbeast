@@ -190,7 +190,7 @@ beaststatus    # beast-spark status
 ```
 
 **Hy4-flash (NVFP4, vLLM TP2), staged** (on spark-1, from `~/openbeast`;
-`docs/SPARK_HYDRA.md` "Hy4-flash (NVFP4, vLLM TP2): staged"). Everything
+`docs/SPARK_HYDRA.md` "Hy4-flash (NVFP4, vLLM TP2): measured"). Everything
 defaults to a dry run; the EXL3 pack `~/Documents/LibertAIDAI-Hy4-flash-EXL3-4bpw`
 is kept and never touched:
 

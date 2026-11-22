@@ -58,7 +58,7 @@ anything fails. The tools below never swap without saying so.
 | `tensorfold-dsv41:exl3-tp2-8a98ae503d85` (image ID `d048841d851f`, 24.9 GB) | both Sparks, built locally from [Mia's two-Spark recipe at `c7f2b85`](https://github.com/MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks/tree/c7f2b85100f0a7b099c92a4e21825e30d93c9c51) | `deepseek_v41` only. Its engine is bertholomus/TensorFold's Zig fork at `fbbc971` plus the recipe's `zig/patches` (image labels `tf.engine=zig`, `tf.ref=fbbc9713…`, `tf.patches=8a98ae503d85`) | yes: Mia's EAQ packs (MEASURED), and per the recipe the EAQ v1.1 mixed pack with `EAQ_V1_1=1` (CLAIMED, recipe `docs/configuration.md`) |
 | `tensorfold-glm53:v0.6.0` (image ID `ead0174052ac`, 24.6 GB; the same image as `ghcr.io/miaai-lab/glm-5.3-flash-exl3-2x-dgx-sparks-tensorfold`, tag `v0.6.0-31557ed1cef6`) | both Sparks, from Mia's GLM recipe v1.8 at `33b50fd` | `glm5_next` through TensorFold v0.6.0 (Python) plus 82 GLM patches | yes: the TR3 layout only (bits 4, `mcg` codebook, scope `glm53_routed_experts_only`) |
 | native TensorFold 1.2.10 (`~/.local/bin/tensorfold`, signed; 1.2.7 when §6 was measured) | both Sparks, installed, not serving | the families in [§6](#6-native-tensorfold-127-what-it-can-and-cannot-do); 1.2.10 adds `dots_ocr` and `qwen3` (both BF16), and still refuses `deepseek_v41` and `hy_v4_flash` (`capabilities --json` and `info`, spark-1 and spark-2, 2026-11-19; `data/spark-families.json` engine `native-1.2.10`) | `glm5_next`, `minimax_m3_vl`, `qwen3_5` |
-| `openbeast/hy4-vllm:e764efa-b486c74ef8b6` (vLLM's `hy4-flash` image + atakann's six sm_121 files) | **staged in code only** (2026-11-19): `scripts/backends/spark-hy4-stage.sh` builds it | `hy_v4_flash` as ModelOpt NVFP4, TP2 + expert parallel ([SPARK_HYDRA.md](SPARK_HYDRA.md#hy4-flash-nvfp4-vllm-tp2-staged)) | no |
+| `openbeast/hy4-vllm:e764efa-b486c74ef8b6` (vLLM's `hy4-flash` image + atakann's six sm_121 files) | **staged in code only** (2026-11-19): `scripts/backends/spark-hy4-stage.sh` builds it | `hy_v4_flash` as ModelOpt NVFP4, TP2 + expert parallel ([SPARK_HYDRA.md](SPARK_HYDRA.md#hy4-flash-nvfp4-vllm-tp2-measured)) | no |
 
 ### 1.3 How a recipe finds its weights
 
@@ -260,7 +260,7 @@ VERDICT: NOT SERVABLE HERE
 The way out was the second one above: **another format another engine
 reads.** atakann's NVFP4 build (`atakans/Hy4-flash-NVFP4`, 165 GB) runs on
 vLLM at TP2 with expert parallel, and is staged as the `hy4-vllm` family:
-[SPARK_HYDRA.md "Hy4-flash (NVFP4, vLLM TP2): staged"](SPARK_HYDRA.md#hy4-flash-nvfp4-vllm-tp2-staged).
+[SPARK_HYDRA.md "Hy4-flash (NVFP4, vLLM TP2): measured"](SPARK_HYDRA.md#hy4-flash-nvfp4-vllm-tp2-measured).
 Intake calls that folder a DROP-IN for `hy4-vllm` (its index, 254,168 keys,
 is the family's reference), next step `beast-spark hy4`.
 

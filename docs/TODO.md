@@ -260,8 +260,15 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   E (2026-11-17). D is C + diagnostics, edit hint and verify-done; F is B at
   `--seed 1`, the noise floor. Resume only on Max's word
   ([`MODEL_CAMPAIGN.md` §8](MODEL_CAMPAIGN.md#8-worked-example-glm-53-flash-2026-11-16)).
-- [ ] **Qwen3.8 v5 rows** when the rig is back (L0 profile, then the
-  thinking-first campaign): the paper's second model and the first `beast` row.
+- [ ] **Qwen3.8 v5 rows** (L0 profile, then the thinking-first campaign):
+  the paper's second model and the first `beast` row. **L0 done
+  2026-11-22:** board row Q38U-L0, 39/71 scored (40 raw; 3 units excluded,
+  the agent's shell reached the network on Linux), SCORE 63.3, 4 units lost
+  to llama-server's HTTP 500 on a truncated tool call
+  ([report](reports/V5_QWEN38_RTX5090-2026-11-22.md)). Next: L1 and L2
+  (running, end ~14:40 2026-11-22), the cross-host calibration (rig
+  container against the Mac), and the Linux network deny (HARNESS_NOTES
+  next-era (d)) before more rig rows.
 - [ ] **DeepSeek-V4.1-Flash (Mia EXL3) thinking-first campaign:** in
   progress ([`MODEL_CAMPAIGN.md` §9](MODEL_CAMPAIGN.md#9-next-deepseek-v41-flash-1017-thinking-first)).
   On the board (2026-11-21): T 61, T_s1 61, **T2 65** (best, SCORE 94.9),
@@ -275,7 +282,12 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   91.4; +2 over U_8k, not conclusive; a tie with T2, so T2 stays), UPA_8k
   62 (−3 against UP_8k: the pack hurts at 8192 too). Board rows DS-UP8k,
   DS-UPA8k; integrity scans clean. The U series is complete.
-- [ ] **Run `H_T2` (Hy4-flash NVFP4) next: the U series is done.** Arm H_T2 is T2
+- [x] **`H_T2` (Hy4-flash NVFP4) done 2026-11-22:** board row HY4-T2, 60/71,
+  SCORE 83.4, #2; 5 units behind DS-T2 on the same harness9 tree and pair
+  (7 lost, 2 gained), single seed; integrity scan clean; conformance PASS
+  ([report](reports/V5_HY4_FLASH-2026-11-22.md)). Arm H_C (GLM's best, the
+  ablation) is running on the same tree; board row HY4-C when it is scanned.
+  The original plan, kept for the record: arm H_T2 is T2
   exactly against Tencent's Hy4-flash (atakann's NVFP4 build on vLLM TP2,
   staged in code 2026-11-19: `SPARK_HYDRA.md` "Hy4-flash (NVFP4, vLLM TP2):
   staged"). A public-interest measurement, compared with DS-T2 (65/71) under

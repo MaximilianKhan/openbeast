@@ -14,7 +14,7 @@ the recipe's image from the vendored files, the tar for offline restore),
 hy4`, campaign arm `H_T2`, and the intake family `hy4-vllm`. Nothing is on the
 Sparks yet; staging and the first start follow the current eval series. The
 EXL3 pack stays on both Sparks on purpose. Runbook:
-[SPARK_HYDRA.md "Hy4-flash (NVFP4, vLLM TP2): staged"](../SPARK_HYDRA.md#hy4-flash-nvfp4-vllm-tp2-staged).
+[SPARK_HYDRA.md "Hy4-flash (NVFP4, vLLM TP2): measured"](../SPARK_HYDRA.md#hy4-flash-nvfp4-vllm-tp2-measured).
 
 ## Verdict
 

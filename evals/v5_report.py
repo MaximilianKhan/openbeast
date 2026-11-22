@@ -27,6 +27,8 @@ Usage:
   python3 evals/v5_report.py --model "GLM-5.3-Flash" --pair A:B
   python3 evals/v5_report.py --json
   python3 evals/v5_report.py --weights-id dsv41f-mia-exl3-2.9bpw-eaq1.1-v2   # one quantization
+  python3 evals/v5_report.py --model "Hy4-flash (NVFP4)" --context DS-T2,GLM-C,OPUS-REF \\
+      --pair DS-T2:H_T2                                   # a context run by its board id
   python3 evals/v5_report.py --arm ... --write docs/reports/<report>.md
       # replace the block between <!-- v5-report:start --> and <!-- v5-report:end -->
 
@@ -158,12 +160,14 @@ def build(model: str = DEFAULT_MODEL, extra: list[tuple[str, list[str]]] | None 
     arms = [arm_result(r, manifest, base_dir, exclusions, weights) for r in runs]
     ctx = [arm_result(r, manifest, base_dir, exclusions, weights)
            for r in board["runs"] if r["id"] in context and r["model"] != model]
-    by_label = {a["label"]: a for a in arms}
+    # a context run (another model's) is named in a pair by its board id, so a
+    # cross-model delta on one harness reads "DS-T2:H_T2" (2026-11-22, Hy4 vs DeepSeek)
+    by_label = {**{c["id"]: c for c in ctx}, **{a["label"]: a for a in arms}}
     deltas = []
     for p in pairs if pairs is not None else DEFAULT_PAIRS:
         base, _, arm = p.partition(":")
         if base in by_label and arm in by_label:
-            deltas.append(pair_delta(by_label[base], by_label[arm]))
+            deltas.append({**pair_delta(by_label[base], by_label[arm]), "base": base, "arm": arm})
     differ = sorted(u for u in manifest
                     if len({a["verdicts"].get(u) for a in arms
                             if a["verdicts"].get(u) is not None}) > 1)

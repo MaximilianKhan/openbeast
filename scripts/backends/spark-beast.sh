@@ -327,7 +327,7 @@ hy4_exit() {
 }
 
 cmd_hy4() {
-  hy4_installed || die "the unit $HY4_UNIT is not installed: scripts/backends/spark-hy4-stage.sh --check, then install (docs/SPARK_HYDRA.md \"Hy4-flash (NVFP4, vLLM TP2): staged\")"
+  hy4_installed || die "the unit $HY4_UNIT is not installed: scripts/backends/spark-hy4-stage.sh --check, then install (docs/SPARK_HYDRA.md \"Hy4-flash (NVFP4, vLLM TP2): measured\")"
   if active "$HY4_UNIT" && serving "$HY4_SERVED"; then
     log "Hy4 is already serving"
     if [[ "$(ob_conf_get INFERENCE_MODEL)" != "$HY4_SERVED" || "$(ob_conf_get INFERENCE_BACKEND)" != vllm ]]; then

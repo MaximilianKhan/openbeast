@@ -15,6 +15,21 @@
       "unit": "122_gemm_blocked_e",
       "run": "GLM-C",
       "reason": "contaminated: the agent read sealed paths (G25 integrity scan, evals/CHANGELOG.md)"
+    },
+    {
+      "unit": "126_hmac_scratch",
+      "run": "Q38U-L0",
+      "reason": "contaminated: the agent's shell reached the network (integrity scan 2026-11-22; on Linux the agent shell has no network deny, evals/README.md residual gaps)"
+    },
+    {
+      "unit": "163_bigint_divmod_e",
+      "run": "Q38U-L0",
+      "reason": "contaminated: the agent's shell reached the network (integrity scan 2026-11-22; on Linux the agent shell has no network deny, evals/README.md residual gaps)"
+    },
+    {
+      "unit": "192_pike_regex",
+      "run": "Q38U-L0",
+      "reason": "contaminated: the agent's shell reached the network (integrity scan 2026-11-22; on Linux the agent shell has no network deny, evals/README.md residual gaps)"
     }
   ],
   "validator_notes": [

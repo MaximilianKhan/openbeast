@@ -82,7 +82,7 @@
       "evidence": "the reference ledger evals/boards/v5/reference-claude-opus-5-5-v5-20261116.jsonl (evals/reference/); its own scaffold, never ranked"
     },
     "hy4-flash-nvfp4-atakans": {
-      "model": "Hy4-flash",
+      "model": "Hy4-flash (NVFP4)",
       "label": "NVFP4 · atakans build · stock",
       "repo": "atakans/Hy4-flash-NVFP4",
       "revision": "30f201acf0b4f9ba178817bcbc04ccfa3ec473f9",
@@ -93,14 +93,16 @@
       "variant": "atakans NVFP4 (ModelOpt)",
       "abliterated": false,
       "engine": "vLLM, TP2 + expert parallel (atakann's recipe)",
-      "engine_version": "vllm/vllm-openai base + the recipe's patches",
+      "engine_version": "vLLM 0.1.dev25463+g77766db1f (vllm/vllm-openai@sha256:5e2c1badbca6… with the Hy4-flash pull request) + the recipe's six patches",
       "image": "openbeast/hy4-vllm:e764efa-b486c74ef8b6 (sha256:6477587cdc521218a6ef5789699d8d74efbcaa26f0738d4342e1398313ad89d9)",
       "recipe": "atakann/dgx-spark-recipes @ e764efa3efed3e21fe543c3fffc927eb6a00bff8 (recipes/llm/hy4-flash-nvfp4-vllm-tp2.yaml)",
       "drafter": "DFly, in-checkpoint (num_speculative_tokens 5)",
-      "kv_dtype": "fp8_ds_mla on the sliding-window MLA layers; 6 GiB fixed pool",
+      "kv_dtype": "vLLM kv_cache_dtype auto (engine log); fp8_ds_mla on the sliding-window MLA layers (the recipe); 6 GiB fixed pool",
       "context": 262144,
-      "hosts": "2× DGX Spark (GB10), vLLM TP2",
-      "evidence": "docs/SPARK_HYDRA.md 'Hy4-flash (NVFP4, vLLM TP2)'; scripts/backends/hy4-vllm/config.sh; image id read on spark-1 2026-11-22. No board run yet."
+      "hosts": "2× DGX Spark (GB10), vLLM TP2 + expert parallel, one rank per Spark",
+      "evidence": "spark-1 journal (hy4-vllm-inference), read 2026-11-22: the unit started 2026-11-21 22:29:52 PST, vLLM logged \"Starting vLLM server\" at 22:39:14 with non-default args max_model_len 262144, served_model_name Hy4-flash-NVFP4, tensor_parallel_size 2, enable_expert_parallel, max_num_seqs 4, kv_cache_memory_bytes 6442450944, speculative_config dfly / num_speculative_tokens 5, reasoning and tool parsers hy_v4, quantization modelopt_fp4; container hy4-vllm created 2026-11-22T06:29:55Z from image sha256:6477587cdc521218a6ef5789699d8d74efbcaa26f0738d4342e1398313ad89d9 with label openbeast.hy4.revision=30f201acf0b4f9ba178817bcbc04ccfa3ec473f9, no restart through HY4-T2 (2026-11-21 22:41 to 11-22 04:46 PST; docker inspect read 2026-11-22 09:40 PST). Conformance PASS 2026-11-22T06:40:50Z (spark-1 .run/conformance/). Weights verified against the Hub LFS sums (scripts/backends/hy4-vllm/SHA256SUMS.hub-lfs, .hy4-verified); docs/SPARK_HYDRA.md 'Hy4-flash (NVFP4, vLLM TP2)'.",
+      "streams": 4,
+      "sampling": "server defaults; thinking at Hy4's default reasoning_effort \"high\" (its chat template ignores the runner's enable_thinking)"
     },
     "qwen38-27b-uncensored-mtp-q5km": {
       "model": "Qwen3.8 27B Uncensored MTP (the shipped default)",
@@ -117,12 +119,14 @@
       "variant": "Qwen3.8-27B-Uncensored (abliterated), MTP head preserved",
       "abliterated": true,
       "engine": "llama.cpp (llama-server)",
-      "engine_version": "ggml-org/llama.cpp @ b1b770d90d94cad9e9ea5b993bdbc383a522fb28 (v1.0.0, scripts/llama.cpp.ref)",
+      "engine_version": "ggml-org/llama.cpp @ b1b770d90d94cad9e9ea5b993bdbc383a522fb28 (v1.0.0, build 12359; scripts/llama.cpp.ref)",
       "drafter": "MTP, in-checkpoint (--spec-type draft-mtp, --spec-draft-n-max 4)",
-      "kv_dtype": "q4_0 K and V (scripts/serve.sh default; the serve script passes no -ctk)",
+      "kv_dtype": "q4_0 K and V (-ctk q4_0 -ctv q4_0)",
       "context": 262144,
       "hosts": "1× RTX 5090",
-      "evidence": "scripts/weights.registry (sha256 and size, cross-checked against the Hub's LFS oid: it matches at main 45d0fc0a, uploaded in 43317b36, 2026-08-14); scripts/serve-qwen38-27b-uncensored-mtp-q5.sh. No board run yet."
+      "evidence": "the rig (beast), read 2026-11-22 09:40 PST: the llama-server process started 2026-11-21 18:33 PST (before Q38U-L0, 2026-11-22 00:38 PST on) runs ~/Documents/openbeast/llama.cpp/build/bin/llama-server (--version: 1.0.0-dev, build 12359, commit b1b770d90) with -m weights/Qwen3.8-27B-Uncensored-Q5_K_M.gguf -ngl 99 -c 262144 -np 1 --kv-unified -ctk q4_0 -ctv q4_0 --cache-ram 44032 --spec-type draft-mtp --spec-draft-n-max 4 --spec-draft-p-min 0.0 --reasoning-budget 20480; sha256sum of that file read the same day = 24780644…9547, the scripts/weights.registry entry (cross-checked against the Hub's LFS oid at main 45d0fc0a, uploaded in 43317b36, 2026-08-14); scripts/serve-qwen38-27b-uncensored-mtp-q5.sh.",
+      "streams": 1,
+      "sampling": "server defaults; thinking on, reasoning budget 20480"
     }
   }
 }
