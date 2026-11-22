@@ -286,6 +286,10 @@ it measures k = wall seconds per reference second). Then it plans L1 (packs)
 and L2 (packs + diagnostics + escalation) to fit the budget, and runs them
 in one process. It writes `evals/results/eval-<slug>-L0-<ts>.json` (and L1,
 L2) plus a state file. `--resume <state>` continues an interrupted profile.
+L0 goes on the board; L1 and L2 are subsets with leaderboard-ineligible
+assists, so they are committed as diagnostics, never board rows, in
+`evals/boards/v5/diagnostics/` (with the state file, and any interrupted
+pass whose rows the final files replay), after their integrity scan.
 
 **Logging a profile run by hand: set `PYTHONUNBUFFERED=1`.** With stdout
 redirected to a file (`nohup … > profile.log 2>&1 &`, or a tmux pane piped
@@ -1082,7 +1086,14 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
       MTP: 39/71 scored (40 raw), SCORE 63.3, 4 units lost to a runner
       retry loop; driven from the rig's eval-host container (not yet
       calibrated against the Mac). Board row Q38U-L0
-      ([report](reports/V5_QWEN38_RTX5090-2026-11-22.md)); L1 and L2 running.
+      ([report](reports/V5_QWEN38_RTX5090-2026-11-22.md)).
+- [x] **The RTX 5090 default's L1 and L2 (2026-11-22), profile complete
+      (retired).** Diagnostics only, not board rows, in
+      `evals/boards/v5/diagnostics/`. L0 → L1 zig 0 → 4 of 6; L1 → L2 zig
+      4 → 2; L0 → L2 over 36 compiled units 19 → 23 (+4, p 0.29); all
+      within churn, single seed, uncalibrated host. Integrity scan
+      2026-11-22: 0 contaminated, no unit withheld (sealed notes in
+      `evals/audit/reviews/`). Report §5.
 - [ ] **Next, in order:** the GLM recipe engine update (1104), tested on
       its own. Optional for Hy4: T's assists without the cap and nudge
       (separates the bundle; not scheduled).

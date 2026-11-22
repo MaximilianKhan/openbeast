@@ -106,8 +106,9 @@ The Qwen3.8 27B Uncensored MTP row is the RTX 5090 default's L0 baseline
 (the bare harness, harness10, 2026-11-22): 40/71 raw, 39 scored after an
 integrity exclusion, SCORE 63.3; 4 units were lost to llama-server's
 HTTP 500 on a truncated tool call and count as fails. Its profile's L1 and
-L2 arms are still running; see
-[the RTX 5090 report](reports/V5_QWEN38_RTX5090-2026-11-22.md).
+L2 arms are complete and kept as diagnostics, not board rows (zig 0 → 4 of
+6 with packs; all contrasts within churn, single seed); see
+[the RTX 5090 report](reports/V5_QWEN38_RTX5090-2026-11-22.md) §5.
 The GLM-5.3-Flash rows are the 2026-11-16 build-up: the L0 profile, then the
 `v5-harness` campaign arms (`evals/campaigns/v5-harness.json`), each one
 change on top of the previous. Single seed each; the arms and their state

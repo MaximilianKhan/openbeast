@@ -1,0 +1,335 @@
+{
+ "version": 1,
+ "suite": "v5",
+ "model_slug": "qwen3-8-27b-uncensored-mtp-q5-k-m",
+ "model_name": "Qwen3.8 27B Uncensored MTP Q5_K_M",
+ "base_url": "http://127.0.0.1:8091/v1",
+ "budget_h": 14.0,
+ "started_at": 1795336694.848208,
+ "deadline": 1795548420.6745808,
+ "pair_id": "qwen3-8-27b-uncensored-mtp-q5-k-m-20261122-083814",
+ "era": "9bcd5aa6030836d1",
+ "phase": "done",
+ "results": {
+  "L0": "/home/max/ob-eval-container/evals/results/eval-qwen3-8-27b-uncensored-mtp-q5-k-m-L0-20261122-083815.json",
+  "L1": "/home/max/ob-eval-container/evals/results/eval-qwen3-8-27b-uncensored-mtp-q5-k-m-L1-20261122-192701.json",
+  "L2": "/home/max/ob-eval-container/evals/results/eval-qwen3-8-27b-uncensored-mtp-q5-k-m-L2-20261122-192701.json"
+ },
+ "l0_wall_s": 28796.9,
+ "k": 3.376826379605526,
+ "k_measured": true,
+ "plan": {
+  "l1": [
+   "122_gemm_blocked_e",
+   "123_nbody_f",
+   "163_bigint_divmod_f",
+   "167_q15_biquad_f",
+   "168_linearizability_kv_f",
+   "36_black_scholes_f"
+  ],
+  "l2": [
+   "122_gemm_blocked_a",
+   "122_gemm_blocked_b",
+   "122_gemm_blocked_c",
+   "122_gemm_blocked_d",
+   "122_gemm_blocked_e",
+   "123_nbody_b",
+   "123_nbody_c",
+   "123_nbody_d",
+   "123_nbody_e",
+   "123_nbody_f",
+   "158_karatsuba_bytes_b",
+   "158_karatsuba_bytes_c",
+   "158_karatsuba_bytes_d",
+   "158_karatsuba_bytes_e",
+   "159_ntt_convolution_b",
+   "159_ntt_convolution_c",
+   "159_ntt_convolution_d",
+   "159_ntt_convolution_e",
+   "163_bigint_divmod_b",
+   "163_bigint_divmod_c",
+   "163_bigint_divmod_d",
+   "163_bigint_divmod_e",
+   "163_bigint_divmod_f",
+   "167_q15_biquad_b",
+   "167_q15_biquad_c",
+   "167_q15_biquad_d",
+   "167_q15_biquad_e",
+   "167_q15_biquad_f",
+   "168_linearizability_kv_b",
+   "168_linearizability_kv_c",
+   "168_linearizability_kv_d",
+   "168_linearizability_kv_e",
+   "168_linearizability_kv_f",
+   "179_git_bisect_revert",
+   "36_black_scholes_b",
+   "36_black_scholes_c",
+   "36_black_scholes_d",
+   "36_black_scholes_e",
+   "36_black_scholes_f"
+  ],
+  "pi": {},
+  "cuts": [],
+  "cost_s": {
+   "L1": 2466,
+   "L2": 14129
+  },
+  "fits": true,
+  "remaining_s": 172800
+ },
+ "finished_at": 1795388556.7069783,
+ "summary": [
+  {
+   "a": {
+    "file_arm": "L0",
+    "label": "bare",
+    "scores": {
+     "n": 67,
+     "solve": 67.21,
+     "lang": 67.27,
+     "score": 67.23
+    }
+   },
+   "b": {
+    "file_arm": "L1",
+    "label": "packs",
+    "scores": {
+     "n": 6,
+     "solve": 63.64,
+     "lang": 17.62,
+     "score": 52.13
+    }
+   },
+   "contrasts": [
+    {
+     "contrast": "zig",
+     "n": 6,
+     "b": 4,
+     "c": 0,
+     "net": 4,
+     "p": 0.125,
+     "p_label": "exact",
+     "within_churn": true
+    },
+    {
+     "contrast": "compiled",
+     "n": 6,
+     "b": 4,
+     "c": 0,
+     "net": 4,
+     "p": 0.125,
+     "p_label": "exact",
+     "within_churn": true
+    },
+    {
+     "contrast": "zig:heldout",
+     "n": 3,
+     "b": 1,
+     "c": 0,
+     "net": 1,
+     "p": 1.0,
+     "p_label": "exact",
+     "within_churn": true
+    },
+    {
+     "contrast": "zig:insample",
+     "n": 3,
+     "b": 3,
+     "c": 0,
+     "net": 3,
+     "p": 0.25,
+     "p_label": "exact",
+     "within_churn": true
+    }
+   ]
+  },
+  {
+   "a": {
+    "file_arm": "L1",
+    "label": "packs",
+    "scores": {
+     "n": 6,
+     "solve": 63.64,
+     "lang": 17.62,
+     "score": 52.13
+    }
+   },
+   "b": {
+    "file_arm": "L2",
+    "label": "packs+diag+escalate",
+    "scores": {
+     "n": 39,
+     "solve": 88.24,
+     "lang": 56.79,
+     "score": 80.38
+    }
+   },
+   "contrasts": [
+    {
+     "contrast": "zig",
+     "n": 6,
+     "b": 0,
+     "c": 2,
+     "net": -2,
+     "p": 0.5,
+     "p_label": "exact",
+     "within_churn": true
+    },
+    {
+     "contrast": "compiled",
+     "n": 6,
+     "b": 0,
+     "c": 2,
+     "net": -2,
+     "p": 0.5,
+     "p_label": "exact",
+     "within_churn": true
+    },
+    {
+     "contrast": "zig:heldout",
+     "n": 3,
+     "b": 0,
+     "c": 1,
+     "net": -1,
+     "p": 1.0,
+     "p_label": "exact",
+     "within_churn": true
+    },
+    {
+     "contrast": "zig:insample",
+     "n": 3,
+     "b": 0,
+     "c": 1,
+     "net": -1,
+     "p": 1.0,
+     "p_label": "exact",
+     "within_churn": true
+    }
+   ]
+  },
+  {
+   "a": {
+    "file_arm": "L0",
+    "label": "bare",
+    "scores": {
+     "n": 67,
+     "solve": 67.21,
+     "lang": 67.27,
+     "score": 67.23
+    }
+   },
+   "b": {
+    "file_arm": "L2",
+    "label": "packs+diag+escalate",
+    "scores": {
+     "n": 39,
+     "solve": 88.24,
+     "lang": 56.79,
+     "score": 80.38
+    }
+   },
+   "contrasts": [
+    {
+     "contrast": "c",
+     "n": 8,
+     "b": 1,
+     "c": 2,
+     "net": -1,
+     "p": 1.0,
+     "p_label": "exact",
+     "within_churn": true
+    },
+    {
+     "contrast": "cpp",
+     "n": 7,
+     "b": 0,
+     "c": 0,
+     "net": 0,
+     "p": 1.0,
+     "p_label": "exact",
+     "within_churn": true
+    },
+    {
+     "contrast": "go",
+     "n": 8,
+     "b": 2,
+     "c": 0,
+     "net": 2,
+     "p": 0.5,
+     "p_label": "exact",
+     "within_churn": true
+    },
+    {
+     "contrast": "rust",
+     "n": 7,
+     "b": 1,
+     "c": 0,
+     "net": 1,
+     "p": 1.0,
+     "p_label": "exact",
+     "within_churn": true
+    },
+    {
+     "contrast": "shell",
+     "n": 1,
+     "b": 0,
+     "c": 0,
+     "net": 0,
+     "p": 1.0,
+     "p_label": "exact",
+     "within_churn": true
+    },
+    {
+     "contrast": "zig",
+     "n": 6,
+     "b": 2,
+     "c": 0,
+     "net": 2,
+     "p": 0.5,
+     "p_label": "exact",
+     "within_churn": true
+    },
+    {
+     "contrast": "compiled",
+     "n": 36,
+     "b": 6,
+     "c": 2,
+     "net": 4,
+     "p": 0.2890625,
+     "p_label": "exact",
+     "within_churn": true
+    },
+    {
+     "contrast": "go+c+cpp+rust",
+     "n": 30,
+     "b": 4,
+     "c": 2,
+     "net": 2,
+     "p": 0.6875,
+     "p_label": "exact",
+     "within_churn": true
+    },
+    {
+     "contrast": "zig:heldout",
+     "n": 3,
+     "b": 0,
+     "c": 0,
+     "net": 0,
+     "p": 1.0,
+     "p_label": "exact",
+     "within_churn": true
+    },
+    {
+     "contrast": "zig:insample",
+     "n": 3,
+     "b": 2,
+     "c": 0,
+     "net": 2,
+     "p": 0.5,
+     "p_label": "exact",
+     "within_churn": true
+    }
+   ]
+  }
+ ]
+}
