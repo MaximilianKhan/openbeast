@@ -64,6 +64,41 @@ else
   fail "expected both raw :8443 mounts to use \$RAW_TARGET"
 fi
 
+# A refused serve names the one-time operator fix (the rig, 2026-11-22: the
+# re-point of :8443 at the gate was denied). ts_admin is lifted out and run
+# against a mock tailscale and sudo on PATH.
+awk '/^ts_admin\(\) \{/,/^}/' "$SRC" > "$T/ts_admin.sh"
+mkdir -p "$T/bin"
+cat > "$T/bin/tailscale" <<'STUB'
+#!/bin/bash
+if [[ "$1 $2" == "debug prefs" ]]; then echo "{\"OperatorUser\": \"${TS_OPERATOR:-}\"}"; exit 0; fi
+echo "tailscale $*" >> "$TS_LOG"
+if [[ "$1" == serve && -n "${TS_DENY:-}" ]]; then echo "Access denied: serve config denied" >&2; exit 1; fi
+exit 0
+STUB
+cat > "$T/bin/sudo" <<'STUB'
+#!/bin/bash
+[[ -n "${SUDO_FAIL:-}" ]] && { echo "sudo: a terminal is required to read the password" >&2; exit 1; }
+"$@"
+STUB
+chmod +x "$T/bin/tailscale" "$T/bin/sudo"
+admin() { # admin <env...> -- prints "rc=<n>" and the combined output
+  env "$@" PATH="$T/bin:$PATH" TS_LOG="$T/ts.log" bash -c 'source "$1"; ts_admin serve --bg --https=8443 http://127.0.0.1:8091; echo "rc=$?"' _ "$T/ts_admin.sh" 2>&1
+}
+me="$(id -un)"
+o="$(admin SUDO_FAIL=1)"
+if grep -q "rc=1" <<<"$o" && grep -qF "sudo tailscale set --operator=$me" <<<"$o" && grep -q "was refused" <<<"$o"; then
+  pass "ts_admin: a refused sudo serve names the operator fix and keeps the exit status"
+else fail "ts_admin sudo refused: $o"; fi
+o="$(admin TS_OPERATOR="$me" TS_DENY=1)"
+if grep -q "rc=1" <<<"$o" && grep -qF "sudo tailscale set --operator=$me" <<<"$o"; then
+  pass "ts_admin: a serve tailscaled denies names the operator fix"
+else fail "ts_admin denied: $o"; fi
+o="$(admin TS_OPERATOR="$me")"
+if grep -q "rc=0" <<<"$o" && ! grep -q "operator" <<<"$o"; then
+  pass "ts_admin: a serve that succeeds prints no hint (control)"
+else fail "ts_admin ok: $o"; fi
+
 echo ""
 echo "================================"
 echo "Results: $PASS passed, $FAIL failed"

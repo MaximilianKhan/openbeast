@@ -148,6 +148,17 @@ the key again, by `EDGE_GATE=true` plus a re-run of `setup-tailscale.sh`
 `sudo tailscale serve --https=8443 off`. Only a real answer refuses: a box
 without tailscale, or a tailscaled that does not answer within 3 s, starts
 as before, and `doctor.sh` still FAILs the keyless mount once it answers.
+
+**Gate drift.** The mount and `EDGE_GATE` can disagree: on the rig (2026-11-22)
+`:8443` still proxied to llama-server `:8080` while `openbeast.conf` said
+`EDGE_GATE=true`, so every enrolled device key reached llama-server and got its
+401. `doctor.sh` reads `tailscale serve status` (no root) and FAILs either way:
+`EDGE_GATE=true` with `:8443` not at the gate port (`EDGE_PORT`, default 8090),
+with the exact fix `tailscale serve --bg --https=8443 http://127.0.0.1:<EDGE_PORT>`;
+and `:8443` at the gate port with `EDGE_GATE` off (the gate is not started:
+502). The re-point needs root or tailscaled's operator: once,
+`sudo tailscale set --operator=$USER`. `setup-tailscale.sh` prints that same
+hint whenever a `tailscale serve` call is refused.
 Offline this needs nothing: `tailscale serve status` reads local state.
 
 **Order matters.** The slot API is served by the dashboard *extension*, and

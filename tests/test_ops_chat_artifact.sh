@@ -243,6 +243,9 @@ if "--unix-socket" in args and os.environ.get("SOCK_UP", "1") != "1": sys.exit(7
 if "/api/artifacts/health" in url:
     if os.environ.get("ART_UP", "1") != "1": sys.exit(7)
     out({"status": "ok", "artifacts": 2})
+if "/gate/health" in url:
+    if os.environ.get("GATE_UP", "0") != "1": sys.exit(7)
+    out({"service": "beast-gate", "auth": "devices", "devices": 1})
 if "/api/chat/health" in url:
     if os.environ.get("CHAT_UP", "1") != "1": sys.exit(7)
     out({"status": "ok", "reads": "allowlist", "running": 0})
@@ -691,6 +694,44 @@ else
   fail "online ext image row: $(row 'image')"
 fi
 cp "$T/docker.orig" "$SB/bin/docker"
+
+# Gate bypass drift (the rig, 2026-11-22): `tailscale serve` :8443 straight at
+# llama :8080 while openbeast.conf had EDGE_GATE=true — every device key was
+# a 401 from llama-server. doctor judges the mount TARGET against EDGE_GATE.
+S8443L='https://beast.example.ts.net:8443 (tailnet only)\n|-- / proxy http://127.0.0.1:8080\n'
+S8443G='https://beast.example.ts.net:8443 (tailnet only)\n|-- / proxy http://127.0.0.1:8091\n'
+RUN_ENV=(TS_SERVE="$S8443L" GATE_UP=1)
+doctor EDGE_GATE=true EDGE_PORT=8091
+if has "$_O" ":8443 proxies to http://127.0.0.1:8080, not beast-gate (:8091), while EDGE_GATE=true" \
+   && has "$_O" 'fix: tailscale serve --bg --https=8443 http://127.0.0.1:8091' && has "$_O" 'sudo tailscale set --operator=$USER' \
+   && ! has "$_O" "inference published via beast-gate"; then
+  pass "EDGE_GATE=true with :8443 -> llama-server FAILs, with the exact re-point and the operator hint"
+else
+  fail "gate bypass: $(row '8443|operator')"
+fi
+RUN_ENV=(TS_SERVE="$S8443G" GATE_UP=0)
+doctor EDGE_PORT=8091
+if has "$_O" ":8443 proxies to http://127.0.0.1:8091 (the beast-gate port) but EDGE_GATE is not true"; then
+  pass "…and the reverse: :8443 -> the gate port with EDGE_GATE off FAILs (the gate is not started: 502)"
+else
+  fail "gate port, gate off: $(row '8443')"
+fi
+RUN_ENV=(TS_SERVE="$S8443G" GATE_UP=1)
+doctor EDGE_GATE=true EDGE_PORT=8091
+if has "$_O" "inference published via beast-gate (per-device keys + audit)" && ! has "$_O" ":8443 proxies to"; then
+  pass "…:8443 -> the gate port with EDGE_GATE=true and a live gate passes (control)"
+else
+  fail "gate control: $(row '8443|gate')"
+fi
+S8443P='https://beast.example.ts.net:8443 (tailnet only)\n|-- / proxy http://127.0.0.1:18090\n'
+RUN_ENV=(TS_SERVE="$S8443P" GATE_UP=1)
+doctor EDGE_GATE=true
+if has "$_O" ":8443 proxies to http://127.0.0.1:18090, not beast-gate (:8090)"; then
+  pass "…a target that merely CONTAINS the gate port (:18090) is not taken for the gate"
+else
+  fail "port suffix: $(row '8443')"
+fi
+RUN_ENV=()
 
 # ---------------------------------------------------------------------------
 echo ""
