@@ -260,6 +260,22 @@ and L2 (packs + diagnostics + escalation) to fit the budget, and runs them
 in one process. It writes `evals/results/eval-<slug>-L0-<ts>.json` (and L1,
 L2) plus a state file. `--resume <state>` continues an interrupted profile.
 
+**Logging a profile run by hand: set `PYTHONUNBUFFERED=1`.** With stdout
+redirected to a file (`nohup … > profile.log 2>&1 &`, or a tmux pane piped
+to `tee`), Python block-buffers it, and a profile's log stayed empty for
+hours in a v5 run while the profile was alive. `campaign.py` already sets it
+for the processes it starts; a direct `profile.py` run needs it on the
+command line:
+
+```bash
+PYTHONUNBUFFERED=1 nohup python3 evals/profile.py --model <slug> --budget-h 4 --jobs 4 \
+    > ~/profile-<slug>.log 2>&1 &
+```
+
+(`python3 -u` does the same.) The harness code itself is era-hashed, so the
+default is a next-era proposal (`docs/HARNESS_NOTES.md`, "Next-era proposals
+from the 2026-11-22 runs").
+
 What to look for:
 - `summary`: passed / total, and the infra rows (`reason`: `server_error`,
   `budget_skip`, ...). These are not failures. `campaign.py`'s rules treat
