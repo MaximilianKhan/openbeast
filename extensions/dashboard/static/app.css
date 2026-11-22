@@ -198,7 +198,8 @@ main { width: var(--shell); margin: var(--gap) auto 0; display: grid; gap: var(-
 .port .p-io { grid-column: 2 / -1; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ---------------------------------------------------------------- services */
-.services { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 158px), 1fr)); gap: 8px; }
+.services { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); gap: 8px; }
+@media (max-width: 720px) { .services { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .svc { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid var(--line-soft); border-radius: var(--radius-sm); background: var(--glass); min-width: 0; }
 .svc[data-state="down"] { border-color: rgba(255, 122, 122, .4); }
 .svc > span:nth-child(2) { min-width: 0; }
