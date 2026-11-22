@@ -143,6 +143,12 @@ Don't touch the system packages. Run the harness in the image instead:
 ./scripts/eval-host-container.sh shell     # look around (as the harness user)
 ```
 
+A leading `python3` (or `python`) after `run --` runs the eval venv's interpreter
+(`/opt/openbeast-eval/venv/bin/python`): the image's bare cpython has no agent
+dependencies, and the profile preflight refuses it (`No module named 'openai'`).
+Add `-u` for an unbuffered log when redirecting output.
+
+
 What the image holds:
 
 - **The toolchains.** `scripts/eval-host.sh setup` installs, as root, into
