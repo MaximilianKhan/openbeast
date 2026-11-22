@@ -6,6 +6,8 @@
   - every run names a weights.json entry, which is validated and rendered
   - a repair run supersedes infrastructure rows and never a real verdict
   - a reference ledger is marked as a ceiling and never ranked
+  - every run's token usage is totalled, per unit and per pass, with the
+    units that recorded none counted
   - rendering is idempotent, and the committed docs match the generator
     (the CI drift gate)
 
@@ -150,6 +152,27 @@ def test_reference_is_marked_and_unranked(tmp_path):
     assert "2/3 at the 1× wall" in v5_board.render_runs(b)
 
 
+def test_token_stats(tmp_path):
+    d = str(tmp_path)
+    f = write(d, "t.json", results([
+        row("1_a_py", True, tokens_prompt=9000, tokens_completion=1000),
+        row("1_a_go", False, tokens_prompt=3000, tokens_completion=500, stats_partial=True),
+        row("2_b", True, tokens_prompt=0, tokens_completion=0),      # wall-killed, no usage
+    ]))
+    r = v5_board.score_run({"id": "x", "model": "m", "config": "c", "files": [f]}, MANIFEST, base_dir=d)
+    assert r["tokens"] == {"prompt": 12000, "completion": 1500, "total": 13500, "units_with_data": 2,
+                           "missing": 1, "partial": 1, "per_unit": 6750, "per_pass": 6750}
+    # no passes: no per-pass figure; a reference ledger has no usage at all
+    assert v5_board.token_stats({}, MANIFEST, 0)["per_pass"] is None
+    b = v5_board.build(board(tmp_path), base_dir=d, manifest=MANIFEST, weights=WEIGHTS)
+    ref = {r["id"]: r for r in b["runs"]}["REF"]
+    assert ref["tokens"]["missing"] == 3 and ref["tokens"]["total"] == 0
+    text = v5_board.render_tokens(b)
+    assert "| Ref Model | REF | — | — | — | 0/3 | — | 3/3 | — | 3 | 0 |" in text
+    assert "| Model M | M-strong | 0 | 300 | 300 | 3/3 | 100 | 3/3 | 100 | 0 | 0 |" in text
+    assert "Completion includes thinking" in text and "re-count" in text
+
+
 def test_render_is_idempotent(tmp_path):
     b = v5_board.build(board(tmp_path), base_dir=str(tmp_path), manifest=MANIFEST, weights=WEIGHTS)
     doc = "intro\n<!-- v5-board:start -->\nold\n<!-- v5-board:end -->\ntail\n"
@@ -167,6 +190,10 @@ def test_update_docs_detects_and_fixes_drift(tmp_path):
         (root / rel).write_text("x\n<!-- v5-board:start -->\n<!-- v5-board:end -->\n")
     assert "docs/RESULTS.md: no v5-weights block" in " ".join(v5_board.update_docs(b, write=False, root=str(root)))
     (root / "docs" / "RESULTS.md").write_text("x\n<!-- v5-board:start -->\n<!-- v5-board:end -->\n"
+                                              "<!-- v5-weights:start -->\n<!-- v5-weights:end -->\n")
+    assert "docs/RESULTS.md: no v5-tokens block" in " ".join(v5_board.update_docs(b, write=False, root=str(root)))
+    (root / "docs" / "RESULTS.md").write_text("x\n<!-- v5-board:start -->\n<!-- v5-board:end -->\n"
+                                              "<!-- v5-tokens:start -->\n<!-- v5-tokens:end -->\n"
                                               "<!-- v5-weights:start -->\n<!-- v5-weights:end -->\n")
     assert sorted(v5_board.update_docs(b, write=True, root=str(root))) == sorted(v5_board.DOCS)
     assert v5_board.update_docs(b, write=False, root=str(root)) == []
@@ -239,7 +266,17 @@ def test_committed_board_numbers():
     g = b["weights"][glm]
     assert (g["repo"], g["revision"], g["bpw"], g["abliterated"]) == (
         "Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit", "57edefd2f5d9b371c8345883304d5af68b52fa24", 4, True)
-    assert "hy4-flash-nvfp4-atakans" not in b["weights"]  # registered, but no board run yet
+    assert "hy4-flash-nvfp4-atakans" not in b["weights"]
+    # token usage (prompt, completion, units without usage), exact
+    assert {k: (runs[k]["tokens"]["prompt"], runs[k]["tokens"]["completion"], runs[k]["tokens"]["missing"])
+            for k in runs} == {
+        "GLM-L0": (16649273, 422241, 4), "GLM-A": (18725452, 448632, 2), "GLM-B": (55749046, 677770, 7),
+        "GLM-C": (14274788, 1056366, 20), "GLM-E": (16568150, 1226455, 17),
+        "DS-T": (16187228, 1232335, 16), "DS-T2": (28140397, 2636448, 0), "DS-Ts1": (18833187, 2868308, 0),
+        "DS-T3": (38279928, 2260595, 0), "DS-U": (23588215, 2792411, 0), "DS-UP": (24624938, 2878231, 0),
+        "DS-UPA": (28279120, 3264679, 0), "DS-U8k": (30429276, 2519544, 0), "DS-UP8k": (26876212, 2456141, 0),
+        "DS-UPA8k": (27402927, 2520048, 0), "OPUS-REF": (0, 0, 71)}
+    assert runs["DS-T2"]["tokens"]["per_pass"] == 473490 and runs["DS-T2"]["tokens"]["total"] == 30776845  # registered, but no board run yet
 
 
 def test_two_quantizations_of_one_model_are_two_rows(tmp_path):

@@ -841,6 +841,22 @@ one quantization: `evals/v5_report.py --weights-id <id>`. The generated
 "Weights used" block in [RESULTS.md](RESULTS.md#weights-used) shows every
 entry a board run uses.
 
+**Token usage comes with every row.** `--add` needs nothing more: the board
+sums each unit row's `tokens_prompt` and `tokens_completion` (the server's
+`usage`, added up over every request of the unit) and publishes, per run, the
+prompt and completion totals, the mean per unit, the **tokens per pass** (the
+total over the scored passes: the efficiency figure) and the units that
+recorded no usage, in the generated "Token usage" block of
+[RESULTS.md](RESULTS.md#token-usage) (and `--json`, `tokens`). Read it with
+its caveats: prompt tokens re-count the whole context every turn (a cache hit
+still counts), completion includes thinking (verified on TensorFold and
+llama.cpp from capped turns), and each model has its own tokenizer, so
+compare totals across arms of one model, and only roughly across models. A
+run with many "No usage" units (wall-killed before 2026-11-18's partial-stats
+file) is an undercount; say so beside any comparison. For an ablation, quote
+the per-pass figure next to the pass count: an arm that ties on passes and
+spends fewer tokens per pass is the cheaper one.
+
 ## 8. Worked example: GLM-5.3-Flash, 2026-11-16
 
 Served on the spark-hydra pair (TensorFold, `GLM-5.3-Flash-EXL3`, 4 slots,
