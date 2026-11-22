@@ -862,7 +862,7 @@
     if (svg) svg._step = sv.interval_s || 3;
     spark(svg, hist, $('spark-toks-read'), v => toks(v) + ' tok/s', 0, sv.history && sv.history.t);
     setId('sig-reqs', (isNum(sv.requests_running) ? sv.requests_running : DASH) + ' · ' + (isNum(sv.requests_waiting) ? sv.requests_waiting : DASH));
-    setId('sig-reqs-sub', 'running · waiting' + (isNum(slots.total) ? ' · ' + slots.total + ' slots' : ''));
+    setId('sig-reqs-sub', 'running · waiting' + (isNum(slots.total) ? ' · ' + slots.total + (slots.total === 1 ? ' slot' : ' slots') : ''));
     const kvKnown = isNum(sv.kv_usage);
     const fill = isNum(sv.ctx_fill_pct) ? sv.ctx_fill_pct : null;
     setId('sig-kv-k', kvKnown || fill === null ? 'KV cache' : 'context fill');
@@ -1008,20 +1008,39 @@
     return s && isNum(s.port) ? s.port : DASH;
   }
 
+  // Where an alert is about: its node, the serving engine, the gate, the services; else the log.
+  const NODE_RULES = ['peer', 'temp', 'throttle', 'mem', 'disk', 'node'];
+  // The GPU temperature the alerts call hot (DASHBOARD_ALERT_GPU_TEMP_C), from /api/status.
+  function hotC() {
+    const t = lastStatus && lastStatus.alerts && lastStatus.alerts.thresholds;
+    return t && isNum(t.gpu_temp_c) ? t.gpu_temp_c : 85;
+  }
+  function alertHref(a) {
+    const r = String((a && a.rule) || ''), k = String((a && a.key) || '');
+    if (NODE_RULES.includes(r)) { const n = k.slice(k.indexOf(':') + 1).slice(0, 64); return n ? '#/nodes/' + encodeURIComponent(n) : '#/nodes'; }
+    if (r === 'service') return '#/services';
+    if (r === 'gate') return '#/gate';
+    if (r === 'engine' || r === 'stall' || r === 'kv') return '#/serving';
+    return '#/events';
+  }
   function alertRows(box, list) {
     keyed(box, list, a => str(a.key, 96), () => {
-      const li = mk('li', 'alert');
-      mk('span', 'a-level', li);
-      const b = mk('span', 'a-body', li); mk('span', 'a-title', b); mk('span', 'a-detail', b);
-      mk('span', 'a-since', li);
+      const li = mk('li', 'alert-item');
+      const el = mk('a', 'alert', li);
+      mk('span', 'a-level', el);
+      const b = mk('span', 'a-body', el); mk('span', 'a-title', b); mk('span', 'a-detail', b);
+      mk('span', 'a-since', el);
       return li;
     }, (li, a) => {
+      const el = li.querySelector('.alert') || li;
+      const h = alertHref(a);
+      if (!el.getAttribute || el.getAttribute('href') !== h) el.setAttribute('href', h);
       const lv = a.level === 'crit' ? 'crit' : a.level === 'warn' ? 'warn' : 'info';
-      if (li.dataset.level !== lv) li.dataset.level = lv;
-      set(li.querySelector('.a-level'), LEVEL_TEXT[lv]);
-      set(li.querySelector('.a-title'), str(a.title, 80));
-      set(li.querySelector('.a-detail'), str(a.detail, 160));
-      set(li.querySelector('.a-since'), isNum(a.since) ? 'since ' + hhmm(a.since) + ' · ' + dur(Date.now() / 1000 - a.since) : '');
+      if (el.dataset.level !== lv) el.dataset.level = lv;
+      set(el.querySelector('.a-level'), LEVEL_TEXT[lv]);
+      set(el.querySelector('.a-title'), str(a.title, 80));
+      set(el.querySelector('.a-detail'), str(a.detail, 160));
+      set(el.querySelector('.a-since'), isNum(a.since) ? 'since ' + hhmm(a.since) + ' · ' + dur(Date.now() / 1000 - a.since) : '');
     });
   }
 
@@ -1080,7 +1099,7 @@
       memShort: isNum(f.memPct) ? pct(f.memPct) : DASH, memK: g && g.unified ? 'unified mem' : n.gpu ? 'VRAM' : 'RAM',
       utilPct: g.util_pct, tempPct: isNum(g.temp_c) ? Math.min(100, g.temp_c) : null,
       powerShort: isNum(pw) ? watts(pw) : DASH, powerPct: isNum(pw) ? Math.min(100, 100 * pw / (lim || Math.max(pw, 1) * 1.25)) : null,
-      hot: isNum(g.temp_c) && g.temp_c >= 85,
+      hot: isNum(g.temp_c) && g.temp_c >= hotC(),
     });
   }
 
@@ -1196,7 +1215,11 @@
     if (miss) miss.hidden = !!n || !lastCluster;
     setId('nd-crumb', str(route.arg, 64));
     setId('nd-name', str(route.arg, 64));
-    if (!n) { setId('nd-sub', lastCluster ? 'not a configured node' : 'loading'); return; }
+    if (!n) {
+      setId('nd-sub', lastCluster ? 'not a configured node' : 'loading');
+      if (lastCluster) { setState($('nd-state'), 'unknown'); setId('nd-state-text', 'unknown'); }
+      return;
+    }
     const f = nodeFields(n), g = n.gpu || {};
     setId('nd-sub', f.sub + (has(f.gpu) && f.gpu !== DASH ? ' · ' + f.gpu : ''));
     setState($('nd-state'), f.state); setId('nd-state-text', f.stateText);
@@ -1204,17 +1227,22 @@
     const r = n.ram || {}, k = n.disk || {};
     const c = n.cpu || {}, p = n.power || {};
     const gpuW = isNum(p.gpu_w) ? p.gpu_w : g.power_w;
+    // A node that is not answering keeps its last reading on the page, marked and dimmed as
+    // such (as the overview dims its card), never at full brightness as if it were live.
+    const old = f.state !== 'up';
+    const last = sub => old ? (isNum(n.last_ok_age_s) ? 'last reading ' + ago(n.last_ok_age_s) : 'last reading') : sub;
+    for (const id of ['nd-tiles', 'nd-charts']) { const el = $(id); if (el && el.dataset) { const v = old ? '1' : ''; if (el.dataset.stale !== v) el.dataset.stale = v; } }
     tiles($('nd-tiles'), [
-      { key: 'util', k: 'GPU utilization', v: f.util, s: n.gpu ? str(g.name, 40) + (g.count > 1 ? ' ×' + g.count : '') : f.gpu },
-      { key: 'mem', k: f.memLabel, v: pct(f.memPct), s: f.mem },
-      { key: 'temp', k: 'GPU temperature', v: f.temp, state: isNum(g.temp_c) && g.temp_c >= 85 ? 'warn' : '' },
-      { key: 'power', k: 'GPU power', v: watts(gpuW), s: (/GB10/.test(String(g.name || '')) ? 'GPU rail only (GB10)' : n.gpu ? 'board power' : '')
-        + (isNum(g.power_limit_w) ? ' · limit ' + watts(g.power_limit_w) : '') },
-      { key: 'clock', k: 'SM clock', v: mhz(g.sm_clock_mhz), s: (isNum(g.sm_clock_max_mhz) ? 'max ' + mhz(g.sm_clock_max_mhz) + ' · ' : '')
-        + (f.throttle ? f.throttle : isNum(g.sm_clock_mhz) ? 'no clock event' : 'not reported'), state: f.slowdown ? 'warn' : '' },
-      { key: 'cpu', k: 'CPU', v: pct(c.util_pct), s: (isNum(c.ncpu) ? c.ncpu + ' cores · ' : '') + 'load ' + f.load },
-      { key: 'ram', k: 'RAM', v: r.pct !== undefined ? pct(r.pct) : DASH, s: r.total_mib ? gib(r.total_mib - r.used_mib) + ' GiB available' : '' },
-      { key: 'disk', k: 'model volume', v: isNum(k.pct) ? pct(k.pct) + ' used' : DASH, s: k.free_b ? bytes(k.free_b) + ' free' : '' },
+      { key: 'util', k: 'GPU utilization', v: f.util, s: last(n.gpu ? str(g.name, 40) + (g.count > 1 ? ' ×' + g.count : '') : f.gpu) },
+      { key: 'mem', k: f.memLabel, v: pct(f.memPct), s: last(f.mem) },
+      { key: 'temp', k: 'GPU temperature', v: f.temp, s: old ? last('') : '', state: !old && isNum(g.temp_c) && g.temp_c >= hotC() ? 'warn' : '' },
+      { key: 'power', k: 'GPU power', v: watts(gpuW), s: last((/GB10/.test(String(g.name || '')) ? 'GPU rail only (GB10)' : n.gpu ? 'board power' : '')
+        + (isNum(g.power_limit_w) ? ' · limit ' + watts(g.power_limit_w) : '')) },
+      { key: 'clock', k: 'SM clock', v: mhz(g.sm_clock_mhz), s: last((isNum(g.sm_clock_max_mhz) ? 'max ' + mhz(g.sm_clock_max_mhz) + ' · ' : '')
+        + (f.throttle ? f.throttle : isNum(g.sm_clock_mhz) ? 'no clock event' : 'not reported')), state: !old && f.slowdown ? 'warn' : '' },
+      { key: 'cpu', k: 'CPU', v: pct(c.util_pct), s: last((isNum(c.ncpu) ? c.ncpu + ' cores · ' : '') + 'load ' + f.load) },
+      { key: 'ram', k: 'RAM', v: r.pct !== undefined ? pct(r.pct) : DASH, s: last(r.total_mib ? gib(r.total_mib - r.used_mib) + ' GiB available' : '') },
+      { key: 'disk', k: 'model volume', v: isNum(k.pct) ? pct(k.pct) + ' used' : DASH, s: last(k.free_b ? bytes(k.free_b) + ' free' : '') },
       { key: 'up', k: 'uptime', v: f.uptime, s: isNum(n.last_ok_age_s) ? 'read ' + ago(n.last_ok_age_s) : '' },
     ]);
   }
@@ -1223,8 +1251,6 @@
     if (!doc || !doc.node) return;
     const n = doc.node;
     renderNodeHead(n);
-    const ndt = $('nd-tiles');
-    if (ndt) { /* reachability over 24 h joins the tiles */ }
     alertRows($('nd-alerts'), Array.isArray(doc.alerts) ? doc.alerts : []);
     chartBox($('nd-charts'), NODE_CHARTS.map(c => Object.assign({ win: doc.window }, c)), doc);
     const fab = doc.fabric_series || {};
@@ -1272,24 +1298,37 @@
     const tok = doc.tokens || {}, l24 = tok.last_24h || {};
     const lw = det.window_s ? 'last ' + dur(det.window_s) : 'since engine start';
     const L = (h, q) => h ? (isNum(h[q]) ? h[q] : h['life_' + q]) : null;
+    // Each value says where it came from: the window, or (when the window had
+    // no observation and the value falls back to the lifetime) the engine's start.
+    const W = (h, q) => h && isNum(h[q]) ? lw : 'since engine start';
     const items = [
       { key: 'gen', k: 'generation', v: unit(nw.tok_s, toks, ' tok/s'), s: nw.tok_s_source === 'engine-completed' ? 'per finished request' : 'all streams' },
-      { key: 'prompt', k: 'prompt', v: unit(nw.prompt_tok_s, toks, ' tok/s'), s: 'prefill throughput' },
+      { key: 'prompt', k: 'prompt', v: unit(nw.prompt_tok_s, toks, ' tok/s'), s: nw.prompt_tok_s_source === 'engine-completed' ? 'per finished prefill' : 'computed prefill, cache hits excluded' },
       { key: 'req', k: 'running · waiting', v: (isNum(nw.running) ? nw.running : DASH) + ' · ' + (isNum(nw.waiting) ? nw.waiting : DASH),
         s: isNum(nw.stalled_s) && nw.stalled_s > 30 ? 'no token for ' + dur(nw.stalled_s) : isNum(det.requests_per_min) ? det.requests_per_min.toFixed(1) + ' done / min' : '',
         state: isNum(nw.stalled_s) && nw.stalled_s > 60 ? 'warn' : '' },
       { key: 'kv', k: isNum(nw.kv_pct) ? 'KV cache' : 'context fill', v: pct(isNum(nw.kv_pct) ? nw.kv_pct : nw.ctx_fill_pct, 1), s: isNum(nw.kv_pct) ? 'of the block pool' : 'busiest slot' },
     ];
-    if (lat.ttft) items.push({ key: 'ttft', k: 'TTFT p50 · p95', v: secs(L(lat.ttft, 'p50')) + ' · ' + secs(L(lat.ttft, 'p95')), s: lw + (isNum(lat.ttft.count) ? ' · ' + int(lat.ttft.count) + ' req' : '') });
-    if (lat.e2e) items.push({ key: 'e2e', k: 'end-to-end p50 · p95', v: secs(L(lat.e2e, 'p50')) + ' · ' + secs(L(lat.e2e, 'p95')), s: lw });
+    if (lat.ttft) {
+      const n = isNum(lat.ttft.p50) ? lat.ttft.count : lat.ttft.life_count;
+      items.push({ key: 'ttft', k: 'TTFT p50 · p95', v: secs(L(lat.ttft, 'p50')) + ' · ' + secs(L(lat.ttft, 'p95')), s: W(lat.ttft, 'p50') + (isNum(n) ? ' · ' + int(n) + ' req' : '') });
+    }
+    if (lat.e2e) items.push({ key: 'e2e', k: 'end-to-end p50 · p95', v: secs(L(lat.e2e, 'p50')) + ' · ' + secs(L(lat.e2e, 'p95')), s: W(lat.e2e, 'p50') });
     if (isNum(pr.decode_tok_s) || isNum(pr.life_decode_tok_s)) items.push({ key: 'dec', k: 'decode per request', v: unit(isNum(pr.decode_tok_s) ? pr.decode_tok_s : pr.life_decode_tok_s, toks, ' tok/s'),
-      s: pr.from ? 'from ' + pr.from : isNum(pr.prefill_tok_s) ? 'prefill ' + toks(pr.prefill_tok_s) + ' tok/s' : 'mean, per stream' });
-    if (spc) items.push({ key: 'spec', k: 'spec. acceptance', v: pct(isNum(spc.accept_pct) ? spc.accept_pct : spc.life_accept_pct, 1),
-      s: isNum(spc.mean_len) ? 'mean ' + spc.mean_len.toFixed(2) + ' tokens / step' : '' });
+      s: (isNum(pr.decode_tok_s) ? '' : 'since engine start · ') + (pr.from ? 'from ' + pr.from : isNum(pr.prefill_tok_s) ? 'prefill ' + toks(pr.prefill_tok_s) + ' tok/s' : 'mean, per stream') });
+    if (spc) {
+      const ml = isNum(spc.mean_len) ? spc.mean_len : spc.life_mean_len;
+      items.push({ key: 'spec', k: 'spec. acceptance', v: pct(isNum(spc.accept_pct) ? spc.accept_pct : spc.life_accept_pct, 1),
+        s: (isNum(spc.accept_pct) ? lw : 'since engine start') + (isNum(ml) ? ' · mean ' + ml.toFixed(2) + ' / step' : '') });
+    }
     if (isNum(det.prefix_hit_pct)) items.push({ key: 'prefix', k: 'prefix cache hit', v: pct(det.prefix_hit_pct, 1), s: lw });
     items.push({ key: 'tok24', k: 'tokens · 24 h', v: big(l24.gen_tokens), s: big(l24.prompt_tokens) + ' prompt' });
     tiles($('sv-tiles'), items);
-    chartBox($('sv-charts'), SV_CHARTS.map(c => Object.assign({ win: doc.window }, c)), doc);
+    // Under speculative decoding one inter-token-latency sample is one engine
+    // step (1 + accepted tokens), not one token: say so on the chart.
+    const tps = spc ? (isNum(spc.mean_len) ? spc.mean_len : spc.life_mean_len) : null;
+    chartBox($('sv-charts'), SV_CHARTS.map(c => Object.assign({ win: doc.window }, c,
+      c.key === 'itl' && spc ? { title: 'Decode step latency' + (isNum(tps) ? ' (~' + tps.toFixed(1) + ' tok/step)' : ' (spec decode)') } : {})), doc);
     const hourly = Array.isArray(tok.hourly) ? tok.hourly : [];
     vbars($('tok-hourly'), hourly.map(h => ({ key: h.t, value: h.gen, label: new Date(h.t * 1000).getHours() % 6 === 0 ? hhmm(h.t) : '', title: hhmm(h.t) + '–' + hhmm(h.t + 3600) })), big);
     const sum24 = hourly.reduce((a, h) => a + (isNum(h.gen) ? h.gen : 0), 0);
@@ -1297,7 +1336,7 @@
     const daily = (Array.isArray(tok.daily) ? tok.daily : []).slice().reverse();
     vbars($('tok-daily'), daily.map(d => ({ key: d.day, value: d.gen_tokens, label: String(d.day).slice(8), title: str(d.day, 10) })), big);
     setId('tok-d-note', daily.length ? 'last ' + daily.length + (daily.length === 1 ? ' day' : ' days') + ' · local days' : 'collecting');
-    setId('spec-note', spc ? (det.window_s ? 'last ' + dur(det.window_s) : 'since engine start') : 'not reported');
+    setId('spec-note', spc ? (isNum(spc.accept_pct) ? lw : 'since engine start') : 'not reported');
     setId('sp-acc', spc ? pct(spc.accept_pct, 1) : DASH);
     setId('sp-len', spc && isNum(spc.mean_len) ? spc.mean_len.toFixed(2) + ' tokens / step' : DASH);
     setId('sp-life', spc ? pct(spc.life_accept_pct, 1) + (isNum(spc.life_mean_len) ? ' · ' + spc.life_mean_len.toFixed(2) + ' / step' : '') : DASH);
@@ -1470,7 +1509,9 @@
     // Render what is already here at once; the page's own document follows.
     if (lastStatus) guard(renderStatus, lastStatus);
     if (lastCluster) { guard(renderCluster, lastCluster); guard(renderPower, lastCluster.power); }
-    pageDocs.clear();
+    pageReset();
+    pageLoading();
+    renderPageStale();
     pageFetch(true);
     if (route.page === 'power') { chartAt = 0; refreshChart(true); }
     for (const fig of charts.keys()) drawTs(fig);
@@ -1478,6 +1519,9 @@
 
   // ------------------------------------------------------------ each page's own document
   const pageDocs = new Map();       // url -> fetched-at (ms)
+  const pageOk = new Map(), pageErr = new Map();   // url -> last success (ms) / last error text
+  let pageGen = 0;                  // bumped on a route or window change: older answers are dropped
+  function pageReset() { pageDocs.clear(); pageOk.clear(); pageErr.clear(); pageGen++; }
   let lastEvents = null;
   const winOf = {};
   const WINS = ['15m', '1h', '6h', '24h', '7d'];
@@ -1490,7 +1534,7 @@
     segWindows($(ids[page]), WINS, winOf[page], w => {
       winOf[page] = w;
       try { localStorage.setItem('obdash.win.' + page, w); } catch (e) { /* private mode */ }
-      pageDocs.clear(); pageFetch(true);
+      pageReset(); renderPageStale(); pageFetch(true);
     });
     return winOf[page];
   }
@@ -1514,14 +1558,57 @@
       if (inflight.has(url) || (!force && Date.now() - at < every - 200)) continue;
       inflight.add(url);
       const want = route.page + '|' + route.arg;
+      // An answer for another page or another window (the range changed while it was in
+      // flight) is dropped: it must not overwrite the newer one.
+      const gen = pageGen;
+      const current = () => gen === pageGen && want === route.page + '|' + route.arg;
       getJSON(url).then(d => {
+        if (gen !== pageGen) return;
         pageDocs.set(url, Date.now());
-        if (want === route.page + '|' + route.arg && d) guard(fn, d);
+        pageOk.set(url, Date.now()); pageErr.delete(url);
+        if (current() && d) { guard(fn, d); pageLoaded(true); }
       }, err => {
+        if (gen !== pageGen) return;
         pageDocs.set(url, Date.now() - every + 3000);   // retry soon
-        if (route.page === 'node' && /HTTP 404/.test(String(err && err.message))) renderNodeHead(null);
-      }).finally(() => inflight.delete(url));
+        const why = String((err && err.message) || err || 'fetch failed').slice(0, 60);
+        pageErr.set(url, why);
+        if (!current()) return;
+        if (route.page === 'node' && /HTTP 404/.test(why)) renderNodeHead(null);
+        else if (!pageOk.has(url)) pageLoaded(false, why);
+      }).finally(() => { inflight.delete(url); renderPageStale(); });
     }
+  }
+
+  // Before a page's first document and when it fails, its notes say so, and the "nothing
+  // here" messages stay hidden: no false "not reported" from a fetch still in flight.
+  const PAGE_NOTE = { serving: 'spec-note', history: 'history-note' };
+  const PAGE_EMPTY = { serving: ['spec-empty', 'finished-empty'], history: ['hs-incidents-empty', 'days-empty', 'swaps-empty'] };
+  function pageLoaded(ok, why) {
+    if (ok) return;
+    const note = PAGE_NOTE[route.page];
+    if (note) setId(note, 'could not load · ' + why + ' · retrying');
+    for (const id of PAGE_EMPTY[route.page] || []) { const e = $(id); if (e) e.hidden = true; }
+  }
+  function pageLoading() {
+    const note = PAGE_NOTE[route.page];
+    if (note) setId(note, 'loading…');
+    for (const id of PAGE_EMPTY[route.page] || []) { const e = $(id); if (e) e.hidden = true; }
+  }
+
+  // A detail page whose own feed stopped answering says so and dims, as the overview does.
+  function renderPageStale() {
+    const now = Date.now();
+    let worst = 0, why = '';
+    for (const [url, , every] of route.page === 'home' ? [] : pageWants()) {
+      const ok = pageOk.get(url) || 0;
+      const age = ok ? now - ok : 0;
+      if (ok && age > Math.max(2.5 * every, STALE_MS) && age > worst) { worst = age; why = pageErr.get(url) || ''; }
+    }
+    const v = worst ? '1' : '';
+    const secs_ = Array.from(document.querySelectorAll ? document.querySelectorAll('[data-page]') : []);
+    for (const sec of secs_) { const w = sec.dataset.page === route.page ? v : ''; if (sec.dataset.stale !== w) sec.dataset.stale = w; }
+    const el = $('page-stale');
+    if (el) { el.hidden = !worst; set(el, worst ? 'detail stale · last update ' + dur(worst / 1000) + ' ago' + (why ? ' · ' + why : '') : ''); }
   }
 
   // ------------------------------------------------------------ polling
@@ -1544,6 +1631,7 @@
     setState(live, age > STALE_MS ? 'stale' : 'ok');
     setId('live-text', age > STALE_MS ? 'stale · ' + dur(age / 1000) + ' ago' : 'live · ' + Math.max(0, Math.round(age / 1000)) + 's');
     renderHealth();
+    renderPageStale();
   }
 
   // The health chip and the overview's verdict from the last data, unless that data is stale:
@@ -1597,7 +1685,8 @@
     powerNodeFields, windowFields, trendText, chartModel, niceCeil, powerFoot, renderHealth, tsModel, bucketSum, parseRoute,
     tileFields, renderServing, renderEvents, renderHistory, renderNode, renderRules, renderAlerts,
     _setLast: (ok, clOk) => { lastOk = ok; lastClusterOk = clOk; }, _setData: (st, cl) => { lastStatus = st; lastCluster = cl; },
-    _setRoute: r => { route = r; },
+    _setRoute: r => { route = r; }, alertHref, renderNodeHead, renderPageStale,
+    _pageOk: pageOk, pageWants,
     fmt: { int, pct, frac, gib, bytes, bps, dur, toks, ctxLabel, watts, energy, money, secs, big } };
   if (globalThis.__OBDASH_TEST__) { globalThis.__obdash = api; return; }
   if (typeof ResizeObserver === 'function') chartRO = new ResizeObserver(entries => {
@@ -1605,7 +1694,18 @@
   });
   wireChart();
   // Only #/... is a route: an in-page anchor (the skip link's #main) leaves the page shown as it is.
-  globalThis.addEventListener('hashchange', () => { if (/^#\/|^$/.test(location.hash)) showRoute(true); });
+  // Back / Forward put the reader where they were on that page; a fresh link opens at the top.
+  const saveY = () => { try { history.replaceState({ y: Math.round(globalThis.scrollY || 0) }, ''); } catch (e) { /* no history */ } };
+  try { if ('scrollRestoration' in history) history.scrollRestoration = 'manual'; } catch (e) { /* old engine */ }
+  document.addEventListener('click', e => { if (e.target && e.target.closest && e.target.closest('a[href^="#/"]')) saveY(); }, true);
+  let ySave = 0;
+  globalThis.addEventListener('scroll', () => { clearTimeout(ySave); ySave = setTimeout(saveY, 200); }, { passive: true });
+  globalThis.addEventListener('hashchange', () => {
+    if (!/^#\/|^$/.test(location.hash)) return;
+    const y = history.state && typeof history.state.y === 'number' ? history.state.y : null;
+    showRoute(y === null);
+    if (y !== null) requestAnimationFrame(() => scrollTo(0, y));
+  });
   if (document.visibilityState !== undefined) document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { hiddenSkip = 0; tick(); } });
   showRoute(false);
   tick();

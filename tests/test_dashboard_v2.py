@@ -464,7 +464,10 @@ def test_gate_counts_never_carry_device_names(monkeypatch, tmp_path):
         {"max-laptop": stamp(now - 60), "old-phone": stamp(now - 86400)}))
     d = load(monkeypatch, repo=tmp_path, EDGE_GATE="true")
     metrics = ('openbeast_edge_requests_total{device="max-laptop",path="/v1/chat/completions",outcome="ok"} 40\n'
-               'openbeast_edge_requests_total{device="max-laptop",path="/v1/chat/completions",outcome="rate_limited"} 2\n'
+               'openbeast_edge_requests_total{device="max-laptop",path="/v1/chat/completions",outcome="upstream_error"} 2\n'
+               # a refusal or a client that went away is not an error (review 2026-11-22)
+               'openbeast_edge_requests_total{device="max-laptop",path="/v1/chat/completions",outcome="rate_limited"} 4\n'
+               'openbeast_edge_requests_total{device="max-laptop",path="/v1/chat/completions",outcome="client_disconnect"} 1\n'
                'openbeast_edge_denied_total{reason="no_key"} 3\n'
                'openbeast_edge_completion_tokens_total{device="max-laptop"} 900\n')
     gate = {"/gate/health": (200, '{"status":"ok","auth":"devices","devices":2,"upstream":"x"}'),
@@ -483,7 +486,7 @@ def test_gate_counts_never_carry_device_names(monkeypatch, tmp_path):
     g = snap["gate"]
     assert g == {"enabled": True, "up": True, "auth": "devices", "devices": 2, "active_devices": 1,
                  "denied_total": 3, "denied_identity": 3, "denied_by_reason": {"no_key": 3},
-                 "requests_total": 72, "errors_total": 2, "req_per_min": 180.0}
+                 "requests_total": 77, "errors_total": 2, "req_per_min": 180.0}
     assert snap["tok_s"] == 60.0 and snap["prompt_tok_s"] == 10.0 and snap["tok_s_source"] == "engine"
     assert snap["history"]["tok_s"] == [None, 60.0]
     assert "laptop" not in json.dumps(snap) and "phone" not in json.dumps(snap)

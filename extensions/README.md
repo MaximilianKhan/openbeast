@@ -186,7 +186,7 @@ The `dashboard` slot API established the sanctioned pattern. Follow it:
   | memory near the memguard floor | warning / critical | MemAvailable under floor + margin / under the floor | `MEM_FLOOR_GIB` (`HY4_MEMGUARD_GIB`, else 2.5), `MEM_MARGIN_GIB` (2.5); held 10 s |
   | GPU throttling | warning | NVML reports a hardware, thermal or power-brake slowdown (the software power cap is shown, not alerted) | `THROTTLE_S` (20 s) |
   | disk low | warning / critical | model volume free under | `DISK_FREE_PCT` (10), `DISK_CRIT_PCT` (3); held 30 s |
-  | gate error spike | warning | errors in 5 min at least N and at least P % of requests | `GATE_ERRORS` (10), `GATE_ERROR_PCT` (20) |
+  | gate error spike | warning | upstream failures (error, timeout, bad status) in 5 min at least N and at least P % of requests; refusals and client disconnects are not errors | `GATE_ERRORS` (10), `GATE_ERROR_PCT` (20) |
   | gate down | critical | beast-gate on but not answering | `ENGINE_DOWN_S` |
   | KV cache full | warning | KV use at or above P % with requests waiting | `KV_PCT` (98), `KV_S` (60 s) |
   | service down | warning | tools, WebUI, search, chat, artifact or instinct down | `SERVICE_S` (30 s) |

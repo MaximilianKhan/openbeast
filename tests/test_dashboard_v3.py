@@ -346,11 +346,17 @@ def test_alerts_hold_raise_clear_and_count_incidents(monkeypatch):
     ev = d.events(10, kind="alert")
     assert [e.get("tag") for e in ev] == ["clear", "raise"] and ev[1]["level"] == "crit"
     assert d._daily.rows(1)[0]["incidents"] == 1
-    # a flapping condition that never holds raises nothing
+    # a flapping condition (down every other probe) keeps its hold timer through the
+    # short gaps and raises (review 2026-11-22: it used to reset on every clear tick)
     b = d.Alerts()
     for k in range(5):
         b.evaluate(cond if k % 2 == 0 else {}, T0 + 100 + k * 4)
-    assert b.snapshot()["active"] == []
+    assert [x["key"] for x in b.snapshot()["active"]] == ["peer:spark-2"]
+    # ...while a single blip, or one blip every 30 s, raises nothing
+    c2 = d.Alerts()
+    for k in range(10):
+        c2.evaluate(cond if k % 6 == 0 else {}, T0 + 200 + k * 5)
+    assert c2.snapshot()["active"] == [] and c2._first == {} and c2._gone == {}
     hv = d.health_verdict(True, snap)
     assert hv == {"state": "critical", "reason": "spark-2 unreachable"}
     assert d.health_verdict(False, snap)["state"] == "down" and d.health_verdict(True, {"active": []})["state"] == "ok"
@@ -642,3 +648,243 @@ def test_llama_window_with_no_finished_request_falls_back_to_lifetime_positions(
     sp = d.detail_window(d.engine_detail("llama", LLAMA), a, 20)["spec"]
     assert sp["accept_pct"] is None and sp["life_accept_pct"] == pytest.approx(61.6, abs=0.05)
     assert sp["per_pos_pct"] == [pytest.approx(82.5, abs=0.05), pytest.approx(66.4, abs=0.05)]
+
+
+# ═════════════════════════ review 2026-11-22 (fix round) ═════════════════════════
+
+def test_verdict_counts_every_alert_it_does_not_name(monkeypatch):
+    d = load(monkeypatch)
+    a = lambda t, lv: {"title": t, "level": lv}
+    v = lambda *al: d.health_verdict(True, {"active": list(al)})["reason"]
+    assert v(a("c", "crit"), a("w", "warn")) == "c; w"
+    assert v(a("c", "crit"), *[a(f"w{i}", "warn") for i in range(5)]) == "c; w0 (+4 more)"
+    assert v(a("c1", "crit"), a("c2", "crit"), a("w", "warn")) == "c1; c2 (+1 more)"
+    assert v(a("c", "crit")) == "c"
+
+
+def test_alerts_survive_a_restart_without_a_second_raise(monkeypatch, tmp_path):
+    (tmp_path / ".run").mkdir()
+    cond = {"peer:spark-2": ("peer", "crit", "spark-2 unreachable", "ssh failed", 10.0)}
+    d = load(monkeypatch, repo=tmp_path)
+    d._alerts.evaluate(cond, T0)
+    d._alerts.evaluate(cond, T0 + 15)
+    assert d.save_log(now=T0 + 16) > 0
+    d2 = load(monkeypatch, repo=tmp_path)
+    d2.load_log()
+    d2._alerts.evaluate(cond, T0 + 100)
+    act = d2._alerts.snapshot()["active"]
+    assert [x["key"] for x in act] == ["peer:spark-2"] and act[0]["since"] == T0
+    assert [e.get("tag") for e in d2.events(10, kind="alert")] == ["raise"]
+    assert d2._daily.rows(1)[0]["incidents"] == 1
+    d2._alerts.evaluate({}, T0 + 101)
+    d2._alerts.evaluate({}, T0 + 120)
+    assert d2._alerts.snapshot()["active"] == []
+    assert [e.get("tag") for e in d2.events(10, kind="alert")] == ["clear", "raise"]
+    # junk alert rows restore nothing
+    assert d2._alerts.restore([{"key": 5}, {"key": "k", "rule": "r", "level": "bogus", "since": 1}, "x"]) == 0
+
+
+def test_escalation_logs_once_and_raises_outlive_event_churn(monkeypatch):
+    d = load(monkeypatch)
+    a = d.Alerts()
+    hot = lambda lv: {"temp:spark-1": ("temp", lv, "GPU hot on spark-1", "x", 0.0)}
+    for k in range(10):
+        a.evaluate(hot("warn" if k % 2 == 0 else "crit"), T0 + k * 5)
+    assert len(d.events(50, kind="alert")) == 2          # the raise and one "now crit"
+    for k in range(600):                                  # a flapping node floods the ring
+        d.event(f"spark-2 {'down' if k % 2 else 'up'}", kind="node", now=T0 + 60 + k)
+    assert d.summary_24h(now=T0 + 700)["incidents"] == 1
+    assert len(d.daily_status()["last_24h"]["incident_list"]) <= 1
+
+
+def test_history_dead_names_expire_and_free_the_cap(monkeypatch, tmp_path):
+    d = load(monkeypatch)
+    s = d.HistoryStore()
+    old = T0 - 30 * 86400
+    for k in range(s.max_metrics):
+        assert s.add(f"fab:spark-1:old{k}/1:tx", 1.0, old)
+    doc = s.dump(now=T0)
+    assert doc == {}, "a metric with no live row is not saved"
+    s2 = d.HistoryStore()
+    assert s2.load({f"x{k}": {"k": "gauge", "t": {"5": [[old, 1, 1, 1, 1]]}} for k in range(200)}, now=T0) == 0
+    assert s2._m == {}, "a name with no valid row takes no slot"
+    assert s.add("serve:tok_s", 5.0, T0), "a dead name is evicted at the cap"
+    full = d.HistoryStore(max_metrics=2)
+    assert full.add("a", 1, T0) and full.add("b", 1, T0) and not full.add("c", 1, T0)
+
+
+def test_log_with_numbers_as_strings_loads(monkeypatch, tmp_path):
+    (tmp_path / ".run").mkdir()
+    (tmp_path / ".run" / "dashboard-log.json").write_text(json.dumps(
+        {"v": 1, "events": [{"t": "1.5", "text": "x"}, {"t": "abc", "text": "y"}],
+         "swaps": [{"model": "m", "from": "1e3"}, {"model": "n", "from": "zz"}]}))
+    d = load(monkeypatch, repo=tmp_path)
+    d.load_log()
+    assert [(e["t"], e["text"]) for e in d.events()] == [(1, "x")]
+    assert [(r["from"], r["model"]) for r in d._swaps.rows()] == [(1000, "m")]
+
+
+def test_swap_unit_learned_later_is_not_a_swap(monkeypatch):
+    d = load(monkeypatch)
+    assert d._swaps.seen(T0, "m", None, "vLLM") is None
+    assert d._swaps.seen(T0 + 15, "m", "hy4-vllm-inference", "vLLM") is None
+    rows = d._swaps.rows()
+    assert len(rows) == 1 and rows[0]["unit"] == "hy4-vllm-inference"
+
+
+def test_vllm_prompt_counts_computed_prefill_not_cache_hits(monkeypatch):
+    d = load(monkeypatch)
+    by = ('vllm:prompt_tokens_total{engine="0"} 100\nvllm:prompt_tokens_cached_total{engine="0"} 90\n'
+          'vllm:prompt_tokens_by_source_total{engine="0",source="local_compute"} 10\n'
+          'vllm:prompt_tokens_by_source_total{engine="0",source="local_cache_hit"} 90\n')
+    assert d.engine_counters("vllm", by)[1] == 10
+    assert d.engine_counters("vllm", by.split("vllm:prompt_tokens_by_source")[0])[1] == 10
+    assert d.engine_counters("vllm", 'vllm:prompt_tokens_total{engine="0"} 100\n')[1] == 100
+
+
+def test_vllm_decode_per_request_from_request_decode_time_under_mtp(monkeypatch):
+    d = load(monkeypatch)
+    itl = [("0.05", 0), ("0.1", 0), ("0.2", 1000), ("+Inf", 1000)]       # p50 ~0.15 s per STEP
+
+    def body(gen, dec, steps):
+        return (_hist("vllm:inter_token_latency_seconds", [(le, n * steps // 1000) for le, n in itl])
+                + f'vllm:spec_decode_num_drafts_total{{engine="0"}} {steps}\n'
+                + f'vllm:spec_decode_num_draft_tokens_total{{engine="0"}} {steps * 3}\n'
+                + f'vllm:spec_decode_num_accepted_tokens_total{{engine="0"}} {int(steps * 2.2)}\n'
+                + f'vllm:request_generation_tokens_sum{{engine="0"}} {gen}\n'
+                + f'vllm:request_decode_time_seconds_sum{{engine="0"}} {dec}\n')
+    a, b = d.engine_detail("vllm", body(3200, 160, 1000)), d.engine_detail("vllm", body(9600, 480, 3000))
+    pr = d.detail_window(b, a, 300)["per_request"]
+    assert pr["decode_tok_s"] == 20.0 and pr["life_decode_tok_s"] == 20.0 and pr["from"] == "request decode time"
+    # without the request histograms, 1/ITL is scaled by the tokens each step emits
+    a2 = d.engine_detail("vllm", body(0, 0, 1000).split("vllm:request_generation")[0])
+    b2 = d.engine_detail("vllm", body(0, 0, 3000).split("vllm:request_generation")[0])
+    pr2 = d.detail_window(b2, a2, 300)["per_request"]
+    assert pr2["decode_tok_s"] > 1.5 / d.detail_window(b2, a2, 300)["latency"]["itl"]["p50"]
+
+
+def test_llama_prompt_rate_is_live_during_prefill(monkeypatch):
+    d = load(monkeypatch)
+    slot = lambda n, dec: json.dumps([{"id": 0, "is_processing": True, "n_prompt_tokens_processed": n,
+                                       "next_token": [{"n_decoded": dec}]}])
+    assert d.llama_inflight_prompt(200, slot(4096, 0)) == 4096
+    assert d.llama_inflight_prompt(200, slot(4096, 3)) == 0, "past prefill the counter has it"
+    assert d.llama_inflight_prompt(500, "") is None and d.llama_inflight_prompt(200, "{}") is None
+    d = load(monkeypatch, **_SLOT_ENV["llama"])
+    st = {"prm": 1000, "n": 0, "dec": 0}
+
+    def get(url, timeout=2, auth=False):
+        if url.endswith("/metrics"):
+            return 200, f"llamacpp:tokens_predicted_total 5000\nllamacpp:prompt_tokens_total {st['prm']}\n"
+        if url.endswith("/slots"):
+            return 200, slot(st["n"], st["dec"])
+        return _canned(_SLOT_ANS["llama"])(url)
+    d._get = get
+    d._gate_get = lambda path: (None, "")
+    d.inference_unit = lambda units=None: {"name": "llama-server", "active": True, "uptime_s": 60}
+    s = d.ServeSampler()
+    rates = []
+    for k in range(8):
+        st["n"] = 2000 * k
+        s.sample(now=T0 + k * 3)
+        rates.append(s.snapshot()["prompt_tok_s"])
+    assert rates[-1] and rates[-1] > 500, rates
+    st.update(prm=1000 + 14000, n=14000, dec=1)            # prefill ends: counter +N, live -N
+    s.sample(now=T0 + 24)
+    assert s.snapshot()["prompt_tok_s"] < 1000, "no spike at the first token"
+    assert s.snapshot()["prompt_tok_s_source"] == "engine"
+
+
+def test_no_progress_counter_is_no_stall(monkeypatch):
+    d = load(monkeypatch, **_SLOT_ENV["tensorfold"])
+    d._get = _canned({"/health": (200, json.dumps({"ok": True, "status": "ok", "requests_running": 2, "iteration_s": 0.05})),
+                      "/metrics": (404, "")})
+    d._gate_get = lambda path: (None, "")
+    d.inference_unit = lambda units=None: {"name": "x", "active": True, "uptime_s": 60}
+    s = d.ServeSampler()
+    for k in range(120):
+        s.sample(now=T0 + k * 3)
+    snap = s.snapshot()
+    assert snap["stalled_s"] is None
+    assert "engine:stalled" not in d.alert_conditions(d.alert_thresholds(conf={}), [], snap, {}, T0 + 400)
+
+
+def test_gate_refusals_and_disconnects_raise_no_error_spike(monkeypatch):
+    d = load(monkeypatch)
+    by = {"ok": 28, "client_disconnect": 6, "rate_limited": 4, "fanout": 2, "gone": 1}
+    assert sum(v for k, v in by.items() if k in d._GATE_ERROR_OUTCOMES) == 0
+    assert {"upstream_error", "upstream_timeout", "upstream_status"} == set(d._GATE_ERROR_OUTCOMES)
+
+
+def test_detail_empty_states_start_hidden_and_tables_are_focusable():
+    html = open(os.path.join(DASH, "static", "index.html")).read()
+    for i in ("spec-empty", "finished-empty", "hs-incidents-empty", "days-empty", "swaps-empty"):
+        assert f'id="{i}" hidden' in html, i
+    assert html.count('class="table-wrap" tabindex="0" role="region"') == 3
+    assert 'id="page-stale"' in html and 'class="brand" href="#/">' in html
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_alert_links_stale_detail_and_unreachable_node(tmp_path):
+    js = r"""
+    const rules = D.rules.map(r => [r, __obdash.alertHref({rule: r, key: r + ':spark-2'})]);
+    const hostile = __obdash.alertHref({rule: 'peer', key: 'peer:a"b<c>/d'});
+    __obdash.renderAlerts({active: [{key: 'peer:spark-2', rule: 'peer', level: 'crit', title: 't', since: 1}], counts: {crit: 1}});
+    const a = document.getElementById('alert-list').children[0].children[0];
+    // a detail feed that stopped answering marks its page stale
+    const sec = new El('section'); sec.dataset.page = 'serving';
+    document.querySelectorAll = () => [sec];
+    __obdash._setRoute({page: 'serving', arg: null});
+    const url = __obdash.pageWants()[0][0];
+    __obdash._pageOk.set(url, Date.now() - 3 * __obdash.pageWants()[0][2]);
+    __obdash.renderPageStale();
+    const stale = {sec: sec.dataset.stale, note: document.getElementById('page-stale').textContent,
+                   hidden: document.getElementById('page-stale').hidden};
+    __obdash._pageOk.set(url, Date.now()); __obdash.renderPageStale();
+    stale.fresh = sec.dataset.stale;
+    // an unreachable node's last readings are marked and dimmed
+    __obdash._setRoute({page: 'node', arg: 'spark-2'});
+    __obdash.renderNodeHead({name: 'spark-2', state: 'unreachable', last_ok_age_s: 20, gpu: {name: 'NVIDIA GB10', util_pct: 97, temp_c: 95}});
+    const nt = document.getElementById('nd-tiles');
+    process.stdout.write(JSON.stringify({rules, hostile, href: a.attrs.href, cls: a.className, lvl: a.dataset.level, stale,
+      nd: nt.dataset.stale, tiles: nt.textContent, warn: nt.children.map(c => c.dataset.state).filter(Boolean)}));
+    """
+    o = json.loads(_node(js, tmp_path, {"rules": ["peer", "temp", "throttle", "mem", "disk", "engine", "stall", "kv",
+                                                  "gate", "service", "other"]}))
+    r = dict(o["rules"])
+    assert r["peer"] == r["temp"] == r["disk"] == "#/nodes/spark-2"
+    assert r["engine"] == r["stall"] == r["kv"] == "#/serving" and r["gate"] == "#/gate"
+    assert r["service"] == "#/services" and r["other"] == "#/events"
+    assert o["hostile"] == "#/nodes/a%22b%3Cc%3E%2Fd"
+    assert o["href"] == "#/nodes/spark-2" and o["cls"] == "alert" and o["lvl"] == "crit"
+    assert o["stale"]["sec"] == "1" and "detail stale" in o["stale"]["note"] and not o["stale"]["hidden"]
+    assert o["stale"]["fresh"] == ""
+    assert o["nd"] == "1" and "last reading 20s ago" in o["tiles"] and o["warn"] == [], "an old reading is no live alarm"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_serving_labels_lifetime_fallbacks_as_such(tmp_path):
+    doc = {"window": "1h", "window_s": 3600, "t0": 0, "step": 5, "series": {}, "now": {},
+           "detail": {"window_s": 300, "latency": {"ttft": {"p50": None, "p95": None, "count": 0, "life_p50": 0.8,
+                                                            "life_p95": 2.3, "life_count": 90},
+                                                   "e2e": {"p50": 5.0, "p95": 9.0, "count": 3}},
+                      "spec": {"accept_pct": None, "life_accept_pct": 44.9, "life_mean_len": 3.2}}}
+    js = ("__obdash.renderServing(D);"
+          "const t = document.getElementById('sv-tiles').children.map(c => [c.children[1].textContent, c.children[2].textContent]);"
+          "process.stdout.write(JSON.stringify({t, note: document.getElementById('spec-note').textContent}));")
+    o = json.loads(_node(js, tmp_path, doc))
+    t = dict(o["t"])
+    assert t["TTFT p50 · p95"] == "since engine start · 90 req"
+    assert t["end-to-end p50 · p95"] == "last 5m"
+    assert t["spec. acceptance"].startswith("since engine start") and "3.20" in t["spec. acceptance"]
+    assert o["note"] == "since engine start"
+
+
+def test_a_flapping_node_does_not_flood_the_event_log(monkeypatch):
+    d = load(monkeypatch)
+    n = d.NodeSampler("spark-2", "spark-2", "peer", 1)
+    n.state = "up"
+    for k in range(520):
+        n._set_state("ssh failed" if k % 2 == 0 else None, view={} if k % 2 else None)
+    ev = d.events(d.EVENTS_MAX, kind="node")
+    assert len(ev) < 20 and any("flapping" in e["text"] for e in ev)

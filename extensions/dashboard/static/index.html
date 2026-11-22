@@ -16,7 +16,7 @@
 <a class="skip-link" href="#main">Skip to the content</a>
 <header class="topbar">
   <div class="topbar-row">
-    <a class="brand" href="#/" aria-label="OpenBeast command center: overview">
+    <a class="brand" href="#/">
       <span class="brand-mark" aria-hidden="true">OB</span>
       <span class="brand-name">OPENBEAST</span>
       <span class="brand-sub">command center</span>
@@ -43,6 +43,7 @@
 </header>
 
 <main id="main" tabindex="-1">
+  <p class="page-stale" id="page-stale" role="status" hidden></p>
 
   <!-- ═══════════════════════════ OVERVIEW ═══════════════════════════ -->
   <section class="page" data-page="home" aria-labelledby="h-home">
@@ -188,7 +189,7 @@
         </dl>
       </section>
       <section class="block panel" aria-labelledby="h-spec">
-        <div class="block-head"><h2 id="h-spec">Speculative decoding &amp; cache</h2><p class="block-note" id="spec-note">—</p></div>
+        <div class="block-head"><h2 id="h-spec">Speculative decoding &amp; cache</h2><p class="block-note" id="spec-note">loading…</p></div>
         <dl class="kv kv-tight" id="spec-kv">
           <div><dt>acceptance (window)</dt><dd id="sp-acc">—</dd></div>
           <div><dt>mean accepted length</dt><dd id="sp-len">—</dd></div>
@@ -197,10 +198,10 @@
         </dl>
         <h3 class="sub-h">Acceptance by draft position</h3>
         <ol class="bars" id="spec-pos"></ol>
-        <p class="empty" id="spec-empty">This engine reports no speculative decoding.</p>
+        <p class="empty" id="spec-empty" hidden>This engine reports no speculative decoding.</p>
         <h3 class="sub-h">Finished requests by reason</h3>
         <ol class="bars" id="finished"></ol>
-        <p class="empty" id="finished-empty">Not reported by this engine.</p>
+        <p class="empty" id="finished-empty" hidden>Not reported by this engine.</p>
       </section>
     </div>
   </section>
@@ -364,7 +365,7 @@
     <p class="empty" id="ev-empty">No events of this kind.</p>
     <section class="block panel" aria-labelledby="h-rules">
       <div class="block-head"><h2 id="h-rules">Alert rules</h2><p class="block-note" id="rules-note">DASHBOARD_ALERT_* in openbeast.conf or the environment</p></div>
-      <div class="table-wrap"><table class="table" id="rules"><thead><tr><th scope="col">setting</th><th scope="col">value</th><th scope="col">what it is</th></tr></thead><tbody></tbody></table></div>
+      <div class="table-wrap" tabindex="0" role="region" aria-label="Alert rules table"><table class="table" id="rules"><thead><tr><th scope="col">setting</th><th scope="col">value</th><th scope="col">what it is</th></tr></thead><tbody></tbody></table></div>
     </section>
   </section>
 
@@ -372,7 +373,7 @@
   <section class="page" data-page="history" aria-labelledby="h-history" hidden>
     <div class="page-head">
       <div><p class="crumb"><a href="#/">Overview</a> / History</p><h1 id="h-history" tabindex="-1">History</h1></div>
-      <p class="page-note" id="history-note">—</p>
+      <p class="page-note" id="history-note">loading…</p>
     </div>
     <h2 class="sub-h sub-h-top">The last 24 hours</h2>
     <ul class="stat-grid" id="hs-tiles" aria-label="The last 24 hours"></ul>
@@ -384,18 +385,18 @@
       <section class="block panel" aria-labelledby="h-hs-inc">
         <div class="block-head"><h2 id="h-hs-inc">Incidents</h2><p class="block-note">alerts raised, last 24 h</p></div>
         <ol class="events" id="hs-incidents"></ol>
-        <p class="empty" id="hs-incidents-empty">No incident in the last 24 hours.</p>
+        <p class="empty" id="hs-incidents-empty" hidden>No incident in the last 24 hours.</p>
       </section>
     </div>
     <section class="block panel" aria-labelledby="h-days">
       <div class="block-head"><h2 id="h-days">Daily rollups</h2><p class="block-note" id="days-note">local days</p></div>
-      <div class="table-wrap"><table class="table table-num" id="days"><thead><tr><th scope="col">day</th><th scope="col">energy</th><th scope="col">tokens gen.</th><th scope="col">prompt</th><th scope="col">requests</th><th scope="col">uptime</th><th scope="col">incidents</th></tr></thead><tbody></tbody></table></div>
-      <p class="empty" id="days-empty">No day recorded yet.</p>
+      <div class="table-wrap" tabindex="0" role="region" aria-label="Daily rollups table"><table class="table table-num" id="days"><thead><tr><th scope="col">day</th><th scope="col">energy</th><th scope="col">tokens gen.</th><th scope="col">prompt</th><th scope="col">requests</th><th scope="col">uptime</th><th scope="col">incidents</th></tr></thead><tbody></tbody></table></div>
+      <p class="empty" id="days-empty" hidden>No day recorded yet.</p>
     </section>
     <section class="block panel" aria-labelledby="h-swaps">
       <div class="block-head"><h2 id="h-swaps">What served when</h2><p class="block-note">model swaps, as seen by the dashboard</p></div>
-      <div class="table-wrap"><table class="table" id="swaps"><thead><tr><th scope="col">model</th><th scope="col">unit</th><th scope="col">engine</th><th scope="col">from</th><th scope="col">to</th><th scope="col">for</th></tr></thead><tbody></tbody></table></div>
-      <p class="empty" id="swaps-empty">No model seen serving yet.</p>
+      <div class="table-wrap" tabindex="0" role="region" aria-label="Model swaps table"><table class="table" id="swaps"><thead><tr><th scope="col">model</th><th scope="col">unit</th><th scope="col">engine</th><th scope="col">from</th><th scope="col">to</th><th scope="col">for</th></tr></thead><tbody></tbody></table></div>
+      <p class="empty" id="swaps-empty" hidden>No model seen serving yet.</p>
     </section>
   </section>
 
