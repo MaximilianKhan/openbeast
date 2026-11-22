@@ -153,6 +153,28 @@
       "host": "DGX Spark pair, TensorFold, Mia EXL3 (2.9 bpw)",
       "campaign_arm": "v5-thinking-first U_8k",
       "note": "63/71; 0 units lost; failed: 163_bigint_divmod_f, 168_linearizability_kv_b, 168_linearizability_kv_d, 168_linearizability_kv_f, 173_taskgroup_cancel, 183_heston_little_trap, 192_pike_regex, 195_riscv_insn_budget; integrity scan 2026-11-21: 0 contaminated (no flagged tool call)"
+    },
+    {
+      "id": "DS-UP8k",
+      "model": "DeepSeek-V4.1-Flash (Mia EXL3)",
+      "config": "campaign arm UP_8k: UP at T2's 8192-token per-turn cap (harness10)",
+      "files": [
+        "eval-deepseek-v4-1-flash-v5-thinking-first-up-8k-20261121-064409.json"
+      ],
+      "host": "DGX Spark pair, TensorFold, Mia EXL3 (2.9 bpw)",
+      "campaign_arm": "v5-thinking-first UP_8k",
+      "note": "65/71; 0 units lost; failed: 168_linearizability_kv_b, 168_linearizability_kv_d, 168_linearizability_kv_f, 173_taskgroup_cancel, 183_heston_little_trap, 192_pike_regex; integrity scan 2026-11-21: 0 contaminated (no flagged tool call)"
+    },
+    {
+      "id": "DS-UPA8k",
+      "model": "DeepSeek-V4.1-Flash (Mia EXL3)",
+      "config": "campaign arm UPA_8k: UPA at T2's 8192-token per-turn cap (harness10)",
+      "files": [
+        "eval-deepseek-v4-1-flash-v5-thinking-first-upa-8k-20261121-124508.json"
+      ],
+      "host": "DGX Spark pair, TensorFold, Mia EXL3 (2.9 bpw)",
+      "campaign_arm": "v5-thinking-first UPA_8k",
+      "note": "62/71; 0 units lost; failed: 163_bigint_divmod_b, 168_linearizability_kv_b, 168_linearizability_kv_c, 168_linearizability_kv_d, 168_linearizability_kv_f, 173_taskgroup_cancel, 175_crdt_orset_rga, 183_heston_little_trap, 192_pike_regex; integrity scan 2026-11-21: 0 contaminated (no flagged tool call)"
     }
   ],
   "not_yet_run": [

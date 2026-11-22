@@ -29,11 +29,12 @@ Status key: **IDEA** (noted) · **BUILDING** · **ARM** (being measured) · **AD
 | DeepSeek arm T2 (T + 8,192-token per-turn cap + act nudge, harness9) | **65/71** (SCORE 94.9) | 2026-11-19; +4 / 0 regressions against T, single seed. **The board's #1** and DeepSeek's recommended setup (`AGENT_PROFILE=deepseek-best`, `SPARK_HYDRA.md` E2b); status in [MODEL_CAMPAIGN.md §9](MODEL_CAMPAIGN.md#9-next-deepseek-v41-flash-1017-thinking-first) |
 | DeepSeek arm T_s1 (T under `--seed 1`, harness9) | **61/71** (SCORE 85.7) | 2026-11-19; the same 61 as T with one unit swapped each way: **noise about ±1 unit** (and about ±3 SCORE) |
 | DeepSeek arm T3 (T2 at a 4,096 cap, harness9) | **65/71** (SCORE 91.5) | 2026-11-20; the same count as T2, 3 units in and 3 out, fastest arm (21.5 unit-hours against 24.5). The cap trades units, so **8,192 stays** |
-| DeepSeek arm U (T2's switches with the forced-act turn, done-when-verified, no web tools, at a 16,384 cap; harness10) | **59/71** (SCORE 85.5) | 2026-11-20; −6 against T2, nothing gained. Every forced turn acted (24 of 24); the cap cost the units. Board row DS-U. Tables: [the interim campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md) |
+| DeepSeek arm U (T2's switches with the forced-act turn, done-when-verified, no web tools, at a 16,384 cap; harness10) | **59/71** (SCORE 85.5) | 2026-11-20; −6 against T2, nothing gained. Every forced turn acted (24 of 24); the cap cost the units. Board row DS-U. Tables: [the final campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md) |
 | DeepSeek arm UP (U + three planning lines; harness10, 16,384 cap) | **62/71** (SCORE 88.0) | 2026-11-20; +3 over U (4 in, 1 out), same era and cap: **planning lines help**. Board row DS-UP (two files: paused and resumed) |
 | DeepSeek arm UPA (UP + the frozen algorithmic procedure pack; harness10) | **59/71** (SCORE 83.8) | 2026-11-21; −3 against UP, nothing gained, most unit-hours of any arm (29.9): **the pack hurts**. Board row DS-UPA |
 | DeepSeek arm U_8k (U at an 8,192 cap; harness10) | **63/71** (SCORE 88.5) | 2026-11-21; +4 over U (the cap alone), −2 against T2 (within about 2 of the noise: **the forced act is no better than the nudge**). Board row DS-U8k |
-| DeepSeek arm UP_8k (UP at an 8,192 cap; harness10) | running: 45 passed of 48 done | 2026-11-21 10:44 snapshot; T2 44 and U_8k 45 on the same 48 units. Not on the board. UPA_8k next |
+| DeepSeek arm UP_8k (UP at an 8,192 cap; harness10) | **65/71** (SCORE 91.4) | 2026-11-21; +2 over U_8k (2 in, 0 out: helped by 2, within the did-not-beat band, so not conclusive); +0 against T2 on passes (2 in, 2 out) with a lower SCORE, so T2 stays. Board row DS-UP8k |
+| DeepSeek arm UPA_8k (UPA at an 8,192 cap; harness10) | **62/71** (SCORE 88.0) | 2026-11-21; −3 against UP_8k, nothing gained: **the pack hurts at 8K too**. Board row DS-UPA8k. The DeepSeek series is complete |
 
 Max's read, and the working hypothesis: GLM-5.3-Flash is a far stronger model than
 26/71 suggests, and much of the gap is the harness around it, not the weights. Each arm
@@ -92,7 +93,7 @@ D and F did not run (Max paused the chain). The first thinking-first campaign
 is DeepSeek-V4.1-Flash (Mia EXL3)'s (2026-11-18 on): T 61/71, T2 65/71, T3
 65/71, U 59/71, UP 62/71, UPA 59/71, U_8k 63/71 ("Headroom" above). For that model the lever after thinking is
 the per-turn thinking cap, not a component: see "DeepSeek-V4.1-Flash (Mia
-EXL3): the v5 campaign" below and [the interim campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md).
+EXL3): the v5 campaign" below and [the final campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md).
 
 ## GLM-5.3-Flash (spark-hydra, thinking off) — from the 2026-11-16 v5 L0 audit
 
@@ -450,17 +451,17 @@ Add a claim when the same error recurs in a second unit or a second arm.
 
 ## DeepSeek-V4.1-Flash (Mia EXL3): the v5 campaign (2026-11-20)
 
-Interim (updated 2026-11-21): UP_8k is running, UPA_8k next. Source: arms T, T_s1, T2, T3, U, UP, UPA, U_8k (board) and UP_8k (partial), read through
+Final (2026-11-21): the series is complete. Source: arms T, T_s1, T2, T3, U, UP, UPA, U_8k, UP_8k and UPA_8k (all on the board), read through
 `evals/v5_report.py`. Full tables, deltas and limitations are in
-[the interim campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md). One seed per arm except T; noise about ±1 unit.
+[the final campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md). One seed per arm except T; noise about ±1 unit.
 
 | Finding | Evidence | Status |
 |---|---|---|
 | **The per-turn thinking cap is this model's lever.** 16K → 8K: +4 units, 0 lost (T → T2, all four gains had hit T's wall). 8K → 4K: 0 net, 3 in and 3 out, SCORE 94.9 → 91.5 (T2 → T3, same era). 16K again under harness10: −6 (T2 → U). Inside harness10, the cap alone: U 59 → U_8k 63, +4 (6 in, 2 out) | wall hits 16 / 13 / 10 / 15 / 11 (T / T2 / T3 / U / U_8k); unit-hours 26.6 / 24.5 / 21.5 / 26.1 / 23.7 | **ADOPTED at 8,192** for DeepSeek (`deepseek-best`); a per-model knob |
 | **The forced-act turn ends a stall** where the text act nudge did not: all 24 forced turns in U (18 of 71 units) ended in a tool call. The text nudge was ignored every time in the 168 investigation | U transcripts, `force_act_result` events | **MEASURED, not adopted** — at the same 8K cap U_8k scored 63 against T2's 65 (−2, within about 2 of the noise; U_8k also adds done-when-verified and hidden web tools, and crosses an era). No improvement over the act nudge; T2 stays the default |
-| **Planning lines help.** Three general lines (bound first; test a doubtful simplification against a brute force; redesign on a large miss of the time limit), naming no task: U 59 → UP 62 at the same 16K cap, 4 units in and 1 out | U → UP (same era, one variable) | **PROMISING** — UP_8k (running) tests them on top of the 8K cap; the GLM control has not run |
-| **The frozen algorithmic procedure pack hurts.** UP 62 → UPA 59: 0 units in, 3 out, and the most unit-hours of any arm (29.9 against UP's 26.5). The no-harm condition fails | UP → UPA (same era, one variable) | **REJECTED at 16K** — UPA_8k measures it once more at 8K, as the campaign orders |
+| **Planning lines help.** Three general lines (bound first; test a doubtful simplification against a brute force; redesign on a large miss of the time limit), naming no task: U 59 → UP 62 at the same 16K cap, 4 units in and 1 out | U → UP (same era, one variable) | **PROMISING** — at 8K, U_8k 63 → UP_8k 65 (+2, 2 in and 0 out): helped by 2, within the did-not-beat band, so not conclusive; UP_8k ties T2 on passes with a lower SCORE, so not adopted into the default; the GLM control has not run |
+| **The frozen algorithmic procedure pack hurts.** UP 62 → UPA 59: 0 units in, 3 out, and the most unit-hours of any arm (29.9 against UP's 26.5). The no-harm condition fails | UP → UPA, UP_8k → UPA_8k (same era, one variable) | **REJECTED** — −3 at 16K and −3 again at 8K (UP_8k 65 → UPA_8k 62, 0 in and 3 out) |
 | **A 16K cap costs units even with the forced act.** U's lost units ran out of wall with 11-26 turns where T2 had 28-49 on the same units (4 of 6; one hit the wall at 53 turns, one ran out of turns) | U and T2 rows (`iterations` from harness9's partial stats) | settled for this model: do not run DeepSeek at 16K (U_8k +4 over U confirms it) |
 | **Adaptive cap.** The units 4K wins (many short iterate-and-test turns) and the units 8K wins (one long derivation) are different units. A cap that changes within a unit by a general rule could take both: deeper for the first, design-setting turns and shorter inside a write-test loop, or shrinking after consecutive capped turns. It must name no task | T2 → T3 deltas | **IDEA** — a runner change (era move), its own arm, read against T2 and T3 |
 | **The residual is design choice and time, not knowledge or language.** T2's six failures are five variants of one task family (168) plus 192_pike_regex. The 168 investigation (sealed review, `evals/audit/reviews/`) found a design-choice failure, not a knowledge gap: the model knows what makes the unit tractable, but usually commits early to an approach that cannot meet the limits, and capped thinking re-decides the design every turn. Its remedies are general and name no task | T2, T_s1, T3 rows; the review | **ARM** — U (forced act, done-when-verified), UP (planning lines), UPA (frozen procedure pack), each with a no-harm check on the other units and a GLM control |
-| **Packs are not the bottleneck here.** Go is 7/8 in every finished arm and Zig 5/6 in all but U_8k (4/6; its extra miss is 163_bigint_divmod_f); each other miss is a 168 variant; Python (25-30 of 32) carries the swings | per-language table in the report | packs stay on as in T; their ablation (T_nopacks) has not run for DeepSeek; no new claim |
+| **Packs are not the bottleneck here.** Go is 7/8 in every arm but UPA_8k (6/8; its extra miss is 163_bigint_divmod_b) and Zig 5/6 in all but U_8k (4/6; its extra miss is 163_bigint_divmod_f); each other miss is a 168 variant; Python (25-30 of 32) carries the swings | per-language table in the report | packs stay on as in T; their ablation (T_nopacks) has not run for DeepSeek; no new claim |

@@ -4,8 +4,8 @@ This is the procedure that found, on 2026-11-16, how best to serve and harness
 GLM-5.3-Flash on the spark-hydra pair. It is written so that any model can go
 through it unchanged. The second model through it is DeepSeek-V4.1-Flash
 (Mia EXL3), the pair's default since 2026-11-18 ("1017"; checklist and status in
-[§9](#9-next-deepseek-v41-flash-1017-thinking-first), results so far in
-[the interim campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md)). Every step is a command. Where the
+[§9](#9-next-deepseek-v41-flash-1017-thinking-first), results in
+[the final campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md)). Every step is a command. Where the
 step needs judgment, the decision rule is written down next to it.
 
 ```
@@ -346,8 +346,8 @@ below). `--dry-run` prints them for your settings.
 | U_8k | U | U at T2's 8192 cap (optional, harness10) | `--reasoning-budget 8192`; `OPENBEAST_AGENT_MAX_TOKENS=8192` | 2.3 | ~6.2 h | the cap question under the forced act (U_8k vs U; read with T3) **DeepSeek: 63/71, +4 over U (the cap was the cost), −2 against T2 (within ~2 of the noise: the forced act is no better than the nudge)** |
 | UP | U | + three planning lines (optional, harness10) | `OPENBEAST_AGENT_ALGO_LINES=1`; also the GLM control (`--model-name GLM-5.3-Flash` when the pair serves GLM) | 2.3 | ~6-7 h | do "bound first / test the doubtful split against a brute force / redesign on a >5x miss" fix the wrong-algorithm failures? (UP vs U) **DeepSeek: yes at 16K, 62/71, +3 over U (4 in, 1 out)** |
 | UPA | UP | + the frozen algorithmic procedure pack (optional, harness10) | `OPENBEAST_ALGO_PACK=1` (`agents/packs/algo-v1.md`, sha256 `6c532400...`, packs on) | 2.3 | ~6-7 h | does a ~400-token procedure pack add to the lines? (UPA vs UP) **DeepSeek: no, 59/71, −3 against UP (0 in, 3 out) and the most unit-hours of any arm** |
-| UP_8k | UP | UP at T2's 8192 cap (optional, harness10) | `--reasoning-budget 8192`; `OPENBEAST_AGENT_MAX_TOKENS=8192` | 2.3 | ~6.2 h | the planning lines at the better cap (UP_8k vs U_8k), and the whole stack against T2 **DeepSeek: running (45 passed of 48 done, 2026-11-21 10:44; T2 44 and U_8k 45 on the same 48)** |
-| UPA_8k | UPA | UPA at T2's 8192 cap (optional, harness10) | `--reasoning-budget 8192`; `OPENBEAST_AGENT_MAX_TOKENS=8192` | 2.3 | ~6.2 h | the pack at the better cap (UPA_8k vs UP_8k) |
+| UP_8k | UP | UP at T2's 8192 cap (optional, harness10) | `--reasoning-budget 8192`; `OPENBEAST_AGENT_MAX_TOKENS=8192` | 2.3 | ~6.2 h | the planning lines at the better cap (UP_8k vs U_8k), and the whole stack against T2 **DeepSeek: done, 65/71 (SCORE 91.4): +2 over U_8k, a tie with T2 on passes (board row DS-UP8k)** |
+| UPA_8k | UPA | UPA at T2's 8192 cap (optional, harness10) | `--reasoning-budget 8192`; `OPENBEAST_AGENT_MAX_TOKENS=8192` | 2.3 | ~6.2 h | the pack at the better cap (UPA_8k vs UP_8k) **DeepSeek: done, 62/71 (SCORE 88.0): −3 against UP_8k (board row DS-UPA8k)** |
 | T_j2 | T | 2 concurrent units (optional) | `"jobs": 2, "slots": 2` in the arm (wins over the CLI); only with `--only T_j2` or `--include T_j2` | 2.3 | ~7.7 h (~9 h for DeepSeek) | the contention model: same tokens per unit, at 2 streams (see the note below) |
 
 **DeepSeek's composite is T2 (2026-11-19).** DeepSeek-V4.1-Flash (Mia EXL3)
@@ -366,8 +366,10 @@ measured, the report uses T and says so. Arm T is unchanged for every model
 about ±1 unit), T3 65/71 (a wash against T2: 8192 stays), U 59/71 (the 16384
 cap cost it), UP 62/71 (planning lines +3 over U), UPA 59/71 (the pack −3
 against UP), U_8k 63/71 (+4 over U; −2 against T2, so the forced act is no
-better than the nudge), **UP_8k running** (45 of 48 so far), then UPA_8k.
-T2 is still the best row and the default. The tables and their deltas are in [the interim campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md). The
+better than the nudge), UP_8k 65/71 (planning lines +2 over U_8k, within
+the did-not-beat band; a tie with T2 on passes, lower SCORE), UPA_8k 62/71
+(the pack −3 again, at 8192). The series is complete.
+T2 is still the best row and the default. The tables and their deltas are in [the final campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md). The
 daily-agent form of T2 is one line in openbeast.conf,
 `AGENT_PROFILE=deepseek-best` ([SPARK_HYDRA.md](SPARK_HYDRA.md#e2b-deepseek-best-configuration-v5-t2)),
 live on spark-1 since 2026-11-19.
@@ -874,15 +876,17 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
       U; −2 against T2, within about 2 of the noise, so the forced act is no
       improvement on the nudge). Integrity scans 2026-11-21: 0 contaminated,
       no flagged tool call. Board rows DS-UP, DS-UPA, DS-U8k.
-- [ ] **Arm UP_8k: running** (45 passed of 48 done, 2026-11-21 10:44; T2
-      44 and U_8k 45 on the same 48 units). The open question: do the
-      planning lines add on top of the 8192 cap? Read against U_8k and T2.
-- [ ] **Next, in order:** UPA_8k (the pack at 8192, against UP_8k); then
-      Hy4-flash's H_T2
+- [x] **Arms UP_8k and UPA_8k (harness10, 2026-11-21).** UP_8k 65/71,
+      SCORE 91.4 (planning lines at 8192: +2 over U_8k, within the
+      did-not-beat band, so not conclusive; +0 against T2 on passes, lower
+      SCORE, so T2 stays). UPA_8k 62/71, SCORE 88.0 (the pack: −3 against
+      UP_8k, again). Integrity scans 2026-11-21: 0 contaminated. Board rows
+      DS-UP8k, DS-UPA8k. The DeepSeek series is complete.
+- [ ] **Next, in order:** Hy4-flash's H_T2
       ([SPARK_HYDRA.md](SPARK_HYDRA.md#hy4-flash-nvfp4-vllm-tp2-staged));
       then, last, the GLM recipe engine update (1104), tested on its own.
       UP on GLM-5.3-Flash as the control when the pair serves GLM.
-- [x] **Interim report** (2026-11-20): [the interim campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md).
+- [x] **Campaign report** (2026-11-20, final 2026-11-21): [the final campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md).
       Its tables come from `evals/v5_report.py`; regenerate them after each
       arm (`--write`).
 - [ ] Model-specific harness hypotheses: start from
