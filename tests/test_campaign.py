@@ -963,3 +963,35 @@ def test_hy4_thinking_needs_no_era_change():
     src = (ROOT / "agents" / "runner.py").read_text()
     assert '"enable_thinking": v == "on"' in src
     assert "reasoning_effort" not in src                        # the runner never names it: an era change would
+
+
+# --- 13. RTX 5090 default (Qwen3.8 27B Uncensored MTP): Q_T2, T2 at one stream --------------
+#
+# Q_T2 is T2's switches exactly; only jobs/slots differ, because the rig's llama-server
+# serves one stream. served_model keeps it off any other server.
+
+Q38 = "Qwen3.8 27B Uncensored MTP Q5_K_M"
+
+
+def test_q_t2_is_t2_at_one_stream():
+    camp = C.load_campaign(TF)
+    q, t2 = C.resolve_arm(camp, "Q_T2"), C.resolve_arm(camp, "T2")
+    assert q["args"] == t2["args"] and q["env"] == t2["env"] and q.get("requires") == t2.get("requires")
+    spec = C.arm_spec(camp, "Q_T2")
+    assert spec["base"] == "T2" and spec["optional"] is True
+    assert spec["jobs"] == 1 and spec["slots"] == 1
+    assert spec["model"] == Q38 and spec["served_model"] == "Qwen3.8 27B Uncensored MTP Q5"
+    assert C.arg_value(q["args"], "--reasoning-budget") == "8192"
+    assert C.arg_value(q["args"], "--thinking") == "on"
+
+
+def test_q38_composite_is_q_t2_and_others_keep_theirs():
+    camp = C.load_campaign(TF)
+    for name in (Q38, "Qwen3.8 27B Uncensored MTP"):
+        assert C.composite_for(camp, name)[0] == "Q_T2", name
+    assert C.composite_for(camp, DS)[0] == "T2"
+    assert C.composite_for(camp, HY4)[0] == "H_T2"
+    assert C.composite_for(camp, "Qwen3.8 27B")[0] == "T"        # another Qwen3.8 build is not this row
+    assert "Q_T2" not in C.run_order(camp)
+    assert C.served_model_mismatch(camp, ["Q_T2"], "DeepSeek-V4.1-Flash-1017")
+    assert C.served_model_mismatch(camp, ["Q_T2"], "Qwen3.8 27B Uncensored MTP Q5") == []
