@@ -1,5 +1,36 @@
 {
  "artifacts": {
+  "drafter": {
+   "dir": "recipe-glm53-flash-exl3-native-tp2.drafter",
+   "files": {
+    "README.md": {
+     "hub_oid": "512ace8d969625bfa81f01acd5629a54718e9d1d",
+     "lfs": false,
+     "sha256": "7a3b09fc163c223f4813257ae0f489d84e8e87c5b5c31192b3c504d5063db8a0",
+     "size": 2396
+    },
+    "assets/dflash2-figure.png": {
+     "hub_oid": "6d8dcc9a9472bddb644c881fe83050b5343d09bf5ffb0912e5598e55fe671e99",
+     "lfs": true,
+     "sha256": "6d8dcc9a9472bddb644c881fe83050b5343d09bf5ffb0912e5598e55fe671e99",
+     "size": 286889
+    },
+    "config.json": {
+     "hub_oid": "083085aaf95d59bad59c58f1160865683460254e",
+     "lfs": false,
+     "sha256": "c4aeac0101196a6e26705b34c45230bcd0c7c68ee2d2d1efdb242087f3712573",
+     "size": 1273
+    },
+    "model.safetensors": {
+     "hub_oid": "b038e1d9d1e7833fa3880c2c0135ba9b673013f03da1b29fb831931584759dac",
+     "lfs": true,
+     "sha256": "b038e1d9d1e7833fa3880c2c0135ba9b673013f03da1b29fb831931584759dac",
+     "size": 2342169800
+    }
+   },
+   "revision": "6cc6c481eee930a5139619ed919f78726371adbc",
+   "source": "incoai/GLM-5.3-Flash-DFlash2"
+  },
   "model": {
    "dir": null,
    "files": {
