@@ -56,7 +56,13 @@ Native TensorFold, 2026-11-22: 1.2.10 is installed on both Sparks; the latest
 upstream release is **1.3.4** (published 2026-11-22 20:53Z; it was the README's
 install pin before it had a release, and the matrix's `unreleased` status
 covers that case). The Qwen3.8 recipe pins 1.3.4; the Hy4 TensorFold recipe
-stays on 1.3.3 (1.3.4 adds no Hy4 path). `~/.local/bin/tensorfold` is one link
+stays on 1.3.3 (1.3.4 adds no Hy4 path). `install-native.sh`'s default and
+the ark catalog pin **1.3.4** since 2026-11-23 (was 1.2.7; each archive's
+sha256 is the release's signed `.sha256`, re-hashed and signature-checked
+when pinned). The default only decides a bare `install-native.sh`: every
+recipe names its own release (`TENSORFOLD_REQUIRES`, `spark.env`'s
+`TENSORFOLD_VERSION`), and the live DeepSeek serve is Mia's
+`tensorfold-dsv41` image, not this binary. `~/.local/bin/tensorfold` is one link
 per Spark: a recipe on another release needs `engine.sh install` (and
 `rollback`) on every Spark before its switch.
 

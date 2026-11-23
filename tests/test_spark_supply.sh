@@ -121,14 +121,16 @@ S
   rm -rf "${T:?}/home"; _in --from "$S" --version 1.2.7 --platform linux-aarch64
   [[ $RC -ne 0 ]] && _has "$OUT" "does NOT verify" && pass "a signature by another key is refused" || fail "bad sig (rc=$RC): $OUT"
 
-  # --stage on any box (the Mac) stages the Spark's platform unless told otherwise.
-  mkdir -p "$T/served/1.2.7"; release "$T/served/1.2.7" 1.2.7 linux-aarch64
+  # --stage on any box (the Mac) stages the Spark's platform unless told otherwise,
+  # at the installer's default release (the one the ark catalog pins, test_ark.py).
+  DV="$(sed -n 's/^VERSION=//p' "$IN_SRC")"
+  mkdir -p "$T/served/$DV"; release "$T/served/$DV" "$DV" linux-aarch64
   : > "$IN_CURL_LOG"; _in --stage "$T/staged"
-  [[ $RC -eq 0 && -f "$T/staged/tensorfold-1.2.7-linux-aarch64.tar.gz" ]] && grep -q 'linux-aarch64.tar.gz$' "$IN_CURL_LOG" \
+  [[ $RC -eq 0 && -f "$T/staged/tensorfold-$DV-linux-aarch64.tar.gz" ]] && grep -q 'linux-aarch64.tar.gz$' "$IN_CURL_LOG" \
     && ! grep -q macos "$IN_CURL_LOG" && _has "$OUT" "staged linux-aarch64" \
     && pass "--stage with no --platform stages linux-aarch64 (the Spark), verified" || fail "stage (rc=$RC): $OUT"
-  rm -rf "${T:?}/home"; _in --from "$T/staged" --version 1.2.7 --platform linux-aarch64
-  [[ $RC -eq 0 ]] && pass "the staged folder installs with --from" || fail "staged --from (rc=$RC): $OUT"
+  rm -rf "${T:?}/home"; _in --from "$T/staged" --platform linux-aarch64
+  [[ $RC -eq 0 ]] && pass "the staged folder installs with --from (default release $DV)" || fail "staged --from (rc=$RC): $OUT"
 
   # Python fallback: an openssl without -rawin (OpenSSL 1.1 / LibreSSL) first on PATH.
   if [[ $PYC -eq 1 && ! -x /opt/homebrew/opt/openssl@3/bin/openssl && ! -x /usr/local/opt/openssl@3/bin/openssl ]]; then
