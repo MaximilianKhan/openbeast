@@ -995,3 +995,26 @@ def test_q38_composite_is_q_t2_and_others_keep_theirs():
     assert "Q_T2" not in C.run_order(camp)
     assert C.served_model_mismatch(camp, ["Q_T2"], "DeepSeek-V4.1-Flash-1017")
     assert C.served_model_mismatch(camp, ["Q_T2"], "Qwen3.8 27B Uncensored MTP Q5") == []
+
+
+# --- 14. Hy4-flash-abliterated (Mix-256G GGUF): HG_T2, H_T2's settings on the GGUF server ------
+
+HG = "Hy4-flash-abliterated (Mix-256G GGUF)"
+
+
+def test_hg_t2_is_h_t2_on_the_gguf_server():
+    camp = C.load_campaign(TF)
+    assert C.resolve_arm(camp, "HG_T2") == C.resolve_arm(camp, "H_T2")
+    spec = C.arm_spec(camp, "HG_T2")
+    assert spec["base"] == "T2" and spec["optional"] is True and spec["jobs"] == 4 and spec["slots"] == 4
+    assert spec["model"] == HG and spec["served_model"] == "Hy4-flash-abliterated-Mix-256G"
+
+
+def test_abliterated_gguf_composite_is_hg_t2_and_nvfp4_keeps_h_t2():
+    camp = C.load_campaign(TF)
+    for name in (HG, "Hy4-flash-abliterated"):
+        assert C.composite_for(camp, name)[0] == "HG_T2", name
+    assert C.composite_for(camp, HY4)[0] == "H_T2"
+    assert C.composite_for(camp, "Hy4-flash")[0] == "H_T2"
+    assert C.served_model_mismatch(camp, ["HG_T2"], "Hy4-flash-NVFP4")
+    assert C.served_model_mismatch(camp, ["HG_T2"], "Hy4-flash-abliterated-Mix-256G") == []
