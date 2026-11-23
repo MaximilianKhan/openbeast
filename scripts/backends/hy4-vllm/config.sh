@@ -59,6 +59,9 @@ HY4_MODEL_DIR="${HY4_MODEL_DIR:-$HOME/Documents/atakans-Hy4-flash-NVFP4}"
 HY4_IMAGE_DIR="${HY4_IMAGE_DIR:-$HOME/Documents/hy4-vllm-image}"     # the saved image tar (offline restore)
 HY4_CACHE_DIR="${HY4_CACHE_DIR:-$HOME/.cache/hy4-vllm}"              # first-start autotune, per image
 HY4_RUNTIME_DIR="${HY4_RUNTIME_DIR:-$HOME/openbeast-recipes/hy4-vllm}"  # where `install` puts start.sh/stop.sh
+# stop.sh writes this before it stops the ranks; start.sh (the unit) then exits 0, not 1:
+# a deliberate stop is not a crash. start.sh clears it before every start.
+HY4_STOP_MARK="${HY4_STOP_MARK:-$HY4_CACHE_DIR/.stopping}"
 HY4_UNIT_DIR="${HY4_UNIT_DIR:-$HOME/.config/systemd/user}"
 HY4_WORKER="${HY4_WORKER:-spark-2}"          # ssh target (key login, BatchMode); NVIDIA Sync's alias = 10.100.216.2
 HY4_PEER="${HY4_PEER:-10.100.216.2}"         # the worker's address on the QSFP link, seen from the head

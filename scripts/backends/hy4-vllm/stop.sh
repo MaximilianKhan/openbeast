@@ -3,7 +3,8 @@
 # worker; both containers removed. Idempotent (nothing running: exit 0). The
 # unit's ExecStop; `beast-spark ds|glm|down` stop the unit, which runs this.
 # Each memguard.sh exits by itself once its container is gone. Touches no
-# weights, no image and no cache.
+# weights, no image and no cache; writes only HY4_STOP_MARK (config.sh), which
+# tells the unit's start.sh that the stop is deliberate (exit 0, not "failed").
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=config.sh
@@ -13,6 +14,11 @@ HY4_TAG=hy4-stop
 [[ "$HY4_CONTAINER" =~ ^[A-Za-z0-9._-]+$ && "$HY4_WORKER" =~ ^[A-Za-z0-9.@_-]+$ ]] || hy4_die "HY4_CONTAINER / HY4_WORKER have unexpected characters"
 GRACE="${HY4_STOP_GRACE_S:-60}"
 [[ "$GRACE" =~ ^[0-9]+$ ]] || GRACE=60
+# First the mark: systemd runs this (ExecStop) while start.sh still supervises, and
+# start.sh sees the ranks end before any SIGTERM reaches it; the mark tells it the
+# end is deliberate, so it exits 0 and the unit ends "inactive", not "failed".
+mkdir -p "$(dirname "$HY4_STOP_MARK")" 2>/dev/null && date +%s > "$HY4_STOP_MARK" 2>/dev/null ||
+  hy4_log "WARNING: could not write $HY4_STOP_MARK: the unit may end \"failed\" after this stop"
 rc=0
 if "$HY4_DOCKER" container inspect "$HY4_CONTAINER" >/dev/null 2>&1; then
   hy4_log "stopping rank 0 ($HY4_CONTAINER)"

@@ -25,6 +25,11 @@ WorkingDirectory=%h/openbeast-recipes/hy4-vllm
 Environment=FOREGROUND=1
 ExecStart=/usr/bin/bash %h/openbeast-recipes/hy4-vllm/start.sh
 ExecStop=/usr/bin/bash %h/openbeast-recipes/hy4-vllm/stop.sh
+# A deliberate stop ends "inactive", not "failed" (no reset-failed needed): stop.sh
+# writes HY4_STOP_MARK before it stops the ranks, and start.sh, which sees them end
+# before systemd's SIGTERM, then exits 0. A rank that dies on its own (a crash,
+# memguard) still exits 1 and shows "failed". No SuccessExitStatus=: it would hide
+# crashes too.
 # Weights load in ~2 min; the first start of an image autotunes ~10 min more
 # (kept in ~/.cache/hy4-vllm/<image hash>/ for the next start).
 TimeoutStartSec=infinity
