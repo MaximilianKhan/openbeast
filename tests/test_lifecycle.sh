@@ -1090,6 +1090,54 @@ else
 fi
 
 echo ""
+echo "start.sh -d after a stop that has not finished (2026-11-23: openbeast.service restart after a model switch):"
+# systemctl: openbeast-stack reports "deactivating" for $_SE/deact more polls
+# ("forever": until a KILL), then inactive; every call is logged.
+cat > "$_SE/bin/systemctl" <<SH
+#!/bin/bash
+printf '%s\n' "\$*" >> "$_SE/systemctl.log"
+if [[ "\$*" == *"show -p ActiveState --value openbeast-stack"* ]]; then
+  n=\$(cat "$_SE/deact" 2>/dev/null || echo 0)
+  if [[ "\$n" == forever ]]; then echo deactivating
+  elif (( n > 0 )); then echo deactivating; echo \$((n - 1)) > "$_SE/deact"
+  else echo inactive; fi
+  exit 0
+fi
+[[ "\$*" == *"kill -s KILL openbeast-stack"* ]] && { echo 0 > "$_SE/deact"; exit 0; }
+[[ "\$*" == *"reset-failed openbeast-stack"* ]] && exit 0
+exit 1
+SH
+chmod +x "$_SE/bin/systemctl"
+printf 'SEARXNG_SECRET=x\n' > "$_SE/openbeast.conf"
+_settle() { rm -f "$_SE/systemd-run.log" "$_SE/systemctl.log"; echo "$1" > "$_SE/deact"
+  RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=http://$_LO:9" "${@:2}")
+  _start_rc "$_SE" 40 -d; RUN_ENV=(); }
+_settle 3
+if [[ "$_SO" == *"the previous openbeast-stack unit is still stopping"* && "$_SO" == *"the previous openbeast-stack unit is down (inactive)"* ]] \
+   && grep -q -- "--unit=openbeast-stack" "$_SE/systemd-run.log" 2>/dev/null \
+   && ! grep -q "kill -s KILL" "$_SE/systemctl.log" \
+   && [[ "$(grep -n 'reset-failed openbeast-stack' "$_SE/systemctl.log" | head -1 | cut -d: -f1)" -gt \
+         "$(grep -n 'show -p ActiveState' "$_SE/systemctl.log" | tail -1 | cut -d: -f1)" ]]; then
+  pass "-d waits for a previous openbeast-stack still stopping, then launches (systemd-run no longer refuses the name)"
+else
+  fail "-d with a stack unit still deactivating (rc=$_SRC): $(tail -n 4 <<< "$_SO" | tr '\n' ' ') :: $(paste -sd';' "$_SE/systemctl.log" 2>/dev/null)"
+fi
+_settle forever OB_STACK_SETTLE_S=1
+if [[ "$_SO" == *"still stopping after 1s: SIGKILL"* ]] && grep -q "kill -s KILL openbeast-stack" "$_SE/systemctl.log" \
+   && grep -q -- "--unit=openbeast-stack" "$_SE/systemd-run.log" 2>/dev/null; then
+  pass "…bounded: one that never finishes is SIGKILLed after OB_STACK_SETTLE_S, then the launch goes ahead"
+else
+  fail "-d with a stuck stack unit (rc=$_SRC): $(tail -n 4 <<< "$_SO" | tr '\n' ' ') :: $(paste -sd';' "$_SE/systemctl.log" 2>/dev/null)"
+fi
+_settle 0
+if [[ "$_SO" != *"still stopping"* ]] && grep -q -- "-p TimeoutStopSec=30s" "$_SE/systemd-run.log" 2>/dev/null; then
+  pass "…no wait when nothing is stopping; the stack unit gets TimeoutStopSec=30s (not systemd's 90 s, the outer unit's whole budget)"
+else
+  fail "stack unit stop timeout / no-wait control: $(cat "$_SE/systemd-run.log" 2>/dev/null) :: $(tail -n 3 <<< "$_SO" | tr '\n' ' ')"
+fi
+printf '#!/bin/bash\nexit 1\n' > "$_SE/bin/systemctl"
+
+echo ""
 echo "start.sh's missing-deps hint (UX-14):"
 _DP="$_T/deps"; _sandbox "$_DP"; mkdir -p "$_DP/nodeps" "$_DP/deps"
 # Whatever this box has installed, PYTHONPATH decides: one shim makes the

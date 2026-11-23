@@ -28,11 +28,14 @@ case "$op" in
   is-enabled) [[ -f "$ST/$1.enabled" ]] && { echo enabled; exit 0; }
               [[ -f "$ST/$1.installed" ]] && { echo static; exit 0; }; echo disabled; exit 1 ;;
   show) u=${!#}; [[ -f "$ST/$u.installed" ]] && echo loaded || echo not-found ;;
-  restart) for u; do echo "restart $u" >> "$LOG"; done ;;
+  # $ST/fail-cc-restart: restarting openbeast.service fails (its stop timed out, 2026-11-23);
+  # $ST/fail-cc-start: so does starting it.
+  restart) for u; do echo "restart $u" >> "$LOG"; if [[ "$u" == openbeast.service && -f "$ST/fail-cc-restart" ]]; then exit 1; fi; done ;;
+  reset-failed) echo "reset-failed $*" >> "$LOG" ;;
   is-active) q=0; [[ "$1" == --quiet ]] && { q=1; shift; }
              [[ -f "$ST/$1.active" ]] && { ((q)) || echo active; exit 0; }; ((q)) || echo inactive; exit 3 ;;
   is-activating) exit 1 ;;
-  start) for u; do echo "start $u" >> "$LOG"; [[ "$u" == hy4-vllm-inference.service && -f "$ST/fail-hy4" ]] || [[ "$u" == beast-recipe-* && -f "$ST/fail-recipe" ]] || touch "$ST/$u.active"; done ;;
+  start) for u; do echo "start $u" >> "$LOG"; [[ "$u" == openbeast.service && -f "$ST/fail-cc-start" ]] && exit 1; [[ "$u" == hy4-vllm-inference.service && -f "$ST/fail-hy4" ]] || [[ "$u" == beast-recipe-* && -f "$ST/fail-recipe" ]] || touch "$ST/$u.active"; done ;;
   stop) for u; do echo "stop $u" >> "$LOG"; rm -f "$ST/$u.active"; done ;;
 esac
 S
@@ -398,6 +401,52 @@ else fail "previous none: $(cat "$T/recipes.d/.previous" 2>&1) / $(cat "$T/out")
 reset; touch "$ST/$RU.installed" "$ST/$RU.active"
 run status
 if grep -q "$RU  *active (recipe demo)" "$T/out"; then pass "status lists the adopted recipes' units"; else fail "status recipes: $(cat "$T/out")"; fi
+
+# ---- the command-center restart after a switch (2026-11-23: its stop hung 90 s, the restart
+# failed, `beast-spark glm` exited 1 with GLM serving and a recipe switch rolled back)
+CC_RETRY="restart openbeast.service;stop openbeast.service;reset-failed openbeast.service openbeast-stack.service;start openbeast.service"
+# a recipe switch whose command-center restart fails: retried from a clean stop, NO rollback
+reset; rm -f "$T/recipes.d/.previous"; touch "$ST/$RU.installed" "$ST/deepseek-v41-inference.service.active" "$ST/fail-cc-restart"
+if run demo && [[ "$(calls)" == "stop deepseek-v41-inference.service;start $RU;$CC_RETRY" ]] \
+   && [[ -f "$ST/$RU.active" ]] && [[ "$(conf_model)" == '"demo-served"' ]] && grep -q '^PREVIOUS=ds$' "$T/recipes.d/.previous" \
+   && grep -q "the command center is up (second try)" "$T/out" && ! grep -q "NOT activated" "$T/out"; then
+  pass "recipe: a failed command-center restart is retried (stop, reset-failed, start); the switch stands"
+else fail "recipe cc retry: $(calls) / $(cat "$T/out")"; fi
+# ... and when the command center does not come up at all: a warning, exit 0, still no rollback
+reset; touch "$ST/$RU.installed" "$ST/deepseek-v41-inference.service.active" "$ST/fail-cc-restart" "$ST/fail-cc-start"
+if run demo && [[ -f "$ST/$RU.active" ]] && [[ ! -f "$ST/deepseek-v41-inference.service.active" ]] \
+   && grep -q "WARNING: the command center did not start; the model serves and the switch stands" "$T/out" \
+   && grep -q "systemctl --user start openbeast" "$T/out" && ! grep -q "start deepseek" "$LOG"; then
+  pass "recipe: a command center that will not start is a warning (exit 0), never a rollback of a serving model"
+else fail "recipe cc down: $(calls) / $(cat "$T/out")"; fi
+# hy4 the same
+reset; touch "$ST/$HY4U.installed" "$ST/deepseek-v41-inference.service.active" "$ST/deepseek-v41-inference.service.enabled" "$ST/fail-cc-restart"
+if run hy4 && [[ "$(calls)" == "stop deepseek-v41-inference.service;start $HY4U;$CC_RETRY" ]] \
+   && [[ -f "$ST/$HY4U.active" ]] && [[ "$(conf_model)" == '"Hy4-flash-NVFP4"' ]] && ! grep -q "NOT activated" "$T/out"; then
+  pass "hy4: a failed command-center restart is retried; Hy4 is not rolled back"
+else fail "hy4 cc retry: $(calls) / $(cat "$T/out")"; fi
+# beastup: a failed command-center start is retried too, then a warning
+reset; touch "$ST/spark-hydra-inference.service.enabled" "$ST/fail-cc-start"
+if run up && [[ "$(calls)" == "start spark-hydra-inference.service;start openbeast.service;stop openbeast.service;reset-failed openbeast.service openbeast-stack.service;start openbeast.service" ]] \
+   && grep -q "WARNING: the command center did not start" "$T/out"; then
+  pass "up: a failed command-center start is retried once, then a warning (exit 0: the model serves)"
+else fail "up cc retry: $(calls) / $(cat "$T/out")"; fi
+# beastglm: restore-glm.sh failing at its LAST step (the command-center restart) with GLM
+# selected and serving: exit 0, the command center restarted by beast-spark
+reset; touch "$ST/deepseek-v41-inference.service.active" "$ST/deepseek-v41-inference.service.enabled"
+cp "$T/prep/rollback/restore-glm.sh" "$T/restore-glm.ok"
+printf '%s\nexit 1\n' "$(cat "$T/restore-glm.ok")" > "$T/prep/rollback/restore-glm.sh"
+if run glm && [[ "$(calls)" == "restore-glm;restart openbeast.service" ]] \
+   && grep -q "WARNING: restore-glm.sh exited 1, but GLM is selected and running" "$T/out" && grep -q 'selected: glm' "$T/out"; then
+  pass "glm: restore-glm.sh failing after GLM serves is not a failed switch (exit 0, the command center restarted)"
+else fail "glm cc: $(calls) / $(cat "$T/out")"; fi
+# ... but a restore-glm.sh that fails BEFORE GLM is selected and running still fails the switch
+reset; touch "$ST/deepseek-v41-inference.service.active" "$ST/deepseek-v41-inference.service.enabled"
+printf 'echo restore-glm >> "$LOG"; exit 1\n' > "$T/prep/rollback/restore-glm.sh"
+if ! run glm && [[ "$(calls)" == restore-glm ]] && grep -q "restore-glm.sh failed (exit 1) and GLM is not selected and running" "$T/out"; then
+  pass "glm: restore-glm.sh failing before GLM runs: exit non-zero, nothing papered over"
+else fail "glm early failure: $(calls) / $(cat "$T/out")"; fi
+cp "$T/restore-glm.ok" "$T/prep/rollback/restore-glm.sh"
 
 echo "=== $PASS passed, $FAIL failed ==="
 (( FAIL == 0 ))

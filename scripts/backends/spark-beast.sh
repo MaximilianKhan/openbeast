@@ -104,6 +104,25 @@ DS_ID="${SB_DS_ID:-$(conf_value DS_ID)}"
 if [[ -z "$DS_PACK" ]]; then DS_PACK=$V2_PACK; DS_ID=${DS_ID:-$V2_ID}; fi
 
 sc() { systemctl --user "$@"; }
+
+# cc_up restart|start: the command center (openbeast.service), once the model
+# serves. A failed restart is not a failed switch: the model is up, so nothing
+# is rolled back. It is retried once from a clean stop (`systemctl --user stop`
+# is bounded by the unit's stop timeout; the stack's own unit is reset), and a
+# second failure leaves a WARNING with the command to run, not an exit 1.
+# (2026-11-23: a stop that hung 90 s failed `beast-spark glm` with GLM serving
+# and rolled back a working recipe switch.)
+OB_STACK_UNIT=openbeast-stack.service
+cc_up() {
+  sc "$1" "$OB_UNIT" && return 0
+  log "WARNING: systemctl --user $1 $OB_UNIT failed; stopping it and starting it once more"
+  sc stop "$OB_UNIT" 2>/dev/null || true
+  sc reset-failed "$OB_UNIT" "$OB_STACK_UNIT" 2>/dev/null || true
+  sc start "$OB_UNIT" && { log "the command center is up (second try)"; return 0; }
+  log "WARNING: the command center did not start; the model serves and the switch stands."
+  log "  journalctl --user -u $OB_UNIT -n 50; then systemctl --user start openbeast"
+  return 0
+}
 enabled() { [[ "$(sc is-enabled "$1" 2>/dev/null || true)" == enabled ]]; }
 active() { sc is-active --quiet "$1"; }
 
@@ -237,7 +256,7 @@ cmd_up() {
   log "starting $s ($u), then the command center"
   sc start "$u"
   wait_ready "$u"
-  if (( CONF_BACK )); then sc restart "$OB_UNIT"; else sc start "$OB_UNIT"; fi
+  if (( CONF_BACK )); then cc_up restart; else cc_up start; fi
   cmd_status
 }
 
@@ -251,12 +270,20 @@ cmd_down() {
 
 cmd_glm() {
   if [[ "$(selected)" == glm ]] && active "$GLM_UNIT" && serving "$GLM_SERVED"; then
-    log "GLM is already selected and serving"; sc start "$OB_UNIT"; cmd_status; return
+    log "GLM is already selected and serving"; cc_up start; cmd_status; return
   fi
   stop_hy4
   log "switching to GLM: restore-glm.sh"
-  bash "$PREP/rollback/restore-glm.sh"
+  local rc=0
+  bash "$PREP/rollback/restore-glm.sh" || rc=$?
+  # restore-glm.sh restarts the command center last: when only that failed,
+  # GLM is selected and serves, and the switch stands (cc_up retries it).
+  if (( rc )); then
+    [[ "$(selected)" == glm ]] && active "$GLM_UNIT" || die "restore-glm.sh failed (exit $rc) and GLM is not selected and running"
+    log "WARNING: restore-glm.sh exited $rc, but GLM is selected and running: waiting for it, then the command center"
+  fi
   wait_ready "$GLM_UNIT"
+  (( rc )) && cc_up restart
   cmd_status
   log "on clients: openbeast-client use spark-hydra"
 }
@@ -282,7 +309,7 @@ cmd_ds() {
   [[ "$DS_ID" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
     die "DS_PACK=$DS_PACK needs DS_ID=<ORG/NAME> beside it in $CONF (spark-deepseek-pack.sh list shows the staged names)"
   if [[ "$(selected)" == ds ]] && active "$DS_UNIT" && [[ "$(ds_pack)" == "$DS_ID@"* ]] && serving "$DS_SERVED"; then
-    log "DeepSeek ($DS_ID) is already selected and serving"; sc start "$OB_UNIT"; cmd_status; return
+    log "DeepSeek ($DS_ID) is already selected and serving"; cc_up start; cmd_status; return
   fi
   if active "$GLM_UNIT"; then GLM_AT_ENTRY=1; fi
   DS_DONE=0
@@ -415,7 +442,7 @@ cmd_hy4() {
   if active "$HY4_UNIT" && serving "$HY4_SERVED"; then
     log "Hy4 is already serving"
     if [[ "$(ob_conf_get INFERENCE_MODEL)" != "$HY4_SERVED" || "$(ob_conf_get INFERENCE_BACKEND)" != vllm ]]; then
-      ob_conf_set INFERENCE_BACKEND vllm; ob_conf_set INFERENCE_MODEL "$HY4_SERVED"; key_sync_log; sc restart "$OB_UNIT"
+      ob_conf_set INFERENCE_BACKEND vllm; ob_conf_set INFERENCE_MODEL "$HY4_SERVED"; key_sync_log; cc_up restart
     fi
     cmd_status; return
   fi
@@ -448,8 +475,8 @@ cmd_hy4() {
   ob_conf_set INFERENCE_BACKEND vllm
   ob_conf_set INFERENCE_MODEL "$HY4_SERVED"
   key_sync_log
-  sc restart "$OB_UNIT"
-  HY4_DONE=1
+  HY4_DONE=1      # Hy4 serves: from here on nothing rolls back (cc_up warns instead)
+  cc_up restart
   trap - INT TERM HUP
   cmd_status
   log "back to the default: beastds (or beastglm); a reboot also comes back to the selection ($(selected))"
@@ -505,7 +532,7 @@ cmd_recipe() {
     fi
     [[ "$(ob_conf_key_sync)" == set ]] && { log "openbeast.conf: LLAMA_API_KEY set from $KEY_FILE (the engine is keyed; it was empty or different)"; changed=1; }
     # as glm/ds do when already serving: the command center comes up (restarted when its conf changed)
-    if (( changed )); then sc restart "$OB_UNIT"; else sc start "$OB_UNIT"; fi
+    if (( changed )); then cc_up restart; else cc_up start; fi
     cmd_status; return
   fi
   if active "$DS_UNIT"; then R_PREV=ds R_PREV_UNIT=$DS_UNIT
@@ -535,10 +562,10 @@ cmd_recipe() {
   ob_conf_set INFERENCE_BACKEND "$backend"
   ob_conf_set INFERENCE_MODEL "$served"
   key_sync_log
-  sc restart "$OB_UNIT"
   # always recorded (PREVIOUS=none when nothing served: rollback is then beast-spark down)
   printf 'PREVIOUS=%s\nRECIPE=%s\nWHEN=%s\n' "$R_PREV" "$R_NAME" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RECIPES_D/.previous"
-  R_DONE=1
+  R_DONE=1        # the recipe serves: from here on nothing rolls back (cc_up warns instead)
+  cc_up restart
   trap - INT TERM HUP
   cmd_status
   log "back: beast-recipe rollback --run (beast-spark $R_PREV); a reboot comes back to the selection ($(selected))"

@@ -3998,19 +3998,58 @@ def start_samplers():
     for s in [*nodes, _serve, AlertLoop()]:
         threading.Thread(target=s.loop, daemon=True).start()
     threading.Thread(target=_sampler_saver, args=(nodes,), daemon=True).start()
+    with contextlib.suppress(ValueError):
+        signal.signal(signal.SIGTERM, _term_handler(nodes))
+
+
+# The most the SIGTERM handler may spend saving before the process exits
+# anyway (the saves themselves take well under a second; 3.4 MB of history
+# measured on spark-1).
+TERM_SAVE_DEADLINE_S = 8.0
+
+
+def _term_handler(nodes, exit_=os._exit):
+    """The SIGTERM handler (ext.sh restart / stop.sh): save the power
+    history, the log and the metric history, then exit.
+
+    It runs ONCE. A stop delivers SIGTERM twice within milliseconds: the
+    supervisor's trap reaps the extension, then systemd TERMs whatever is
+    left in openbeast-stack when the supervisor exits. Python runs a handler
+    in the main thread between bytecodes, so the second signal re-entered
+    this handler INSIDE the first one, and the locks taken here
+    (threading.Lock, not reentrant) deadlocked against the frame below:
+    the nested save_history() waited forever on the HistoryStore lock its
+    own outer call held. The process then ignored every SIGTERM until
+    systemd's SIGKILL 90 s later, which timed out `systemctl --user stop
+    openbeast` and failed the command-center restart of every model switch
+    it hit (GLM serving window, 2026-11-23: 4 of 10 stops on spark-1). When
+    the second signal instead landed while the outer call held _save_lock,
+    the nested call gave up on the lock timeouts and os._exit()ed in the
+    middle of the outer write: a 4 s stop and a stray .tmp file.
+
+    A re-entered call now returns at once, further SIGTERMs are ignored, and
+    a timer thread (it does not need the main thread or any lock) exits the
+    process after TERM_SAVE_DEADLINE_S whatever the saves are doing."""
+    stopping = []
 
     def _term(signum, frame):
-        # ext.sh restart / stop.sh: keep the power history, the metric
-        # history and the log across it.
+        if stopping:            # re-entered by a second SIGTERM: the first call finishes the job
+            return
+        stopping.append(signum)
+        with contextlib.suppress(Exception):
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        deadline = threading.Timer(TERM_SAVE_DEADLINE_S, exit_, (0,))
+        deadline.daemon = True
+        deadline.start()
         with contextlib.suppress(Exception):
             save_power(nodes, lock_timeout=2.0)
         with contextlib.suppress(Exception):
             save_log(lock_timeout=1.0)
         with contextlib.suppress(Exception):
             save_history(lock_timeout=1.0)
-        os._exit(0)
-    with contextlib.suppress(ValueError):
-        signal.signal(signal.SIGTERM, _term)
+        deadline.cancel()
+        exit_(0)
+    return _term
 
 
 # ───────────────────────── v3: the detail documents ─────────────────────────

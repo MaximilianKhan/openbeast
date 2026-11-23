@@ -645,6 +645,40 @@ _island_line() {
   return 0
 }
 
+# The stack unit's stop timeout (start.sh -d sets it on openbeast-stack). The
+# stack's own stop is bounded well below it: the supervisor's trap waits at most
+# 3 s for beast-island, beast-chat and the uvicorn services give open
+# connections 5 s, the dashboard's SIGTERM save 8 s.
+OB_STACK_STOP_TIMEOUT_S=30
+
+# _ob_stack_settle: wait until no openbeast-stack unit is still stopping. A
+# unit in "deactivating" is a stop in progress whose processes have not all
+# exited; it ends by itself at its TimeoutStopSec (90 s for a unit started
+# before that was set). Bounded: past OB_STACK_SETTLE_S the remainder is
+# SIGKILLed — it belongs to a stack that is already down.
+_ob_stack_settle() {
+  local st i waited=0 max="${OB_STACK_SETTLE_S:-40}"
+  st="$(systemctl --user show -p ActiveState --value openbeast-stack 2>/dev/null || true)"
+  [[ "$st" == deactivating ]] || return 0
+  echo "  the previous openbeast-stack unit is still stopping: waiting up to ${max}s for it..."
+  for (( i = 0; i < max * 5; i++ )); do
+    st="$(systemctl --user show -p ActiveState --value openbeast-stack 2>/dev/null || true)"
+    [[ "$st" == deactivating ]] || break
+    sleep 0.2; waited=1
+  done
+  if [[ "$st" == deactivating ]]; then
+    echo "  still stopping after ${max}s: SIGKILL to what is left of it (systemctl --user kill -s KILL openbeast-stack)" >&2
+    systemctl --user kill -s KILL openbeast-stack 2>/dev/null || true
+    for (( i = 0; i < 25; i++ )); do
+      st="$(systemctl --user show -p ActiveState --value openbeast-stack 2>/dev/null || true)"
+      [[ "$st" == deactivating ]] || break
+      sleep 0.2
+    done
+  fi
+  (( waited )) && echo "  the previous openbeast-stack unit is down ($st)."
+  return 0
+}
+
 # ---- daemon launcher: spawn the detached supervisor, wait for readiness ----
 if [[ $DAEMON -eq 1 ]]; then
   mkdir -p "$RUN_DIR"
@@ -713,6 +747,12 @@ if [[ $DAEMON -eq 1 ]]; then
     # <<< per-profile memory scope
     MEM_MAX_BYTES=$(( MEM_TOTAL_KB * 1024 / 100 * MEM_LIMIT_PCT ))
     MEM_MAX_GB=$(( MEM_MAX_BYTES / 1024 / 1024 / 1024 ))
+    # A previous stack unit still stopping (a child that has not exited yet)
+    # makes systemd-run refuse the name, and this start exits 1 a second
+    # later: what failed `systemctl --user restart openbeast` after a model
+    # switch on 2026-11-23. No supervisor is alive (checked above), so it is
+    # a leftover: wait for it, bounded by its own TimeoutStopSec, then KILL it.
+    _ob_stack_settle
     systemctl --user reset-failed openbeast-stack 2>/dev/null || true
     # Forward the caller's OPENBEAST_* overrides (plus WebUI admin creds) into
     # the transient unit — systemd-run starts from a CLEAN environment, so
@@ -756,8 +796,14 @@ if [[ $DAEMON -eq 1 ]]; then
     if [[ -n "${WEBUI_ADMIN_EMAIL:-}" ]]; then
       SETENV_ARGS+=(--setenv="WEBUI_ADMIN_EMAIL=${WEBUI_ADMIN_EMAIL}")
     fi
+    # TimeoutStopSec: a child that ignores SIGTERM is SIGKILLed after
+    # OB_STACK_STOP_TIMEOUT_S (30 s), not systemd's default 90 s, which equals
+    # openbeast.service's own stop timeout: stop.sh's
+    # `systemctl --user stop openbeast-stack` then used all of the outer
+    # unit's budget, and the outer stop timed out with it.
     systemd-run --user --quiet --collect --unit=openbeast-stack \
       -p MemoryMax="$MEM_MAX_BYTES" -p MemorySwapMax=8G \
+      -p TimeoutStopSec="${OB_STACK_STOP_TIMEOUT_S}s" \
       ${_SCOPE_PROPS[@]+"${_SCOPE_PROPS[@]}"} \
       ${SETENV_ARGS[@]+"${SETENV_ARGS[@]}"} \
       "$SCRIPT_DIR/start.sh" --_daemonized "$SERVE_SCRIPT"

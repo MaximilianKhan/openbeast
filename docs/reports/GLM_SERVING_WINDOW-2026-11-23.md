@@ -218,7 +218,10 @@ Sparks, both rails, and the head reachable.
 
 ## Bugs found
 
-1. **The command-center restart fails after a model switch (open).**
+1. **The command-center restart fails after a model switch (fixed
+   2026-11-23; cause and fix in [TODO](../TODO.md)).** The `python3` was the
+   dashboard extension, whose SIGTERM handler deadlocked when a second
+   SIGTERM re-entered it. What was observed:
    `systemctl --user restart openbeast` timed out stopping, 90 s by
    default. The supervisor exits at once, but one `python3` process in
    the `openbeast-stack` unit ignores SIGTERM and is SIGKILLed at 90 s.

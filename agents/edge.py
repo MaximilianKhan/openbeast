@@ -1064,6 +1064,10 @@ def _usage_from_json_tail(tail: bytes) -> dict | None:
 # included — now serves every caller for this long.
 _HEALTH_TTL_S = 1.0
 
+# How long uvicorn waits for open requests on SIGTERM before cancelling them
+# (main(); the same bound as beast-chat's).
+GRACEFUL_SHUTDOWN_S = 5
+
 
 async def _upstream_health(app, client) -> tuple[int, dict]:
     st = app.state
@@ -1748,7 +1752,13 @@ def main() -> None:
     print(f"beast-gate on http://{BIND}:{PORT} -> {UPSTREAM}  auth={mode}",
           flush=True)
     # Loopback by default like every other service; publish via tailscale.
-    config = uvicorn.Config(app, host=BIND, port=PORT, log_level="warning")
+    # timeout_graceful_shutdown: without it uvicorn waits FOREVER on SIGTERM
+    # for every open request, and a generation through the gate runs for up
+    # to OPENBEAST_EDGE_READ_TIMEOUT (600 s) per chunk, so one long stream
+    # held a stop open until systemd's SIGKILL (beast-chat's fix, the same
+    # hazard). The client sees its stream end; the stack is stopping anyway.
+    config = uvicorn.Config(app, host=BIND, port=PORT, log_level="warning",
+                            timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S)
     uvicorn.Server(config).run(sockets=[sock])
 
 

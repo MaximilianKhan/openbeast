@@ -868,7 +868,11 @@ def main() -> None:
     _tools.harden_process()
     print(f"OpenBeast identity tool server on {host}:{port} "
           f"({len(TOOL_NAMES)} tools)")
-    uvicorn.run(create_app(), host=host, port=port, log_level="warning")
+    # Bounded on SIGTERM (see beast-chat's GRACEFUL_SHUTDOWN_S): uvicorn's
+    # default waits forever for open requests, and a web fetch or a tool call
+    # in flight then held the whole stack's stop open.
+    uvicorn.run(create_app(), host=host, port=port, log_level="warning",
+                timeout_graceful_shutdown=5)
 
 
 if __name__ == "__main__":
