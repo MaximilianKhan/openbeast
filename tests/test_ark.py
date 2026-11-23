@@ -212,7 +212,7 @@ def test_real_catalog_covers_the_required_ground():
             "cmake", "ninja", "meson", "bazelisk", "bazel", "postgres", "valkey", "sqlite", "duckdb",
             "clickhouse", "nats", "kafka", "prometheus", "grafana", "loki", "otelcol-contrib", "headscale",
             "wireguard-tools", "caddy", "nginx", "coredns", "forgejo", "git", "gh", "minio", "restic",
-            "step-ca", "trivy", "cosign", "llama.cpp", "vllm", "tensorfold", "kiwix-tools", "devdocs-zim-core"}
+            "step-ca", "trivy", "cosign", "llama.cpp", "vllm", "tensorfold", "tensorfold-1.2.10", "kiwix-tools", "devdocs-zim-core"}
     assert need <= names, sorted(need - names)
     plats = {a.platform for a in C.load().artifacts if a.kind == "file"}
     assert {"linux-x86_64", "linux-aarch64", "darwin-arm64"} <= plats
@@ -248,6 +248,26 @@ def test_repo_pins_and_the_catalog_agree():
         "linux-x86_64": "8336d2866cef7929ac8c68a44801956aa43c3cc24e3eeac003f4f6b4d87614f1",
         "linux-aarch64": "02566a5297dd67db9b0b834737fe73e192907454896ee7d097d3a0dfca303937",
         "darwin-arm64": "4e14cbfa94af7d45f1bb9ad05495b10009a58480e5644699b52a0cd7f1755823"}
+    # A second, held entry: 1.2.10, the native build on both Sparks and the release the GLM
+    # and MiniMax recipes pin. Same repo, key, signature scheme and archive layout as the default.
+    old = cat.entries["tensorfold-1.2.10"]
+    assert old.version == "1.2.10" and old.commit == "2a674b552498739e783a31c2573fc9ccf4d8cc0d"
+    assert old.update == "manual" and old.git == tf.git and "core" in old.profiles
+    assert {a.platform: (a.sha256, a.size) for a in old.artifacts} == {
+        "linux-x86_64": ("bc77f6d4112dd67a3298bd2560b9f0e7c9a54d3c5b0036a9c52c0d27f6c7e9fd", 52293655),
+        "linux-aarch64": ("c335c44f81d55847a5f81d74a94ac3d09f81bd6688247cff972cf1f63fc18105", 51781328),
+        "darwin-arm64": ("76eb33cce9e297f156cfe5cbb0cec664b0266f4ecc3d103176adadc6aee21e58", 7651150)}
+    for e in (tf, old):
+        for a in e.artifacts:
+            assert (a.verified, a.signature_kind, a.signature_key, a.signature_prefix) == (
+                "upstream-sums", "ed25519-sums", "agents/ark/keys/tensorfold-release-key.pem",
+                "tensorfold-native-checksum-v1\n"), a.id
+            assert a.filename == f"tensorfold-{e.version}-{a.platform.replace('darwin', 'macos')}.tar.gz", a.id
+    # Every native TensorFold release a shipped recipe pins has an ark copy.
+    have = {e.version for e in cat.entries.values() if e.git == tf.git}
+    pinned = {m.group(1) for f in (REPO / "scripts/backends/models").glob("recipe-*.env")
+              for m in re.finditer(r"^TENSORFOLD_REQUIRES=(\S+)$", f.read_text(), re.M)}
+    assert pinned and pinned <= have, sorted(pinned - have)
     assert (REPO / "agents/ark/keys/tensorfold-release-key.pem").read_bytes() == \
         (REPO / "scripts/backends/tensorfold/release-key.pem").read_bytes()
     ci = (REPO / ".github/workflows/ci.yml").read_text()
