@@ -93,7 +93,7 @@ Both recipes read a Hugging Face cache layout,
 | unit | `deepseek-v41-inference` | `spark-hydra-inference` (`PREPARE=0`) |
 | served name | `DeepSeek-V4.1-Flash-1017` | `GLM-5.3-Flash-EXL3` |
 | per-rank weights | built rank files, about 106 GB each (`tensorfold-dsv41/REV8/` on spark-1, `worker-rank-cache-REV8/` copied to spark-2) | read straight from the snapshot on each host (`WORKER_WEIGHTS=copy`) |
-| auxiliary | Engram tables: base shards 47 and 48 of `deepseek-ai/DeepSeek-V4.1-Flash-1017` @ `1bae0e10`, staged on both hosts and shared by every pack | DFlash2 drafter `incoai/GLM-5.3-Flash-DFlash2` @ `bf582e4e` in the cache on both hosts |
+| auxiliary | Engram tables: base shards 47 and 48 of `deepseek-ai/DeepSeek-V4.1-Flash-1017` @ `1bae0e10`, staged on both hosts and shared by every pack | DFlash2 drafter `incoai/GLM-5.3-Flash-DFlash2` @ `6cc6c481` (Apache-2.0; byte-identical weights to the earlier pin `bf582e4e`) in the cache on both hosts |
 | API key | yes (`~/.config/openbeast/tensorfold-api-key`) | none (v0.6.0); loopback only, beast-gate in front |
 
 A model folder in `~/Documents` becomes servable when it is hard-linked into
@@ -450,7 +450,7 @@ stock `4456161f…`, GLM `8fc4c5d5…`). The hermetic tests check both functions
 | The checkpoint folder: every `model-*.safetensors`, `model.safetensors.index.json`, `config.json`, `quantization_config.json`, `generation_config.json` | the model | `hf download ORG/NAME --revision <40-hex sha> --local-dir NAME`. Record the SHA: it becomes the snapshot REV and the provenance |
 | tokenizer (`tokenizer.json`, `tokenizer_config.json`) and chat template (`chat_template.jinja`) | tools and thinking need the template; the recipes read the checkpoint's own | same download. DeepSeek's recipe also ships `model/chat_template.jinja` |
 | any auxiliary weights | some families need more than the checkpoint | DeepSeek: Engram shards 47 and 48 of the base repo (already on both Sparks; carry them only for a new pair). GLM: the DFlash2 drafter (already on both) |
-| drafters | speculative decoding | GLM: `incoai/GLM-5.3-Flash-DFlash2` @ `bf582e4e` (CC BY-NC-ND). DeepSeek: DSpark blocks are inside the pack |
+| drafters | speculative decoding | GLM: `incoai/GLM-5.3-Flash-DFlash2` @ `6cc6c481` (Apache-2.0 since 2026-11-10; `bf582e4e`, the same weights, is CC BY-NC-ND). DeepSeek: DSpark blocks are inside the pack |
 | `SHA256SUMS` over the folder | proves the copy | `sha256sum model-* *.json *.jinja > SHA256SUMS.drive` on the source box. Keep the upstream `SHA256SUMS` too, but the -v2 pack shows it can be stale |
 | for case (b)/(c): the engine | the Sparks cannot build images offline | `docker save IMAGE \| zstd -T0 > IMAGE.tar.zst` (or `scripts/backends/spark-cluster.sh save-image IMAGE FILE`); a native release via `scripts/engine.sh stage tensorfold --version V --platform linux-aarch64 ./carry` |
 | for a new recipe: the repo | its scripts and patches | `git -C RECIPE bundle create RECIPE.bundle --all`; on the Spark `git clone RECIPE.bundle ~/openbeast-recipes/NAME && git -C … checkout <pinned commit>` |

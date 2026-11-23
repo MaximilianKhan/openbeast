@@ -489,7 +489,7 @@ zig, the docs mirror). G6 also lists what is still pending on the live pair.
 | [Quickstart](#quickstart) | everyday checks and restarts, using the pair from a client, the build order |
 | [Install everything, fresh](#install-everything-fresh) | the ordered checklist from bare DGX OS to the full pair, online and offline, per host |
 | [0. The pair at a glance](#0-the-pair-at-a-glance) | names, addresses, what runs where |
-| [A. What you need](#a-what-you-need) | hardware, cabling for 1 / 2 / 3 / 4-8 Sparks, accounts, the offline staging checklist |
+| [A. What you need](#a-what-you-need) | hardware, cabling for 1 / 2 / 3 / 4 (a cabled ring needs no switch) / 5-8 Sparks, accounts, the offline staging checklist |
 | [B. Bare boxes to root setup](#b-bare-boxes-to-root-setup) | `spark-root-setup.sh`, `spark-guard.sh`, checking them from another device, fabric MTU 9000 (`spark-fabric-mtu.sh`) |
 | [C. Weights](#c-weights) | fetch or copy, lock, hard-link into the recipe's HF-cache layout, carry to workers |
 | [D. Inference](#d-inference) | D1 the GLM recipe (the alternative; DeepSeek's recipe is in [DeepSeek deployment](#deepseek-deployment)), D2 native TensorFold through `spark-node.sh` / `spark-cluster.sh`, D3 the engine plane |
@@ -611,7 +611,8 @@ Offline, copy the tree from the drive and run the same command with
 `--verify`. Then, both ways: the HF-cache hard links (C2), one `rsync -aH`
 to spark-2 and `--verify` there (C3), DFlash2 copied and checked with the
 blob loop on both (C4). Online, DFlash2 comes from
-`hf download incoai/GLM-5.3-Flash-DFlash2 --revision bf582e4eacc1810f76656d1811693ff6c6737d2a`
+`hf download incoai/GLM-5.3-Flash-DFlash2 --revision 6cc6c481eee930a5139619ed919f78726371adbc`
+(Apache-2.0 since that 2026-11-10 revision; [C4](#c4-the-drafter-dflash2))
 (the `hf` CLI is in `~/.local/bin` once step 11 has installed the Python
 lock; run step 11's `bootstrap.sh` first if it is missing).
 
@@ -848,7 +849,7 @@ How to reach each box:
 | API | spark-1 | `http://127.0.0.1:8000/v1`, model `GLM-5.3-Flash-EXL3`. **Loopback only: v0.6.0 has no API key** |
 | Command center | spark-1, `systemctl --user` unit `openbeast` | `~/openbeast`, a git checkout: WebUI :3000, tools :3001, SearXNG :8888, beast-gate :8090, beast-chat, beast-artifact, the dashboard (beast-slot), the island watcher. `openbeast.conf`: [E2](#e2-openbeastconf) |
 | Weights | both | `~/openbeast-models/glm53-flash-ablit-exl3` (175.7 GB, 83 shards), hard-linked into `~/.cache/huggingface/hub/models--Mia-AiLab--GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit/snapshots/57edefd2…`. Verified against the Hub revision (sha256, 0 mismatches) and locked in `scripts/backends/models/glm53-flash-ablit-exl3-tensorfold.lock` ([C](#c-weights)) |
-| Drafter | both | `incoai/GLM-5.3-Flash-DFlash2 @ bf582e4e` (CC BY-NC-ND: personal use, Max's call). It lives in the HF cache only, in `hf download` layout (snapshot symlinks into `blobs/`). **No OpenBeast lock covers it**; [C4](#c4-the-drafter-dflash2) shows how to check it |
+| Drafter | both | `incoai/GLM-5.3-Flash-DFlash2 @ 6cc6c481` (**Apache-2.0**; re-pinned 2026-11-23 from `bf582e4e`, CC BY-NC-ND, which holds the byte-identical `model.safetensors` and `config.json`: only the README differs). It lives in the HF cache only, in `hf download` layout (snapshot symlinks into `blobs/`). **No OpenBeast lock covers it**; [C4](#c4-the-drafter-dflash2) shows how to check it |
 | Native TensorFold 1.2.10 | both | `~/.local/bin/tensorfold` → `~/.local/opt/tensorfold-1.2.10-linux-aarch64` (signed release; read 2026-11-22; `install-native.sh`'s default and the ark catalog still pin 1.2.7, so pass `--version 1.2.10`). A challenger engine, **not serving** ([D2](#d2-native-tensorfold-through-spark-nodesh--spark-clustersh)) |
 | spark-guard | both | `openbeast-spark-guard.service` (system unit, `active (exited)`): an nftables table that keeps the engines' rendezvous ports on the fabric ([B3](#b3-firewall-spark-guard)) |
 
@@ -947,7 +948,7 @@ has the commands.
 | `libnccl2 2.28.9-1+cuda13.0` and `tailscale 1.104.7` .debs | ~200 MB | `apt-get download` on an online Spark | sha256 pins in `spark-root-setup.sh` (`--check-debs`) | [H3](#h3-debs-libnccl2-and-tailscale) |
 | The OpenBeast repo at one commit | ~100 MB | `git clone` / `git bundle` | the commit id | [H2](#h2-the-repo) |
 | GLM-5.3-Flash Ablit EXL3 weights | 175.7 GB | the Hub at `57edefd2…` | `model-fetch.sh --verify` against the committed lock | [C](#c-weights) |
-| DFlash2 drafter | 2.3 GB | the Hub at `bf582e4e…` | the blob-hash loop | [C4](#c4-the-drafter-dflash2) |
+| DFlash2 drafter | 2.3 GB | the Hub at `6cc6c481…` (Apache-2.0) | the blob-hash loop | [C4](#c4-the-drafter-dflash2) |
 | Recipe image `tensorfold-glm53:v0.6.0` | tens of GB | `prepare.sh`, or `docker pull` from ghcr | image ID `sha256:ead01740…` after `docker load` | [H4](#h4-container-images) |
 | The recipe checkout `~/openbeast-recipes/glm53` | small | git (MiaAI-Lab) | commit `33b50fd` | [D1](#d1-the-glm-recipe-the-alternative-deployment) |
 | Native TensorFold 1.2.7 (optional) | ~100 MB | GitHub release | ed25519 signature + SHA256SUMS (`install-native.sh --stage` / `--from`) | [H5](#h5-native-tensorfold-and-the-engine-plane) |
@@ -1584,8 +1585,8 @@ in `tests/test_spark_cluster.sh`.
 
 ### C4. The drafter, DFlash2
 
-`incoai/GLM-5.3-Flash-DFlash2 @ bf582e4eacc1810f76656d1811693ff6c6737d2a`
-lives only in the HF cache, in `hf download` layout, and no OpenBeast lock
+`incoai/GLM-5.3-Flash-DFlash2 @ 6cc6c481eee930a5139619ed919f78726371adbc`
+(**Apache-2.0**, the 2026-11-10 "Release under Apache 2.0" commit) lives only in the HF cache, in `hf download` layout, and no OpenBeast lock
 covers it. Copy the whole repo dir; its relative symlinks into `blobs/` survive
 `rsync -a`. Then check every blob against its own name. LFS blobs are named by
 their sha256, small files by their git blob SHA-1:
@@ -1599,9 +1600,38 @@ cd ~/$D/blobs && for b in *; do
     40) [ "$(git hash-object "$b")" = "$b" ] || echo "BAD $b" ;;
   esac
 done; echo checked
-readlink ~/$D/snapshots/bf582e4eacc1810f76656d1811693ff6c6737d2a/model.safetensors
+readlink ~/$D/snapshots/6cc6c481eee930a5139619ed919f78726371adbc/model.safetensors
 # -> ../../blobs/b038e1d9d1e7833fa3880c2c0135ba9b673013f03da1b29fb831931584759dac (2.34 GB)
 ```
+
+**The re-pin from `bf582e4e` (CC BY-NC-ND) to `6cc6c481` (Apache-2.0),
+2026-11-23.** The Hub tree API lists the same git blob ids at both revisions
+for `config.json` (`083085aa…`), `.gitattributes`, `assets/dflash2-figure.png`
+and `model.safetensors` (LFS `b038e1d9…`); only `README.md` differs (its licence
+front matter: `d70cae7d…` → `512ace8d…`, 2,396 bytes). So a cache that holds
+`bf582e4e` needs one 2.4 KB file, no weight download. On each Spark (the
+README fetched once on a box with the internet, or carried on the drive; check
+`git hash-object README.md` = `512ace8d969625bfa81f01acd5629a54718e9d1d`):
+
+```bash
+D=~/.cache/huggingface/hub/models--incoai--GLM-5.3-Flash-DFlash2; R=6cc6c481eee930a5139619ed919f78726371adbc
+install -m 0644 README-6cc6c481.md $D/blobs/512ace8d969625bfa81f01acd5629a54718e9d1d
+mkdir -p $D/snapshots/$R/assets && cd $D/snapshots/$R
+ln -sfn ../../blobs/083085aaf95d59bad59c58f1160865683460254e config.json
+ln -sfn ../../blobs/e404a01e1f3116ff0744366d088c8fc2ba4ab735 .gitattributes
+ln -sfn ../../blobs/b038e1d9d1e7833fa3880c2c0135ba9b673013f03da1b29fb831931584759dac model.safetensors
+ln -sfn ../../blobs/512ace8d969625bfa81f01acd5629a54718e9d1d README.md
+ln -sfn ../../../blobs/6d8dcc9a9472bddb644c881fe83050b5343d09bf5ffb0912e5598e55fe671e99 assets/dflash2-figure.png
+printf %s $R > $D/refs/main      # then the blob loop above
+```
+
+Mia's recipes still default to `bf582e4e` (`glm53/scripts/config.sh`,
+`glm53-1104/scripts/config.sh`); our `local.sh` overrides it with
+`DFLASH2_REVISION` ([D1](#d1-the-glm-recipe-the-alternative-deployment)). Both
+snapshots stay in the cache (they share the blobs), so either revision serves
+offline. The 1104 recipe and D2 read a flat copy instead:
+`~/openbeast-models/glm53-dflash2-6cc6c481` (hard links to the same blobs plus
+a `.revision` file), on both Sparks.
 
 That proves the blobs are the bytes their names claim. That the snapshot is the
 pinned revision rests on the names above (read off spark-1, 2026-11-15).
@@ -1637,7 +1667,8 @@ live values).** `scripts/config.sh` sources it, and
 # OpenBeast spark-hydra settings (written 2026-11-13). Sourced by scripts/config.sh.
 WORKER=max@10.100.216.2        # spark-2 over the ConnectX-7 link (rank 1)
 ABLIT=1                        # Mia's abliterated checkpoint @ 57edefd2 (staged locally, not re-downloaded)
-DRAFTER=dflash2                # Max 2026-11-13: DFlash2 (CC BY-NC-ND, personal use) — 4 streams
+DRAFTER=dflash2                # Max 2026-11-13: DFlash2 — 4 streams
+DFLASH2_REVISION=6cc6c481eee930a5139619ed919f78726371adbc   # 2026-11-23: the Apache-2.0 release (same weights as the recipe's default bf582e4e, CC BY-NC-ND)
 # v0.6.0 has no API key: listen on loopback only. Everything outside reaches it
 # through spark-hydra's beast-gate (:8443, per-device keys). 8888 is SearXNG's.
 HOST=127.0.0.1
