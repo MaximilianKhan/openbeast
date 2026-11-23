@@ -363,6 +363,38 @@ if ! HY4_POLL_S=0 HY4_MAX_POLLS=20 bash "$RT/start.sh" > "$T/out" 2>&1 && grep -
   pass "foreground: when rank 1 ends, rank 0 is stopped"
 else fail "foreground rank 1: $(out) / $(cat "$LOG")"; fi
 rm -f "$T/dw/dies"
+# a deliberate stop (stop.sh, the unit's ExecStop, runs while start.sh still supervises,
+# before systemd's SIGTERM): start.sh exits 0, so the unit ends inactive, not failed
+fg_bg() { HY4_POLL_S=0.1 FOREGROUND=1 bash "$RT/start.sh" > "$T/out" 2>&1 & FGPID=$!; }
+fg_wait_up() { local i; for i in $(seq 100); do grep -q '^dh run' "$LOG" 2>/dev/null && return 0; sleep 0.1; done; return 1; }
+fg_rc() {  # sets frc to start.sh's exit code (not in $(...): wait needs the parent shell)
+  local i; for i in $(seq 100); do kill -0 "$FGPID" 2>/dev/null || break; sleep 0.1; done
+  if kill -0 "$FGPID" 2>/dev/null; then kill -9 "$FGPID"; frc=hung; return; fi
+  frc=0; wait "$FGPID" || frc=$?; }
+: > "$LOG"; fg_bg; fg_wait_up; sleep 0.3
+bash "$RT/stop.sh" > "$T/stop.out" 2>&1; fg_rc
+if [[ "$frc" == 0 ]] && grep -q 'rank 0 ended .*stopped on purpose' "$T/out" && [[ ! -f "$T/dh/ctr-hy4-vllm" && ! -f "$T/dw/ctr-hy4-vllm" ]]; then
+  pass "foreground: stop.sh while start.sh supervises (ExecStop before SIGTERM): exit 0, the unit is not left failed"
+else fail "deliberate stop (rc $frc): $(out)"; fi
+# the same when rank 1 is the one seen gone first
+: > "$LOG"; fg_bg; fg_wait_up; sleep 0.3
+date +%s > "$HOME/.cache/hy4-vllm/.stopping"; echo 0 > "$T/dw/dies"; fg_rc; rm -f "$T/dw/dies"
+if [[ "$frc" == 0 ]] && grep -q 'rank 1 on spark-2 ended .*stopped on purpose' "$T/out"; then
+  pass "foreground: rank 1 gone during a deliberate stop: exit 0"
+else fail "deliberate stop rank 1 (rc $frc): $(out)"; fi
+bash "$RT/stop.sh" > /dev/null 2>&1
+# SIGTERM (systemd's stop signal) also ends it cleanly: both ranks stopped, exit 0
+: > "$LOG"; fg_bg; fg_wait_up; sleep 0.3
+kill -TERM "$FGPID"; fg_rc
+if [[ "$frc" == 0 ]] && grep -q '^dh stop ' "$LOG" && grep -q '^dw stop ' "$LOG"; then pass "foreground: SIGTERM stops both ranks, exit 0"
+else fail "sigterm (rc $frc): $(out) / $(cat "$LOG")"; fi
+# a crash after an earlier stop: the stale mark is cleared at start, so it still fails
+date +%s > "$HOME/.cache/hy4-vllm/.stopping"; echo 2 > "$T/dh/dies"; : > "$LOG"
+if ! HY4_POLL_S=0 FOREGROUND=1 bash "$RT/start.sh" > "$T/out" 2>&1 && grep -q 'rank 0 ended' "$T/out" && ! grep -q 'on purpose' "$T/out" \
+   && [[ ! -f "$HOME/.cache/hy4-vllm/.stopping" || "$(cat "$T/out")" == *"stopping rank 1"* ]]; then
+  pass "foreground: a crash after an earlier stop (stale mark) still exits non-zero: the unit shows failed"
+else fail "crash after stale mark: $(out)"; fi
+rm -f "$T/dh/dies"
 
 # --- 6. stop.sh: both ranks, idempotent --------------------------------------------------
 startrc; : > "$LOG"

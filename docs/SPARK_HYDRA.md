@@ -166,10 +166,10 @@ a GPU that is not Hopper or data-center Blackwell.
 |---|---|---|
 | `scripts/backends/spark-hy4-stage.sh` | spark-1, from a checkout | stages everything (default `--dry-run`), `--check`, `install` |
 | `scripts/backends/hy4-vllm/config.sh` | sourced | the pins, the settings (`~/.config/openbeast/hy4-vllm.env`, `HY4_*=value`, parsed, never sourced; the environment wins), link discovery, the memory rule |
-| `scripts/backends/hy4-vllm/start.sh` | spark-1 (the unit) | checks, then rank 1 on spark-2 over ssh, then rank 0 here; foreground |
-| `scripts/backends/hy4-vllm/stop.sh` | spark-1 (the unit's ExecStop) | stops and removes both containers; idempotent |
+| `scripts/backends/hy4-vllm/start.sh` | spark-1 (the unit) | checks, then rank 1 on spark-2 over ssh, then rank 0 here; foreground: exits 1 when a rank dies on its own (the unit shows `failed`), 0 when stop.sh or SIGTERM ends them |
+| `scripts/backends/hy4-vllm/stop.sh` | spark-1 (the unit's ExecStop) | writes the stop mark (`HY4_STOP_MARK`, `~/.cache/hy4-vllm/.stopping`), then stops and removes both containers; idempotent |
 | `scripts/backends/hy4-vllm/memguard.sh` | both Sparks, beside each rank | kills the rank's container before the Spark runs out of memory |
-| `scripts/backends/hy4-vllm/hy4-vllm-inference.service` | `~/.config/systemd/user/` on spark-1 | the user unit: no `[Install]` (cannot be enabled), `Restart=no`, `Conflicts=` both other inference units |
+| `scripts/backends/hy4-vllm/hy4-vllm-inference.service` | `~/.config/systemd/user/` on spark-1 | the user unit: no `[Install]` (cannot be enabled), `Restart=no`, `Conflicts=` both other inference units. A deliberate stop (`beast-spark ds` / `glm` / `up` / `down`, `systemctl --user stop`) leaves it `inactive`, not `failed`: no `systemctl --user reset-failed` needed (before 2026-11-23 it did need one). A crash still shows `failed` |
 | `scripts/backends/spark-beast.sh` | `~/.local/bin/beast-spark` | `beast-spark hy4` (`beasthy4`), and `ds` / `glm` / `up` / `down` stop Hy4 |
 
 ### Stage (after the eval series; on spark-1)
