@@ -1,5 +1,20 @@
 # spark-hydra: the DGX Spark launch runbook
 
+**2026-11-23, GLM serving window ([report](reports/GLM_SERVING_WINDOW-2026-11-23.md)).** The pair now serves
+**GLM-5.3-Flash** (`beast-spark glm`: Mia's v1.8 recipe, the board's GLM
+configuration, with the DFlash2 drafter re-pinned to its Apache-2.0
+revision `6cc6c481`, the same bytes) and GLM is the boot selection, so that
+the GLM UP control arm runs on the same serving as GLM-C. `beastds` returns
+to DeepSeek, the default; put `AGENT_PROFILE=deepseek-best` back then
+([E2b](#e2b-deepseek-best-configuration-v5-t2)). The window measured three
+GLM servings through the gate. The current v1.8 recipe gave 48.4 / 78.4
+tok/s at 1 / 4 streams and 2.0K prefill. Mia's 1104 gave 41.3 / 66.8 and
+1.4K, so it does not replace v1.8. The first native D2 serve gave 30.7 /
+57.7 as rendered, or 42-45 / 66-70 with 4-bit dense, and 1.4K prefill. All
+three are functionally clean. **Before a model switch, run
+`systemctl --user stop openbeast`:** otherwise the command-center restart
+can time out and fail (an open bug, in the report).
+
 **Live deployment, 2026-11-18.** The pair serves **DeepSeek-V4.1-Flash (Mia EXL3)** by default since 2026-11-18 (`DeepSeek-V4.1-Flash-1017`, unit `deepseek-v41-inference`, enabled for boot; 524,288-token window, four streams): Max's decision after hands-on testing, with v5 61/71, the board's #1 (65/71 under arm T2 since 2026-11-19, its default agent setup: [E2b](#e2b-deepseek-best-configuration-v5-t2); the preset `AGENT_PROFILE=deepseek-best` is on `main` since #232 and live in spark-1's `openbeast.conf` since 2026-11-19, E2b). **GLM-5.3-Flash is staged as the alternative** (`GLM-5.3-Flash-EXL3`, unit `spark-hydra-inference`, 1,048,576-token window): `beastglm` switches to it, `beastds` back (it stops GLM, re-selects the Mia EXL3 pack, [DeepSeek packs](#deepseek-packs-spark-deepseek-pack), and runs `activate-stock.sh`). Switch only through `beast-spark` (the `beast*` aliases, [Everyday shortcuts](#quickstart)); `activate-stock.sh` and `restore-glm.sh` are its internals, and `activate-stock.sh` never stops GLM itself. `beastup` with nothing selected picks DeepSeek. The pair serves these two models, one at a time; **Hy4-flash (NVFP4, vLLM TP2) is staged on both Sparks and measured** (`beasthy4`, never a boot default; v5 60/71 under arm H_T2, 5 units behind DeepSeek's T2 on the same harness, single seed; [Hy4-flash](#hy4-flash-nvfp4-vllm-tp2-measured)). The command center and beast-gate run on spark-1. The DeepSeek sections below record its deployment and describe the serving default; the GLM recipe, tuning measurements and rebuild examples describe the alternative, which the fresh-install checklist still builds first. (History: GLM served 2026-11-13 to 11-17, DeepSeek from 11-17, GLM again for part of 11-18, then DeepSeek by Max's decision.)
 
 This page takes you from bare boxes to a serving pair, start to finish, and then
@@ -1756,8 +1771,14 @@ The first D2 serve on the pair is planned as `recipes/glm53-flash-exl3-native-tp
 OpenBeast's own launcher. It is general (any profile, 1 to 8 ranks), keyed
 (`--api-key-file`), and launches only verified local weights. On our pair it is
 the **challenger**: native TensorFold 1.2.10 is installed on both Sparks
-(`tensorfold --version`, checked 2026-11-22) but does not serve. Serving GLM-5.3-Flash on the pair through D2 is VERIFY ON HARDWARE,
-and so is comparing it with the recipe ("Not done yet").
+(`tensorfold --version`, checked 2026-11-22). **D2 served GLM-5.3-Flash on the
+pair for the first time on 2026-11-23** (`beast-recipe adopt
+glm53-flash-exl3-native-tp2 --run`, then `beast-spark glm53-flash-exl3-native-tp2`):
+conformance PASS, 9/9 functional checks through the gate, 30.7 / 57.7 tok/s
+at 1 / 4 streams as rendered (bf16 dense linears; 42-45 / 66-70 with
+`TF_GLM_DENSE_BITS=4`, which the profile grammar cannot pass yet), against
+the recipe's 48.4 / 78.4. It stays the challenger
+([report](reports/GLM_SERVING_WINDOW-2026-11-23.md#step-4-the-first-native-d2-serve)).
 
 **Install the engine** on every Spark. `install-native.sh` verifies three
 things, all required: the `.sha256` names exactly this archive, its ed25519
@@ -3573,7 +3594,8 @@ up on the operator steps named):
   `[nodes.sparks]` is already that shape.
 - Switching the primary between `beast` and `spark-hydra` on the hydra
   side. Clients switch since #204 (`openbeast-client use <rig>`, F2).
-- A `PARALLEL=8` measurement; native TensorFold 1.2.7 (D2) vs the recipe.
+- A `PARALLEL=8` measurement. (Native TensorFold vs the recipe: measured on
+  2026-11-23 with 1.2.10, [report](reports/GLM_SERVING_WINDOW-2026-11-23.md).)
 - A fully offline rebuild of the pair, end to end (H9).
 - `tests/test_scripts.sh` showed 7 failures when run from a non-git copy on
   spark-2 (`test_uninstall.sh` among them). Rerun from a git checkout before

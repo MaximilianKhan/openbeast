@@ -994,6 +994,15 @@ pair (each in a pair-down window, after the live evals):
    --run --bench`: **the first D2 serve on the pair**. Expect to tune
    `CONTEXT`, `KV_POOL_GIB` and `MEMORY_RESERVE_GIB` from the start line. The profile's lock is the existing GLM profile's, so
    `model-fetch.sh` verifies the folder against it rather than trusting it.
+   **Done 2026-11-23** ([report](reports/GLM_SERVING_WINDOW-2026-11-23.md#step-4-the-first-native-d2-serve)):
+   it serves, conformance PASS, 30.7 / 57.7 tok/s as rendered. Start line:
+   "model 87.69 GiB; 4 streams at once, 1.86 GiB each at a 245760-token
+   window (fp8 caches), of 6.9 GiB left after a 17.5 GiB reserve".
+   `--kv-cache fp8` works on 1.2.10. `KV_POOL_GIB` has no native
+   equivalent. With 4-bit dense linears (`TF_GLM_DENSE_BITS=4`, which needs
+   a profile key) it reaches 42-45 / 66-70, and `CONTEXT=524288` with
+   `MEMORY_RESERVE_GIB=11.5` fits with 16+ GiB MemAvailable to spare. The
+   drafter lock now sits beside the model's (#289).
 2. `beast-recipe engine hy4-flash-exl3-tensorfold-tp2 --run --stage`: stage
    1.3.3, snapshot `capabilities --json`, update the matrix; build
    `tf-hy4-cuda-generate` from source at v1.3.3.
