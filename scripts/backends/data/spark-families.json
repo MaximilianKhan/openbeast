@@ -92,7 +92,7 @@
    "swap": "manual for now: docs/EXL3_PLAYBOOK.md, 'A GLM pack, by hand'",
    "rank_files": false,
    "aux": [
-    "DFlash2 drafter incoai/GLM-5.3-Flash-DFlash2 @ bf582e4e in the HF cache on both Sparks (2.34 GB)"
+    "DFlash2 drafter incoai/GLM-5.3-Flash-DFlash2 @ 6cc6c481 (Apache-2.0; the same weights as bf582e4e) in the HF cache on both Sparks (2.34 GB)"
    ]
   },
   {

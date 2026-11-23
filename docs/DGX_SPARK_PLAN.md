@@ -748,8 +748,8 @@ small: 11 sparse-MLA layers × (512 latent + 128 indexer) per token.
 6. **Measure and write down:** decode tok/s single-stream, the context
    TensorFold admits at start (then set `MAX_MODEL_LEN`), and whether the
    checkpoint kept its MTP layer (the profile runs `--drafter none`;
-   TensorFold's own GLM drafter `incoai/GLM-5.3-Flash-DFlash2` is CC
-   BY-NC-ND and unreviewed).
+   TensorFold's own GLM drafter `incoai/GLM-5.3-Flash-DFlash2` was CC
+   BY-NC-ND then; Apache-2.0 since revision `6cc6c481`, 2026-11-10).
 
 **Fallback if the TensorFold EXL3 path fails on hardware:** the one-Spark
 exllamav3/TabbyAPI route needs a launcher and a `BACKEND` value OpenBeast

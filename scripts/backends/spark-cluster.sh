@@ -99,6 +99,7 @@ check)
     1) echo "   topology: one Spark — no fabric needed" ;;
     2) echo "   topology: two Sparks — one direct QSFP cable (both rails used when addressed)" ;;
     3) echo "   topology: three Sparks — a switch, or one subnet every Spark is on (NOT a cabled ring with a subnet per cable: the launchers rendezvous on one fabric address). Untested on hardware." ;;
+    4) echo "   topology: four Sparks — a cabled ring (each Spark to its two neighbours; no switch) or a RoCE-capable switch. The ring has a subnet per cable, so spark-node.sh's one-address rendezvous cannot start it yet (GLM 1104's start-tp4-switchless.sh can; SPARK_HYDRA A2): use the switch, or one subnet every Spark is on. Untested on hardware." ;;
     *) echo "   topology: $N Sparks — a RoCE-capable switch; every node on the fabric subnet(s). Untested on hardware." ;;
   esac
   # One probe script for every node; it prints KEY=VALUE lines. SPARK_HEAD_IP
