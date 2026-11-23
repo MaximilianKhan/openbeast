@@ -834,4 +834,6 @@ if __name__ == "__main__":
     # is fail-open on a single-user rig (see REQUIRE_IDENTITY), so honoring a
     # BIND_HOST=0.0.0.0 here would hand agent-spawn to the whole LAN. WebUI
     # reaches it on 127.0.0.1, and start.sh probes 127.0.0.1 for readiness.
-    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
+    # Bounded on SIGTERM: uvicorn's default waits forever for open requests.
+    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning",
+                timeout_graceful_shutdown=5)

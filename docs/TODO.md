@@ -358,13 +358,24 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   (`beast-spark glm`: v1.8 `33b50fd`, DFlash2 re-pinned to the
   byte-identical Apache-2.0 `6cc6c481`, and E2a's `openbeast.conf` lines), and
   GLM is the boot selection until `beastds`.
-- [ ] **The command-center restart after a model switch** (found 2026-11-23,
-  [report](reports/GLM_SERVING_WINDOW-2026-11-23.md#bugs-found)): `systemctl --user restart openbeast` timed out
-  stopping (a `python3` in `openbeast-stack` ignores SIGTERM for 90 s), and
-  the start then failed on the lingering unit. That broke `beast-spark glm`
-  (exit 1) and rolled back a recipe switch. Find the process, and make
-  `start.sh` wait out or reset `openbeast-stack`. Until then, run
-  `systemctl --user stop openbeast` before every switch.
+- [x] **The command-center restart after a model switch** (found 2026-11-23,
+  [report](reports/GLM_SERVING_WINDOW-2026-11-23.md#bugs-found); **fixed
+  2026-11-23**). The `python3` was the dashboard extension: a stop sends it
+  SIGTERM twice within milliseconds (the supervisor's trap, then systemd for
+  the rest of `openbeast-stack`), the second signal re-entered its SIGTERM
+  handler inside the first, and the nested save deadlocked on the history
+  lock the outer one held, so the process waited for systemd's SIGKILL at 90 s
+  (4 of the day's 10 stops on spark-1; the other 6 stops left a stray
+  `.run/dashboard-power.json.tmp.*`). Fixed in the handler (runs once, an 8 s
+  deadline). Also: `openbeast-stack` gets `TimeoutStopSec=30s`; `start.sh -d`
+  waits (bounded) for a stack unit still stopping instead of exiting 1;
+  beast-gate, the tool server and the router bound uvicorn's graceful
+  shutdown to 5 s; and `beast-spark` retries a failed command-center restart
+  once and never rolls back or fails a switch whose model serves. Tests:
+  `tests/test_dashboard_stop.py`, `test_spark_beast.sh`, `test_lifecycle.sh`.
+  Takes effect on spark-1 after `git pull` + `beast-spark install` and one
+  command-center restart; `systemctl --user stop openbeast` before a switch
+  is no longer needed after that.
 - [ ] **k-seed noise run** — the same arm at `--seed 1` (and 2) to put a noise
   floor under every single-seed delta above (G12; the campaign's seed arm).
   Arm F would have been the first such run; it did not run.
