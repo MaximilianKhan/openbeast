@@ -339,6 +339,13 @@ printf 'LLAMA_API_KEY="SECRETKEY123"\n' >> "$T/openbeast.conf"; cp "$T/openbeast
 if run demo && ! grep -q 'LLAMA_API_KEY set from' "$T/out" && [[ "$(grep LLAMA "$T/openbeast.conf")" == "$(grep LLAMA "$T/conf.before")" ]]; then
   pass "recipe with the key already in openbeast.conf: the line is left as it is"
 else fail "recipe key unchanged: $(cat "$T/out")"; fi
+# already serving: the key is synced and the command center restarted; with nothing to change it is only started
+reset; touch "$ST/$RU.installed" "$ST/$RU.active"
+printf 'INFERENCE_MODEL="demo-served"\nINFERENCE_BACKEND="tensorfold"\nLLAMA_API_KEY=\n' >> "$T/openbeast.conf"
+if run demo && [[ "$(calls)" == "restart openbeast.service" ]] && [[ "$(sed -n 's/^LLAMA_API_KEY=//p' "$T/openbeast.conf")" == '"SECRETKEY123"' ]] \
+   && run demo && [[ "$(calls)" == "restart openbeast.service;start openbeast.service" ]]; then
+  pass "recipe already serving: key synced + command center restarted; again: only started"
+else fail "recipe already serving: $(calls) / $(cat "$T/out")"; fi
 reset; touch "$ST/$RU.installed" "$ST/spark-hydra-inference.service.active" "$ST/fail-recipe"
 if ! run recipe demo && [[ "$(calls)" == "stop spark-hydra-inference.service;start $RU;stop $RU;start spark-hydra-inference.service" ]] \
    && [[ "$(conf_model)" == '"DeepSeek-V4.1-Flash-1017"' ]]; then

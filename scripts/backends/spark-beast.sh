@@ -499,9 +499,13 @@ cmd_recipe() {
   fi
   if active "$R_UNIT" && serving "$served"; then
     log "the recipe $R_NAME is already serving"
+    local changed=0
     if [[ "$(ob_conf_get INFERENCE_MODEL)" != "$served" || "$(ob_conf_get INFERENCE_BACKEND)" != "$backend" ]]; then
-      ob_conf_set INFERENCE_BACKEND "$backend"; ob_conf_set INFERENCE_MODEL "$served"; key_sync_log; sc restart "$OB_UNIT"
+      ob_conf_set INFERENCE_BACKEND "$backend"; ob_conf_set INFERENCE_MODEL "$served"; changed=1
     fi
+    [[ "$(ob_conf_key_sync)" == set ]] && { log "openbeast.conf: LLAMA_API_KEY set from $KEY_FILE (the engine is keyed; it was empty or different)"; changed=1; }
+    # as glm/ds do when already serving: the command center comes up (restarted when its conf changed)
+    if (( changed )); then sc restart "$OB_UNIT"; else sc start "$OB_UNIT"; fi
     cmd_status; return
   fi
   if active "$DS_UNIT"; then R_PREV=ds R_PREV_UNIT=$DS_UNIT
