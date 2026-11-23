@@ -1135,10 +1135,15 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
       until then). Diagnostics only, no board row
       ([report](reports/V5_EVAL_HOST_CALIBRATION-2026-11-23.md)). Q_T2 is
       affected only if its Rust GEMM uses threads.
-- [ ] **Next, in order:** the GLM recipe engine update (1104), tested on
-      its own. Optional for Hy4: T's assists without the cap and nudge
-      (separates the bundle; not scheduled).
-      UP on GLM-5.3-Flash as the control when the pair serves GLM.
+- [x] **The GLM recipe engine update (1104), tested on its own
+      (2026-11-23):** it does not beat v1.8 on the pair (41.3 / 66.8 tok/s
+      against 48.4 / 78.4 at 1 / 4 streams, and 1.4K against 2.0K
+      prefill), so GLM rows stay on v1.8
+      ([report](reports/GLM_SERVING_WINDOW-2026-11-23.md)).
+- [ ] **Next, in order:** UP on GLM-5.3-Flash as the control. The pair
+      serves GLM's board configuration since 2026-11-23 for it. Optional
+      for Hy4: T's assists without the cap and nudge (separates the bundle;
+      not scheduled).
 - [x] **Campaign report** (2026-11-20, final 2026-11-21): [the final campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md).
       Its tables come from `evals/v5_report.py`; regenerate them after each
       arm (`--write`).

@@ -871,7 +871,9 @@ below are kept as asked, for the record.
   shorter: holding it back until `H_T2` has a row costs little.
 - **Q-J.** The Mia GLM recipe (1104, TensorFold 1.3.0): if it beats today's
   GLM recipe, does GLM-5.3-Flash stay "the alternative" with an upgraded
-  line, or get a changelog entry?
+  line, or get a changelog entry? **Moot (2026-11-23):** 1104 did not beat
+  v1.8 on the pair (41.3 / 66.8 against 48.4 / 78.4 tok/s; [report](reports/GLM_SERVING_WINDOW-2026-11-23.md)),
+  so the GLM line does not change.
 - **Q-K.** Name harness 10's arms on the site? **This handoff assumes yes**,
   at the level "short planning guidance" and "an extra procedure pack"
   (E4), because the 2026-11-21 brief asked for the ladder to span U to

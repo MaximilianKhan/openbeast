@@ -342,12 +342,29 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   `reasoning_effort`): an era change, so no N arms for Hy4 until then. The
   EXL3 pack `~/Documents/LibertAIDAI-Hy4-flash-EXL3-4bpw` stays (single-host
   only; kept on purpose).
-- [ ] **The GLM recipe engine update (1104), last:** tested and profiled on
-  its own, after H_T2, before any GLM row runs on it.
+- [x] **The GLM recipe engine update (1104), last:** tested and profiled on
+  its own, 2026-11-23 ([report](reports/GLM_SERVING_WINDOW-2026-11-23.md)). **Verdict: no.** On the same pair,
+  day and gate probe, 1104 served at Mia's numerics (`DENSE=q8 HEAD=q8`)
+  gave 41.3 / 66.8 tok/s at 1 / 4 streams and 1.37-1.41K prefill. v1.8 gave
+  48.4 / 78.4 and 1.97-2.05K. At v1.8's `DENSE=q4`, 1104 ties at 1 stream
+  (45-49) but trails at 4 (75.5) and in prefill (1.4-1.5K). Both pass 9/9
+  functional checks (chat, thinking in `reasoning_content`, tool calls
+  streamed and not, a 105K needle) and conformance. GLM rows stay on v1.8.
+  The image `tensorfold-glm53-spark:b9f8eb919ae0` stays on both Sparks
+  (3.85 GB).
 - [ ] **The GLM UP control:** arm UP with `--model-name GLM-5.3-Flash`, after
   `beastglm`, so the UP change is measured on a second model (#234 asks for
-  it). It needs a GLM serving window, which takes the default model down; run
-  it after the DeepSeek arms.
+  it). **Ready since 2026-11-23:** the pair serves GLM's board configuration
+  (`beast-spark glm`: v1.8 `33b50fd`, DFlash2 re-pinned to the
+  byte-identical Apache-2.0 `6cc6c481`, and E2a's `openbeast.conf` lines), and
+  GLM is the boot selection until `beastds`.
+- [ ] **The command-center restart after a model switch** (found 2026-11-23,
+  [report](reports/GLM_SERVING_WINDOW-2026-11-23.md#bugs-found)): `systemctl --user restart openbeast` timed out
+  stopping (a `python3` in `openbeast-stack` ignores SIGTERM for 90 s), and
+  the start then failed on the lingering unit. That broke `beast-spark glm`
+  (exit 1) and rolled back a recipe switch. Find the process, and make
+  `start.sh` wait out or reset `openbeast-stack`. Until then, run
+  `systemctl --user stop openbeast` before every switch.
 - [ ] **k-seed noise run** — the same arm at `--seed 1` (and 2) to put a noise
   floor under every single-seed delta above (G12; the campaign's seed arm).
   Arm F would have been the first such run; it did not run.
@@ -664,9 +681,23 @@ diagnostics and escalation unresolved, all within churn); GLM's D and F only on 
     <drive>/files/tensorfold-1.2.10/1.2.10/linux-aarch64` ([SPARK_HYDRA.md H5](SPARK_HYDRA.md#h5-native-tensorfold-and-the-engine-plane)).
 - [ ] **beast-recipe on hardware** (v1 built off-hardware, merged 2026-11-22 as #274): each in a
   pair-down window, after the live evals ([BEAST_RECIPE.md, deferred](BEAST_RECIPE.md#what-is-deferred-to-hardware-day)):
-  - [ ] the first D2 serve on the pair: `beast-recipe adopt glm53-flash-exl3-native-tp2 --run` +
+  - [x] the first D2 serve on the pair: `beast-recipe adopt glm53-flash-exl3-native-tp2 --run` +
     `beast-spark glm53-flash-exl3-native-tp2`, then `check --run --bench`; tune `CONTEXT`,
-    `KV_POOL_GIB`, `MEMORY_RESERVE_GIB` from the start line.
+    `KV_POOL_GIB`, `MEMORY_RESERVE_GIB` from the start line. **Done 2026-11-23**
+    ([report](reports/GLM_SERVING_WINDOW-2026-11-23.md#step-4-the-first-native-d2-serve)). It serves, with conformance PASS and
+    9/9 checks through the gate. As rendered (bf16 dense linears, 245,760 window, 17.5 GiB
+    reserve) it gives 30.7 / 57.7 tok/s at 1 / 4 streams and 1.4K prefill, against v1.8's
+    48.4 / 78.4 and 2.0K. `KV_POOL_GIB` has no native flag. The drafter lock is #289. Two
+    switch bugs were fixed on the way: #290 and #291, `LLAMA_API_KEY` after GLM.
+  - [ ] the D2 dense-bits profile key: native 1.2.10 reads `TF_GLM_DENSE_BITS` /
+    `TF_GLM_HEAD_BITS` (4/6/8/16), and the profile grammar cannot pass them. Add a
+    `TENSORFOLD_GLM_DENSE_BITS` key (obprofile, `spark-node.sh` RANKENV, the recipe render, tests),
+    then set the recipe to 4-bit dense, `CONTEXT=524288` and `MEMORY_RESERVE_GIB=11.5`. Measured
+    by the env experiment: 41.8 / 64.7 tok/s, a 214K needle passes, and MemAvailable stays at
+    18+ GiB under load. Then `check --bench` again.
+  - [ ] native-engine prefill: 1104 and native 1.2.10 both reach about 1.4K tok/s against
+    v1.8's 2.0K on this pair. Find out why (the prompt chunk, `ABSORB_MMA`, the engine), on
+    1.3.4 once it is staged.
   - [ ] `beast-recipe engine hy4-flash-exl3-tensorfold-tp2 --run --stage`: stage TensorFold 1.3.3 on
     both Sparks, snapshot `capabilities --json` into `data/recipe-engines.json`, build
     `tf-hy4-cuda-generate` at v1.3.3.
