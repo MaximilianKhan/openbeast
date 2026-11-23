@@ -156,7 +156,7 @@ if (( TP > 1 )); then
 fi
 if [[ "$ENGINE" == native ]]; then
   TENSORFOLD_BIN="${TENSORFOLD_BIN:-$HOME/.local/bin/tensorfold}"
-  sp_need TENSORFOLD_VERSION "the release install-native.sh installed (e.g. 1.2.7) — the launcher refuses any other binary"
+  sp_need TENSORFOLD_VERSION "the release install-native.sh installed (e.g. 1.2.10) — the launcher refuses any other binary"
   if [[ ! -x "$TENSORFOLD_BIN" ]]; then
     sp_err "no TensorFold binary at $TENSORFOLD_BIN — scripts/backends/tensorfold/install-native.sh"
   elif [[ -n "${TENSORFOLD_VERSION:-}" ]]; then

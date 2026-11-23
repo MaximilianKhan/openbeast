@@ -337,8 +337,9 @@ It fails on:
 - **The repo's own pins are mirrored, not re-chosen.** Each is held equal
   to the repo by `tests/test_ark.py`:
   - llama.cpp is `scripts/llama.cpp.ref`'s commit;
-  - TensorFold is `install-native.sh`'s 1.2.7 (`update` sees 1.2.9 and
-    leaves it to whoever moves the installer);
+  - TensorFold is `install-native.sh`'s 1.3.4 (moved from 1.2.7 on
+    2026-11-23; `update` sees newer releases and leaves them to whoever
+    moves the installer);
   - Zig is 0.16.0, whose x86_64 sha256 equals CI's `ZIG_SHA256`;
   - Open WebUI and SearXNG are at `docker-compose.yml`'s digests.
 - **The Kubernetes control-plane image tags** (etcd `3.7.0-0`, coredns

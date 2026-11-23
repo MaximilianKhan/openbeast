@@ -4823,20 +4823,20 @@ category = "ai"
 description = "TensorFold native engine (the Spark default)"
 homepage = "https://github.com/ashhart/TensorFold"
 license = "Apache-2.0"
-version = "1.2.7"
+version = "1.3.4"
 profiles = ["core"]
 update = "manual"
 git = "https://github.com/ashhart/TensorFold.git"
-commit = "93a2e93ecebff8aa52b88e58c5dd222516e69c5f"
-note = "Version follows scripts/backends/tensorfold/install-native.sh (tests hold them equal). Each .sha256 is ed25519-signed with TensorFold's release key (vendored as agents/ark/keys/tensorfold-release-key.pem, byte-identical to the installer's), checked here in pure python. install-native.sh --from <the files dir> installs it the supported way."
-git_size = 78753792
+commit = "12ebd414de443485d281768036ac4835e5abe8fe"
+note = "Version follows scripts/backends/tensorfold/install-native.sh (tests hold them equal). Each .sha256 is ed25519-signed with TensorFold's release key (vendored as agents/ark/keys/tensorfold-release-key.pem, byte-identical to the installer's), checked here in pure python. install-native.sh --from <the files dir> installs it the supported way. 1.3.4 (was 1.2.7) pinned 2026-11-23: each sha256 equals the release's signed .sha256, a local re-hash of the downloaded archive and GitHub's asset digest; the signature verified with the vendored key. Recipes pin their own release (TENSORFOLD_REQUIRES), so this default moves no recipe."
+git_size = 93953024
 
 [[artifact]]
 entry = "tensorfold"
 kind = "file"
 platform = "linux-x86_64"
 url = "https://github.com/ashhart/TensorFold/releases/download/{tag}/tensorfold-{version}-linux-x86_64.tar.gz"
-sha256 = "319f548ba3d8af501b30108fceccf6d12a375e2851999ae9f5cb88466406a694"
+sha256 = "8336d2866cef7929ac8c68a44801956aa43c3cc24e3eeac003f4f6b4d87614f1"
 checksum_url = "https://github.com/ashhart/TensorFold/releases/download/{tag}/tensorfold-{version}-linux-x86_64.tar.gz.sha256"
 signature_url = "https://github.com/ashhart/TensorFold/releases/download/{tag}/tensorfold-{version}-linux-x86_64.tar.gz.sha256.sig"
 signature_kind = "ed25519-sums"
@@ -4845,14 +4845,14 @@ signature_prefix = "tensorfold-native-checksum-v1\n"
 install = "tar"
 bins = ["bin/tensorfold-native"]
 verified = "upstream-sums"
-size = 50249460
+size = 57732933
 
 [[artifact]]
 entry = "tensorfold"
 kind = "file"
 platform = "linux-aarch64"
 url = "https://github.com/ashhart/TensorFold/releases/download/{tag}/tensorfold-{version}-linux-aarch64.tar.gz"
-sha256 = "250b7cd3d1aa2685cbf011f501c4f10bbff44c6ccd876dc63a7a4bbf337ed01b"
+sha256 = "02566a5297dd67db9b0b834737fe73e192907454896ee7d097d3a0dfca303937"
 checksum_url = "https://github.com/ashhart/TensorFold/releases/download/{tag}/tensorfold-{version}-linux-aarch64.tar.gz.sha256"
 signature_url = "https://github.com/ashhart/TensorFold/releases/download/{tag}/tensorfold-{version}-linux-aarch64.tar.gz.sha256.sig"
 signature_kind = "ed25519-sums"
@@ -4861,14 +4861,14 @@ signature_prefix = "tensorfold-native-checksum-v1\n"
 install = "tar"
 bins = ["bin/tensorfold-native"]
 verified = "upstream-sums"
-size = 49778314
+size = 57183010
 
 [[artifact]]
 entry = "tensorfold"
 kind = "file"
 platform = "darwin-arm64"
 url = "https://github.com/ashhart/TensorFold/releases/download/{tag}/tensorfold-{version}-macos-arm64.tar.gz"
-sha256 = "b8e4c5e42f844f3f25c1c8a75d5d3a05d90dbf660df2c148d3c6e4cc6de2be75"
+sha256 = "4e14cbfa94af7d45f1bb9ad05495b10009a58480e5644699b52a0cd7f1755823"
 checksum_url = "https://github.com/ashhart/TensorFold/releases/download/{tag}/tensorfold-{version}-macos-arm64.tar.gz.sha256"
 signature_url = "https://github.com/ashhart/TensorFold/releases/download/{tag}/tensorfold-{version}-macos-arm64.tar.gz.sha256.sig"
 signature_kind = "ed25519-sums"
@@ -4877,7 +4877,7 @@ signature_prefix = "tensorfold-native-checksum-v1\n"
 install = "tar"
 bins = ["bin/tensorfold-native"]
 verified = "upstream-sums"
-size = 7223486
+size = 8330369
 
 [[entry]]
 name = "open-webui"
