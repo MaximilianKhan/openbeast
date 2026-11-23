@@ -334,7 +334,12 @@ def test_glm_recipe_drafter_is_the_apache_revision_and_profile_validates(data):
     assert "DRAFTER_REVISION=6cc6c481eee930a5139619ed919f78726371adbc" in prof and "TENSOR_PARALLEL_SIZE=2" in prof
     lock = json.loads((REPO / "scripts/backends/models/recipe-glm53-flash-exl3-native-tp2.lock").read_text())
     old = json.loads((REPO / "scripts/backends/models/glm53-flash-ablit-exl3-tensorfold.lock").read_text())
-    assert lock["profile"] == "recipe-glm53-flash-exl3-native-tp2" and lock["artifacts"] == old["artifacts"]
+    assert lock["profile"] == "recipe-glm53-flash-exl3-native-tp2"
+    assert lock["artifacts"]["model"] == old["artifacts"]["model"]
+    # the drafter lock (recorded 2026-11-23 on spark-1): the Apache-2.0 revision, the same weights blob as bf582e4e
+    d = lock["artifacts"]["drafter"]
+    assert (d["source"], d["revision"]) == ("incoai/GLM-5.3-Flash-DFlash2", "6cc6c481eee930a5139619ed919f78726371adbc")
+    assert d["files"]["model.safetensors"]["sha256"] == "b038e1d9d1e7833fa3880c2c0135ba9b673013f03da1b29fb831931584759dac"
     unit = recipe.render_unit(r, p)
     assert "\n[Install]" not in unit and "Restart=no" in unit
     assert "spark-cluster.sh start --profile recipe-glm53-flash-exl3-native-tp2 --engine tensorfold" in unit
