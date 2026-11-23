@@ -222,6 +222,39 @@ load /media/ark/openbeast-eval-host.tar.gz` checks the sha256 and loads it.
 The image's tag must match the offline checkout's pins: `eval-host-container.sh
 tag` prints the tag the checkout expects.
 
+**Calibrated against the Mac (2026-11-23).** DeepSeek-V4.1-Flash arm T2
+was rerun from this container, the same tree (harness9 `f38a29c7`), the
+same command and the same Spark server as board row `DS-T2` (65/71, from
+the Mac); only the harness host changed. The calibration arm scored
+60/71. Contention-free follow-ups scored 2/7 on the flipped units and
+5/11 on every calibration fail. A fails-only redo can only add passes, so
+it shows host parity, not a score. **Verdict: no host effect except one
+validator bug.** The other differences are run-to-run variation on
+wall-bound hard units, which flip between attempts on the rig itself.
+Python is the same pinned 3.12.16. Time per unit is level (0.99), and so
+are tokens (0.97). No board row; the files are in
+`evals/boards/v5/diagnostics/`. Full write-up:
+[reports/V5_EVAL_HOST_CALIBRATION-2026-11-23.md](reports/V5_EVAL_HOST_CALIBRATION-2026-11-23.md).
+
+**The Linux-host bug: a threaded Rust `122_gemm_blocked` fails on `dlsym`.**
+Rust's std on Linux/glibc imports `dlsym` whenever a program spawns a
+thread. The `122_gemm_blocked` validators reject any binary that imports
+`dlsym` (the rule against a `dlopen`-loaded BLAS). So on a Linux harness
+host, a threaded Rust GEMM fails with `the binary imports dlsym` before
+any case runs. On the Mac it passes. The fix is a next-era proposal
+([HARNESS_NOTES](HARNESS_NOTES.md#next-era-the-122_gemm_blocked-dlsym-rule-on-linux-2026-11-23));
+the tasks stay as they are mid-campaign. **Until then, for every
+Linux-host run that goes on the board:** read its `122_gemm_blocked_*`
+rust row. If the only failure line is `the binary imports dlsym`, check
+the built binary: `nm -D` shows no `dlopen`/`dlmopen`/`dlvsym` and no
+BLAS-like name. If both hold, add a `validator_notes` entry for that unit
+and run to `evals/boards/v5/exclusions.json`, as `GLM-E`'s
+`122_gemm_blocked_c` has. The note says: validator false FAIL on a Linux
+host, std's `dlsym`, correctness not measured. Then run `python3
+evals/v5_board.py --write`. The unit still counts as not passed (the
+score is not adjusted). The other Linux-host caveat remains the agent
+shell's missing network deny (HARNESS_NOTES next-era (d)).
+
 **1c. The gate admits `--jobs` concurrent requests.** Nothing to run by
 hand: `profile.py` and `campaign.py run` both call
 `evals/profile.py:admission_check` before anything is scored. It sends
@@ -1084,8 +1117,8 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
       hand only; the pair is back on DeepSeek.
 - [x] **The RTX 5090 default's L0 (2026-11-22).** Qwen3.8 27B Uncensored
       MTP: 39/71 scored (40 raw), SCORE 63.3, 4 units lost to a runner
-      retry loop; driven from the rig's eval-host container (not yet
-      calibrated against the Mac). Board row Q38U-L0
+      retry loop; driven from the rig's eval-host container (calibrated
+      against the Mac afterwards, 2026-11-23, below). Board row Q38U-L0
       ([report](reports/V5_QWEN38_RTX5090-2026-11-22.md)).
 - [x] **The RTX 5090 default's L1 and L2 (2026-11-22), profile complete
       (retired).** Diagnostics only, not board rows, in
@@ -1094,6 +1127,14 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
       within churn, single seed, uncalibrated host. Integrity scan
       2026-11-22: 0 contaminated, no unit withheld (sealed notes in
       `evals/audit/reviews/`). Report §5.
+- [x] **The eval-host container calibration (2026-11-23).** DeepSeek T2
+      rerun from the rig's container against the Mac's `DS-T2` (65/71):
+      60/71, then 2/7 on the flips and 5/11 on the fails, contention-free.
+      No host effect except the Rust `dlsym` validator bug on
+      `122_gemm_blocked` (Linux only; next-era fix, per-run validator note
+      until then). Diagnostics only, no board row
+      ([report](reports/V5_EVAL_HOST_CALIBRATION-2026-11-23.md)). Q_T2 is
+      affected only if its Rust GEMM uses threads.
 - [ ] **Next, in order:** the GLM recipe engine update (1104), tested on
       its own. Optional for Hy4: T's assists without the cap and nudge
       (separates the bundle; not scheduled).

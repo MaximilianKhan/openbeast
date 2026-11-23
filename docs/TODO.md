@@ -279,9 +279,24 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   2026-11-22, the profile is complete (retired):** diagnostics only, not
   board rows (`evals/boards/v5/diagnostics/`); zig 0 → 4 of 6 with packs,
   L2 4 → 2 on zig, L0 → L2 +4 over 36 compiled units, all within churn;
-  integrity scan clean (report §5). Next: the cross-host calibration (rig
-  container against the Mac), and the Linux network deny (HARNESS_NOTES
-  next-era (d)) before more rig rows.
+  integrity scan clean (report §5). **Cross-host calibration done
+  2026-11-23** ([report](reports/V5_EVAL_HOST_CALIBRATION-2026-11-23.md)):
+  DeepSeek T2 rerun from the rig container scored 60/71 against the Mac's
+  65; contention-free, 2/7 on the flips and 5/11 on the fails. No host
+  effect except one validator bug: on Linux, Rust's std imports `dlsym`
+  for any thread, and `122_gemm_blocked` rejects a binary that imports
+  `dlsym`, so a threaded Rust GEMM is a false FAIL. Q_T2 (running in the
+  container) is affected only if its Rust GEMM uses threads; footnote a
+  hit with a per-run validator note ([`MODEL_CAMPAIGN.md`, eval host in a
+  container](MODEL_CAMPAIGN.md#eval-host-in-a-container-linux)).
+  Still open: the Linux network deny (HARNESS_NOTES next-era (d)) before
+  more rig rows.
+- [ ] **Next suite/era: the `122_gemm_blocked` `dlsym` rule** (allow
+  `dlsym` when the binary imports no loader and no BLAS-like symbol;
+  [HARNESS_NOTES](HARNESS_NOTES.md#next-era-the-122_gemm_blocked-dlsym-rule-on-linux-2026-11-23)).
+  After Q_T2 finishes, replay the calibration's three Rust
+  `122_gemm_blocked_d` solutions on the rig under the proposed rule
+  (calibration report §6).
 - [x] **DeepSeek-V4.1-Flash (Mia EXL3) thinking-first campaign:** complete
   2026-11-21 ([final report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md); [`MODEL_CAMPAIGN.md` §9](MODEL_CAMPAIGN.md#9-next-deepseek-v41-flash-1017-thinking-first)).
   On the board (2026-11-21): T 61, T_s1 61, **T2 65** (best, SCORE 94.9),
