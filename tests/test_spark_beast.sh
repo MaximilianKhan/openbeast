@@ -324,6 +324,21 @@ if run demo && [[ "$(calls)" == "stop deepseek-v41-inference.service;start $RU;r
    && grep -q '^PREVIOUS=ds$' "$T/recipes.d/.previous"; then
   pass "recipe from ds: DeepSeek stopped (still the boot selection), the recipe unit started and waited for, openbeast.conf set, .previous=ds"
 else fail "recipe from ds: $(calls) / $(conf_model) / $(cat "$T/out")"; fi
+# from GLM, whose restore-glm.sh leaves LLAMA_API_KEY empty: the keyed recipe gets the engine key
+# (else beast-gate sends none and the native engine answers 401), and the key never reaches the output
+reset; rm -f "$T/recipes.d/.previous"; touch "$ST/$RU.installed" "$ST/spark-hydra-inference.service.active"
+printf 'LLAMA_API_KEY=\n' >> "$T/openbeast.conf"
+if run demo && [[ "$(calls)" == "stop spark-hydra-inference.service;start $RU;restart openbeast.service" ]] \
+   && [[ "$(sed -n 's/^LLAMA_API_KEY=//p' "$T/openbeast.conf")" == '"SECRETKEY123"' ]] \
+   && [[ "$(grep -c '^LLAMA_API_KEY=' "$T/openbeast.conf")" == 1 ]] && grep -q 'LLAMA_API_KEY set from' "$T/out" \
+   && ! grep -q SECRETKEY123 "$T/out"; then
+  pass "recipe from glm: LLAMA_API_KEY (empty after restore-glm.sh) set from the key file, never printed"
+else fail "recipe key sync: $(calls) / $(grep LLAMA "$T/openbeast.conf") / $(cat "$T/out")"; fi
+reset; rm -f "$T/recipes.d/.previous"; touch "$ST/$RU.installed" "$ST/deepseek-v41-inference.service.active"
+printf 'LLAMA_API_KEY="SECRETKEY123"\n' >> "$T/openbeast.conf"; cp "$T/openbeast.conf" "$T/conf.before"
+if run demo && ! grep -q 'LLAMA_API_KEY set from' "$T/out" && [[ "$(grep LLAMA "$T/openbeast.conf")" == "$(grep LLAMA "$T/conf.before")" ]]; then
+  pass "recipe with the key already in openbeast.conf: the line is left as it is"
+else fail "recipe key unchanged: $(cat "$T/out")"; fi
 reset; touch "$ST/$RU.installed" "$ST/spark-hydra-inference.service.active" "$ST/fail-recipe"
 if ! run recipe demo && [[ "$(calls)" == "stop spark-hydra-inference.service;start $RU;stop $RU;start spark-hydra-inference.service" ]] \
    && [[ "$(conf_model)" == '"DeepSeek-V4.1-Flash-1017"' ]]; then

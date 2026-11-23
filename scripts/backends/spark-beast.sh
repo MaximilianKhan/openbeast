@@ -340,6 +340,51 @@ os.replace(tmp, path)
 PY
 }
 
+# ob_conf_key_sync: LLAMA_API_KEY in openbeast.conf = the engine key in KEY_FILE, which the keyed
+# engines serve with (DeepSeek's recipe, native TensorFold recipes via TENSORFOLD_API_KEY_FILE, Hy4's
+# vLLM). The command center and beast-gate send LLAMA_API_KEY upstream; restore-glm.sh clears it
+# (GLM's v0.6.0 has no key and ignores a bearer header), so a keyed model started after GLM got
+# 401s through the gate until this ran (2026-11-23, the first D2 serve). The key is read inside
+# python from the file, never passed on argv; nothing is printed but "set" when the line changed.
+ob_conf_key_sync() {
+  [[ -r "$KEY_FILE" && -f "$OB_CONF" ]] || return 0
+  python3 -I - "$OB_CONF" "$KEY_FILE" <<'PY'
+import os, re, sys, tempfile
+path, kf = sys.argv[1:3]
+key = open(kf).read().strip()
+if not key or not re.fullmatch(r"[A-Za-z0-9._~+/=-]+", key):
+    sys.exit(0)                          # empty or odd: leave the conf alone (api_get refuses it too)
+lines = open(path).read().splitlines(keepends=True)
+pat = re.compile(r"^\s*LLAMA_API_KEY\s*=\s*(.*?)\s*$")
+cur = None
+for ln in lines:
+    m = pat.match(ln)
+    if m:
+        cur = m.group(1).strip("\"'")
+if cur == key:
+    sys.exit(0)
+new, done = [], False
+for ln in lines:
+    if pat.match(ln):
+        if not done:
+            new.append(f'LLAMA_API_KEY="{key}"\n')
+            done = True
+        continue
+    new.append(ln)
+if not done:
+    if new and not new[-1].endswith("\n"):
+        new.append("\n")
+    new.append(f'LLAMA_API_KEY="{key}"\n')
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(path)), prefix=".openbeast.conf.")
+with os.fdopen(fd, "w") as f:
+    f.writelines(new)
+os.chmod(tmp, os.stat(path).st_mode & 0o7777)
+os.replace(tmp, path)
+print("set")
+PY
+}
+key_sync_log() { [[ "$(ob_conf_key_sync)" == set ]] && log "openbeast.conf: LLAMA_API_KEY set from $KEY_FILE (the engine is keyed; it was empty or different)"; return 0; }
+
 # On any failure of `hy4`: Hy4 stopped, the model that served before back.
 HY4_DONE=1 HY4_PREV=none HY4_PREV_UNIT="" HY4_PREV_WAIT="" HY4_PREV_MODEL="" HY4_PREV_BACKEND="" HY4_CONF_SET=0
 hy4_exit() {
@@ -370,7 +415,7 @@ cmd_hy4() {
   if active "$HY4_UNIT" && serving "$HY4_SERVED"; then
     log "Hy4 is already serving"
     if [[ "$(ob_conf_get INFERENCE_MODEL)" != "$HY4_SERVED" || "$(ob_conf_get INFERENCE_BACKEND)" != vllm ]]; then
-      ob_conf_set INFERENCE_BACKEND vllm; ob_conf_set INFERENCE_MODEL "$HY4_SERVED"; sc restart "$OB_UNIT"
+      ob_conf_set INFERENCE_BACKEND vllm; ob_conf_set INFERENCE_MODEL "$HY4_SERVED"; key_sync_log; sc restart "$OB_UNIT"
     fi
     cmd_status; return
   fi
@@ -402,6 +447,7 @@ cmd_hy4() {
   HY4_CONF_SET=1
   ob_conf_set INFERENCE_BACKEND vllm
   ob_conf_set INFERENCE_MODEL "$HY4_SERVED"
+  key_sync_log
   sc restart "$OB_UNIT"
   HY4_DONE=1
   trap - INT TERM HUP
@@ -454,7 +500,7 @@ cmd_recipe() {
   if active "$R_UNIT" && serving "$served"; then
     log "the recipe $R_NAME is already serving"
     if [[ "$(ob_conf_get INFERENCE_MODEL)" != "$served" || "$(ob_conf_get INFERENCE_BACKEND)" != "$backend" ]]; then
-      ob_conf_set INFERENCE_BACKEND "$backend"; ob_conf_set INFERENCE_MODEL "$served"; sc restart "$OB_UNIT"
+      ob_conf_set INFERENCE_BACKEND "$backend"; ob_conf_set INFERENCE_MODEL "$served"; key_sync_log; sc restart "$OB_UNIT"
     fi
     cmd_status; return
   fi
@@ -484,6 +530,7 @@ cmd_recipe() {
   R_CONF_SET=1
   ob_conf_set INFERENCE_BACKEND "$backend"
   ob_conf_set INFERENCE_MODEL "$served"
+  key_sync_log
   sc restart "$OB_UNIT"
   # always recorded (PREVIOUS=none when nothing served: rollback is then beast-spark down)
   printf 'PREVIOUS=%s\nRECIPE=%s\nWHEN=%s\n' "$R_PREV" "$R_NAME" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RECIPES_D/.previous"
