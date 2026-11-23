@@ -142,6 +142,7 @@ backing it up, restoring it after an OS reinstall).
 | [reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md) | The v5 campaign of DeepSeek-V4.1-Flash (Mia EXL3), final: ten arms T to UPA_8k, T2 stays #1 and the default; the cap trade-off, integrity (tables from `evals/v5_report.py`) |
 | [reports/V5_HY4_FLASH-2026-11-22.md](reports/V5_HY4_FLASH-2026-11-22.md) | Hy4-flash (NVFP4) on the Spark pair, final: H_T2 60/71 and the H_C ablation 55/71 |
 | [reports/V5_QWEN38_RTX5090-2026-11-22.md](reports/V5_QWEN38_RTX5090-2026-11-22.md) | Qwen3.8 27B Uncensored MTP on the RTX 5090: the L0 baseline 39/71 scored; the profile's L1/L2 diagnostics (complete, not board rows) |
+| [reports/V5_EVAL_HOST_CALIBRATION-2026-11-23.md](reports/V5_EVAL_HOST_CALIBRATION-2026-11-23.md) | The rig's eval-host container against the Mac harness host: DeepSeek T2 rerun 60/71 vs 65/71, no host effect except the Linux-only Rust `dlsym` validator bug on `122_gemm_blocked` (diagnostics, no board row) |
 | [`../evals/README.md`](../evals/README.md) | The eval suite: schema, scoring, CLI, the v5 suite |
 | [RESEARCH_FINDINGS.md](RESEARCH_FINDINGS.md) | MTP, profiling, model comparisons |
 | [EVAL_FAST_SUITE_PROPOSAL.md](EVAL_FAST_SUITE_PROPOSAL.md) | The v4 fast suite (*plan*, built) |
