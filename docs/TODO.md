@@ -656,8 +656,12 @@ diagnostics and escalation unresolved, all within churn); GLM's D and F only on 
   It moves no recipe (each pins `TENSORFOLD_REQUIRES`) and not the live DeepSeek serve (Mia's
   `tensorfold-dsv41` image). The Sparks keep 1.2.10 installed: reinstall or carry it with
   `--version 1.2.10` ([SPARK_HYDRA.md H5](SPARK_HYDRA.md#h5-native-tensorfold-and-the-engine-plane)).
-  - [ ] Open: the ark mirrors only the default, so 1.2.10 has no ark copy; its offline path is
-    `engine.sh stage tensorfold --version 1.2.10` (signed, verified) and the Spark backup's `~/.local/opt`.
+  - [x] Closed 2026-11-23: 1.2.10 has its own ark entry, `tensorfold-1.2.10`, next to `tensorfold`
+    (1.3.4). Tag v1.2.10 = `2a674b55`; the three archive sha256s were checked the same way as 1.3.4's
+    (local re-hash = signed `.sha256` = GitHub asset digest, ed25519 signature with the vendored key,
+    in-archive `SHA256SUMS`), and `ark lock` derived the same pins on its own. Offline path:
+    `ark fetch --only tensorfold-1.2.10`, then `install-native.sh --version 1.2.10 --from
+    <drive>/files/tensorfold-1.2.10/1.2.10/linux-aarch64` ([SPARK_HYDRA.md H5](SPARK_HYDRA.md#h5-native-tensorfold-and-the-engine-plane)).
 - [ ] **beast-recipe on hardware** (v1 built off-hardware, merged 2026-11-22 as #274): each in a
   pair-down window, after the live evals ([BEAST_RECIPE.md, deferred](BEAST_RECIPE.md#what-is-deferred-to-hardware-day)):
   - [ ] the first D2 serve on the pair: `beast-recipe adopt glm53-flash-exl3-native-tp2 --run` +

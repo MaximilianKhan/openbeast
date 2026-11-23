@@ -850,7 +850,7 @@ How to reach each box:
 | Command center | spark-1, `systemctl --user` unit `openbeast` | `~/openbeast`, a git checkout: WebUI :3000, tools :3001, SearXNG :8888, beast-gate :8090, beast-chat, beast-artifact, the dashboard (beast-slot), the island watcher. `openbeast.conf`: [E2](#e2-openbeastconf) |
 | Weights | both | `~/openbeast-models/glm53-flash-ablit-exl3` (175.7 GB, 83 shards), hard-linked into `~/.cache/huggingface/hub/models--Mia-AiLab--GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit/snapshots/57edefd2…`. Verified against the Hub revision (sha256, 0 mismatches) and locked in `scripts/backends/models/glm53-flash-ablit-exl3-tensorfold.lock` ([C](#c-weights)) |
 | Drafter | both | `incoai/GLM-5.3-Flash-DFlash2 @ 6cc6c481` (**Apache-2.0**; re-pinned 2026-11-23 from `bf582e4e`, CC BY-NC-ND, which holds the byte-identical `model.safetensors` and `config.json`: only the README differs). It lives in the HF cache only, in `hf download` layout (snapshot symlinks into `blobs/`). **No OpenBeast lock covers it**; [C4](#c4-the-drafter-dflash2) shows how to check it |
-| Native TensorFold 1.2.10 | both | `~/.local/bin/tensorfold` → `~/.local/opt/tensorfold-1.2.10-linux-aarch64` (signed release; read 2026-11-22; `install-native.sh`'s default and the ark catalog pin 1.3.4 since 2026-11-23, so pass `--version 1.2.10` to reinstall this one). A challenger engine, **not serving** ([D2](#d2-native-tensorfold-through-spark-nodesh--spark-clustersh)) |
+| Native TensorFold 1.2.10 | both | `~/.local/bin/tensorfold` → `~/.local/opt/tensorfold-1.2.10-linux-aarch64` (signed release; read 2026-11-22; `install-native.sh`'s default is 1.3.4 since 2026-11-23, so pass `--version 1.2.10` to reinstall this one; the ark carries it as entry `tensorfold-1.2.10`, [H5](#h5-native-tensorfold-and-the-engine-plane)). A challenger engine, **not serving** ([D2](#d2-native-tensorfold-through-spark-nodesh--spark-clustersh)) |
 | spark-guard | both | `openbeast-spark-guard.service` (system unit, `active (exited)`): an nftables table that keeps the engines' rendezvous ports on the fabric ([B3](#b3-firewall-spark-guard)) |
 
 **Checkouts, 2026-11-22 (read-only).** spark-1 is on `e8e4b2fa` (#278), spark-2 on
@@ -951,7 +951,7 @@ has the commands.
 | DFlash2 drafter | 2.3 GB | the Hub at `6cc6c481…` (Apache-2.0) | the blob-hash loop | [C4](#c4-the-drafter-dflash2) |
 | Recipe image `tensorfold-glm53:v0.6.0` | tens of GB | `prepare.sh`, or `docker pull` from ghcr | image ID `sha256:ead01740…` after `docker load` | [H4](#h4-container-images) |
 | The recipe checkout `~/openbeast-recipes/glm53` | small | git (MiaAI-Lab) | commit `33b50fd` | [D1](#d1-the-glm-recipe-the-alternative-deployment) |
-| Native TensorFold 1.2.10 installed; 1.3.4 the installer's default and the ark's pin (optional) | ~55 MB an archive | GitHub release | ed25519 signature + SHA256SUMS (`install-native.sh --stage` / `--from`, always with `--version`); the ark catalog pins 1.3.4's three archive sha256s | [H5](#h5-native-tensorfold-and-the-engine-plane) |
+| Native TensorFold 1.2.10 installed; 1.3.4 the installer's default; the ark holds both (optional) | ~55 MB an archive | GitHub release | ed25519 signature + SHA256SUMS (`install-native.sh --stage` / `--from`, always with `--version`); the ark catalog pins both releases' three archive sha256s (entries `tensorfold` 1.3.4 and `tensorfold-1.2.10`) | [H5](#h5-native-tensorfold-and-the-engine-plane) |
 | Python wheels for the command center | ~200 MB | `pydeps.sh wheelhouse` or `bundle.sh build` **on a Spark** | `agents/requirements.lock` hashes | [H6](#h6-the-command-center-wheels-and-compose-images) |
 | Compose images (open-webui, searxng, extensions) | a few GB | `docker save` on an online Spark | digest pins; `bundle.sh install` rewrites them to the content ID | [H6](#h6-the-command-center-wheels-and-compose-images) |
 | pytest (to run the test suites) | small | `.github/ci-requirements/test.txt` | `--require-hashes` | [H7](#h7-test-and-language-toolchains) |
@@ -3211,8 +3211,14 @@ scripts/backends/tensorfold/install-native.sh --version 1.2.10 --stage tf-1.2.10
 scripts/backends/tensorfold/install-native.sh --version 1.2.10 --from tf-1.2.10 --platform linux-aarch64   # on the Spark
 # --from computes the archive name from --version: without it, it looks for the
 # default release (1.3.4) and refuses a folder staged for another one.
-# The ark mirrors the default (1.3.4): `ark` fetches the three archives with their
-# signed .sha256 files, and install-native.sh --version 1.3.4 --from <that files dir> installs it.
+# The ark holds both releases, each as three archives with their signed .sha256 files:
+# entry tensorfold (1.3.4, the default) and entry tensorfold-1.2.10 (the Sparks' release,
+# pinned by the GLM and MiniMax recipes). From an ark drive, with no network:
+#   ./scripts/ark.sh fetch --to /media/usb/ark --only tensorfold-1.2.10      # online, once
+#   install-native.sh --version 1.2.10 --platform linux-aarch64 \
+#     --from /media/usb/ark/files/tensorfold-1.2.10/1.2.10/linux-aarch64       # on the Spark
+#   (1.3.4: --version 1.3.4 --from /media/usb/ark/files/tensorfold/1.3.4/linux-aarch64)
+# install-native.sh re-checks the sha256 and the ed25519 signature, then SHA256SUMS inside.
 # or through the engine plane, which also pins and records history:
 scripts/engine.sh stage tensorfold --version 1.2.9 --platform linux-aarch64 /media/usb/tf
 scripts/engine.sh install tensorfold --from /media/usb/tf

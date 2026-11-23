@@ -283,11 +283,11 @@ It fails on:
 | storage | 5 | 3 | 13 | minio, rclone, restic, seaweedfs, syncthing |
 | security | 8 | 6 | 26 | age, cosign, openbao, sops, step, step-ca, syft, trivy |
 | iac | 2 | 1 | 6 | ansible-core, opentofu |
-| ai | 5 | 2 | 7 | llama.cpp, open-webui, searxng, tensorfold, vllm |
+| ai | 6 | 3 | 10 | llama.cpp, open-webui, searxng, tensorfold, tensorfold-1.2.10, vllm |
 | docs | 4 | 2 | 44 | devdocs, devdocs-zim-core, devdocs-zim-extra, kiwix-tools |
 | os | 3 | 2 | 8 | alpine-minirootfs, base-images, ubuntu-server |
 | virtualization | 3 | 2 | 8 | colima, firecracker, lima |
-| **total** | **112** | **64** | **350** | |
+| **total** | **113** | **65** | **353** | |
 
 **Verification, as `lock` left it:**
 
@@ -340,6 +340,16 @@ It fails on:
   - TensorFold is `install-native.sh`'s 1.3.4 (moved from 1.2.7 on
     2026-11-23; `update` sees newer releases and leaves them to whoever
     moves the installer);
+  - TensorFold 1.2.10, the native build on both DGX Sparks and the release
+    the GLM and MiniMax recipes pin (`TENSORFOLD_REQUIRES=1.2.10`), is a
+    second entry, `tensorfold-1.2.10` (added 2026-11-23): one entry holds
+    one version, so a second release the repo still depends on gets its own
+    name, the way `cpython-3.12` sits next to `cpython-3.14`. Same repo,
+    vendored key, signature scheme and archive layout as `tensorfold`;
+    `update = "manual"`, so nothing moves it. The test also checks that
+    every `TENSORFOLD_REQUIRES` in a shipped recipe has an ark entry.
+    `fetch --only tensorfold-1.2.10` puts it under
+    `files/tensorfold-1.2.10/1.2.10/<platform>/`;
   - Zig is 0.16.0, whose x86_64 sha256 equals CI's `ZIG_SHA256`;
   - Open WebUI and SearXNG are at `docker-compose.yml`'s digests.
 - **The Kubernetes control-plane image tags** (etcd `3.7.0-0`, coredns
@@ -367,7 +377,7 @@ whole stack. It covers these groups:
 | storage | SeaweedFS, restic, rclone |
 | security | step-ca, step, Trivy with its DBs, cosign, age, OpenBao |
 | iac | OpenTofu |
-| ai | llama.cpp, TensorFold |
+| ai | llama.cpp, TensorFold (1.3.4 and 1.2.10) |
 | docs | the core DevDocs ZIMs and kiwix-tools |
 | cli | jq, yq, ripgrep, fd, fzf |
 | os | the Alpine root fs and the base images |

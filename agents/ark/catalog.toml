@@ -4880,6 +4880,68 @@ verified = "upstream-sums"
 size = 8330369
 
 [[entry]]
+name = "tensorfold-1.2.10"
+category = "ai"
+description = "TensorFold native engine 1.2.10 (installed on both DGX Sparks; the GLM and MiniMax recipes pin it)"
+homepage = "https://github.com/ashhart/TensorFold"
+license = "Apache-2.0"
+version = "1.2.10"
+profiles = ["core"]
+update = "manual"
+git = "https://github.com/ashhart/TensorFold.git"
+commit = "2a674b552498739e783a31c2573fc9ccf4d8cc0d"
+note = "A second, held TensorFold release next to the default entry `tensorfold` (which follows install-native.sh). 1.2.10 is the native build on both Sparks and the release recipe-glm53-flash-exl3-native-tp2 and recipe-minimax-m31-flash-exl3-3.06-tp2 pin (TENSORFOLD_REQUIRES=1.2.10); tests hold it there, and `update` never moves it (manual). Install it the supported way: install-native.sh --version 1.2.10 --from <the files dir> (the --version is required, the installer's default is the newer release). Pinned 2026-11-23: each sha256 equals the release's signed .sha256, a local re-hash of the downloaded archive and GitHub's asset digest; the ed25519 signature verified with the vendored key; every archive's SHA256SUMS checks."
+git_size = 93953024
+
+[[artifact]]
+entry = "tensorfold-1.2.10"
+kind = "file"
+platform = "linux-x86_64"
+url = "https://github.com/ashhart/TensorFold/releases/download/{tag}/tensorfold-{version}-linux-x86_64.tar.gz"
+sha256 = "bc77f6d4112dd67a3298bd2560b9f0e7c9a54d3c5b0036a9c52c0d27f6c7e9fd"
+checksum_url = "https://github.com/ashhart/TensorFold/releases/download/{tag}/tensorfold-{version}-linux-x86_64.tar.gz.sha256"
+signature_url = "https://github.com/ashhart/TensorFold/releases/download/{tag}/tensorfold-{version}-linux-x86_64.tar.gz.sha256.sig"
+signature_kind = "ed25519-sums"
+signature_key = "agents/ark/keys/tensorfold-release-key.pem"
+signature_prefix = "tensorfold-native-checksum-v1\n"
+install = "tar"
+bins = ["bin/tensorfold-native"]
+verified = "upstream-sums"
+size = 52293655
+
+[[artifact]]
+entry = "tensorfold-1.2.10"
+kind = "file"
+platform = "linux-aarch64"
+url = "https://github.com/ashhart/TensorFold/releases/download/{tag}/tensorfold-{version}-linux-aarch64.tar.gz"
+sha256 = "c335c44f81d55847a5f81d74a94ac3d09f81bd6688247cff972cf1f63fc18105"
+checksum_url = "https://github.com/ashhart/TensorFold/releases/download/{tag}/tensorfold-{version}-linux-aarch64.tar.gz.sha256"
+signature_url = "https://github.com/ashhart/TensorFold/releases/download/{tag}/tensorfold-{version}-linux-aarch64.tar.gz.sha256.sig"
+signature_kind = "ed25519-sums"
+signature_key = "agents/ark/keys/tensorfold-release-key.pem"
+signature_prefix = "tensorfold-native-checksum-v1\n"
+install = "tar"
+bins = ["bin/tensorfold-native"]
+verified = "upstream-sums"
+size = 51781328
+
+[[artifact]]
+entry = "tensorfold-1.2.10"
+kind = "file"
+platform = "darwin-arm64"
+url = "https://github.com/ashhart/TensorFold/releases/download/{tag}/tensorfold-{version}-macos-arm64.tar.gz"
+sha256 = "76eb33cce9e297f156cfe5cbb0cec664b0266f4ecc3d103176adadc6aee21e58"
+checksum_url = "https://github.com/ashhart/TensorFold/releases/download/{tag}/tensorfold-{version}-macos-arm64.tar.gz.sha256"
+signature_url = "https://github.com/ashhart/TensorFold/releases/download/{tag}/tensorfold-{version}-macos-arm64.tar.gz.sha256.sig"
+signature_kind = "ed25519-sums"
+signature_key = "agents/ark/keys/tensorfold-release-key.pem"
+signature_prefix = "tensorfold-native-checksum-v1\n"
+install = "tar"
+bins = ["bin/tensorfold-native"]
+verified = "upstream-sums"
+size = 7651150
+
+[[entry]]
 name = "open-webui"
 category = "ai"
 description = "Open WebUI image at docker-compose.yml's digest pin"
