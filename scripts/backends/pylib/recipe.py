@@ -144,6 +144,8 @@ KEYS: dict[str, tuple[str, str]] = {
     "KV_POOL_GIB": ("float", "KV pool per rank, GiB"),
     "MEMORY_RESERVE_GIB": ("float", "engine reserve / workspace per rank, GiB (never below the family's measured value)"),
     "MIN_AVAIL_GIB": ("float", "refuse to start unless every Spark has this much MemAvailable"),
+    "DENSE_BITS": ("int", ("bits of the dense (non-expert) linears, where the engine's family reads it (native "
+                           "TensorFold GLM: TF_GLM_DENSE_BITS 4 | 6 | 8 | 16); empty = the engine's default")),
     "DRAFTER": ("text", "none | mtp | copy | in-checkpoint:<method> | <repo>@<40-hex sha>"),
     "AUX": ("text", "auxiliary weights the family needs beside the pack (Engram tables etc.), repo@sha:files"),
     "RANK_INPUTS": ("text", "the command that prepares per-rank input files (DeepSeek rank cache), or none"),
@@ -179,6 +181,13 @@ VALIDATORS = {
     "path": re.compile(r"^(~/|/)[A-Za-z0-9._/@+-]{1,300}$"),
     "source": re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*|/[A-Za-z0-9._/@+-]{1,300})$"),
 }
+# Recipe keys that reach the engine as a per-family environment variable on every rank. The engine
+# family says which it reads, as what, and the values (data/recipe-engines.json families.<mt>.env:
+# {"<KEY>": {"var": "TF_...", "values": [...], "source": "..."}}); the D2 profile carries them as
+# TENSORFOLD_RANK_ENV, whose allow list is obprofile.RANK_ENV_ALLOW. A recipe that sets one for an
+# engine/family that does not read it is refused, never rendered and silently ignored.
+FAMILY_ENV_KEYS = ("DENSE_BITS",)
+ENV_VAR_RE = re.compile(r"^TF_[A-Z0-9_]+$")
 LINE_RE = re.compile(r"^([A-Z][A-Z0-9_]*)=(.*)$")
 PROV_RE = re.compile(r"^\s*#\s*(?:(" + "|".join(PROV_TAGS) + r")\b:?\s*)?(.*)$")
 
@@ -403,6 +412,11 @@ def validate_data(d: dict, p: Path | str = "engine matrix") -> None:
             for g in ww.get("gaps", []):
                 if g not in gaps:
                     bad(f"{eid}/{mt}: with_work gap {g!r} is not a gap id")
+            for k, spec in (f.get("env") or {}).items():
+                if k not in FAMILY_ENV_KEYS or not isinstance(spec, dict) or not ENV_VAR_RE.match(spec.get("var", "")) \
+                        or not (isinstance(spec.get("values"), list) and spec["values"]):
+                    bad(f"{eid}/{mt}: env.{k} needs a key of {', '.join(FAMILY_ENV_KEYS)}, a TF_* var and a "
+                        "non-empty values list")
             for x in f.get("extra_gaps", []):
                 days = x.get("days")
                 if not (x.get("id") and x.get("title") and isinstance(days, list) and len(days) == 2
@@ -1038,6 +1052,28 @@ def vllm_serve_args(r: Recipe) -> list[str]:
     return a
 
 
+def family_env(r: Recipe, p: dict) -> dict[str, str]:
+    """{engine variable: value} for the FAMILY_ENV_KEYS the recipe sets, checked against what the chosen
+    engine's family reads (its "env" entry). Refuses a key the engine/family does not read, and a value
+    outside the recorded ones."""
+    spec = ((p.get("family") or {}).get("env") or {}) if p.get("kind") != "vllm" else {}
+    out: dict[str, str] = {}
+    for k in FAMILY_ENV_KEYS:
+        v = r.get(k)
+        if not v:
+            continue
+        s = spec.get(k)
+        if not s:
+            raise RecipeError(f"{k}={v}: {p.get('engine', '?')} does not read it for {r.get('MODEL_TYPE') or '?'} "
+                              f"(no families.{r.get('MODEL_TYPE') or '?'}.env.{k} in data/recipe-engines.json); "
+                              "remove it, or record the engine variable there once it is verified")
+        allowed = [str(x) for x in s["values"]]
+        if v not in allowed:
+            raise RecipeError(f"{k}={v}: {p.get('engine', '?')} takes {s['var']} = {' | '.join(allowed)}")
+        out[s["var"]] = v
+    return out
+
+
 def render_profile(r: Recipe, p: dict) -> str:
     """The D2 profile (scripts/backends/models/<PROFILE>.env) the recipe serves through, validated by
     obprofile's own rules before it is shown or written."""
@@ -1057,6 +1093,9 @@ def render_profile(r: Recipe, p: dict) -> str:
     if r.get("CONTEXT"):
         lines.append(f"MAX_MODEL_LEN={r.get('CONTEXT')}")
     kind, drepo, drev = drafter_spec(r)
+    renv = family_env(r, p)
+    if renv and backend != "tensorfold":
+        raise RecipeError(f"{', '.join(renv)}: a native TensorFold rank variable; the {launcher} launcher cannot pass it")
     if backend == "tensorfold":
         lines.append(f"TENSORFOLD_PARALLEL={r.get('PARALLEL') or 'auto'}")
         if kind == "repo":
@@ -1073,6 +1112,9 @@ def render_profile(r: Recipe, p: dict) -> str:
             raise RecipeError(f"KV_DTYPE={kvd}: native TensorFold's --kv-cache takes bf16 or fp8")
         if r.get("MEMORY_RESERVE_GIB"):
             lines.append(f"TENSORFOLD_MEMORY_RESERVE_GIB={r.get('MEMORY_RESERVE_GIB')}")
+        if renv:
+            # spark-node.sh sets each on every rank (systemd-run --setenv), for the family it names only
+            lines.append("TENSORFOLD_RANK_ENV=" + json.dumps(renv, separators=(",", ":"), sort_keys=True))
         v = (p.get("version") or "")
         if re.match(r"^[0-9]+\.[0-9]+\.[0-9]+$", v):
             lines.append(f"TENSORFOLD_REQUIRES={v}")
@@ -1270,6 +1312,10 @@ def plan(r: Recipe, data: dict, sparks: int | None = None, counts: list[int] | N
         caveats.append(f"one tensorfold per Spark: the profile pins TENSORFOLD_REQUIRES={p['version']}, and spark-node.sh "
                        "refuses another binary. A recipe on another release needs scripts/engine.sh install/rollback "
                        f"tensorfold on every Spark (and TENSORFOLD_VERSION={p['version']} in spark.env) before its switch")
+    # a key the chosen engine/family does not read is refused here, not at render time only
+    renv = family_env(r, p) if p.get("reads") else {}
+    if renv and not native:
+        raise RecipeError(f"{', '.join(renv)}: a native TensorFold rank variable; the {launcher} launcher cannot pass it")
     k, drepo, drev = drafter_spec(r)
     drafters = list((data.get("drafters") or {}).get(r.get("MODEL_TYPE"), []))
     steps = {
@@ -1292,7 +1338,7 @@ def plan(r: Recipe, data: dict, sparks: int | None = None, counts: list[int] | N
         "engine": {"id": p["engine"], "title": p["title"], "status": p["status"], "pinned": c["pinned"],
                    "launcher": launcher, "n": p.get("n"), "rank_reason": p.get("rank_reason"),
                    "note": p.get("note") or "", "unverified": unverified, "caveats": caveats,
-                   "version": p.get("version") or "",
+                   "version": p.get("version") or "", "rank_env": renv,
                    "why": p.get("why") or "", "launch_note": p.get("launch_note") or "", "reads": p["reads"]},
         "better_path": better,
         "hardware_why": hardware_why(r, data, p, sparks) if p["verdict"] == "NEEDS-MORE-HARDWARE" else [],
@@ -1407,6 +1453,9 @@ def render_plan(pl: dict) -> str:
     add(f"KV           {pl['kv']['dtype']}, {pl['kv']['pool_gib'] if pl['kv']['pool_gib'] is not None else '?'} GiB a rank   "
         f"({pl['kv']['source']})")
     add(f"             {pl['kv']['passed']}")
+    if e.get("rank_env"):
+        add("Rank env     " + " ".join(f"{k}={v}" for k, v in e["rank_env"].items())
+            + "   (set on every rank: TENSORFOLD_RANK_ENV)")
     add(f"Licences     {pl['model']['licences'] or 'unknown: read the model card'}")
     add(f"Nodes        {' '.join(pl['nodes'])}   ({pl['nodes_from']})")
     if pl["baseline"]["from"]:

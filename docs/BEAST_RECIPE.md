@@ -250,6 +250,44 @@ that streams from disk does not count: Hy4 EXL3's resident size is the 85.38
 GiB TensorFold 1.3.2 loads on one GB10 with the opt-in CUDA slab mode (#4003),
 not its 203 GiB of files (Engram).
 
+**Per-family engine variables (`DENSE_BITS`).** Some knobs a native family
+reads only from its environment, not from a flag: GLM-5.3-Flash on native
+1.2.10 renders its dense (non-expert) linears at `TF_GLM_DENSE_BITS` bits
+(4, 6, 8 or 16; unset = bf16, "model 87.69 GiB" at TP2). A recipe sets them
+through recipe keys, never raw env:
+
+| Recipe key | Engine / family that reads it | Rendered as | Values | Empty |
+|---|---|---|---|---|
+| `DENSE_BITS` | `tf-native-1.2.10` / `glm5_next` | `TF_GLM_DENSE_BITS` on every rank | 4, 6, 8, 16 | the engine's default (bf16 dense) |
+
+- **Data, not code, says who reads what.** The engine family's `env` entry
+  in `data/recipe-engines.json` (`families.glm5_next.env.DENSE_BITS =
+  {"var": "TF_GLM_DENSE_BITS", "values": [4, 6, 8, 16], "source": ...}`)
+  names the variable and its values, with provenance. A recipe that sets
+  `DENSE_BITS` on an engine or family without that entry (MiniMax, Qwen,
+  any vLLM path, and GLM on 1.3.3/1.3.4, which carry their own unverified
+  `glm5_next` entry) is refused by `plan` and `up`, never rendered and
+  silently ignored; so is a value outside the list. `load_data` refuses a
+  malformed `env` entry (a key that is not a `FAMILY_ENV_KEYS` key, a
+  variable that is not `TF_*`, an empty value list).
+- **The profile carries them as one key**, `TENSORFOLD_RANK_ENV`, a JSON
+  object (`TENSORFOLD_RANK_ENV={"TF_GLM_DENSE_BITS":"4"}`). `obprofile.py`
+  lets through only the names and values in its `RANK_ENV_ALLOW`
+  (`TF_GLM_DENSE_BITS` -> `glm5_next`, 4/6/8/16), so a hand-written profile
+  cannot set a placement variable (`TF_GLM_RANK`, `NCCL_*`) or `LD_PRELOAD`.
+  `spark-node.sh` sets each with `systemd-run --setenv` on every rank, and
+  refuses one whose family is not the checkpoint's `model_type` (from its
+  `config.json`); the container engine refuses the key outright.
+- **A new knob** (`TF_GLM_HEAD_BITS` next, once verified) is three lines:
+  the recipe key in `recipe.py` `KEYS` + `FAMILY_ENV_KEYS`, the variable in
+  `obprofile.py` `RANK_ENV_ALLOW`, and the family's `env` entry in the data
+  file. A test checks the data never records a variable or value the
+  profile allow list would refuse.
+- **The fit maths does not model it**: the plan budgets the checkpoint's
+  bytes. At TP2, 4-bit dense renders 82.36 GiB a rank instead of 87.69
+  (MEASURED), so the plan's W is close to what 4-bit dense loads. The plan
+  prints the variables under `Rank env`.
+
 **Other bit widths.** For an EXL3 recipe the plan projects 3/4/5/6 bpw: the
 family's sizing rule when the data has one (DeepSeek `14 + 63.3 x e`, GLM
 `11.6 + 38 x e`, both from measured packs), else linear in bpw. A test checks
@@ -388,8 +426,8 @@ such as DeepSeek 4.0 at TP4 against the TP2 2.9 unit, is never "already
 active"). For D2 it renders the profile `scripts/backends/models/<PROFILE>.env`
 (validated by `obprofile.py`'s own rules: a local SOURCE must be absolute, a
 Hub SOURCE carries its 40-hex REVISION, the drafter its own; for native
-TensorFold `TENSORFOLD_KV_CACHE`, `TENSORFOLD_MEMORY_RESERVE_GIB` and
-`TENSORFOLD_REQUIRES`) and the unit `recipes/<name>/beast-recipe-<name>.service`
+TensorFold `TENSORFOLD_KV_CACHE`, `TENSORFOLD_MEMORY_RESERVE_GIB`,
+`TENSORFOLD_RANK_ENV` (from `DENSE_BITS`) and `TENSORFOLD_REQUIRES`) and the unit `recipes/<name>/beast-recipe-<name>.service`
 (`Conflicts=` and `After=` the known units); `--write-profile` writes both
 (commit them: every Spark launches the profile from its own checkout, at the
 same commit). `up --run` holds beast-spark's switch lock. While any inference
@@ -708,15 +746,14 @@ with the same `model.safetensors` blob as the CC BY-NC-ND pin `bf582e4e`.
 VERDICT   SERVABLE-NOW at TP2
           an engine we already have serves it on this many Sparks and it fits: what is left is steps (fetch, profile, start, check), no engineering
           caveat: D2 has never served on the pair (SPARK_HYDRA D2 'VERIFY ON HARDWARE')
-          caveat: tight budget (5.7 GiB of headroom) that nothing enforces: native TensorFold sizes its KV pages itself, so the first start line and MemAvailable on every rank decide (step: tuning)
           caveat: one tensorfold per Spark: the profile pins TENSORFOLD_REQUIRES=1.2.10, and spark-node.sh refuses another binary. A recipe on another release needs scripts/engine.sh install/rollback tensorfold on every Spark (and TENSORFOLD_VERSION=1.2.10 in spark.env) before its switch
 
 Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; what of KV and reserve reaches the engine: the KV line below)
   Sparks  W/rank  rule          W + KV + reserve + OS = used    headroom  engine allows
-  1       163.6   does not fit  163.6 + 10.0 + 17.5 + 6.0 = 197.1   -75.4     no
-  2       82.4    fits          82.4 + 10.0 + 17.5 + 6.0 = 115.9   5.7       yes
-  3       55.4    fits          55.4 + 10.0 + 17.5 + 6.0 = 88.9    32.8      yes
-  4       41.9    fits          41.9 + 10.0 + 17.5 + 6.0 = 75.4    46.3      yes
+  1       163.6   does not fit  163.6 + 10.0 + 11.5 + 6.0 = 191.1   -69.4     no
+  2       82.4    fits          82.4 + 10.0 + 11.5 + 6.0 = 109.9   11.7      yes
+  3       55.4    fits          55.4 + 10.0 + 11.5 + 6.0 = 82.9    38.8      yes
+  4       41.9    fits          41.9 + 10.0 + 11.5 + 6.0 = 69.4    52.3      yes
   KV: engine-sized, not capped (native TensorFold has no KV-pool flag; the reserve is passed as TENSORFOLD_MEMORY_RESERVE_GIB)
   other bpw (projected checkpoint GiB -> per rank):
     3.0 bpw: 125.6 GiB -> 1: 125.6, 2: 63.3, 3: 42.5, 4: 32.2   (sizing rule)
@@ -734,6 +771,8 @@ Engines  (who reads it, at which sizes; best first)
     vllm-ngc           not-installed no: exl3 weights: vLLM cannot load them
     exllamav3          not-installed BLOCKED: allowed at 1, but it does not fit at any of them
   ranks: TF_GLM_RANK / TF_GLM_WORLD place 2 to 16 ranks (WORLD 1 is for a thin test model only)
+
+Rank env     TF_GLM_DENSE_BITS=4   (set on every rank: TENSORFOLD_RANK_ENV)
 
 Gaps  (blocking work: 0-0 engineering days, ESTIMATED)
   step  [d2-first-serve] D2 (spark-cluster.sh + spark-node.sh) has never served on the pair: the first native serve qualifies it
@@ -753,18 +792,30 @@ BACKEND=tensorfold
 SOURCE=/home/max/openbeast-models/glm53-flash-ablit-exl3
 SERVED_MODEL_NAME=glm-5.3-flash-ablit
 TENSOR_PARALLEL_SIZE=2
-MAX_MODEL_LEN=245760
+MAX_MODEL_LEN=524288
 TENSORFOLD_PARALLEL=4
 DRAFTER_SOURCE=incoai/GLM-5.3-Flash-DFlash2
 DRAFTER_REVISION=6cc6c481eee930a5139619ed919f78726371adbc
 TENSORFOLD_KV_CACHE=fp8
-TENSORFOLD_MEMORY_RESERVE_GIB=17.5
+TENSORFOLD_MEMORY_RESERVE_GIB=11.5
+TENSORFOLD_RANK_ENV={"TF_GLM_DENSE_BITS":"4"}
 TENSORFOLD_REQUIRES=1.2.10
 ```
 
 `TENSORFOLD_KV_CACHE=fp8` is native `--kv-cache fp8`, an opt-in upstream does
-not qualify: VERIFY on the first serve. The fallback is bf16, which needs the
-KV re-budgeted (13,056 against 6,960 B a token a rank).
+not qualify; it works on 1.2.10 (2026-11-23). The fallback is bf16, which
+needs the KV re-budgeted (13,056 against 6,960 B a token a rank).
+
+The launch values are MEASURED in the
+[2026-11-23 window](reports/GLM_SERVING_WINDOW-2026-11-23.md): `DENSE_BITS=4`
+(`TF_GLM_DENSE_BITS=4` on every rank: "model 82.36 GiB" instead of 87.69 with
+bf16 dense, 42.2 / 65.8 tok/s instead of 30.7 / 57.7), `CONTEXT=524288` and
+`MEMORY_RESERVE_GIB=11.5` ("4 streams at once, 3.66 GiB each at a
+524288-token window, of 16.1 GiB left after a 11.5 GiB reserve";
+MemAvailable bottomed at 18.3 / 19.4 GiB under the 4-stream bench plus a
+214K-token needle; 41.8 / 64.7 tok/s). That window set the dense bits by hand
+(`systemctl --user set-environment`); the committed render passes them through
+`TENSORFOLD_RANK_ENV` and has not yet been re-checked on the pair (TODO.md).
 
 ### 4. DeepSeek-V4.1-Flash at 2.9 bpw (the default) and at 4.0 bpw
 
@@ -999,10 +1050,15 @@ pair (each in a pair-down window, after the live evals):
    "model 87.69 GiB; 4 streams at once, 1.86 GiB each at a 245760-token
    window (fp8 caches), of 6.9 GiB left after a 17.5 GiB reserve".
    `--kv-cache fp8` works on 1.2.10. `KV_POOL_GIB` has no native
-   equivalent. With 4-bit dense linears (`TF_GLM_DENSE_BITS=4`, which needs
-   a profile key) it reaches 42-45 / 66-70, and `CONTEXT=524288` with
-   `MEMORY_RESERVE_GIB=11.5` fits with 16+ GiB MemAvailable to spare. The
-   drafter lock now sits beside the model's (#289).
+   equivalent. With 4-bit dense linears (`TF_GLM_DENSE_BITS=4`) it reaches
+   42-45 / 66-70, and `CONTEXT=524288` with `MEMORY_RESERVE_GIB=11.5` fits
+   with 16+ GiB MemAvailable to spare. The drafter lock now sits beside the
+   model's (#289). **The recipe now carries all three** (`DENSE_BITS=4`,
+   rendered as `TENSORFOLD_RANK_ENV`; see
+   [Per-family engine variables](#the-fit-maths)). **Pending:** re-run
+   `adopt --run`, `beast-spark glm53-flash-exl3-native-tp2` and `check --run
+   --bench` on the committed render, and confirm the start line says "model
+   82.36 GiB" and a 524288-token window.
 2. `beast-recipe engine hy4-flash-exl3-tensorfold-tp2 --run --stage`: stage
    1.3.3, snapshot `capabilities --json`, update the matrix; build
    `tf-hy4-cuda-generate` from source at v1.3.3.

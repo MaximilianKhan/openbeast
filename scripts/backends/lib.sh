@@ -231,10 +231,11 @@ sp_print_cmd() {
 SP_PYLIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pylib"
 
 # sp_profile_load <name|path> <backend> — sets PF_<KEY> for every profile key
-# and the PF_EXTRA array. Returns 1 (messages on stderr) on any refusal.
+# and the PF_EXTRA and PF_RANK_ENV arrays (PF_RANK_ENV: "<model_type>:<NAME>=<value>",
+# from TENSORFOLD_RANK_ENV). Returns 1 (messages on stderr) on any refusal.
 sp_profile_load() {
   local spec="$1" backend="$2" tmp k v
-  PF_EXTRA=()
+  PF_EXTRA=() PF_RANK_ENV=()
   tmp="$(mktemp "${TMPDIR:-/tmp}/obprofile.XXXXXX")"
   if ! python3 "$SP_PYLIB/obprofile.py" resolve "$spec" --backend "$backend" > "$tmp"; then
     rm -f "$tmp"
@@ -243,6 +244,8 @@ sp_profile_load() {
   while IFS= read -r -d '' k && IFS= read -r -d '' v; do
     if [[ "$k" == EXTRA_ARG ]]; then
       PF_EXTRA+=("$v")
+    elif [[ "$k" == RANK_ENV ]]; then
+      PF_RANK_ENV+=("$v")
     elif [[ "$k" =~ ^[A-Z][A-Z0-9_]*$ ]]; then
       printf -v "PF_$k" '%s' "$v"
     fi
