@@ -776,16 +776,20 @@ def test_glm_profile_passes_the_native_kv_cache_and_reserve_and_the_plan_says_wh
     prof = recipe.render_profile(r, p)
     # native TensorFold: --kv-cache bf16|fp8 (TENSORFOLD_KV_CACHE); --kv-dtype is the 0.x flag it refuses
     assert "TENSORFOLD_KV_CACHE=fp8" in prof and "kv-dtype" not in prof
-    assert "TENSORFOLD_MEMORY_RESERVE_GIB=17.5" in prof and "TENSORFOLD_REQUIRES=1.2.10" in prof
+    assert "TENSORFOLD_MEMORY_RESERVE_GIB=11.5" in prof and "TENSORFOLD_REQUIRES=1.2.10" in prof
     pl = recipe.plan(r, data)
     kv = pl["kv"]["passed"]
-    assert "--kv-cache fp8 is passed" in kv and "TENSORFOLD_MEMORY_RESERVE_GIB=17.5 is set" in kv
+    assert "--kv-cache fp8 is passed" in kv and "TENSORFOLD_MEMORY_RESERVE_GIB=11.5 is set" in kv
     assert "engine-sized, not capped" in kv and "engine-sized" in pl["fit"][2]["kv_from"]
-    assert pl["fit"][2]["reserve_gib"] == 17.5                     # the larger, verified local.sh value
+    assert pl["fit"][2]["reserve_gib"] == 11.5                     # MEASURED in the 2026-11-23 window
     text = recipe.render_plan(pl)
     assert "KV: engine-sized, not capped" in text
-    assert "tight budget" in text and "nothing enforces" in text   # 5.7 GiB of headroom, not enforced
+    assert "tight budget" not in text                              # 11.7 GiB of headroom at 11.5
     assert "one tensorfold per Spark" in text
+    # at the old 17.5 reserve the budget is tight, and the plan says nothing enforces it
+    r.values["MEMORY_RESERVE_GIB"] = "17.5"
+    text = recipe.render_plan(recipe.plan(r, data))
+    assert "tight budget" in text and "nothing enforces" in text   # 5.7 GiB of headroom, not enforced
 
 
 def test_no_native_profile_carries_kv_dtype(data):
@@ -1123,3 +1127,145 @@ def test_a_worker_on_another_commit_is_refused(stubs, tmp_path):
               stubs)
     assert "workers' checkouts differ" not in out.stderr
     assert any("rev-parse" in c for c in calls(stubs))
+
+
+# --------------------------------------------------------------------------- DENSE_BITS (per-family engine env)
+
+def _with(name: str, tmp_path, **kv) -> recipe.Recipe:
+    """A committed recipe with keys replaced (or added; '' drops a key), parsed from a scratch copy."""
+    lines = []
+    for line in (RECIPES / name / "recipe.env").read_text().splitlines():
+        k = line.split("=", 1)[0] if "=" in line and not line.startswith("#") else None
+        if k in kv:
+            continue
+        lines.append(line)
+    lines += [f"{k}={v}" for k, v in kv.items() if v != ""]
+    return mk(tmp_path, "\n".join(lines) + "\n", name)
+
+
+def test_glm_recipe_renders_dense_bits_as_the_rank_env(data):
+    r = recipe.load_recipe("glm53-flash-exl3-native-tp2")
+    assert r.get("DENSE_BITS") == "4" and r.provenance("DENSE_BITS").startswith("MEASURED")
+    assert r.get("CONTEXT") == "524288" and r.provenance("CONTEXT").startswith("MEASURED")
+    assert r.get("MEMORY_RESERVE_GIB") == "11.5" and r.provenance("MEMORY_RESERVE_GIB").startswith("MEASURED")
+    p = recipe.choose(r, data, 2)["chosen"]
+    assert recipe.family_env(r, p) == {"TF_GLM_DENSE_BITS": "4"}
+    prof = recipe.render_profile(r, p)
+    assert 'TENSORFOLD_RANK_ENV={"TF_GLM_DENSE_BITS":"4"}' in prof and "MAX_MODEL_LEN=524288" in prof
+    assert "TF_GLM_DENSE_BITS" not in recipe.render_unit(r, p)     # the unit runs the profile; nothing inline
+    pl = recipe.plan(r, data)
+    assert pl["engine"]["rank_env"] == {"TF_GLM_DENSE_BITS": "4"}
+    assert "Rank env     TF_GLM_DENSE_BITS=4" in recipe.render_plan(pl)
+    # the profile the launcher reads hands spark-node.sh "<model_type>:<VAR>=<value>"
+    import obprofile
+    prof_obj = obprofile.Profile(name="t", path=Path("/x/t.env"), values=obprofile.parse_text(prof, "t"))
+    pairs = obprofile.resolved_pairs(obprofile.validate(prof_obj, "tensorfold"))
+    assert ("RANK_ENV", "glm5_next:TF_GLM_DENSE_BITS=4") in pairs
+    assert ("TENSORFOLD_RANK_ENV", '{"TF_GLM_DENSE_BITS":"4"}') in pairs   # the container engine refuses it by name
+
+
+@pytest.mark.parametrize("bits", ["4", "6", "8", "16"])
+def test_dense_bits_takes_the_engine_values(tmp_path, data, bits):
+    r = _with("glm53-flash-exl3-native-tp2", tmp_path, DENSE_BITS=bits)
+    p = recipe.choose(r, data, 2)["chosen"]
+    assert f'TENSORFOLD_RANK_ENV={{"TF_GLM_DENSE_BITS":"{bits}"}}' in recipe.render_profile(r, p)
+
+
+def test_dense_bits_empty_is_the_engine_default(tmp_path, data):
+    r = _with("glm53-flash-exl3-native-tp2", tmp_path, DENSE_BITS="")
+    p = recipe.choose(r, data, 2)["chosen"]
+    assert recipe.family_env(r, p) == {}
+    assert "TENSORFOLD_RANK_ENV" not in recipe.render_profile(r, p)
+    assert "Rank env" not in recipe.render_plan(recipe.plan(r, data))
+
+
+@pytest.mark.parametrize("bits", ["3", "5", "12", "32", "0"])
+def test_dense_bits_refuses_a_value_the_engine_does_not_take(tmp_path, data, bits):
+    r = _with("glm53-flash-exl3-native-tp2", tmp_path, DENSE_BITS=bits)
+    p = recipe.choose(r, data, 2)["chosen"]
+    with pytest.raises(recipe.RecipeError, match="TF_GLM_DENSE_BITS = 4 | 6 | 8 | 16"):
+        recipe.render_profile(r, p)
+    with pytest.raises(recipe.RecipeError, match="DENSE_BITS"):
+        recipe.plan(r, data)
+
+
+@pytest.mark.parametrize("bad", ["q4", "4.0", "-4", "4 8"])
+def test_dense_bits_is_parsed_as_an_int(tmp_path, bad):
+    with pytest.raises(recipe.RecipeError, match="not a valid int|not KEY=VALUE"):
+        mk(tmp_path, f"DENSE_BITS='{bad}'\n" if " " in bad else f"DENSE_BITS={bad}\n")
+
+
+@pytest.mark.parametrize("name", ["minimax-m31-flash-exl3-3.06-tp2", "qwen38-27b-exl3-4.0-1x",
+                                  "hy4-flash-nvfp4-vllm-tp2"])
+def test_dense_bits_is_refused_where_the_engine_family_does_not_read_it(tmp_path, data, name):
+    """MiniMax / Qwen on native 1.2.10 (no env entry for their family) and vLLM (no TF_* variables)."""
+    r = _with(name, tmp_path, DENSE_BITS="4")
+    p = recipe.choose(r, data, int(r.num("SPARKS") or 2))["chosen"]
+    with pytest.raises(recipe.RecipeError, match="does not read it"):
+        recipe.family_env(r, p)
+    with pytest.raises(recipe.RecipeError, match="DENSE_BITS"):
+        recipe.plan(r, data)
+    if recipe.launcher_of(r, p).startswith("d2-"):
+        with pytest.raises(recipe.RecipeError, match="does not read it"):
+            recipe.render_profile(r, p)
+
+
+def test_dense_bits_is_refused_on_a_glm_engine_not_recorded_to_read_it(tmp_path, data):
+    # 1.3.x carries its own glm5_next entry without env: unverified there, so refused, not guessed
+    r = _with("glm53-flash-exl3-native-tp2", tmp_path, ENGINE="tf-native-1.3.3")
+    p = recipe.choose(r, data, 2)["chosen"]
+    assert p["engine"] == "tf-native-1.3.3"
+    with pytest.raises(recipe.RecipeError, match="tf-native-1.3.3 does not read it for glm5_next"):
+        recipe.render_profile(r, p)
+
+
+def test_family_env_data_matches_the_profile_allow_list(data):
+    """Every engine variable the matrix records is one obprofile lets through, for the same model_type
+    and at least the same values: a recipe can never render a profile the launcher refuses."""
+    import obprofile
+    seen = 0
+    for e in data["engines"]:
+        for mt, f in (e.get("families") or {}).items():
+            for k, spec in (f.get("env") or {}).items():
+                assert k in recipe.FAMILY_ENV_KEYS and k in recipe.KEYS
+                fam, values = obprofile.RANK_ENV_ALLOW[spec["var"]]
+                assert fam == mt and {str(v) for v in spec["values"]} <= set(values), (e["id"], mt, k)
+                seen += 1
+    assert seen >= 1
+
+
+def test_engine_matrix_refuses_a_malformed_env_entry(tmp_path):
+    import copy
+    d = copy.deepcopy(json.loads(recipe.DATA_FILE.read_text()))
+    fam = recipe.engine_by_id(d, "tf-native-1.2.10")["families"]["glm5_next"]
+    for bad in ({"NOT_A_KEY": {"var": "TF_GLM_X", "values": [4]}},
+                {"DENSE_BITS": {"var": "LD_PRELOAD", "values": [4]}},
+                {"DENSE_BITS": {"var": "TF_GLM_DENSE_BITS", "values": []}}):
+        fam["env"] = bad
+        f = tmp_path / "m.json"
+        f.write_text(json.dumps(d))
+        with pytest.raises(recipe.RecipeError, match="env"):
+            recipe.load_data(f)
+
+
+def test_profile_rank_env_validates(tmp_path):
+    import obprofile
+    base = "BACKEND=tensorfold\nSOURCE=org/m\nREVISION=" + "a" * 40 + "\nSERVED_MODEL_NAME=m\n"
+
+    def load(extra):
+        return obprofile.validate(obprofile.Profile(name="t", path=tmp_path / "t.env",
+                                                    values=obprofile.parse_text(base + extra, "t")), "tensorfold")
+    assert load('TENSORFOLD_RANK_ENV={"TF_GLM_DENSE_BITS":"8"}\n').rank_env == {"TF_GLM_DENSE_BITS": "8"}
+    for bad, msg in (('TENSORFOLD_RANK_ENV={"TF_GLM_DENSE_BITS":"5"}\n', "one of 4, 6, 8, 16"),
+                     ('TENSORFOLD_RANK_ENV={"TF_GLM_RANK":"1"}\n', "not an allowed rank variable"),
+                     ('TENSORFOLD_RANK_ENV={"LD_PRELOAD":"/x.so"}\n', "not an allowed rank variable"),
+                     ('TENSORFOLD_RANK_ENV={"TF_GLM_DENSE_BITS":4}\n', "JSON object of strings"),
+                     ("TENSORFOLD_RANK_ENV=TF_GLM_DENSE_BITS=4\n", "JSON object of strings"),
+                     ("TENSORFOLD_RANK_ENV={}\n", "JSON object of strings")):
+        with pytest.raises(obprofile.ProfileError, match=msg):
+            load(bad)
+    vl = ("BACKEND=vllm\nSOURCE=org/m\nREVISION=" + "a" * 40 + "\nSERVED_MODEL_NAME=m\n"
+          'TENSORFOLD_RANK_ENV={"TF_GLM_DENSE_BITS":"4"}\n')
+    with pytest.raises(obprofile.ProfileError, match="TensorFold setting"):
+        obprofile.validate(obprofile.Profile(name="t", path=tmp_path / "t.env", values=obprofile.parse_text(vl, "t")),
+                           "vllm")

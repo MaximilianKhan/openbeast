@@ -1150,6 +1150,20 @@ _mkfetched "$_P/tfnat.env" "model:tfnat:acme/Brand-New-Model-MLX-4bit:$_REV"
 _sp "$_TN" -- --profile "$_P/tfnat.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
 [[ $SPRC -eq 0 ]] && _has "$_O" "--kv-cache fp8" && _has "$_O" "--setenv=TENSORFOLD_MEMORY_RESERVE_GIB=17.5" && ! _has "$_O" "--kv-dtype" \
   && pass "native: TENSORFOLD_KV_CACHE is --kv-cache, TENSORFOLD_MEMORY_RESERVE_GIB is set on the rank" || fail "native kv-cache/reserve (rc=$SPRC): $_O"
+# TENSORFOLD_RANK_ENV (beast-recipe's DENSE_BITS): set on every rank, for its own family only.
+{ cat "$_P/tfnat.env"; echo 'TENSORFOLD_RANK_ENV={"TF_GLM_DENSE_BITS":"4"}'; } > "$_P/tfdense.env"
+MKF_MODEL_TYPE=glm5_next _mkfetched "$_P/tfdense.env" "model:tfdense:acme/Brand-New-Model-MLX-4bit:$_REV"
+_sp "$_TN" -- --profile "$_P/tfdense.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 0 ]] && _has "$_O" "--setenv=TF_GLM_DENSE_BITS=4" && _has "$_O" "--setenv=TF_GLM_RANK=1" \
+  && _has "$_O" "--setenv=TENSORFOLD_MEMORY_RESERVE_GIB=17.5" \
+  && pass "native GLM: TENSORFOLD_RANK_ENV TF_GLM_DENSE_BITS=4 is set on the rank" || fail "native rank env (rc=$SPRC): $_O"
+cp "$_P/tfdense.env" "$_P/tfdense2.env"; _mkfetched "$_P/tfdense2.env" "model:tfdense2:acme/Brand-New-Model-MLX-4bit:$_REV"
+_sp "$_TN" -- --profile "$_P/tfdense2.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "only native TensorFold's glm5_next family reads" && _has "$_O" "model_type brand_new" \
+  && ! _has "$_O" "--setenv=TF_GLM_DENSE_BITS" \
+  && pass "native refuses a GLM rank variable for another family's checkpoint" || fail "native rank env family (rc=$SPRC): $_O"
+{ cat "$_P/tftest.env"; echo 'TENSORFOLD_RANK_ENV={"TF_GLM_DENSE_BITS":"4"}'; } > "$_P/tfdensec.env"
+_mkfetched "$_P/tfdensec.env" "model:tfdensec:acme/Brand-New-Model-MLX-4bit:$_REV"
 sed -e 's/^TENSORFOLD_REQUIRES=.*/TENSORFOLD_REQUIRES=1.3.3/' "$_P/tfnat.env" > "$_P/tfnat133.env"; _mkfetched "$_P/tfnat133.env" "model:tfnat133:acme/Brand-New-Model-MLX-4bit:$_REV"
 _sp "$_TN" -- --profile "$_P/tfnat133.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
 [[ $SPRC -eq 1 ]] && _has "$_O" "needs native TensorFold 1.3.3" && _has "$_O" "engine.sh install tensorfold --version 1.3.3" \
@@ -1161,6 +1175,9 @@ _sp "$_TN" -- --profile "$_P/tfkvd.env" --rank 1 --master 192.168.100.10 --env "
 _sp "$_TN" TENSORFOLD_ENGINE=container TENSORFOLD_REF= -- --profile "$_P/tfnat.env" --rank 1 --master 1.2.3.4 --env "$_K/absent.env" --print
 [[ $SPRC -eq 1 ]] && _has "$_O" "sets TENSORFOLD_KV_CACHE, a native TensorFold setting" \
   && pass "the container engine refuses a profile with native-only keys" || fail "container native keys (rc=$SPRC): $_O"
+_sp "$_TN" TENSORFOLD_ENGINE=container TENSORFOLD_REF= -- --profile "$_P/tfdensec.env" --rank 1 --master 1.2.3.4 --env "$_K/absent.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "sets TENSORFOLD_RANK_ENV, a native TensorFold setting" \
+  && pass "the container engine refuses TENSORFOLD_RANK_ENV" || fail "container rank env (rc=$SPRC): $_O"
 _sp "$_TN" TENSORFOLD_API_KEY_FILE="$_K/no-such-key" -- --profile "$_P/tftest.env" --rank 0 --master 192.168.100.10 --env "$_K/spark-native.env" --print
 [[ $SPRC -eq 1 ]] && _has "$_O" "does not exist" && pass "native rank 0 refuses to serve without its key file" \
   || fail "native rank 0 keyless (rc=$SPRC): $_O"

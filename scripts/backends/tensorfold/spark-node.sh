@@ -181,7 +181,7 @@ if [[ "$ENGINE" == native ]]; then
     [[ -n "${TENSORFOLD_API_KEY_FILE:-}" ]] && sp_check_secret_file "$TENSORFOLD_API_KEY_FILE"
   fi
 else
-  for _k in TENSORFOLD_KV_CACHE TENSORFOLD_MEMORY_RESERVE_GIB TENSORFOLD_REQUIRES; do
+  for _k in TENSORFOLD_KV_CACHE TENSORFOLD_MEMORY_RESERVE_GIB TENSORFOLD_REQUIRES TENSORFOLD_RANK_ENV; do
     _v="PF_$_k"
     [[ -n "${!_v:-}" ]] && sp_err "profile '$PF_PROFILE_NAME' sets $_k, a native TensorFold setting: TENSORFOLD_ENGINE=native serves it (the container engine has no equivalent)"
   done
@@ -297,6 +297,13 @@ PY
     fi
   fi
 fi
+# A per-family engine variable (TENSORFOLD_RANK_ENV) is read by one family only: refuse it for
+# another checkpoint rather than set a variable the engine silently ignores.
+for _e in ${PF_RANK_ENV[@]+"${PF_RANK_ENV[@]}"}; do
+  _fam="${_e%%:*}" _kv="${_e#*:}"
+  [[ "$ENGINE" == native && "$MODEL_TYPE" != "$_fam" ]] \
+    && sp_err "profile '$PF_PROFILE_NAME' sets ${_kv%%=*} (TENSORFOLD_RANK_ENV), which only native TensorFold's $_fam family reads; this checkpoint is model_type ${MODEL_TYPE:-unknown}"
+done
 if [[ $SP_ERRORS -gt 0 ]]; then
   echo "Refusing to start: $SP_ERRORS setting(s) missing or unsafe (settings: $ENV_FILE, profile: $PF_PROFILE_PATH)." >&2
   exit 1
@@ -313,6 +320,8 @@ if [[ "$ENGINE" == native ]]; then
   SERVE+=(${PF_EXTRA[@]+"${PF_EXTRA[@]}"})
   RANKENV=()
   [[ -n "$PF_TENSORFOLD_MEMORY_RESERVE_GIB" ]] && RANKENV+=("TENSORFOLD_MEMORY_RESERVE_GIB=$PF_TENSORFOLD_MEMORY_RESERVE_GIB")
+  # TENSORFOLD_RANK_ENV (obprofile's allow list; checked against the model_type above)
+  for _e in ${PF_RANK_ENV[@]+"${PF_RANK_ENV[@]}"}; do RANKENV+=("${_e#*:}"); done
   if (( TP > 1 )); then
     case "$PLACE" in
       TF_GLM|TF_MINIMAX)

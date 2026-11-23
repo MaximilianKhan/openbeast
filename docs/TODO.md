@@ -689,12 +689,21 @@ diagnostics and escalation unresolved, all within churn); GLM's D and F only on 
     reserve) it gives 30.7 / 57.7 tok/s at 1 / 4 streams and 1.4K prefill, against v1.8's
     48.4 / 78.4 and 2.0K. `KV_POOL_GIB` has no native flag. The drafter lock is #289. Two
     switch bugs were fixed on the way: #290 and #291, `LLAMA_API_KEY` after GLM.
-  - [ ] the D2 dense-bits profile key: native 1.2.10 reads `TF_GLM_DENSE_BITS` /
-    `TF_GLM_HEAD_BITS` (4/6/8/16), and the profile grammar cannot pass them. Add a
-    `TENSORFOLD_GLM_DENSE_BITS` key (obprofile, `spark-node.sh` RANKENV, the recipe render, tests),
-    then set the recipe to 4-bit dense, `CONTEXT=524288` and `MEMORY_RESERVE_GIB=11.5`. Measured
-    by the env experiment: 41.8 / 64.7 tok/s, a 214K needle passes, and MemAvailable stays at
-    18+ GiB under load. Then `check --bench` again.
+  - [x] the D2 dense-bits profile key: native 1.2.10 reads `TF_GLM_DENSE_BITS` (4/6/8/16), and
+    the profile grammar could not pass it. **Key added 2026-11-23**: recipe key `DENSE_BITS`
+    (validated against the engine family's `env` entry in `data/recipe-engines.json`; refused on
+    engines/families that do not read it), rendered as the profile key `TENSORFOLD_RANK_ENV`
+    (obprofile allow list `RANK_ENV_ALLOW`; `spark-node.sh` sets it on every rank and refuses
+    it for another family's checkpoint). The recipe is now `DENSE_BITS=4`, `CONTEXT=524288`,
+    `MEMORY_RESERVE_GIB=11.5` (MEASURED by the env experiment: 41.8 / 64.7 tok/s, a 214K needle
+    passes, MemAvailable 18+ GiB under load)
+    ([BEAST_RECIPE.md](BEAST_RECIPE.md#the-fit-maths)). `TF_GLM_HEAD_BITS` can follow the same
+    way once verified.
+  - [ ] **hardware re-check of the committed D2 render** (pending, in a pair-down window):
+    `beast-recipe adopt glm53-flash-exl3-native-tp2 --run`, `beast-spark
+    glm53-flash-exl3-native-tp2`, `beast-recipe check glm53-flash-exl3-native-tp2 --run --bench`.
+    Confirm the rank units carry `TF_GLM_DENSE_BITS=4` and the start line says "model 82.36 GiB"
+    at a 524288-token window; expect about 42 / 65 tok/s. Rollback: `beast-spark glm`.
   - [ ] native-engine prefill: 1104 and native 1.2.10 both reach about 1.4K tok/s against
     v1.8's 2.0K on this pair. Find out why (the prompt chunk, `ABSORB_MMA`, the engine), on
     1.3.4 once it is staged.

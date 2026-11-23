@@ -64,6 +64,8 @@ KEYS = {
                                      "(empty = the engine's default; the container engine refuses it)",
     "TENSORFOLD_REQUIRES": "native TensorFold release this profile was planned for (e.g. 1.2.10): the launcher "
                            "refuses another binary",
+    "TENSORFOLD_RANK_ENV": "native TensorFold per-family engine variables set on every rank, a JSON object such as "
+                           "{\"TF_GLM_DENSE_BITS\":\"4\"} (allow-listed names and values: RANK_ENV_ALLOW)",
     "DRAFTER_SOURCE": "TensorFold draft model repo id (fetched and pinned like SOURCE)",
     "DRAFTER_REVISION": "full 40-hex commit SHA of DRAFTER_SOURCE",
     "FETCH_INCLUDE": "JSON array of globs model-fetch downloads (default: everything)",
@@ -93,7 +95,18 @@ NEVER_WHY = {
 VLLM_ONLY = ("DTYPE", "QUANTIZATION", "TOOL_CALL_PARSER", "REASONING_PARSER", "CHAT_TEMPLATE",
              "TRUST_REMOTE_CODE", "GPU_MEMORY_UTILIZATION", "MAX_NUM_SEQS", "SPECULATIVE_CONFIG")
 TF_ONLY = ("TENSORFOLD_PARALLEL", "DRAFTER_SOURCE", "DRAFTER_REVISION", "TENSORFOLD_KV_CACHE",
-           "TENSORFOLD_MEMORY_RESERVE_GIB", "TENSORFOLD_REQUIRES")
+           "TENSORFOLD_MEMORY_RESERVE_GIB", "TENSORFOLD_REQUIRES", "TENSORFOLD_RANK_ENV")
+# TENSORFOLD_RANK_ENV: the per-family engine variables a profile may set on every native rank, as
+# name -> (the model_type that reads it, the values it takes). An allow list, like EXTRA_ARGS': the
+# launcher owns the placement variables (TF_GLM_RANK / _WORLD, NCCL_*), and a typo'd name would be
+# ignored by the engine without a word. spark-node.sh refuses a name whose model_type is not the
+# checkpoint's. A new knob is one line here plus its recipe key (pylib/recipe.py FAMILY_ENV_KEYS) and
+# the engine family's "env" entry in data/recipe-engines.json.
+RANK_ENV_ALLOW: dict[str, tuple[str, tuple[str, ...]]] = {
+    # native 1.2.10 renders GLM-5.3-Flash's dense linears at these bits (empty = bf16, the engine's
+    # default): docs/reports/GLM_SERVING_WINDOW-2026-11-23.md (4 = 82.36 GiB vs 87.69, 42.2 vs 30.7 tok/s)
+    "TF_GLM_DENSE_BITS": ("glm5_next", ("4", "6", "8", "16")),
+}
 # Files model-fetch never downloads unless FETCH_INCLUDE names them: pickled
 # weights execute code on load, and GGUF/ONNX/"original" copies are dead weight
 # for a safetensors engine.
@@ -114,6 +127,7 @@ class Profile:
     fetch_include: list[str] = field(default_factory=list)
     fetch_exclude: list[str] = field(default_factory=list)
     speculative: dict | None = None
+    rank_env: dict[str, str] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
     def get(self, key: str, default: str = "") -> str:
@@ -377,6 +391,23 @@ def validate(p: Profile, backend: str | None = None) -> Profile:
                 raise ValueError
         except ValueError:
             err(f"TENSORFOLD_MEMORY_RESERVE_GIB={mres!r} — a GiB amount above 0 and at most 64")
+    renv = p.get("TENSORFOLD_RANK_ENV")
+    if renv:
+        try:
+            obj = json.loads(renv)
+            if not isinstance(obj, dict) or not obj or not all(isinstance(v, str) for v in obj.values()):
+                raise ValueError("not a non-empty object of strings")
+        except ValueError as e:
+            err(f"TENSORFOLD_RANK_ENV must be a JSON object of strings, e.g. {{\"TF_GLM_DENSE_BITS\":\"4\"}} ({e})")
+        else:
+            for k, v in obj.items():
+                if k not in RANK_ENV_ALLOW:
+                    err(f"TENSORFOLD_RANK_ENV: {k!r} is not an allowed rank variable (allowed: "
+                        f"{', '.join(sorted(RANK_ENV_ALLOW))})")
+                elif v not in RANK_ENV_ALLOW[k][1]:
+                    err(f"TENSORFOLD_RANK_ENV: {k}={v!r} — one of {', '.join(RANK_ENV_ALLOW[k][1])}")
+                else:
+                    p.rank_env[k] = v
     treq = p.get("TENSORFOLD_REQUIRES")
     if treq and not re.match(r"^[0-9]+\.[0-9]+\.[0-9]+$", treq):
         err(f"TENSORFOLD_REQUIRES={treq!r} — a release version such as 1.2.10")
@@ -435,6 +466,10 @@ def resolved_pairs(p: Profile) -> list[tuple[str, str]]:
     out.append(("CHAT_TEMPLATE", str(ct) if ct else ""))
     for a in p.extra_args:
         out.append(("EXTRA_ARG", a))
+    # TENSORFOLD_RANK_ENV is emitted as is above (the container engine refuses it by name) and, parsed,
+    # as RANK_ENV "<model_type>:<NAME>=<value>": spark-node.sh checks the model_type against the checkpoint's
+    for k, v in sorted(p.rank_env.items()):
+        out.append(("RANK_ENV", f"{RANK_ENV_ALLOW[k][0]}:{k}={v}"))
     return out
 
 
