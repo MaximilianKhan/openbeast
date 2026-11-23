@@ -240,6 +240,14 @@ def test_repo_pins_and_the_catalog_agree():
     assert cat.entries["llama.cpp"].commit == ref
     inst = (REPO / "scripts/backends/tensorfold/install-native.sh").read_text()
     assert cat.entries["tensorfold"].version == re.search(r"^VERSION=(\S+)$", inst, re.M).group(1)
+    # The default is the newest signed release with verified pins (1.3.4, 2026-11-23); the
+    # Sparks' recipes pin their own release (TENSORFOLD_REQUIRES), so this moves none of them.
+    tf = cat.entries["tensorfold"]
+    assert tf.version == "1.3.4" and tf.commit == "12ebd414de443485d281768036ac4835e5abe8fe"
+    assert {a.platform: a.sha256 for a in tf.artifacts} == {
+        "linux-x86_64": "8336d2866cef7929ac8c68a44801956aa43c3cc24e3eeac003f4f6b4d87614f1",
+        "linux-aarch64": "02566a5297dd67db9b0b834737fe73e192907454896ee7d097d3a0dfca303937",
+        "darwin-arm64": "4e14cbfa94af7d45f1bb9ad05495b10009a58480e5644699b52a0cd7f1755823"}
     assert (REPO / "agents/ark/keys/tensorfold-release-key.pem").read_bytes() == \
         (REPO / "scripts/backends/tensorfold/release-key.pem").read_bytes()
     ci = (REPO / ".github/workflows/ci.yml").read_text()

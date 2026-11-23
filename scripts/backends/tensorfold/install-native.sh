@@ -6,7 +6,7 @@
 #   scripts/backends/tensorfold/install-native.sh                 # download + verify + install
 #   scripts/backends/tensorfold/install-native.sh --stage DIR     # download + verify into DIR only (for offline)
 #   scripts/backends/tensorfold/install-native.sh --from DIR      # OFFLINE: install from a staged DIR
-#   ... --version 1.2.7 --platform linux-aarch64|linux-x86_64|macos-arm64
+#   ... --version 1.3.4 --platform linux-aarch64|linux-x86_64|macos-arm64
 #
 # Three checks, all required: the .sha256 must be exactly one line naming
 # THIS archive (tensorfold-<V>-<platform>.tar.gz) and the archive must hash to
@@ -26,7 +26,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 KEY="$HERE/release-key.pem"
-VERSION=1.2.7
+VERSION=1.3.4
 PLATFORM="" STAGE="" FROM=""
 while [[ $# -gt 0 ]]; do
   case "$1" in

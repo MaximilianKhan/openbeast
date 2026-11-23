@@ -720,6 +720,7 @@ sed -e "s|^SPARK_SERVE_HOST=.*|SPARK_SERVE_HOST=100.64.1.2|" \
     -e "s|^VLLM_API_KEY_FILE=.*|VLLM_API_KEY_FILE=$_K/key|" \
     -e "s|^MODELS_DIR=.*|MODELS_DIR=$_K/models|" \
     -e "s|^TENSORFOLD_ENGINE=.*|TENSORFOLD_ENGINE=container|" \
+    -e "s|^TENSORFOLD_VERSION=.*|TENSORFOLD_VERSION=1.2.7|" \
     -e "s|^SPARK_ALLOW_KEYLESS_BIND=.*|SPARK_ALLOW_KEYLESS_BIND=true   # the keyless container serves 100.64.1.2 here|" \
     "$REPO_DIR/scripts/backends/spark.env.example" > "$_K/spark.env"
 # The native engine's settings: a stub binary that reports its release, a key.

@@ -352,7 +352,7 @@ flowchart TB
 | `~/Documents/` | Model folders as delivered (packs, GLM, notes), mirrored to spark-2's `~/Documents` as a backup; `opencode/` (the kept opencode release) |
 | `~/.config/openbeast/` | 0600 secrets: `tensorfold-api-key`, `gate-keys`, `hf-token`, `webui-max-password` |
 | `~/.config/systemd/user/` | The user units |
-| `~/.local/bin/` | `beast-spark`, `tensorfold` (native 1.2.7, not serving), opencode link |
+| `~/.local/bin/` | `beast-spark`, `tensorfold` (native 1.2.10 on the Sparks, not serving), opencode link |
 
 None of this is recreated by a clone. The scripts that exist only here
 (`activate-stock.sh`, `rollback/restore-glm.sh`, `verify-chat.py`, the

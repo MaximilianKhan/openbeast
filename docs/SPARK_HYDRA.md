@@ -657,7 +657,7 @@ serves without it.
 
 ```bash
 cd ~/openbeast
-scripts/engine.sh install tensorfold --version 1.2.7          # online: download, verify, pin (or install-native.sh --version 1.2.7)
+scripts/engine.sh install tensorfold --version 1.2.10         # online: download, verify, pin (or install-native.sh --version 1.2.10; the Sparks' release)
 scripts/engine.sh install tensorfold --from /media/usb/tf      # offline (H5)
 cp scripts/backends/spark.env.example scripts/backends/spark.env    # then edit it per node (D2 table)
 cp scripts/backends/cluster.env.example scripts/backends/cluster.env  # spark-1 only: CLUSTER_NODES="local max@10.100.216.2"
@@ -849,7 +849,7 @@ How to reach each box:
 | Command center | spark-1, `systemctl --user` unit `openbeast` | `~/openbeast`, a git checkout: WebUI :3000, tools :3001, SearXNG :8888, beast-gate :8090, beast-chat, beast-artifact, the dashboard (beast-slot), the island watcher. `openbeast.conf`: [E2](#e2-openbeastconf) |
 | Weights | both | `~/openbeast-models/glm53-flash-ablit-exl3` (175.7 GB, 83 shards), hard-linked into `~/.cache/huggingface/hub/models--Mia-AiLab--GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit/snapshots/57edefd2…`. Verified against the Hub revision (sha256, 0 mismatches) and locked in `scripts/backends/models/glm53-flash-ablit-exl3-tensorfold.lock` ([C](#c-weights)) |
 | Drafter | both | `incoai/GLM-5.3-Flash-DFlash2 @ bf582e4e` (CC BY-NC-ND: personal use, Max's call). It lives in the HF cache only, in `hf download` layout (snapshot symlinks into `blobs/`). **No OpenBeast lock covers it**; [C4](#c4-the-drafter-dflash2) shows how to check it |
-| Native TensorFold 1.2.10 | both | `~/.local/bin/tensorfold` → `~/.local/opt/tensorfold-1.2.10-linux-aarch64` (signed release; read 2026-11-22; `install-native.sh`'s default and the ark catalog still pin 1.2.7, so pass `--version 1.2.10`). A challenger engine, **not serving** ([D2](#d2-native-tensorfold-through-spark-nodesh--spark-clustersh)) |
+| Native TensorFold 1.2.10 | both | `~/.local/bin/tensorfold` → `~/.local/opt/tensorfold-1.2.10-linux-aarch64` (signed release; read 2026-11-22; `install-native.sh`'s default and the ark catalog pin 1.3.4 since 2026-11-23, so pass `--version 1.2.10` to reinstall this one). A challenger engine, **not serving** ([D2](#d2-native-tensorfold-through-spark-nodesh--spark-clustersh)) |
 | spark-guard | both | `openbeast-spark-guard.service` (system unit, `active (exited)`): an nftables table that keeps the engines' rendezvous ports on the fabric ([B3](#b3-firewall-spark-guard)) |
 
 **Checkouts, 2026-11-22 (read-only).** spark-1 is on `e8e4b2fa` (#278), spark-2 on
@@ -950,7 +950,7 @@ has the commands.
 | DFlash2 drafter | 2.3 GB | the Hub at `bf582e4e…` | the blob-hash loop | [C4](#c4-the-drafter-dflash2) |
 | Recipe image `tensorfold-glm53:v0.6.0` | tens of GB | `prepare.sh`, or `docker pull` from ghcr | image ID `sha256:ead01740…` after `docker load` | [H4](#h4-container-images) |
 | The recipe checkout `~/openbeast-recipes/glm53` | small | git (MiaAI-Lab) | commit `33b50fd` | [D1](#d1-the-glm-recipe-the-alternative-deployment) |
-| Native TensorFold 1.2.7 (optional) | ~100 MB | GitHub release | ed25519 signature + SHA256SUMS (`install-native.sh --stage` / `--from`) | [H5](#h5-native-tensorfold-and-the-engine-plane) |
+| Native TensorFold 1.2.10 installed; 1.3.4 the installer's default and the ark's pin (optional) | ~55 MB an archive | GitHub release | ed25519 signature + SHA256SUMS (`install-native.sh --stage` / `--from`, always with `--version`); the ark catalog pins 1.3.4's three archive sha256s | [H5](#h5-native-tensorfold-and-the-engine-plane) |
 | Python wheels for the command center | ~200 MB | `pydeps.sh wheelhouse` or `bundle.sh build` **on a Spark** | `agents/requirements.lock` hashes | [H6](#h6-the-command-center-wheels-and-compose-images) |
 | Compose images (open-webui, searxng, extensions) | a few GB | `docker save` on an online Spark | digest pins; `bundle.sh install` rewrites them to the content ID | [H6](#h6-the-command-center-wheels-and-compose-images) |
 | pytest (to run the test suites) | small | `.github/ci-requirements/test.txt` | `--require-hashes` | [H7](#h7-test-and-language-toolchains) |
@@ -1735,7 +1735,7 @@ matches `SHA256SUMS`.
 
 ```bash
 scripts/backends/tensorfold/install-native.sh                     # latest, download + verify + install
-scripts/backends/tensorfold/install-native.sh --version 1.2.7     # a specific version
+scripts/backends/tensorfold/install-native.sh --version 1.2.10    # a specific version (the Sparks' release; the default is 1.3.4)
 tensorfold capabilities --json | head                             # NCCL must be found:true (root setup installs it)
 ```
 
@@ -1746,7 +1746,7 @@ matter:
 | Key | Meaning |
 |---|---|
 | `TENSORFOLD_ENGINE` | `native` (default) or `container` (the frozen 0.x engine, which pip-installs from GitHub/PyPI at every start: needs the internet every time). A real container run also needs its dependencies pinned: `TENSORFOLD_IMAGE_PREBUILT=true` (an image that already holds them, pinned by `TENSORFOLD_IMAGE_ID`; nothing installed at start, so it is also the offline route), `TENSORFOLD_PIP_LOCK=FILE` (hash-locked requirements), or the acknowledged `TENSORFOLD_ALLOW_UNPINNED_DEPS=true` |
-| `TENSORFOLD_VERSION`, `TENSORFOLD_BIN` | the installed version (both Sparks run `1.2.10`, read 2026-11-22; `1.2.7` is `install-native.sh`'s default), `~/.local/bin/tensorfold` |
+| `TENSORFOLD_VERSION`, `TENSORFOLD_BIN` | the installed version (both Sparks run `1.2.10`, read 2026-11-22; `1.3.4` is `install-native.sh`'s default since 2026-11-23), `~/.local/bin/tensorfold` |
 | `TENSORFOLD_API_KEY_FILE` | 0600 key file; the native engine is keyed |
 | `SPARK_IFACE`, `SPARK_IB_HCA` | this node's fabric netdev(s) and RoCE device(s); several rails comma-separated |
 | `SPARK_HEAD_IP` | rank 0's fabric address. **The same on every node** (`check` enforces it) |
@@ -3176,8 +3176,12 @@ it is not offline-capable. The native engine is.
 On any connected box, the Mac included:
 
 ```bash
-scripts/backends/tensorfold/install-native.sh --stage tf-1.2.7                       # stages linux-aarch64 by default
-scripts/backends/tensorfold/install-native.sh --from tf-1.2.7 --platform linux-aarch64   # on the Spark
+scripts/backends/tensorfold/install-native.sh --version 1.2.10 --stage tf-1.2.10                       # stages linux-aarch64 by default
+scripts/backends/tensorfold/install-native.sh --version 1.2.10 --from tf-1.2.10 --platform linux-aarch64   # on the Spark
+# --from computes the archive name from --version: without it, it looks for the
+# default release (1.3.4) and refuses a folder staged for another one.
+# The ark mirrors the default (1.3.4): `ark` fetches the three archives with their
+# signed .sha256 files, and install-native.sh --version 1.3.4 --from <that files dir> installs it.
 # or through the engine plane, which also pins and records history:
 scripts/engine.sh stage tensorfold --version 1.2.9 --platform linux-aarch64 /media/usb/tf
 scripts/engine.sh install tensorfold --from /media/usb/tf
