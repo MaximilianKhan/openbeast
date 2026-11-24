@@ -56,8 +56,17 @@ fire inside an eval. The serve script and its flags (`--reasoning-budget
 20480`, MTP, 262K) do not change, and neither does opencode. Precedence,
 per key: env `OPENBEAST_<KEY>` > that key's own line in `openbeast.conf` >
 the profile > the built-in default; the rig's `BEAST_ASSIST=1` line sets
-the same value and does not conflict. Apply steps:
-[TODO.md](TODO.md) "apply `AGENT_PROFILE=qwen38-best` on the 5090 rig".
+the same value and does not conflict. **Applied on the rig 2026-11-23
+(19:15 PST)** in `~/Documents/openbeast/openbeast.conf`, verified through
+the gate; what was done and the rollback: [TODO.md](TODO.md) "`AGENT_PROFILE=qwen38-best`
+applied on the 5090 rig".
+
+**Inkling 2 Mini (evaluated 2026-11-23, not a profile).** Its speed on the
+5090 was measured with Strata and llama.cpp (138.6 and 96.9 tok/s single
+stream, the same unsloth UD-Q4_K_XL GGUF); no serve script ships and it has
+no board row yet. The v5 run (arm `I_T2`) waits on the engine choice:
+[reports/STRATA_INKLING_5090-2026-11-23.md](reports/STRATA_INKLING_5090-2026-11-23.md),
+[TODO.md](TODO.md) "Inkling 2 Mini on the 5090".
 
 **Qwen reasoning budget (2026-09-09):** every Qwen-family serve script (3.6
 dense + MoE + NVFP4 + all 3.8 variants — not Gemma, and the Qwen-derived

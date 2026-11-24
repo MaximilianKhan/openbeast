@@ -284,6 +284,20 @@ functions out of `start.sh` verbatim and still passes, and
 - `scripts/lib/backend.sh` (not a shared hot spot): adapter-only engine names
   in `normalize`, `label` and `ready`.
 
+## Evaluated, not adopted
+
+Engines measured on our hardware and deliberately left out of the matrix.
+Each line says why, so the question is not reopened without new evidence.
+
+| Engine | Status | Why not | Evidence |
+|---|---|---|---|
+| **Strata** (`Niko1221/Strata`, MIT; `strata-inkling` built from source at `6a6db7ff`, binary sha256 `11df1066…`) | **Evaluated 2026-11-23 on the RTX 5090 with Inkling 2 Mini (unsloth UD-Q4_K_XL GGUF); not adopted** | (1) It forces Inkling's thinking off (`HAS_THINKING = False`; every effort normalizes to `"none"`), and our best agent setup is thinking-first (T2), so it cannot run arm `I_T2`. (2) Its DSpark drafter dies at startup on CUDA with a GGUF drafter (`dspark.layers.N` vs `layers.N`; upstream #6762, a one-line fix not merged at the pin). (3) Alpha: open 5090 hangs at high concurrency and long prefill, reasoning-channel bugs, one author. (4) Its release binaries, images and `curl \| sh` installer have no provenance; only a reviewed source build in a locked-down container is acceptable. What it does well: 1.43x llama.cpp single-stream on the same tensors (138.6 vs 96.9 tok/s), 1.5-2.0x prefill, conformance PASS. The "4,087 tok/s" claim is its own 64-request aggregate (4,089.7), not single-stream | [reports/STRATA_INKLING_5090-2026-11-23.md](reports/STRATA_INKLING_5090-2026-11-23.md); earlier, for weight streaming: [WEIGHT_STREAMING.md](WEIGHT_STREAMING.md#why-maya-and-not-strata) |
+
+Revisit Strata only if (a) a thinking mode for Inkling lands, (b) the DSpark
+fix is in a reviewed commit, and (c) its own SQ packs beat the alternative
+being measured now (the report's §11). There is no `scripts/engines/strata.sh`
+adapter, and none is planned.
+
 ## Research notes (primary sources, read 2026-11-15)
 
 - **The pin moved to v1.0.0** (`b1b770d9…`, 2026-11-15) for the MoE expert
@@ -349,7 +363,10 @@ functions out of `start.sh` verbatim and still passes, and
 
 ## The rig A/B (llama.cpp vs vLLM), when the rig is back
 
-None of this has run on the 5090 yet. To measure the A/B you need:
+None of this has run on the 5090 yet. The container prerequisite is met
+since 2026-11-23: the rig has the NVIDIA Container Toolkit, so vLLM's
+`--gpus all` works there ([INSTALL.md](INSTALL.md#gpu-in-docker-the-nvidia-container-toolkit)).
+To measure the A/B you need:
 
 1. **A model that both engines can serve and that is allowed to be served.**
    The default is a GGUF of the uncensored Qwen3.8-27B.

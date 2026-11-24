@@ -715,6 +715,10 @@ Both are single-author engines measured on our rig class.
     unlikely to clear 1.5×.
   - An adapter for it would follow the same file contract, with an
     install-native-style archive and SHA256SUMS check. None ships.
+  - *2026-11-23:* Strata was built from source and measured on the 5090 for
+    Inkling 2 Mini, and not adopted (thinking forced off, a CUDA drafter
+    bug, alpha): [reports/STRATA_INKLING_5090-2026-11-23.md](reports/STRATA_INKLING_5090-2026-11-23.md),
+    [ENGINES.md](ENGINES.md#evaluated-not-adopted).
 
 ## Experiments after acceptance (not shipped)
 
