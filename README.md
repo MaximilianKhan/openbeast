@@ -885,6 +885,8 @@ Qwen3.8 on SCORE (level on problem-solving, wider on languages) with 3 fewer pas
 units both measured cleanly (p 0.07), single seed; it ran the arm in 4.5 h against ~13.5. On Basalt's stock Inkling
 pack the same arm passed 53/71 (SCORE 78.2, now the top RTX 5090 row): level with Qwen3.8 on the units both measured
 cleanly (−2, p 0.69), single seed, and a seed repeat of the Derisked arm moved 2 units, so the gaps are within noise.
+DeepSeek's UP_8k setup on the Derisked pack (INK-UP8K, harness10) passed 49/71, level with T2 (3 units each way), and
+its forced-act turns kept thinking on Basalt, so T2 stays Inkling's setup ([report](docs/reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md) §10.9).
 **Since 2026-11-24 the stock Inkling 2 Mini on Basalt is the RTX 5090's default** (Max's decision: level with
 Qwen3.8 on the units both measured, the arm about 3× faster, no unit lost; `scripts/engines/basalt.sh`, profile
 `inkling2-mini-stock`, `AGENT_PROFILE=inkling-best`), with Qwen3.8 on llama.cpp as the fallback and the rollback path

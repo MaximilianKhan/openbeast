@@ -581,7 +581,7 @@ below). `--dry-run` prints them for your settings.
 | I_T2 | T2 | Q_T2's settings against Inkling 2 Mini on Basalt (optional, harness9) | T2's flags and switches with `"jobs": 1, "slots": 1`, `"model": "Inkling 2 Mini Derisked (Basalt NVFP4-MX8)"`, `"served_model": "inkling-2-mini"`; Basalt v0.5.7 (`400b411c`), the Blackfrost Derisked pack converted to `.basalt` (sha256 `d2b01bcc…`), `--parallel 1 --max-context 262144 --kv fp8 --answer-room auto` (thinking capped at 6,144 of the 8,192-token turn, then closed; the close does not force an answer on Inkling, upstream #588); only with `--only I_T2` (or a `--model-name` starting with Inkling 2 Mini); harness9 tree `f38a29c7`; run from the rig's eval-host container | 2.3 | 5-12 h estimated; **4.5 h measured** | Inkling 2 Mini against Qwen3.8's Q38U-T2 (52/71) on one harness, one host, one stream **Inkling 2 Mini Derisked: 49/71 scored, SCORE 76.5, #4 (board row INK-T2); 0 lost, 0 excluded; paired with Q38U-T2: −6 over 65 units (p 0.07); Qwen3.8 stays the default** |
 | I_T2_s1 | I_T2 | I_T2 under `--seed 1` (optional, harness9; `noise_of: I_T2`) | `--seed 1`; Derisked pack. Basalt honours a request seed on Inkling (`request_prefill.cpp`; unseeded requests take a clock seed, so I_T2 itself is a fresh draw, unlike the Spark server's fixed seed); a seeded request keeps DSpark drafts by the plain rule (`draw_drafts=false`) | 2.3 | ~1.5-2 h (UNVERIFIED); **4 h 11 min measured** | the Inkling noise margin **51/71 (board row INK-T2-S1, a seed replicate: `replicate_of: INK-T2`, never ranked); 2 of 71 units flipped against I_T2, both gains (p 0.50)** |
 | I_T2_stock | I_T2 | I_T2 on Basalt's stock pack (optional, harness9) | I_T2 exactly, `inkling-v5.sh start stock` (`c2afac3a`, `28ec7072…`); `--model-name "Inkling 2 Mini (Basalt NVFP4-MX8, stock)"`; the queue checks the pack with `docker inspect` (the alias is the same for both packs) | 2.3 | ~1.5-2 h (UNVERIFIED); **4 h 18 min measured** | the derisking edit's effect (control) **53/71 scored, SCORE 78.2, #4 (board row INK-T2-STOCK, weights `inkling2-mini-basalt-nvfp4-mx8-stock`); against I_T2 +4 (p 0.22), I_T2_s1 +2 (p 0.63); against Q38U-T2 −2 over 65 clean units (p 0.69): parity; Qwen3.8 stays the default** |
-| I_UP8k | UP_8k | UP_8k at one stream on Inkling, Derisked pack (optional, harness10) | UP_8k exactly with `"jobs": 1, "slots": 1`; harness10 tree (era `9bcd5aa6`), no `--arm-tree` | 2.3 | ~1.5-2 h (UNVERIFIED); campaign estimate 4.2 h | DeepSeek's other 65/71 setup against I_T2 (crosses the era, as DS-UP8k vs DS-T2) **running since 2026-11-24 10:25 PST** |
+| I_UP8k | UP_8k | UP_8k at one stream on Inkling, Derisked pack (optional, harness10) | UP_8k exactly with `"jobs": 1, "slots": 1`; harness10 tree (era `9bcd5aa6`), no `--arm-tree` | 2.3 | ~1.5-2 h (UNVERIFIED); campaign estimate 4.2 h; **4 h 3 min measured** | DeepSeek's other 65/71 setup against I_T2 (crosses the era, as DS-UP8k vs DS-T2) **49/71, SCORE 75.1 (board row INK-UP8K, listed, not ranked: INK-T2 is the pack's best); against I_T2 3 gained, 3 lost (p 1.0): level, T2 stays. On Basalt the forced-act turn did not stop thinking (`enable_thinking=false` → effort "none", no budget): 67 of 68 still thought, 50 ended empty, 18 acted; do not run U-type arms on Basalt with Inkling (DECISIONS-2026-11-24 §13)** |
 | T_j2 | T | 2 concurrent units (optional) | `"jobs": 2, "slots": 2` in the arm (wins over the CLI); only with `--only T_j2` or `--include T_j2` | 2.3 | ~7.7 h (~9 h for DeepSeek) | the contention model: same tokens per unit, at 2 streams (see the note below) |
 
 **DeepSeek's composite is T2 (2026-11-19).** DeepSeek-V4.1-Flash (Mia EXL3)
@@ -1301,9 +1301,19 @@ GLM, its N0 is arm B (36/71, thinking pinned off).
       every tool output that printed the file (a `cat` result is kept to its
       first 2,000 characters: compare as a prefix); the grading step is
       #303's, unchanged (sealed review `ink-t2-s1-stock-integrity-2026-11-24.md`).
-- [ ] **Running: I_UP8k** (2026-11-24 10:25 PST on), then the improved
-      Inkling arm: the stock pack + Basalt PR #632 as a local patch, I_T2's
-      switches, ideally with a seed repeat (DECISIONS-2026-11-24 §6).
+- [x] **I_UP8k** (2026-11-24, 18:25:28 to 22:28:05 UTC, harness10): 49/71,
+      board row INK-UP8K; level with I_T2 on the same pack (3 in, 3 out).
+      One unit excluded (a `find /` listed sealed file names; a fail);
+      dlsym replayed PASS 3/3; 226 empty capped turns, 50 of them forced
+      turns that thought anyway (report §10.9). **For a harness10 arm with
+      the forced-act turn:** `capped_turns.py` now prints the forced turns
+      (still thought / at the cap / empty / acted) and `basalt_log.py`'s
+      `without_budget_line` counts the thinking-off requests from the server
+      side; check they agree, and that a forced turn actually acts (on
+      DeepSeek and GLM all did) before reading the arm as a test of it.
+- [ ] **Next: the improved Inkling arm `I_T3`** (DECISIONS-2026-11-24 §12;
+      it takes none of UP_8k's switches, §13); read against I_T2_stock
+      (53/71, 105 empty capped turns; `without_budget_line` should be 0).
 - [ ] **Next, not scheduled:** GLM at the 8,192 cap (UP_8k or T2 with
       `--model-name GLM-5.3-Flash`; GLM has never run below 16,384), and a
       GLM U arm to isolate the planning lines on GLM. Optional for Hy4: T's

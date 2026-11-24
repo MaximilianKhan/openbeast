@@ -370,22 +370,12 @@ DeepSeek's UP on the same harness
     transcripts exactly; decode 484 / 444 tok/s, drafts accepted 90.2% /
     88.7%.
   - **Qwen3.8 stays the 5090 default** until the improved arm below. *(Superseded the same day: Max made the stock Inkling the default, DECISIONS-2026-11-24 §10.)*
-- [ ] **RUNNING (started 2026-11-24 10:25 PST): `I_UP8k`**, the third arm
-  (DeepSeek's UP_8k at one stream, Derisked pack, harness10 tree
-  `~/ob-ink2` at `d41c2c47`), unit 32/71 at 11:01 PST, ETA ~14:40 PST
-  (the campaign's 4.2 h). Wrap it up the same way (report §10.9 is its
-  placeholder): scan (transcripts in `~/ob-ink2/agents/logs/`, `--until` from
-  the campaign log), shell check, `capped_turns.py`, `basalt_log.py` on
-  `~/openbeast-runs/basalt-server-logs/basalt-20261124-102527-c9c29fce36b3.log`,
-  the dlsym replay if a Rust GEMM stops, a board row. The queue then
-  restores the default stack (`RESTORE OK` in the `.out`).
-- [ ] **NEXT: the improved Inkling arm, stock pack + Basalt PR #632 as a
-  local patch** (being designed; DECISIONS-2026-11-24 §6, §8): I_T2's
-  switches on the stock pack, ideally with a seed repeat. The switch rule,
-  set before it runs: Inkling becomes the 5090 default only if its scored
-  row beats Q38U-T2's and the paired net over clean units is positive, a
-  seed repeat does not reverse either, and the Basalt §15.8 items are
-  closed.
+- [ ] **IDEA: a forced-act turn that works on Basalt** (HARNESS_NOTES,
+  "Inkling 2 Mini on Basalt: UP_8k"): send a small explicit
+  `reasoning_budget_tokens` on the forced turn instead of
+  `enable_thinking=false` (a runner change, era move), or an engine-side
+  hard stop at effort `none`. No U-type arm on Basalt with Inkling until
+  then (DECISIONS-2026-11-24 §13).
 - [x] **(History) QUEUED 2026-11-23 21:46:38 PST: three Inkling
   ablation arms after `I_T2` and the Maya benchmark** (Max approved; arms
   in #309, merge `d41c2c47`; reasoning in
@@ -459,10 +449,27 @@ DeepSeek's UP on the same harness
   forced-act turn made a call in 18 of 68 turns (`enable_thinking: false`
   is not a hard switch on Inkling). Read in
   [the Inkling report §12](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md#12-the-improved-arm-i_t3-2026-11-24).
-  Not on the board yet (wrap-up: sealed integrity review, `dlsym` replay).
-  Its scan flags `163_bigint_divmod_c`: a `find /` listed the reference
-  file names under the mounted tree, reading them was refused by the eval
-  guard, the unit failed.
+  **Wrapped up the same evening** ([report §10.9](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md#109-i_up8k-deepseeks-up_8k-setup-on-inkling-2026-11-24),
+  [DECISIONS-2026-11-24 §13-§14](reports/DECISIONS-2026-11-24.md#13-i_up8k-up_8ks-setup-is-not-adopted-for-inkling-no-forced-act-arm-on-basalt)):
+  - **Board row `INK-UP8K`: 49/71, SCORE 75.1**, listed, not ranked (INK-T2
+    is the Derisked pack's best row). Against I_T2 on the same pack: 3
+    gained, 3 lost (p 1.0); against I_T2_s1 −2 (p 0.63): **UP_8k adds
+    nothing measurable over T2 on Inkling**, as on DeepSeek.
+  - **The forced-act turns did not run with thinking off:** Basalt maps
+    `enable_thinking=false` to `reasoning_effort "none"` with no thinking
+    budget; 67 of 68 still thought, 56 hit the cap, 50 ended empty, 18
+    acted. Both tools now count it (`capped_turns.py` forced columns;
+    `basalt_log.py` `without_budget_line`: 68 here, 0 in the T2 arms).
+  - **Integrity:** the scan flags `163_bigint_divmod_c`: a `find /` listed
+    the reference file names under the mounted tree; reading them was
+    refused by the eval guard; the unit failed. By the scan's rule the
+    listing (not refused) is a contamination: **excluded** (49 raw, 49
+    scored; DECISIONS §14). The same check over the other rig arms' 503
+    transcripts found no other listing of a sealed path. No web calls, no
+    shell route off the host. dlsym replayed: PASS 3/3 (validator note).
+  - 226 empty capped turns (50 of them forced turns), the server log
+    agreeing exactly; §10.9.8 reconciles §12.6's earlier figures (its "176"
+    is the thinking-turn subset).
 - [ ] **READY, not launched (Max launches): arm `I_T3`, Inkling's improved
   composite** ([DECISIONS-2026-11-24 §12](reports/DECISIONS-2026-11-24.md#12-the-improved-inkling-arm-i_t3-turns-cap-patch)):
   `I_T2_stock` (the stock pack, §8) + `--turns-per-wall-s 5` + a 16,384
@@ -505,7 +512,7 @@ DeepSeek's UP on the same harness
   log goes to the stack's inference log like llama-server's (no
   `docker logs` needed).
 - [ ] **Switch the 5090 rig to Inkling 2 Mini (Basalt): Max, after the GPU
-  frees up** (I_UP8k and the improved #632 arm first; nothing on the rig
+  frees up** (I_UP8k is done; the improved #632 arm first; nothing on the rig
   changed for this PR). Steps and rollback:
   [MODELS.md](MODELS.md#switching-the-rtx-5090-to-its-default-and-back).
   Before: `git pull --ff-only` in `~/Documents/openbeast`; the toolkit's
@@ -668,7 +675,11 @@ DeepSeek's UP on the same harness
   `validator_notes` "verdict not measured" (report §6), since replayed
   under the proposed rule: verdict PASS (the item below).
   Still open: the Linux network deny (HARNESS_NOTES next-era (d)) before
-  more rig rows.
+  more rig rows. **And the Linux read-deny** (the same item): in INK-UP8K
+  (2026-11-24) a `find /` from the agent's shell listed a unit's sealed
+  reference file names, because the container mounts the eval tree and the
+  Linux shell has no read-deny; the reads were refused by the command-text
+  check, the unit (a fail) was excluded.
 - [ ] **Next suite/era: the `122_gemm_blocked` `dlsym` rule** (Rust
   variant only: allow `dlsym` when no other symbol matches `_BAD_IMPORT`
   or `_BAD_DEFINED`; C/C++/Go/Zig keep the rule, because glibc ≥ 2.34

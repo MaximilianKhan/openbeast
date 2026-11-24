@@ -111,8 +111,13 @@ units, so every gap here is within noise. The wrap-up kept Qwen3.8 as the
 default pending an improved arm (stock + Basalt PR #632) and a seed repeat
 (DECISIONS-2026-11-24 §6); **Max overrode that rule the same day and made
 the stock Inkling the default** (§10 there: level with Qwen3.8, about 3×
-faster, no unit lost). A third arm, I_UP8k, is running, and the improved
-#632 arm follows ([TODO.md](TODO.md) "Inkling 2 Mini on the 5090").
+faster, no unit lost). The third arm, I_UP8k (DeepSeek's UP_8k setup on
+the Derisked pack, harness10), passed 49/71, level with I_T2 (3 units each
+way), and its forced-act turns kept thinking on Basalt (`enable_thinking=false`
+is only a reasoning-effort hint there, with no thinking budget), so T2's
+`inkling-best` stays the setup (report §10.9). The improved arm `I_T3`
+(report §12) takes none of UP_8k's switches ([TODO.md](TODO.md) "Inkling 2
+Mini on the 5090").
 
 ## Switching the RTX 5090 to its default, and back
 

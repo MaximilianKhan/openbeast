@@ -45,6 +45,11 @@
       "unit": "126_hmac_scratch",
       "run": "Q38U-T2",
       "reason": "contaminated: the integrity scan flagged off-host access from the agent's shell (integrity scan 2026-11-23; on Linux the agent shell has no network deny, evals/README.md residual gaps)"
+    },
+    {
+      "unit": "163_bigint_divmod_c",
+      "run": "INK-UP8K",
+      "reason": "contaminated: a find / listing printed sealed reference file names (evals/refs/163_bigint_divmod/, the paths only; both reads of a file were refused by the eval guard); the unit failed, so the scored count is unchanged (integrity scan 2026-11-24; the Linux container mounts the eval tree, docs/HARNESS_NOTES.md)"
     }
   ],
   "validator_notes": [
@@ -211,6 +216,11 @@
     {
       "unit": "122_gemm_blocked_d",
       "run": "INK-T2-STOCK",
+      "note": "a stop at the binary check on std's dlsym (Linux host): verdict not measured; replayed under the proposed next-era rule (docs/HARNESS_NOTES.md): verdict PASS, 6 hidden cases"
+    },
+    {
+      "unit": "122_gemm_blocked_d",
+      "run": "INK-UP8K",
       "note": "a stop at the binary check on std's dlsym (Linux host): verdict not measured; replayed under the proposed next-era rule (docs/HARNESS_NOTES.md): verdict PASS, 6 hidden cases"
     }
   ]

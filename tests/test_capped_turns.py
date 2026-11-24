@@ -10,13 +10,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "evals" / "audit"))
 
-import capped_turns  # noqa: E402
+import capped_turns
 
 
 def _transcript(path, turns):
     """turns: (finish_reason, kind) with kind empty | text | call | tools (a normal turn)."""
     t0 = 0
-    at = lambda s: (datetime(2026, 11, 24, 5) + timedelta(seconds=s)).isoformat()  # noqa: E731
+    at = lambda s: (datetime(2026, 11, 24, 5) + timedelta(seconds=s)).isoformat()
     lines = [{"type": "start", "timestamp": "2026-11-24T05:00:00"}]
     for i, (finish, kind) in enumerate(turns, 1):
         lines.append({"type": "iteration", "number": i, "timestamp": at(t0)})
@@ -70,3 +70,25 @@ def test_needs_one_arm(tmp_path):
         assert "--label" in str(e)
     else:
         raise AssertionError("two arms without --label")
+
+
+def test_counts_forced_act_turns(tmp_path):
+    # harness10's forced-act turn: one that acted, one that thought to the cap with
+    # nothing (the I_UP8k pattern on Basalt), one with text only
+    a = tmp_path / "agent-f.jsonl"
+    _transcript(a, [("length", "empty"), ("length", "empty"), ("length", "empty"), ("tool_calls", "tools")])
+    extra = [{"type": "force_act_result", "iteration": 3, "tool_calls": 0, "content_chars": 0,
+              "reasoning_chars": 30000, "finish_reason": "length"},
+             {"type": "force_act_result", "iteration": 4, "tool_calls": 1, "content_chars": 300,
+              "reasoning_chars": 500, "finish_reason": "tool_calls"},
+             {"type": "force_act_result", "iteration": 5, "tool_calls": 0, "content_chars": 120,
+              "reasoning_chars": 0, "finish_reason": "stop"}]
+    a.write_text(a.read_text() + "".join(json.dumps(x) + "\n" for x in extra))
+    scan = [{"label": "UP", "units": {"u": [{"unit": "u", "transcript": str(a), "scored": True, "passed": False}]}}]
+    units = capped_turns.from_scan(scan, None, None)
+    u = units["u"]
+    assert (u["forced"], u["forced_thought"], u["forced_length"], u["forced_call"], u["forced_empty"]) == (3, 2, 1, 1, 1)
+    s = capped_turns.summary(units)
+    assert s["forced"] == 3 and s["forced_units"] == ["u"] and s["forced_reasoning_chars_median"] == 500
+    # an arm without the switch reports zeros
+    assert capped_turns.summary({})["forced"] == 0
