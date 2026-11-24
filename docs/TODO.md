@@ -408,8 +408,24 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   (`beast-spark glm`: v1.8 `33b50fd`, DFlash2 re-pinned to the
   byte-identical Apache-2.0 `6cc6c481`, and E2a's `openbeast.conf` lines), and
   GLM is the boot selection until `beastds`.
-  - [ ] **After the GLM UP arm finishes (pending deploys, in this order; spark-1
+  - [x] **After the GLM UP arm finishes (deploys, in this order; spark-1
     unless named; nothing here while any arm runs against the Sparks):**
+    **Done 2026-11-23 ~18:51-19:03 PST**, all nine steps, the pair idle. Both
+    checkouts pulled to `ea45b9fb` (#299); `beast-spark install`; the unit
+    re-installed (`TimeoutStopSec=120`; old copy kept as
+    `openbeast.service.bak-20261123`). The stop of step 2 took 6 s, no kill
+    needed (5 stray `.tmp` files removed). `spark-hy4-stage.sh install` with
+    Hy4 inactive (start/stop/config now match the checkout). The D2 re-check
+    ran in between (below, "hardware re-check of the committed D2 render").
+    `beast-spark ds` exited 0 (`selected: ds`, `deepseek-v41-inference`
+    active/enabled, `spark-hydra-inference` disabled). `openbeast.conf`:
+    `BEAST_ASSIST=0` and `AGENT_MAX_TOKENS=16384` replaced by
+    `AGENT_PROFILE=deepseek-best` (backup `openbeast.conf.bak-20261123-preds`);
+    the restart took 7 s, healthcheck 9/9. From the Mac through the gate:
+    `/v1/models` lists `DeepSeek-V4.1-Flash-1017`, a chat and a tool call
+    answer, the dashboard (`:8447`) says 200. Step 9 done too:
+    `activate-stock.sh` restarts the command center after enable/disable
+    (backup `activate-stock.sh.bak-20261123`).
     1. `cd ~/openbeast && git pull` on spark-1 and spark-2 (both to the same
        commit), then on spark-1 `beast-spark install` (installs #294's
        beast-spark retry, the exit-3 contract and the `ds` fix of the
@@ -464,12 +480,11 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   once and never rolls back or fails a switch whose model serves (exit 3
   when the command center stays down: the 2026-11-23 review). Tests:
   `tests/test_dashboard_stop.py`, `test_spark_beast.sh`, `test_lifecycle.sh`.
-  **Not deployed yet (#294):** spark-1 and spark-2 run `5b198d3d` (#292). It
-  takes effect only after the safe order under "The GLM UP control" above
-  (after the arm, never mid-arm): the first stop still runs the OLD dashboard
-  handler, so it can hit the very 90 s race it fixes. Until then keep the
-  workaround, `systemctl --user stop openbeast` before a switch; after it,
-  that is no longer needed.
+  **Deployed 2026-11-23** (both Sparks at `ea45b9fb`, the safe order under
+  "The GLM UP control" above). The first stop under the old handler took 6 s;
+  after it, every command-center restart of the day's switches (D2, GLM,
+  DeepSeek, the conf restart) came up without the workaround; the conf
+  restart took 7 s.
 - [ ] **k-seed noise run** — the same arm at `--seed 1` (and 2) to put a noise
   floor under every single-seed delta above (G12; the campaign's seed arm).
   Arm F would have been the first such run; it did not run.
@@ -808,7 +823,18 @@ escalation unresolved, all within churn); GLM's D and F only on Max's word.
     passes, MemAvailable 18+ GiB under load)
     ([BEAST_RECIPE.md](BEAST_RECIPE.md#the-fit-maths)). `TF_GLM_HEAD_BITS` can follow the same
     way once verified.
-  - [ ] **hardware re-check of the committed D2 render** (pending, in a pair-down window):
+  - [x] **hardware re-check of the committed D2 render** (**done 2026-11-23 ~18:53-18:59 PST**,
+    both Sparks at `ea45b9fb`). `model-fetch.sh --verify`: model and drafter OK on both (spark-2's
+    drafter now checked too). `spark-cluster.sh start` did not refuse (same commit, same profile).
+    `TF_GLM_DENSE_BITS=4` on `openbeast-tensorfold-rank0` (spark-1) and `-rank1` (spark-2). Start
+    line: "model 84.33 GiB; 4 streams at once, 3.66 GiB each at a 524288-token window (fp8 caches),
+    of 15.9 GiB left after a 11.5 GiB reserve; ... a 4.9 GiB prompt cache" (expected 16.1 and 5.2:
+    the free memory at launch, not the render; model, streams, per-stream KV, window and reserve
+    match, so `launch` stays). `check --run --bench`: conformance PASS, **44.65 / 67.95 tok/s** at
+    1 / 4 streams (expected about 41.8 / 64.7), TTFT 0.24-0.26 s; MemAvailable 22.1 / 23.1 GiB
+    (spark-1 / spark-2) right after. Records: `recipes/glm53-flash-exl3-native-tp2/runs/bench-20261123T185747.json`
+    and `.run/conformance/conformance-20261124T025630Z-glm-5.3-flash-ablit.json` on spark-1. Rolled
+    back with `beast-spark glm`, then `beastds`. The original steps:
     `beast-recipe adopt glm53-flash-exl3-native-tp2 --run`, `beast-spark
     glm53-flash-exl3-native-tp2`, `beast-recipe check glm53-flash-exl3-native-tp2 --run --bench`.
     Before it, on each Spark: `git -C ~/openbeast pull --ff-only` to a commit with this item, then
