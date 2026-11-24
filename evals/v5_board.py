@@ -28,6 +28,13 @@ a model AND its exact weights: the best configuration is chosen per (model,
 weights), so a second quantization of a model (another bpw, another pack) is
 its own row and never replaces or merges with the first.
 
+SEED REPLICATES. A run that repeats another run's configuration under a new
+seed (a noise draw: DS-Ts1, INK-T2-S1) names that run with "replicate_of".
+It is listed and scored with every run, and never chosen as the best row:
+otherwise the board would rank the better of two draws of one setup, a
+selection effect that a single-seed row of another model does not get. The
+run it replicates is the one that ranks (the first, pre-planned draw).
+
 The board is generated between markers in README.md and docs/RESULTS.md
 (<!-- v5-board:start --> / <!-- v5-board:end -->); docs/RESULTS.md also holds
 every run of every model (<!-- v5-runs:start --> / <!-- v5-runs:end -->),
@@ -173,6 +180,18 @@ def weights_problems(board: dict, weights: dict) -> list[str]:
             bad.append(f"run {r['id']}: weights_id {wid!r} is not in weights.json")
         elif weights[wid].get("model") != r["model"]:
             bad.append(f"run {r['id']}: weights {wid} belong to {weights[wid].get('model')!r}, not {r['model']!r}")
+    ids = {r["id"]: r for r in board.get("runs", [])}
+    for r in board.get("runs", []):
+        rep = r.get("replicate_of")
+        if rep is None:
+            continue
+        base = ids.get(rep)
+        if base is None or rep == r["id"]:
+            bad.append(f"run {r['id']}: replicate_of {rep!r} is not another board run")
+        elif (base["model"], base.get("weights_id")) != (r["model"], r.get("weights_id")):
+            bad.append(f"run {r['id']}: a seed replicate needs the same model and weights as {rep}")
+        elif base.get("replicate_of"):
+            bad.append(f"run {r['id']}: replicate_of names {rep}, itself a replicate: name the original")
     return bad
 
 
@@ -336,6 +355,7 @@ def score_run(run: dict, manifest: dict, base_dir: str = BOARD_DIR,
         "id": run["id"], "model": run["model"], "config": run["config"],
         "host": run.get("host"), "campaign_arm": run.get("campaign_arm"),
         "reference": bool(run.get("reference")), "note": run.get("note"),
+        "replicate_of": run.get("replicate_of"),
         "files": run["files"], "timestamp": ts, "date": ts[:10],
         "passed": sum(1 for t in scored if t["passed"]), "units": len(scored),
         "solve": solve, "lang": lang, "score": cap,
@@ -361,6 +381,8 @@ def best_per_model(results: list[dict]) -> list[dict]:
     the 2.9 bpw one."""
     best: dict = {}
     for r in results:
+        if r.get("replicate_of"):
+            continue   # a seed replicate never ranks (module docstring)
         key = (r["model"], r.get("weights_id"))
         cur = best.get(key)
         if cur is None or (r["score"], r["passed"], _neg_date(r)) > (
@@ -440,6 +462,8 @@ def _status(r: dict) -> str:
         bits.append("board protocol (L0)")
     if r["lost"]:
         bits.append(f"{len(r['lost'])} units lost to infrastructure, counted as fails")
+    if r.get("replicate_of"):
+        bits.append(f"seed replicate of {r['replicate_of']}: never the ranked row")
     return "; ".join(bits)
 
 

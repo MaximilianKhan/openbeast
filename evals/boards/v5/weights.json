@@ -161,7 +161,42 @@
       "streams": 1,
       "sampling": "server defaults; thinking on (Inkling's template default); the runner's 8,192-token turn cap leaves 6,144 thinking tokens under --answer-room auto (Basalt serve/service.py:249-271)",
       "hosts": "1× RTX 5090",
-      "evidence": "the rig (beast): ~/openbeast-runs/ink-I_T2-switch-20261123-2057.log shows the default stack stopped 20:57:43 PST, the basalt-serve container started 20:57:51 (id 27ee46cd31f0…), /v1/models answering inkling-2-mini (n_ctx 262144) and the pack re-hashed at 20:57:58 = d2b01bcc…a427, the same sum the converter wrote (weights/basalt-blackfrost-derisked/sha256.txt, 20:47); the source checkpoint's revision 31ec2edd… from its .cache/huggingface metadata (/mnt/9100s4tb/weights/Blackfrost-AI-Inkling-2-Mini-Derisked/, read 2026-11-24); docker inspect basalt-serve at 2026-11-24 05:0xZ (Strata report §15.4: started 04:57:51Z, image above, read-only rootfs and binds, uid 1000, --cap-drop ALL, port 127.0.0.1:8099); the build tree at 400b411c with only bin/ added (git status --ignored). The container ran with no restart policy until ink-I_T2-run.sh removed it at 2026-11-24 01:29:33 PST, after I_T2's last unit (ink-I_T2-run.out); all 71 rows report model inkling-2-mini and 0 API errors. Its docker log went with it (json-file driver), so the per-reply server lines are not kept."
+      "evidence": "the rig (beast): ~/openbeast-runs/ink-I_T2-switch-20261123-2057.log shows the default stack stopped 20:57:43 PST, the basalt-serve container started 20:57:51 (id 27ee46cd31f0…), /v1/models answering inkling-2-mini (n_ctx 262144) and the pack re-hashed at 20:57:58 = d2b01bcc…a427, the same sum the converter wrote (weights/basalt-blackfrost-derisked/sha256.txt, 20:47); the source checkpoint's revision 31ec2edd… from its .cache/huggingface metadata (/mnt/9100s4tb/weights/Blackfrost-AI-Inkling-2-Mini-Derisked/, read 2026-11-24); docker inspect basalt-serve at 2026-11-24 05:0xZ (Strata report §15.4: started 04:57:51Z, image above, read-only rootfs and binds, uid 1000, --cap-drop ALL, port 127.0.0.1:8099); the build tree at 400b411c with only bin/ added (git status --ignored). The container ran with no restart policy until ink-I_T2-run.sh removed it at 2026-11-24 01:29:33 PST, after I_T2's last unit (ink-I_T2-run.out); all 71 rows report model inkling-2-mini and 0 API errors. Its docker log went with it (json-file driver), so the per-reply server lines are not kept. INK-T2-S1 (arm I_T2_s1, 2026-11-24): ~/openbeast-runs/ink-ablations-queue.out shows inkling-v5.sh start derisked at 01:56:44 PST (container 131da79751c8), docker inspect Args = basalt serve --model /models-derisked/Inkling-2-Mini-Derisked-NVFP4-MX8.basalt --alias inkling-2-mini --parallel 1 --max-context 262144 --kv fp8, Dns [127.0.0.1] (the DNS fix: the in-container probe failed to resolve example.com and huggingface.co, as intended), image ob-strata-env:2026-11-23, the same args read again at the arm's end (06:07:28 PST) before the stop; a seed probe (seed 1, temperature 0.6, twice) gave identical text and an unseeded pair differed; all 71 rows report model inkling-2-mini, agent_seed 1 and 0 API errors. Its server log was kept (~/openbeast-runs/basalt-server-logs/basalt-20261124-022403-131da79751c8.log, docker logs --timestamps from the container's start). The pack file is read-only since its conversion (mode 0444, mtime 2026-11-23 20:47 PST) and re-hashed 2026-11-24 10:58 PST: d2b01bcc…a427."
+    },
+    "inkling2-mini-basalt-nvfp4-mx8-stock": {
+      "model": "Inkling 2 Mini (Basalt NVFP4-MX8)",
+      "label": "Basalt NVFP4-MX8 pack · Basalt's official pack · stock",
+      "repo": "jesdga/Inkling-2-Mini-Basalt",
+      "revision": "c2afac3adb772e14d77b2ea2ac7068ad4460e932",
+      "revision_kind": "file-sha256",
+      "file": "Inkling-2-Mini-NVFP4-MX8.basalt",
+      "file_sha256": "28ec70723feaa037942a02f55b9d5e898276f3e62a3b1fa083745f932a041b99",
+      "file_bytes": 19606374189,
+      "derived_from": {
+        "repo": "thinkingmachines/Inkling-2-Mini",
+        "revision": "unverified",
+        "relation": "built by the pack's publisher (Hub user jesdga; Basalt's own docs point to this pack as its default) from Thinking Machines Lab's official release with Basalt's tools/convert/convert.py --checkpoint (the pack README's Sources; docs/models/inkling2.md at the engine pin 400b411c names this file and this sha256 as Basalt's default Inkling pack, 'needs 0.5.6 or later'); neither the pack nor its README records the release revision or the converter commit, so both are unverified; we did not convert it"
+      },
+      "base_model": {
+        "repo": "thinkingmachines/Inkling-2-Mini",
+        "revision": "unverified"
+      },
+      "format": "Basalt pack (.basalt)",
+      "bpw": null,
+      "quant_detail": "NVFP4-MX8: routed experts of layers 0-19 the release's NVFP4 codes and scales and of layers 20-23 its MXFP8 values, bit for bit; attention, gate, short-convolution and output projections Q8_0; output head and token embedding BF16; the DSpark drafter BF16 (the pack README and docs/models/inkling2.md at 400b411c); KLD 0.0128, top-1 94.93% against UD-Q8_K_XL on our wikitext run (the Derisked pack: 0.0263, 92.93%; Strata report §11.2); the publisher's own figure against the release dequantized to BF16: KLD 0.00297, top-1 97.83%",
+      "variant": "stock: Thinking Machines Lab's release, quantized and repacked, no behavioural edit",
+      "abliterated": false,
+      "engine": "Basalt (C++/CUDA engine, Python stdlib server), built from source offline (-DBASALT_MODELS=inkling2, sm_120, nvcc 13.0.88)",
+      "engine_version": "jesdga95/basalt v0.5.7 @ 400b411c58031d064812ea21a259b2381acdaa3e (bin/basalt sha256 5dc8a63ca0089bf8eac749b22da764349d648b7f11f881a659d2511aede84abf); reviewed read-only, Strata report §15",
+      "image": "ob-strata-env:2026-11-23 (sha256:0c44ed984067fe0c4149aa1c0d27e4eeac48f5f278bde580c12e7aebd9038698; Ubuntu 24.04 + CUDA 13.0.2; the Basalt tree mounted read-only, the server on distro Python packages, §15.3)",
+      "recipe": "rig scripts in ~/openbeast-runs/inkling-perf-2026-11-23/scripts/: inkling-v5.sh start stock -> basalt-serve.sh 1 262144 fp8 with the DNS fix (--dns 127.0.0.1): basalt serve --alias inkling-2-mini --parallel 1 --max-context 262144 --kv fp8, --answer-room auto (default); the pack directory mounted read-only at /models",
+      "drafter": "DSpark, in-checkpoint (in the pack; the pack's default draft length)",
+      "kv_dtype": "fp8 (--kv fp8)",
+      "context": 262144,
+      "streams": 1,
+      "sampling": "server defaults (clock-seeded, as for INK-T2); thinking on (Inkling's template default); the runner's 8,192-token turn cap leaves 6,144 thinking tokens under --answer-room auto (Basalt serve/service.py:249-271)",
+      "hosts": "1× RTX 5090",
+      "evidence": "the rig (beast): the pack was fetched 2026-11-23 by scripts/dl-all.sh (pdl.py, ranged, from https://huggingface.co/jesdga/Inkling-2-Mini-Basalt/resolve/c2afac3adb772e14d77b2ea2ac7068ad4460e932/Inkling-2-Mini-NVFP4-MX8.basalt, 19,606,374,189 bytes) and verified: logs/dl-all.log 'OK … 28ec7072…1b99' (an earlier curl attempt, logs/dl-basalt-pack.log, was terminated part way and its partial file failed the check; dl-all replaced it, file mtime 19:51:59 PST); the sum is the one docs/models/inkling2.md at 400b411c publishes; the file is read-only (mode 0444) and was re-hashed 2026-11-24 10:55 PST: 28ec7072…1b99. INK-T2-STOCK (arm I_T2_stock): ~/openbeast-runs/ink-ablations-queue.out shows inkling-v5.sh start stock at 06:07:29 PST 2026-11-24 (container 54e3597ff960), docker inspect Args = basalt serve --model /models/Inkling-2-Mini-NVFP4-MX8.basalt --alias inkling-2-mini --parallel 1 --max-context 262144 --kv fp8, Dns [127.0.0.1] (the in-container probe failed to resolve example.com and huggingface.co, as intended), image ob-strata-env:2026-11-23; the same args read again at the arm's end (10:25:17 PST), then the stop (10:25:18); basalt-serve.sh mounts weights/basalt-Inkling-2-Mini-c2afac3a read-only at /models. All 71 rows report model inkling-2-mini and 0 API errors. The server log was kept: ~/openbeast-runs/basalt-server-logs/basalt-20261124-060744-54e3597ff960.log (docker logs --timestamps from the container's start)."
     }
   }
 }

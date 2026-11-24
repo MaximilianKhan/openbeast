@@ -79,8 +79,16 @@ llama.cpp's. Report:
 [V5_INKLING2_MINI_RTX5090-2026-11-24.md](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md);
 engines measured for it (Strata, llama.cpp, vLLM, Basalt):
 [reports/STRATA_INKLING_5090-2026-11-23.md](reports/STRATA_INKLING_5090-2026-11-23.md).
-Three ablation arms are queued ([TODO.md](TODO.md) "Inkling 2 Mini on the
-5090").
+**Ablations (2026-11-24, report §10):** on **Basalt's stock pack** (no
+behavioural edit, `jesdga/Inkling-2-Mini-Basalt` @ `c2afac3a`) the same arm
+passed **53/71 (SCORE 78.2, row INK-T2-STOCK, the top RTX 5090 row)**, +4
+and +2 against the two Derisked draws and level with the default (−2 over
+65 clean units, p 0.69), single seed, with about half the empty capped
+turns (105). A seed repeat of the Derisked arm (INK-T2-S1, 51/71) flipped 2
+units, so every gap here is within noise. **Qwen3.8 stays the default**
+until an improved arm (stock pack + Basalt PR #632 as a local patch) and a
+seed repeat confirm. A third arm, I_UP8k, is running ([TODO.md](TODO.md)
+"Inkling 2 Mini on the 5090").
 
 **Qwen reasoning budget (2026-09-09):** every Qwen-family serve script (3.6
 dense + MoE + NVFP4 + all 3.8 variants — not Gemma, and the Qwen-derived

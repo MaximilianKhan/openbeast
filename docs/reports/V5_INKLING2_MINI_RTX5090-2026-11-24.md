@@ -1,12 +1,16 @@
-# v5 report: Inkling 2 Mini Derisked on the RTX 5090, arm I_T2 (2026-11-24)
+# v5 report: Inkling 2 Mini on the RTX 5090, arm I_T2 and its ablations (2026-11-24)
 
 > **Final for I_T2 (2026-11-24).** Arm `I_T2` of `v5-thinking-first` ran
 > Inkling 2 Mini (Blackfrost's Derisked weights, converted to a Basalt
 > NVFP4-MX8 pack) on Basalt v0.5.7, one RTX 5090, from the rig's eval-host
 > container: T2's switches at one stream, as Q_T2 was for Qwen3.8. It
 > finished with no unit lost, was scanned, and is on the board as row
-> `INK-T2`. Three ablation arms (`I_T2_s1`, `I_T2_stock`, `I_UP8k`) are
-> queued behind it (§8). Engine choice and its review:
+> `INK-T2`. **Updated 2026-11-24 (afternoon) with two of its three ablation
+> arms (§10):** `I_T2_s1` (the same arm under seed 1: 51/71, row
+> `INK-T2-S1`, a seed replicate that never ranks) and `I_T2_stock`
+> (Basalt's stock pack in place of the Derisked one: 53/71, row
+> `INK-T2-STOCK`, SCORE 78.2, now #4 and the top RTX 5090 row). The third,
+> `I_UP8k`, is **still running** on the rig (§10.9). Engine choice and its review:
 > [STRATA_INKLING_5090-2026-11-23.md](STRATA_INKLING_5090-2026-11-23.md)
 > §11 and §15; decisions: [DECISIONS-2026-11-24.md](DECISIONS-2026-11-24.md).
 
@@ -34,6 +38,31 @@ python3 evals/ablation.py --force "$M"/eval-qwen3-8-27b-uncensored-mtp-q5-k-m-v5
     $B/eval-inkling-2-mini-derisked-basalt-nvfp4-mx8-v5-thinking-first-i-t2-20261124-045843.json
 ```
 
+The ablations' tables (§4 now carries their rows and pairs; §10):
+
+```bash
+python3 evals/v5_report.py --model "Inkling 2 Mini Derisked (Basalt NVFP4-MX8)" \
+    --context INK-T2-STOCK,Q38U-T2,DS-T2,HY4-T2,OPUS-REF --pair Q38U-T2:I_T2 --pair I_T2:I_T2_s1 \
+    --pair I_T2:INK-T2-STOCK --pair I_T2_s1:INK-T2-STOCK --pair Q38U-T2:INK-T2-STOCK \
+    --write docs/reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md
+I=$B/eval-inkling-2-mini-derisked-basalt-nvfp4-mx8-v5-thinking-first-i-t2-20261124-045843.json
+S=$B/eval-inkling-2-mini-derisked-basalt-nvfp4-mx8-v5-thinking-first-i-t2-s1-20261124-095656.json
+K=$B/eval-inkling-2-mini-basalt-nvfp4-mx8-stock-v5-thinking-first-i-t2-stock-20261124-140740.json
+# B and M as in the block above
+python3 evals/ablation.py --force $I $S      # seed noise (the slugs differ, so --force)
+python3 evals/ablation.py --force $I $K      # stock against Derisked; and $S $K
+python3 evals/ablation.py --force "$M"/eval-qwen3-8-27b-uncensored-mtp-q5-k-m-v5-thinking-first-q-t2-20261123-115749.json $K
+python3 evals/ablation.py $B/eval-deepseek-v4-1-flash-v5-thinking-first-t-20261118-015132.json \
+    $B/eval-deepseek-v4-1-flash-v5-thinking-first-t-s1-20261119-074954.json   # DeepSeek's seed pair
+```
+
+The Basalt speed and acceptance (§10.6) need the rig's saved server logs
+(`~/openbeast-runs/basalt-server-logs/`, not committed):
+`python3 evals/audit/basalt_log.py <log> --since <START> --until <END>`
+with the arm's START and END lines of its `campaign.log` (UTC); the
+commands are in the sealed review
+`evals/audit/reviews/ink-t2-s1-stock-integrity-2026-11-24.md`.
+
 `--force`: the pair is two models (and two engines), which the tool flags as
 "not a clean pair". The era, arm, host, tree and stream count are the same.
 The "all units" row in §5 uses the tool's own `contrast()` with its `all`
@@ -48,6 +77,44 @@ integrity scan with `--json` (command in the sealed review,
 ---
 
 ## 1. Executive summary
+
+**The ablations (added 2026-11-24 afternoon; §10):**
+
+- **Seed noise is small in passes, large in SCORE.** `I_T2_s1` (I_T2 under
+  seed 1) passed 51/71 against I_T2's 49: 2 of 71 units flipped, both
+  gains, none lost (p 0.50). DeepSeek's seed pair (DS-T against DS-Ts1)
+  also flipped 2 units, one each way. But SCORE moved +1.8 on Inkling and
+  −2.8 on DeepSeek, both on the same SOLVE, through LANG alone: **a SCORE
+  gap under about 3 points between two single-seed rows is inside one
+  seed's noise.** INK-T2-S1 is recorded as a seed replicate and never
+  ranks (a new board rule, `replicate_of`; DECISIONS-2026-11-24 §7).
+- **Basalt's stock pack did better than the Derisked pack, within noise.**
+  `I_T2_stock` passed **53/71 (SCORE 78.2, #4 on the board, the top
+  RTX 5090 row)**. Paired against I_T2: 5 gained, 1 lost (+4, p 0.22);
+  against I_T2_s1: 3 gained, 1 lost (+2, p 0.63). The three units the
+  stock pack gained in both views are two Knuth long-division ports and
+  one resampler, where the Derisked arms had empty capped turns. **105
+  empty capped turns** (Basalt #588) against 203 and 167 for the two
+  Derisked arms; the stock pack's KLD is half the Derisked one's (0.0128
+  against 0.0263).
+- **Stock against Q38U-T2: parity, not a lead.** Over the 65 units both
+  measured cleanly, Qwen3.8 52, stock Inkling 50 (2 gained, 4 lost, −2,
+  p 0.69); on the board's view (68 units) level. 53 against 52 scored
+  passes and SCORE 78.2 against 75.6 are inside seed noise.
+- **Decision unchanged: Qwen3.8 stays the RTX 5090 default** until the
+  improved arm (stock pack + Basalt PR #632 as a local patch) and ideally a
+  seed repeat of it confirm (§10.8; DECISIONS-2026-11-24 §6).
+- **Integrity: both clean** (0 contaminated; attempts only, all refused;
+  no shell route off the host). Both stopped `122_gemm_blocked_d` (Rust) at
+  the Linux `dlsym` check; replayed under the proposed rule, both PASS (3 of
+  3 runs each); notes, not adjustments.
+- **The Basalt server log was kept this time** and agrees with the
+  transcripts exactly (requests, cap endings, empty turns, token sums).
+  Decode over all replies 484 tok/s (Derisked, seed 1) and 444 (stock);
+  drafts accepted 90.2% and 88.7% (token-weighted) (§10.6).
+- **`I_UP8k` is still running** (started 2026-11-24 18:25 UTC; §10.9).
+
+**The first arm, I_T2:**
 
 - **Inkling 2 Mini Derisked passed 49/71 (SCORE 76.5) under arm I_T2**,
   single seed, no unit lost, no unit excluded. **#4 on the v5 board by
@@ -278,32 +345,48 @@ dropped from the pair in §5 either way.
 | Arm | Run | Weights | On the board | Era | Turn cap | Passed | SCORE | SOLVE | LANG |
 |---|---|---|---|---|---:|---:|---:|---:|---:|
 | I_T2 | INK-T2 | Basalt NVFP4-MX8 pack · Blackfrost Derisked · abliterated | yes | 036638ddd68698ce | 8192 | 49/71 | 76.5 | 72.3 | 89.1 |
+| I_T2_s1 | INK-T2-S1 | Basalt NVFP4-MX8 pack · Blackfrost Derisked · abliterated | yes | 036638ddd68698ce | 8192 | 51/71 | 78.3 | 72.3 | 96.4 |
 | Claude Opus 5.5: OPUS-REF | OPUS-REF | Anthropic API · hosted, weights not public | yes | — | — | 71/71 | 100.0 | 100.0 | 100.0 |
 | DeepSeek-V4.1-Flash (Mia EXL3): T2 | DS-T2 | EXL3 2.9 bpw · Mia EAQ v1.1 -v2 · stock | yes | 036638ddd68698ce | 8192 | 65/71 | 94.9 | 96.9 | 88.9 |
 | Hy4-flash (NVFP4): H_T2 | HY4-T2 | NVFP4 · atakans build · stock | yes | 036638ddd68698ce | 8192 | 60/71 | 83.4 | 81.5 | 89.0 |
 | Qwen3.8 27B Uncensored MTP (the shipped default): Q_T2 | Q38U-T2 | GGUF Q5_K_M · JonathanColetti Uncensored (MTP head kept) · abliterated | yes | 036638ddd68698ce | 8192 | 52/71 (54 raw) | 75.6 | 72.3 | 85.6 |
+| Inkling 2 Mini (Basalt NVFP4-MX8): I_T2_stock | INK-T2-STOCK | Basalt NVFP4-MX8 pack · Basalt's official pack · stock | yes | 036638ddd68698ce | 8192 | 53/71 | 78.2 | 75.4 | 86.7 |
 
 **Per language** (passed / units of that language; an in-progress arm's passes are over the units done so far)
 
 | Arm | Py | Go | C | C++ | Rust | Zig | Sh |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | I_T2 | 23/32 | 6/8 | 5/8 | 6/8 | 5/8 | 3/6 | 1/1 |
+| I_T2_s1 | 23/32 | 6/8 | 6/8 | 6/8 | 5/8 | 4/6 | 1/1 |
 | Claude Opus 5.5: OPUS-REF | 32/32 | 8/8 | 8/8 | 8/8 | 8/8 | 6/6 | 1/1 |
 | DeepSeek-V4.1-Flash (Mia EXL3): T2 | 30/32 | 7/8 | 7/8 | 7/8 | 8/8 | 5/6 | 1/1 |
 | Hy4-flash (NVFP4): H_T2 | 26/32 | 6/8 | 7/8 | 8/8 | 8/8 | 4/6 | 1/1 |
 | Qwen3.8 27B Uncensored MTP (the shipped default): Q_T2 | 23/32 | 7/8 | 6/8 | 6/8 | 6/8 | 3/6 | 1/1 |
+| Inkling 2 Mini (Basalt NVFP4-MX8): I_T2_stock | 24/32 | 6/8 | 7/8 | 6/8 | 5/8 | 4/6 | 1/1 |
 
 **Time and the wall** (wall hit = the harness killed the agent at the unit's wall, `agent_exit_code == -1`; turns are counted only where the row carries them, from harness9 on)
 
 | Arm | Units done | Unit-hours | Mean min / unit | Wall hits | Passed at the wall | Failed at the wall | Turns of the wall-hit units |
 |---|---:|---:|---:|---:|---:|---:|---|
 | I_T2 | 71 | 4.5 | 3.8 | 0 | 0 | 0 | — |
+| I_T2_s1 | 71 | 4.1 | 3.5 | 0 | 0 | 0 | — |
 
 **Units gained and lost** (arm against base, over the units both have a verdict for)
 
 | Base → arm | Compared | Net | Gained | Lost |
 |---|---:|---:|---|---|
 | Q38U-T2 → I_T2 | 68 | -4 | 122_gemm_blocked_b, 124_rkf45, 126_hmac_scratch | 158_karatsuba_bytes_c, 163_bigint_divmod_a, 163_bigint_divmod_b, 163_bigint_divmod_c, 163_bigint_divmod_e, 176_intermittent_500s_a, 196_polyphase_resampler |
+| I_T2 → I_T2_s1 | 71 | +2 | 122_gemm_blocked_e, 158_karatsuba_bytes_c | — |
+| I_T2 → INK-T2-STOCK | 71 | +4 | 122_gemm_blocked_e, 158_karatsuba_bytes_c, 163_bigint_divmod_a, 163_bigint_divmod_c, 196_polyphase_resampler | 178_codebase_qa |
+| I_T2_s1 → INK-T2-STOCK | 71 | +2 | 163_bigint_divmod_a, 163_bigint_divmod_c, 196_polyphase_resampler | 178_codebase_qa |
+| Q38U-T2 → INK-T2-STOCK | 68 | +0 | 122_gemm_blocked_b, 122_gemm_blocked_e, 124_rkf45, 126_hmac_scratch | 163_bigint_divmod_b, 163_bigint_divmod_e, 176_intermittent_500s_a, 178_codebase_qa |
+
+**Units whose verdict differs across the arms** (P pass, F fail, · not run yet, L lost to infrastructure); every other unit has the same verdict in every arm
+
+| Unit | I_T2 | I_T2_s1 |
+|---|:---:|:---:|
+| 122_gemm_blocked_e | F | P |
+| 158_karatsuba_bytes_c | F | P |
 <!-- v5-report:end -->
 
 The generated "units gained and lost" row counts Q38U-T2's two excluded
@@ -355,7 +438,8 @@ integrity exclusions (`122_gemm_blocked_d`, `124_rkf45`,
   because it solves more of the multi-language tasks in at least one more
   language, and Q38U-T2's row is depressed by its 3 lost and 3 excluded
   units. Neither difference is resolved by one seed; `I_T2_s1` gives the
-  noise margin (§8).
+  noise margin (§8). *(It did, §10.2: 2 units flipped between seeds, and
+  SCORE moved 1.8 on them alone, twice the 0.9 here.)*
 
 ### 5.2 Cost on the units both solve
 
@@ -484,7 +568,8 @@ scored row beats Q38U-T2.
    keeping measured (the ablations), not a reason to switch.
 
 Revisit when `I_T2_s1` gives the noise margin and `I_T2_stock` the edit's
-effect, and again after a re-pin past #588.
+effect, and again after a re-pin past #588. *(Revisited with both, §10.8:
+the default stays.)*
 
 **The board and the website.** The board ranks by SCORE, so INK-T2 is #4
 and Q38U-T2 #5; that is the board's rule and stays. The website shows each
@@ -494,7 +579,7 @@ RTX 5090's best model there, with Qwen3.8 still the shipped default and the
 paired reading beside it. Recorded in
 [DECISIONS-2026-11-24.md](DECISIONS-2026-11-24.md).
 
-## 8. Next: three ablations queued
+## 8. The three ablations: how they were queued
 
 Queued since 2026-11-23 21:46 PST (`~/openbeast-runs/ink-ablations-queue.sh`;
 DECISIONS-2026-11-23 §12); the queue started at 2026-11-24 01:56 PST,
@@ -510,11 +595,13 @@ intended). Each one stream, Basalt alias `inkling-2-mini`:
 
 Each gets the same integrity scan, `capped_turns.py`, and the `dlsym`
 replay for a stopped Rust GEMM. Their serves run with `--dns 127.0.0.1`.
+**Results: §10** (I_T2_s1 and I_T2_stock done; I_UP8k running).
 
 ## 9. Caveats
 
 - **Single seed**, one run; Basalt samples with a clock seed when none is
-  sent, so I_T2 is one draw.
+  sent, so I_T2 is one draw. *(Now two draws of the Derisked setup, §10.2;
+  the stock pack is still one draw.)*
 - **A model-plus-engine comparison.** Against Q38U-T2 the weights, the
   model, the engine, the thinking room per turn (6,144 against 8,192) and
   the tool-call parser all differ at once (§5.1, §6).
@@ -527,7 +614,358 @@ replay for a stopped Rust GEMM. Their serves run with `--dns 127.0.0.1`.
 - **The empty-turn and lenient-call counts are transcript counts**, without
   the server log's cross-check (§6.3).
 
-## 10. Sources
+## 10. The ablations: seed noise and the stock pack (2026-11-24)
+
+Two of the three queued arms finished (§8): `I_T2_s1` (2026-11-24 09:56:55
+to 14:07:28 UTC, 4 h 11 min) and `I_T2_stock` (14:07:39 to 18:25:17 UTC,
+4 h 18 min), back to back from `~/openbeast-runs/ink-ablations-queue.sh`.
+Both are I_T2 exactly: the harness9 tree `f38a29c7` (a worktree of
+`~/ob-ink2`, clean), the same arm switches and `--jobs 1 --slots 1`, the
+same eval-host container image, Basalt `400b411c` with the same serve flags
+(`--parallel 1 --max-context 262144 --kv fp8`, answer room auto). One thing
+changes in each:
+
+| Arm | Board row | What differs from I_T2 | Passed | SCORE | SOLVE | LANG |
+|---|---|---|---:|---:|---:|---:|
+| I_T2 | INK-T2 | — (clock seed) | 49/71 | 76.5 | 72.3 | 89.1 |
+| I_T2_s1 | INK-T2-S1 | `--seed 1` on every request | 51/71 | 78.3 | 72.3 | 96.4 |
+| I_T2_stock | INK-T2-STOCK | Basalt's stock pack (`c2afac3a`, sha256 `28ec7072…`), clock seed | 53/71 | 78.2 | 75.4 | 86.7 |
+| Q_T2 (context) | Q38U-T2 | Qwen3.8 on llama.cpp | 52/71 | 75.6 | 72.3 | 85.6 |
+
+Per language (Py, Go, C, C++, Rust, Zig, Sh): I_T2_s1 23/32, 6/8, 6/8,
+6/8, 5/8, 4/6, 1/1; I_T2_stock 24/32, 6/8, 7/8, 6/8, 5/8, 4/6, 1/1 (§4).
+No unit lost in either, none excluded, 0 API errors, every row served as
+`inkling-2-mini`.
+
+### 10.1 The serves, checked
+
+From the queue log (`~/openbeast-runs/ink-ablations-queue.out`):
+
+- **Pack.** `docker inspect basalt-serve` read at each start and again at
+  each arm's end: `/models-derisked/Inkling-2-Mini-Derisked-NVFP4-MX8.basalt`
+  for I_T2_s1 (container `131da797…`), `/models/Inkling-2-Mini-NVFP4-MX8.basalt`
+  for I_T2_stock (`54e3597f…`); the alias is the same, so this is the
+  check that the right pack served. Both files are read-only and were
+  re-hashed on 2026-11-24 after the arms: `d2b01bcc…a427` and
+  `28ec7072…1b99`, the registry's sums (`weights.json`).
+- **DNS.** Both serves ran with `--dns 127.0.0.1`, and the in-container
+  probe failed to resolve `example.com` and `huggingface.co`, as intended:
+  the fix of the Strata review's DNS gap (§15.4 there), now proven on three
+  live starts (I_UP8k's too).
+- **Seed.** Before I_T2_s1 the queue sent the same prompt twice under
+  seed 1 at temperature 0.6 (identical text) and twice unseeded
+  (different): Basalt honours a request seed, so I_T2_s1 is a fixed draw
+  and I_T2 (unseeded) a clock-seeded one. Every I_T2_s1 row records
+  `agent_seed 1`.
+
+### 10.2 Seed noise: I_T2 against I_T2_s1
+
+`evals/ablation.py --force` (the slugs differ only by the arm suffix),
+over all 71 units (no pair dropped):
+
+| Contrast | n | I_T2 | I_T2_s1 | gained | lost | net | p |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| all units | 71 | 49 | 51 | 2 | 0 | +2 | 0.50 |
+| Python | 32 | 23 | 23 | 0 | 0 | 0 | 1.0 |
+| C | 8 | 5 | 6 | 1 | 0 | +1 | 1.0 |
+| Zig | 6 | 3 | 4 | 1 | 0 | +1 | 1.0 |
+| Go, C++, Rust, Shell | 25 | 18 | 18 | 0 | 0 | 0 | 1.0 |
+
+Gained under seed 1: `122_gemm_blocked_e` (Zig, Performance & HW Opt) and
+`158_karatsuba_bytes_c` (C, Pure & Abstract Math). **Churn: 2 of 71
+units (2.8%).** For comparison, DeepSeek's seed pair on the Spark pair
+(DS-T against DS-Ts1, harness9, `--jobs 4`): 61 and 61, 1 gained and 1
+lost, also 2 of 71. Two models, two engines, the same measured churn; both
+far under the 15% "untreated churn" `ablation.py` assumes for its minimum
+detectable effect (MDE 9.5 at n 71; at a 2.8% churn it would be 6.5).
+One replicate pair per model: this is a floor, not a distribution.
+
+**SCORE is noisier than the pass count.** Both seed pairs kept SOLVE
+exactly (Inkling 72.3 and 72.3; DeepSeek 84.6 and 84.6) and moved LANG:
+Inkling 89.1 to 96.4 (SCORE 76.5 to 78.3, +1.8), DeepSeek 100.0 to 88.9
+(SCORE 88.5 to 85.7, −2.8). LANG counts, per multi-language base, the
+languages solved, so one flipped port can move a base by a large step.
+Read SCORE gaps under about 3 points between single-seed rows as unresolved:
+that covers INK-T2 against Q38U-T2 (0.9), INK-T2-STOCK against INK-T2
+(1.7) and INK-T2-STOCK against Q38U-T2 (2.6).
+
+**On the board.** INK-T2-S1 scores above INK-T2 (78.3 against 76.5).
+Ranking the better of two draws of one setup would give Inkling a
+best-of-two its single-seed neighbours do not get, so the board now marks
+a seed repeat with `replicate_of` and never ranks it (`evals/v5_board.py`;
+DS-Ts1 is marked too, which changes nothing there: DS-T2 is DeepSeek's
+row). INK-T2 stays the Derisked pack's ranked row; INK-T2-S1 is listed with
+every run (DECISIONS-2026-11-24 §7).
+
+Cost on the 49 units both seeds passed: fewer completion tokens under seed
+1 on 26, more on 23 (median −89, p 0.78); iterations fewer on 15, more on
+22 (p 0.32). No difference.
+
+### 10.3 Stock against Derisked
+
+The pair differs only in the weights: Basalt's own pack of Thinking
+Machines' release (no behavioural edit; KLD 0.0128, top-1 94.93% against
+UD-Q8_K_XL on our wikitext run) against Blackfrost's refusal-direction edit
+converted with the same tool (Basalt's `convert.py`: ours at the engine pin,
+the publisher's at a commit the pack does not record; KLD 0.0263, top-1
+92.93%; Strata report §11.2). Paired, all 71 units, two views, since the Derisked side
+has two draws:
+
+| Pair | n | Derisked | stock | gained | lost | net | p | MDE |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| I_T2 → I_T2_stock | 71 | 49 | 53 | 5 | 1 | +4 | 0.22 | 9.5 |
+| I_T2_s1 → I_T2_stock | 71 | 51 | 53 | 3 | 1 | +2 | 0.63 | 9.5 |
+
+Which units, by category and language:
+
+| Unit | Category | Language | vs I_T2 | vs I_T2_s1 |
+|---|---|---|---|---|
+| `163_bigint_divmod_a` | Algorithms & DS | Python | gained | gained |
+| `163_bigint_divmod_c` | Algorithms & DS | C | gained | gained |
+| `196_polyphase_resampler` | Signal Processing & DSP | Python | gained | gained |
+| `122_gemm_blocked_e` | Performance & HW Opt | Zig | gained | — (seed 1 passed it too) |
+| `158_karatsuba_bytes_c` | Pure & Abstract Math | C | gained | — (seed 1 passed it too) |
+| `178_codebase_qa` | SWE / DevOps | Python | lost | lost |
+
+**Reading.** The stock pack is ahead in both views and the sign agrees,
+but neither is significant and both are under the MDE even at the
+measured 2.8% churn (6.5). Two of I_T2's five gains are units seed 1
+alone also gained, so they are noise, not the edit; the three gained in
+both views are the candidates for an edit effect: two ports of Knuth long
+division (where the Derisked arms went 0/6 and 0/6, the stock arm 2/6) and
+the polyphase resampler. Each of the three had empty capped turns in at
+least one Derisked arm (`163_a` 17 and 10, `163_c` 19 under seed 1,
+`196` 2 under seed 1) and none in the stock arm. The one loss
+(`178_codebase_qa`) ran to its turn limit without writing its answer file.
+
+**The empty capped turns** (Basalt #588; §6.1), per arm, from the
+transcripts and, for the two ablations, confirmed by the server log
+(§10.6):
+
+| | I_T2 | I_T2_s1 | I_T2_stock |
+|---|---:|---:|---:|
+| Turns | 1,935 | 1,911 | 2,032 |
+| Ended at the cap | 293 | 240 | 190 |
+| **Empty at the cap** | **203** (10.5%) | **167** (8.7%) | **105** (5.2%) |
+| Units with an empty turn | 21 | 17 | 12 |
+| In failed units | 199, in 17 of 22 fails | 144, in 15 of 20 | 102, in 10 of 18 |
+| At the cap with a tool call | 88 | 73 | 83 |
+
+Per unit (P pass, F fail; the number is that unit's empty capped turns,
+blank for none), every unit with one in any arm:
+
+| Unit | I_T2 | I_T2_s1 | I_T2_stock |
+|---|---:|---:|---:|
+| 122_gemm_blocked_e | F | P | P 1 |
+| 143_uov | P 1 | P | P |
+| 158_karatsuba_bytes_b | P 1 | P | P |
+| 158_karatsuba_bytes_c | F 12 | P | P |
+| 163_bigint_divmod_a | F 17 | F 10 | P |
+| 163_bigint_divmod_b | F 4 | F | F |
+| 163_bigint_divmod_c | F | F 19 | P |
+| 163_bigint_divmod_d | F 15 | F 38 | F 2 |
+| 163_bigint_divmod_e | F 2 | F 2 | F |
+| 163_bigint_divmod_f | F 24 | F | F 7 |
+| 167_q15_biquad_f | P 1 | P | P |
+| 168_linearizability_kv_a | F 21 | F 11 | F 9 |
+| 168_linearizability_kv_b | F 1 | F 11 | F |
+| 168_linearizability_kv_c | F 35 | F 12 | F 19 |
+| 168_linearizability_kv_d | F 17 | F 1 | F 25 |
+| 168_linearizability_kv_e | F 14 | F 14 | F 3 |
+| 168_linearizability_kv_f | F 2 | F | F |
+| 173_taskgroup_cancel | F 4 | F 1 | F |
+| 175_crdt_orset_rga | P 1 | P 1 | P |
+| 183_heston_little_trap | F 2 | F 3 | F 15 |
+| 188_gmm_em | P | P 22 | P 2 |
+| 190_autograd_mlp | F 2 | F 1 | F 2 |
+| 192_pike_regex | F 24 | F 13 | F 3 |
+| 195_riscv_insn_budget | F 3 | F 6 | F 17 |
+| 196_polyphase_resampler | F | F 2 | P |
+| **all units** | **203** in 21 units | **167** in 17 units | **105** in 12 units |
+
+The stock pack ran out of room with no answer about half as often as the
+Derisked pack (105 against 203 and 167), in fewer units. Two readings fit:
+the edit makes the model think in longer loops (its distribution moved
+twice as far), or the difference is which units each draw struggled on.
+The counts fall on the same hard families in all three arms; the stock
+arm's total is lower, but not on every unit (it is the highest of the three
+on `168_linearizability_kv_d`, `183_heston_little_trap` and
+`195_riscv_insn_budget`). Not separable without a seed repeat of the stock
+arm. Either way it is the
+same Basalt bug (#588), so the improved arm's #632 patch tests it directly.
+
+**Cost.** On the 48 units both passed, the stock pack used more
+completion tokens on 30 and fewer on 18 than I_T2 (median +1,596, p 0.11)
+and more iterations on 28, fewer on 13 (median +1, p 0.028): where both
+solve, the Derisked pack solves in slightly fewer turns. The stock arm's
+median unit was 122 s (44 s for its passes) against 47 s for I_T2.
+
+### 10.4 Stock against Q38U-T2, paired
+
+As §5.1, Q_T2's two files merged as the board merges them; 6 pairs dropped
+(Q38U-T2's 3 lost units and 3 integrity exclusions):
+
+| Contrast | n | Q38U-T2 | INK-T2-STOCK | gained | lost | net | p | MDE |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| all units | 65 | 52 | 50 | 2 | 4 | −2 | 0.69 | 10 |
+| Python | 28 | 23 | 21 | 0 | 2 | −2 | 0.50 | 8 |
+| Go | 8 | 7 | 6 | 0 | 1 | −1 | 1.0 | 5.5 |
+| C | 8 | 6 | 7 | 1 | 0 | +1 | 1.0 | 5.5 |
+| C++ | 8 | 6 | 6 | 0 | 0 | 0 | 1.0 | 5.5 |
+| Rust | 7 | 6 | 5 | 0 | 1 | −1 | 1.0 | 5.5 |
+| Zig | 5 | 3 | 4 | 1 | 0 | +1 | 1.0 | — |
+| compiled | 36 | 28 | 28 | 2 | 2 | 0 | 1.0 | 9 |
+
+- Gained: `122_gemm_blocked_b` (C), `122_gemm_blocked_e` (Zig), both
+  Performance & HW Opt.
+- Lost: `163_bigint_divmod_b` (Go) and `_e` (Rust), Algorithms & DS;
+  `176_intermittent_500s_a` and `178_codebase_qa` (Python), SWE / DevOps.
+- **Board view** (`v5_report.py`, Q38U-T2's excluded passes as fails, 68
+  units): net 0, 4 each way (§4). Under seed 1 the Derisked pack against
+  Q38U-T2 was −4 over the 65 (2 gained, 6 lost, p 0.29); I_T2 was −6.
+- Cost on the 48 units both passed: Inkling stock used fewer completion
+  tokens on 33, more on 15 (median −1,713, p 0.013); turns level (p 0.35).
+
+**Does Inkling now reach parity? Yes, and no more.** On the units both
+measured cleanly the stock pack is 2 behind (p 0.69), on the board's view
+level, on scored passes 1 ahead (53 against 52, a lead made of units
+Q38U-T2 never measured: its 3 lost and 3 excluded units, of which the
+stock arm passed 3). SCORE 78.2 against 75.6 is 2.6 points, inside the
+seed noise of §10.2. The Derisked pack's gap closed from −6 (I_T2) through
+−4 (seed 1) to −2 (stock): all three inside noise, all three behind on the
+clean pairs.
+
+### 10.5 Integrity and the dlsym stop
+
+Sealed notes: `evals/audit/reviews/ink-t2-s1-stock-integrity-2026-11-24.md`.
+
+- **I_T2_s1:** 71 transcripts, 71 units, 0 contaminated. Attempts only:
+  five `web_search` calls and one `fetch` in four units (all fails), each
+  refused by the eval guard. **I_T2_stock:** 71 units, 0 contaminated
+  (the scan also saw I_T2_s1's last ten transcripts at the window's start
+  and marked them unscored); five `web_search` calls in five units (one a
+  pass, which went on without it), each refused.
+- **The Linux shell gap**, checked by hand over all 1,713 and 1,872 tool
+  calls (non-loopback URLs; curl, wget, nc, socat, pip, git, cargo and go
+  fetches, Python sockets and URL readers, `/dev/tcp`): 0 real hits (one
+  match was a Rust variable named `nc` inside a heredoc).
+- **`122_gemm_blocked_d` (Rust)** stopped at the `dlsym` binary check in
+  both arms. Each final `gemm.rs` was rebuilt from its transcript (one
+  `write_file`, then Python edit snippets run from bash, re-run exactly,
+  every printed output matching), and replayed with PR #303's script in a
+  new directory on the rig (`~/ob-cal/.claude/gemm-replay-ink-ab/`):
+  unpatched validator FAIL `imports dlsym` (the recorded line), proposed
+  rule **PASS, 6 hidden cases, 3 of 3 runs, in both**. `validator_notes`
+  entries for INK-T2-S1 and INK-T2-STOCK; not adjusted (52/71 and 54/71
+  under the proposed rule).
+
+### 10.6 Basalt live speed and draft acceptance (the saved server logs)
+
+This time the server log was kept: `basalt-logsaver.sh` followed each
+`basalt-serve` container with `docker logs -f --timestamps` from its
+start (`~/openbeast-runs/basalt-server-logs/basalt-20261124-022403-131da79751c8.log`
+for I_T2_s1, `…-060744-54e3597ff960.log` for I_T2_stock). Basalt writes
+one line per request (`s1 done pp=… tg=N R t/s acc=A% dl=D … end=…`) and
+a warning per reply that hit the cap still thinking. A new
+`evals/audit/basalt_log.py` reads them over each arm's window (START and
+END of `campaign.log`; the serve's probe requests before START are left
+out).
+
+**Cross-check first.** Over the window the log has exactly the
+transcripts' turns (1,911 and 2,032 requests), their cap endings (240 and
+190 `end=length`), their empty capped turns (167 and 105 "no answer"
+warnings, also the counts the queue grepped before each stop), and the
+runner's token sums to the token (completion 4,959,068 and 4,900,235;
+prompt 64,747,685 and 64,862,866). So `capped_turns.py`'s transcript count
+is confirmed, and I_T2's 203 (no log) stands on the same method.
+
+| | I_T2_s1 (Derisked) | I_T2_stock |
+|---|---:|---:|
+| Requests | 1,911 | 2,032 |
+| Generated tokens | 4,959,068 | 4,900,235 |
+| Decode time (Σ tokens / rate) | 10,243 s (2.85 h) | 11,036 s (3.07 h) |
+| Prefill time (Σ) | 281 s | 304 s |
+| **Decode, all replies** (Σ tokens / Σ time) | **484 tok/s** | **444 tok/s** |
+| Decode per reply ≥ 256 tokens: median (p10, p90; n) | 505 (393, 636; 1,304) | 467 (363, 599; 1,337) |
+| Decode per reply at the 8,192 cap: median (p10, p90; n) | 554 (454, 615; 240) | 512 (413, 598; 190) |
+| **Drafts accepted**, token-weighted mean | **90.2%** | **88.7%** |
+| Drafts accepted per reply: median (p10, p90) | 90% (75, 99) | 89% (74, 98) |
+| Tokens per verify window, token-weighted (median) | 5.08 (4.7) | 4.64 (4.4) |
+| Replies with no draft (very short) | 33 | 59 |
+| Prompt tokens served from cache | 96.6% | 96.5% |
+| Prefill on ≥ 1,000 uncached tokens: median (p10, p90; n) | 12,052 tok/s (7,630, 16,785; 551) | 12,410 (8,230, 16,384; 517) |
+
+These are the server's own per-request rates (decode only; prefill timed
+separately), from a single stream on one RTX 5090. Decode was about 70% of
+each arm's wall time. The end-to-end rate on replies of exactly 8,192
+tokens, from the transcripts (prefill and request overhead included, as
+§3.3 measured I_T2's 520): I_T2_s1 median 542 (p10 467, p90 600), I_T2_stock
+510 (434, 594). For scale, the short-prompt engine bench of 2026-11-23:
+403 / 356 tok/s code / prose (thinking off), and the session notes' live
+read during I_T2: about 530 to 680 tok/s per reply.
+
+**Reading.** The DSpark drafter accepts about nine in ten drafted tokens
+on agent work, emitting about five tokens per verify step; that is where
+Basalt's single-stream speed comes from. The Derisked arm decoded about 9%
+faster than the stock arm with a slightly higher acceptance; the two arms
+generated different replies, so this is not a controlled speed comparison
+of the packs; the engine bench of 2026-11-23 also had the Derisked pack
+faster, by 7% (code) and 16% (prose), thinking off, 403 / 356 against
+376 / 307 tok/s (Strata report §11.2). The drafter is the checkpoint's own
+in both packs.
+
+### 10.7 What the two arms say together
+
+1. **Noise floor (I_T2 vs I_T2_s1):** 2 of 71 units flip between seeds,
+   as on DeepSeek; SCORE moves up to about 3 points on LANG alone.
+2. **The derisking edit (stock vs Derisked):** +4 and +2 for the stock
+   pack, 3 units consistent across both views, and about half the empty
+   capped turns. Not significant; the direction favours the stock pack,
+   with no sign that the edit helps coding.
+3. **Parity with the default (stock vs Q38U-T2):** −2 on clean pairs, 0 on
+   the board's view, +1 on scored passes, +2.6 SCORE. Level within noise.
+4. **The board:** INK-T2-STOCK (78.2) is #4, above INK-T2 (76.5, #5) and
+   Q38U-T2 (75.6, #6); INK-T2-S1 is listed, not ranked. INK-T2-STOCK is
+   now the RTX 5090's top board row.
+
+### 10.8 The default decision, revisited
+
+**Qwen3.8 27B Uncensored MTP with `qwen38-best` stays the RTX 5090
+default** (DECISIONS-2026-11-24 §6):
+
+1. **Parity is not a reason to switch.** By the letter of §7's rule the
+   stock row edges Q38U-T2 (53 against 52 scored passes); the edge comes
+   from units Q38U-T2 lost to infrastructure or had excluded, and on the
+   65 units both measured cleanly Qwen3.8 is 2 ahead. Every gap here is
+   inside the measured seed noise, and the stock arm has one seed.
+2. **The engine still carries #588.** 105 empty capped turns in the stock
+   arm is the same bug, smaller. Basalt PR #632 would open an answer block
+   instead of leaving the model to; a local patch of it is being designed.
+   The next arm is **stock + #632** (I_T2's switches, the stock pack), and
+   ideally its seed repeat.
+3. **Basalt's review items** (Strata report §15.8): the DNS fix is now
+   proven on three live starts (§10.1) and the server log is kept by the
+   queue's saver; still open: the #588 re-pin (or the patch), the Python
+   side pinned, an adapter in `scripts/engines/`.
+
+**Switch when** the improved arm's scored row beats Q38U-T2's and the
+paired net over clean units is positive, confirmed by a seed repeat that
+does not reverse it, and the §15.8 items are closed. The pack for that
+arm is the stock one: the uncensored-preferred policy is a tie-breaker
+between equals, and here the measured direction (passes, empty turns,
+divergence) favours the stock pack; Derisked stays measured, not dropped.
+
+### 10.9 I_UP8k (running)
+
+`I_UP8k` (DeepSeek's UP_8k setup at one stream, harness10 tree `d41c2c47`,
+era `9bcd5aa6`, the Derisked pack) started 2026-11-24 18:25:28 UTC and was
+at unit 32 of 71 at 19:01 UTC; the campaign estimates about 4.2 h. Its
+serve passed the same checks (Derisked pack, DNS probe failing as
+intended) plus a thinking-off probe. **Placeholder:** its row, scan,
+`capped_turns.py`, `basalt_log.py` (`basalt-20261124-102527-c9c29fce36b3.log`)
+and any dlsym replay land here when it ends.
+
+## 11. Sources
 
 - Result file: [`evals/boards/v5/eval-inkling-2-mini-derisked-basalt-nvfp4-mx8-v5-thinking-first-i-t2-20261124-045843.json`](../../evals/boards/v5/eval-inkling-2-mini-derisked-basalt-nvfp4-mx8-v5-thinking-first-i-t2-20261124-045843.json) (board row `INK-T2`).
 - Weights: [`evals/boards/v5/weights.json`](../../evals/boards/v5/weights.json), `inkling2-mini-blackfrost-derisked-basalt-nvfp4-mx8`.
@@ -546,3 +984,21 @@ replay for a stopped Rust GEMM. Their serves run with `--dns 127.0.0.1`.
   `~/openbeast-runs/inkling-perf-2026-11-23/weights/basalt-blackfrost-derisked/`;
   the `dlsym` replay `~/ob-cal/.claude/gemm-replay-ink/`.
 - Q38U-T2: [V5_QWEN38_RTX5090-2026-11-22.md](V5_QWEN38_RTX5090-2026-11-22.md) §6.
+- **The ablations (§10):** result files
+  [`…-i-t2-s1-20261124-095656.json`](../../evals/boards/v5/eval-inkling-2-mini-derisked-basalt-nvfp4-mx8-v5-thinking-first-i-t2-s1-20261124-095656.json)
+  (row `INK-T2-S1`) and
+  [`…-i-t2-stock-20261124-140740.json`](../../evals/boards/v5/eval-inkling-2-mini-basalt-nvfp4-mx8-stock-v5-thinking-first-i-t2-stock-20261124-140740.json)
+  (row `INK-T2-STOCK`), verbatim (sha256 `c30d78a3…` and `0e018365…`, as
+  on the rig); weights `inkling2-mini-basalt-nvfp4-mx8-stock`; the sealed
+  review `evals/audit/reviews/ink-t2-s1-stock-integrity-2026-11-24.md`; the
+  log reader [`evals/audit/basalt_log.py`](../../evals/audit/basalt_log.py).
+  On the rig: `~/ob-ink2/.claude/worktrees/h9/agents/logs/` (142
+  transcripts, `agent-20261124-095657-*` to `agent-20261124-182329-*`), the
+  campaign directories
+  `~/ob-ink2/evals/results/campaigns/v5-thinking-first-inkling-2-mini-derisked-basalt-nvfp4-mx8/`
+  (`arm-I_T2_s1.log`; shared with the running I_UP8k) and
+  `…/v5-thinking-first-inkling-2-mini-basalt-nvfp4-mx8-stock/`, the queue
+  and its log `~/openbeast-runs/ink-ablations-queue.{sh,out}`, the server
+  logs `~/openbeast-runs/basalt-server-logs/`, the stock pack and its
+  download log `~/openbeast-runs/inkling-perf-2026-11-23/{weights/basalt-Inkling-2-Mini-c2afac3a,logs/dl-all.log}`,
+  the `dlsym` replay `~/ob-cal/.claude/gemm-replay-ink-ab/`.

@@ -352,7 +352,41 @@ DeepSeek's UP on the same harness
   - **After (done 2026-11-24):** integrity scan, the `dlsym` procedure (the
     replay), the board row, the report, the default decision (Qwen3.8 with
     `qwen38-best` stays).
-- [ ] **QUEUED (armed 2026-11-23 21:46:38 PST, waiting): three Inkling
+- [x] **DONE 2026-11-24: two of the three ablation arms, wrapped up**
+  ([report §10](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md#10-the-ablations-seed-noise-and-the-stock-pack-2026-11-24),
+  [DECISIONS-2026-11-24 §6-§9](reports/DECISIONS-2026-11-24.md#6-qwen38-stays-the-default-after-i_t2_s1-and-i_t2_stock)):
+  - **`I_T2_s1` (seed 1): 51/71, board row `INK-T2-S1`, a seed replicate
+    (`replicate_of: INK-T2`, never ranked).** 2 of 71 units flipped against
+    I_T2, both gains (p 0.50): Inkling's seed noise floor, as DeepSeek's
+    (DS-T vs DS-Ts1: 2 flips). SCORE moved +1.8 on LANG alone.
+  - **`I_T2_stock` (Basalt's stock pack): 53/71, SCORE 78.2, board row
+    `INK-T2-STOCK`, #4 (the top RTX 5090 row).** Against I_T2 +4 (5/1,
+    p 0.22), against I_T2_s1 +2 (3/1, p 0.63); against Q38U-T2 over 65 clean
+    units −2 (2/4, p 0.69), level on the board's view: parity. 105 empty
+    capped turns (#588) against 203 and 167 on Derisked.
+  - Both: 0 contaminated, no shell route off the host; `122_gemm_blocked_d`
+    dlsym stop replayed: PASS 3/3 each (validator notes). Basalt server logs
+    kept and read with the new `evals/audit/basalt_log.py`: they match the
+    transcripts exactly; decode 484 / 444 tok/s, drafts accepted 90.2% /
+    88.7%.
+  - **Qwen3.8 stays the 5090 default** until the improved arm below.
+- [ ] **RUNNING (started 2026-11-24 10:25 PST): `I_UP8k`**, the third arm
+  (DeepSeek's UP_8k at one stream, Derisked pack, harness10 tree
+  `~/ob-ink2` at `d41c2c47`), unit 32/71 at 11:01 PST, ETA ~14:40 PST
+  (the campaign's 4.2 h). Wrap it up the same way (report §10.9 is its
+  placeholder): scan (transcripts in `~/ob-ink2/agents/logs/`, `--until` from
+  the campaign log), shell check, `capped_turns.py`, `basalt_log.py` on
+  `~/openbeast-runs/basalt-server-logs/basalt-20261124-102527-c9c29fce36b3.log`,
+  the dlsym replay if a Rust GEMM stops, a board row. The queue then
+  restores the default stack (`RESTORE OK` in the `.out`).
+- [ ] **NEXT: the improved Inkling arm, stock pack + Basalt PR #632 as a
+  local patch** (being designed; DECISIONS-2026-11-24 §6, §8): I_T2's
+  switches on the stock pack, ideally with a seed repeat. The switch rule,
+  set before it runs: Inkling becomes the 5090 default only if its scored
+  row beats Q38U-T2's and the paired net over clean units is positive, a
+  seed repeat does not reverse either, and the Basalt §15.8 items are
+  closed.
+- [x] **(History) QUEUED 2026-11-23 21:46:38 PST: three Inkling
   ablation arms after `I_T2` and the Maya benchmark** (Max approved; arms
   in #309, merge `d41c2c47`; reasoning in
   [DECISIONS-2026-11-23 §12](reports/DECISIONS-2026-11-23.md#12-queue-three-inkling-ablation-arms-behind-i_t2)).
@@ -416,6 +450,10 @@ DeepSeek's UP on the same harness
     intended), the seed probe gave identical seeded replies and different
     unseeded ones, and `I_T2_s1` launched 01:56:53
     (`~/openbeast-runs/beast-inkling-I_T2_s1-20261124-0156.out`).
+    `I_T2_s1` ended 06:07:28 (51/71), `I_T2_stock` ran 06:07:39 to 10:25:17
+    (53/71), `I_UP8k` launched 10:25:27. A log saver
+    (`~/openbeast-runs/basalt-logsaver.sh`) kept each container's server log
+    in `~/openbeast-runs/basalt-server-logs/`.
 - [x] **Basalt code review** done 2026-11-23 (read only, the Strata report
   [§15](reports/STRATA_INKLING_5090-2026-11-23.md#15-basalt-security-and-supply-chain-review)):
   no malware, telemetry or credential access, no network code in the
@@ -426,8 +464,9 @@ DeepSeek's UP on the same harness
     through Docker's embedded resolver; TCP out is blocked): `--internal`
     plus a loopback proxy, or `--dns 127.0.0.1`, then the §15.4 probe must
     print `dns … FAIL` (**done 2026-11-23 in the rig's `basalt-serve.sh`
-    with `--dns 127.0.0.1`, probe FAIL as expected; first live Basalt start
-    with it is the ablation queue's, see above**; the same flag also served
+    with `--dns 127.0.0.1`, probe FAIL as expected; proven on the ablation
+    queue's three live Basalt starts on 2026-11-24, the in-container probe
+    failing each time**; the same flag also served
     Maya on 2026-11-24 with the port working, [the Maya report §9.1](reports/MAYA_INKLING_5090-2026-11-23.md#91-the-dns-fix)); drop `exec` from `/tmp` if Basalt runs without it;
     add `--pids-limit` and a memory limit;
   - re-pin past upstream #588 (PR #632 or successor: after a thinking-budget
@@ -441,8 +480,12 @@ DeepSeek's UP on the same harness
     <run>/basalt-serve.log 2>&1` before each `inkling-v5.sh stop`
     (`docker rm -f` drops it, and the rig logs to json-file). `I_T2`'s log
     was lost this way, so its #588 and lenient-parse counts have no
-    server-side cross-check (Inkling report §6.3). The ablation queue logs
-    only the "no answer" count.
+    server-side cross-check (Inkling report §6.3). **Partly done
+    2026-11-24:** `~/openbeast-runs/basalt-logsaver.sh` follows every
+    `basalt-serve` the ablation queue starts (`docker logs -f --timestamps`
+    to `~/openbeast-runs/basalt-server-logs/`); read with
+    `evals/audit/basalt_log.py`. It lives on the rig only and stops with the
+    queue: the engine adapter should do the same for every serve.
 - [ ] **Strata forces Inkling's thinking off** (`HAS_THINKING = False`,
   every reasoning effort normalized to `"none"`, in
   `terminal/strata_control/inkling_family.py` and
@@ -1026,7 +1069,10 @@ and arm Q_T2 (T2 at one stream), board row Q38U-T2 at 52/71 scored, its best
 ([report](reports/V5_QWEN38_RTX5090-2026-11-22.md)). Inkling 2 Mini Derisked
 on Basalt, the same arm on the same rig, board row INK-T2 at 49/71 scored
 (SCORE 76.5, above Q38U-T2 on SCORE, 6 behind it paired; Qwen3.8 stays the
-default; [report](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md)). The cross-model reading
+default; [report](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md)); its seed
+repeat INK-T2-S1 51/71 (2 units flipped; never ranked) and the stock-pack
+control INK-T2-STOCK 53/71 (SCORE 78.2, the top 5090 row; level with
+Q38U-T2 paired; report §10). The cross-model reading
 is in [HARNESS_NOTES.md](HARNESS_NOTES.md). The GLM status as of 2026-11-17
 (evening) follows; it was GLM only at that point. GLM's arms L0 26
 → A 31 → B 36 → C 51/71 scored (54 raw; thinking) → E 50/71, against the
