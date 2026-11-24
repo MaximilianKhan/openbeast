@@ -262,9 +262,13 @@ def call_kinds(name: str, args) -> tuple[set, list[str]]:
     for text in _arg_texts(name, args):
         # A relative evals/ or tests/ means the repo only after a cd out of
         # /tmp (bash starts in the eval workdir; the file tools resolve a
-        # relative path there too).
+        # relative path there too). A cd to a bare relative name
+        # (`cd /tmp/eval_x && (cd tests && ...)`) descends from where the
+        # shell already is, so only an absolute or home-relative target
+        # leaves (GLM-UP 2026-11-23: a fixture's own tests/ was flagged).
         left_tmp = name == "bash" and any(
-            not c.startswith(("$", "/tmp", "/private/tmp", "/var/folders", "."))
+            (c.startswith(("/", "~"))
+             and not c.startswith(("/tmp", "/private/tmp", "/var/folders")))
             or c.startswith(("$HOME", "${HOME}"))
             for c in _CD.findall(text))
         for m in _ABS.finditer(text):

@@ -103,7 +103,9 @@ It serves **DeepSeek-V4.1-Flash (Mia EXL3)** by default (served id
 `DeepSeek-V4.1-Flash-1017`, unit `deepseek-v41-inference`, four streams,
 524,288-token context of the model's 1,048,576 window, thinking on); its pack
 folder and cache id end in `-v2`. **GLM-5.3-Flash** (`GLM-5.3-Flash-EXL3`) is
-the staged alternative. One model serves at a time, and the only supported
+the staged alternative; its best v5 row is arm UP (2026-11-23): 56/71, SCORE
+81.9, #3, single seed, 6 units behind DeepSeek's UP on the same harness
+([report](reports/V5_GLM_UP-2026-11-23.md)). One model serves at a time, and the only supported
 switch is `beast-spark` on spark-1 (`beastds`, `beastglm`, `beastup`,
 `beastdown`, `beaststatus`). The recommended agent setup for DeepSeek is
 `AGENT_PROFILE=deepseek-best` (below). Hy4-flash (NVFP4), Tencent's model in

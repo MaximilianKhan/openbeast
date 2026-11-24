@@ -4,7 +4,8 @@
 **GLM-5.3-Flash** (`beast-spark glm`: Mia's v1.8 recipe, the board's GLM
 configuration, with the DFlash2 drafter re-pinned to its Apache-2.0
 revision `6cc6c481`, the same bytes) and GLM is the boot selection, so that
-the GLM UP control arm runs on the same serving as GLM-C. `beastds` returns
+the GLM UP control arm runs on the same serving as GLM-C (it ran 2026-11-23:
+56/71, GLM's best row, [report](reports/V5_GLM_UP-2026-11-23.md)). `beastds` returns
 to DeepSeek, the default; put `AGENT_PROFILE=deepseek-best` back then
 ([E2b](#e2b-deepseek-best-configuration-v5-t2)). The window measured three
 GLM servings through the gate. The current v1.8 recipe gave 48.4 / 78.4
