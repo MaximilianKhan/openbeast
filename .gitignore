@@ -15,10 +15,14 @@ openbeast.conf
 !scripts/backends/models/*.env
 # beast-recipe recipes are data (parsed, never sourced; no secrets: docs/BEAST_RECIPE.md)
 !recipes/*/recipe.env
-# …and Project Maya's profiles, for the same reason: scripts/engines/maya.sh
-# refuses any key outside GGUF / SERVED_MODEL_NAME / CONTEXT /
-# RAM_HEADROOM_GB / VRAM_RESERVE_MIB.
-!scripts/engines/maya/profiles/*.env
+# …and every engine adapter's serve profiles (scripts/engines/<engine>/profiles/),
+# for the same reason: each adapter parses its profile and refuses any key
+# outside its allow list (maya.sh: GGUF / SERVED_MODEL_NAME / CONTEXT /
+# RAM_HEADROOM_GB / VRAM_RESERVE_MIB; basalt.sh: PACK / SERVED_MODEL_NAME /
+# PARALLEL / MAX_CONTEXT / KV / ANSWER_ROOM / AGENT_PROFILE / MEASURED_ROW).
+# One rule for all engines: the Basalt default profile was once silently left
+# out by "*.env" (PR #314); tests/test_profiles_tracked.py holds this.
+!scripts/engines/*/profiles/*.env
 
 # Agent logs
 agents/logs/

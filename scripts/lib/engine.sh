@@ -31,25 +31,31 @@ OB_ENGINE_STATE_DIR="${OPENBEAST_ENGINE_STATE_DIR:-$REPO_DIR/.engines}"
 # maya is opt-in and gated (ob_engine_gate_ok): listed, never a default.
 OB_ENGINES_SHIPPED="llama vllm tensorfold maya basalt"
 
+# _ob_engine_is_adapter <name> — scripts/engines/<name>.sh exists and defines
+# at least one eng_<name>_*() function. A helper script that lives next to the
+# adapters (basalt-apply-pr632.sh) is not an engine.
+_ob_engine_is_adapter() {
+  [[ "${1:-}" =~ ^[a-z][a-z0-9-]*$ && -f "$OB_ENGINE_ADAPTER_DIR/$1.sh" ]] || return 1
+  grep -qE "^eng_${1//-/_}_[a-z0-9_]+\(\)" "$OB_ENGINE_ADAPTER_DIR/$1.sh"
+}
+
 # ob_engines — every engine with an adapter, shipped ones first.
 ob_engines() {
   local e f out=""
   for e in $OB_ENGINES_SHIPPED; do
-    [[ -f "$OB_ENGINE_ADAPTER_DIR/$e.sh" ]] && out+="$e "
+    _ob_engine_is_adapter "$e" && out+="$e "
   done
   for f in "$OB_ENGINE_ADAPTER_DIR"/*.sh; do
     [[ -e "$f" ]] || continue
     e="$(basename "$f" .sh)"
-    [[ "$e" =~ ^[a-z][a-z0-9-]*$ ]] || continue
+    _ob_engine_is_adapter "$e" || continue
     [[ " $out " == *" $e "* ]] || out+="$e "
   done
   printf '%s\n' "${out% }"
 }
 
 # ob_engine_valid <name> — an adapter exists for it.
-ob_engine_valid() {
-  [[ "${1:-}" =~ ^[a-z][a-z0-9-]*$ && -f "$OB_ENGINE_ADAPTER_DIR/$1.sh" ]]
-}
+ob_engine_valid() { _ob_engine_is_adapter "${1:-}"; }
 
 # ob_engine_fn <engine> <fn> — the adapter function's name (dashes → _).
 ob_engine_fn() { local e="${1//-/_}"; printf 'eng_%s_%s' "$e" "$2"; }
