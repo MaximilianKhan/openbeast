@@ -330,13 +330,32 @@ DeepSeek's UP on the same harness
     foreground of the launcher, with a random name):
     `docker stop $(docker ps -q --filter ancestor=openbeast-eval-host:8d1e28442569)`;
     the launcher then logs the exit and restores.
+  - **Known serve effect (#588):** some turns that hit the 6,144-token
+    thinking budget end empty at the 8,192 cap (3 of 189 replies by
+    05:11Z, `docker logs basalt-serve | grep -c "no answer"`). Count them
+    per unit in the integrity scan and name them in the row's note
+    ([report §15.6](reports/STRATA_INKLING_5090-2026-11-23.md#156-server-behaviours-that-bear-on-the-eval)).
   - **After:** integrity scan, the `dlsym` procedure, `campaign.py report`,
     a board row and a report (as V5_QWEN38_RTX5090). Qwen3.8 with
     `qwen38-best` stays the default unless Max decides otherwise.
-- [ ] **Basalt has no written code review** (the Strata report §11.3). It ran
-  built from the v0.5.7 tag, offline, with no egress. Do a read-only review
-  like Strata's §2 before Basalt becomes a default or gets an adapter
-  ([ENGINES.md](ENGINES.md#chosen-for-one-run-not-a-default)).
+- [x] **Basalt code review** done 2026-11-23 (read only, the Strata report
+  [§15](reports/STRATA_INKLING_5090-2026-11-23.md#15-basalt-security-and-supply-chain-review)):
+  no malware, telemetry or credential access, no network code in the
+  engine; OK to keep serving `I_T2` in its sandbox.
+- [ ] **Basalt follow-ups before it becomes a default** (§15.8 of that
+  report; none touches the running eval):
+  - close the DNS channel of `strata-bench-net` (public names resolve
+    through Docker's embedded resolver; TCP out is blocked): `--internal`
+    plus a loopback proxy, or `--dns 127.0.0.1`, then the §15.4 probe must
+    print `dns … FAIL`; drop `exec` from `/tmp` if Basalt runs without it;
+    add `--pids-limit` and a memory limit;
+  - re-pin past upstream #588 (PR #632 or successor: after a thinking-budget
+    wrap Inkling can open a second thinking block and end empty at the cap)
+    and re-review the diff;
+  - pin the Python side (hashed offline wheels of `requirements.txt`, or
+    Basalt's `serve/tests` run once on the Ubuntu 24.04 packages we use);
+  - then `scripts/engines/basalt.sh` with every hardening flag
+    ([ENGINES.md](ENGINES.md#chosen-for-one-run-not-a-default)).
 - [ ] **Strata forces Inkling's thinking off** (`HAS_THINKING = False`,
   every reasoning effort normalized to `"none"`, in
   `terminal/strata_control/inkling_family.py` and
