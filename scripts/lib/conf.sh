@@ -459,7 +459,7 @@ fi
 # ── AGENT_PROFILE: a named set of daily-agent switches ─────────────────────
 #   AGENT_PROFILE  (env OPENBEAST_AGENT_PROFILE)  default empty (none)
 #       Each name is an alias for one internal switch table (_ob_profile_set);
-#       today both names map to the same table, "t2", the switches of
+#       today all three names map to the same table, "t2", the switches of
 #       v5-thinking-first arm T2:
 #         INFERENCE_THINKING=on   AGENT_MAX_TOKENS=8192   AGENT_ACT_NUDGE=1
 #         BEAST_ASSIST=1          DIAG_EDIT_HINT=1        AGENT_VERIFY_DONE=1
@@ -468,12 +468,21 @@ fi
 #         65/71, SCORE 94.9, board row DS-T2, 2026-11-19, single seed
 #         (docs/SPARK_HYDRA.md "DeepSeek best configuration").
 #       qwen38-best   = T2 on Qwen3.8 27B Uncensored MTP Q5_K_M (llama.cpp),
-#         the RTX 5090 default, one stream (campaign arm Q_T2): 52/71 scored,
+#         the RTX 5090's previous default, one stream (arm Q_T2): 52/71 scored,
 #         SCORE 75.6, board row Q38U-T2, 2026-11-23, single seed, against
 #         39/71 (SCORE 63.3) for its bare L0 baseline (row Q38U-L0; that pair
-#         also crosses harness10 -> harness9). The rig's default since
-#         2026-11-23 (docs/MODELS.md; report
-#         docs/reports/V5_QWEN38_RTX5090-2026-11-22.md §6).
+#         also crosses harness10 -> harness9). The rig's default setup
+#         2026-11-23 to 2026-11-24 (docs/MODELS.md; report
+#         docs/reports/V5_QWEN38_RTX5090-2026-11-22.md §6). The fallback
+#         and rollback path since 2026-11-24.
+#       inkling-best  = T2 on Inkling 2 Mini (stock, Basalt NVFP4-MX8), the
+#         RTX 5090 default since 2026-11-24 (Max; DECISIONS-2026-11-24 §10),
+#         one stream (campaign arm I_T2_stock): 53/71 scored, SCORE 78.2,
+#         board row INK-T2-STOCK, 2026-11-24, single seed; level with
+#         qwen38-best's Q38U-T2 on the 65 units both measured cleanly (−2,
+#         p 0.69). Served by scripts/engines/basalt.sh, profile
+#         inkling2-mini-stock (docs/MODELS.md; report
+#         docs/reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md §10).
 #       A profile supplies a DEFAULT for each key; the key set explicitly
 #       (env OPENBEAST_<KEY>, then its own openbeast.conf line) always wins.
 #       none / empty = no profile. Anything else is reported (ob_conf_lint)
@@ -483,11 +492,11 @@ fi
 #       best setup differs gets its own table in _ob_profile_value.
 # Read before the keys it feeds (BEAST_ASSIST just below, INFERENCE_THINKING
 # further down). Never exported: only the keys it resolves are.
-_OB_AGENT_PROFILES="deepseek-best qwen38-best"   # the names; keep in step with _ob_profile_set
+_OB_AGENT_PROFILES="deepseek-best qwen38-best inkling-best"   # the names; keep in step with _ob_profile_set
 # _ob_profile_set NAME — the internal switch table NAME aliases, or fail.
 _ob_profile_set() {
   case "$1" in
-    deepseek-best|qwen38-best) printf 't2\n' ;;
+    deepseek-best|qwen38-best|inkling-best) printf 't2\n' ;;
     *) return 1 ;;
   esac
 }

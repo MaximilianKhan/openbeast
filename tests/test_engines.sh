@@ -229,12 +229,12 @@ done
 echo "Library: engines, host class, defaults, conf writes"
 _lib() { env -i "${BASE_ENV[@]}" REPO_DIR="$SB" "$@"; }
 _o="$(_lib bash -c 'source "$REPO_DIR/scripts/lib/engine.sh"; ob_engines')"
-check "the four shipped adapters are discovered, in order (maya last: opt-in, gated)" '[[ "$_o" == "llama vllm tensorfold maya" ]]' "$_o"
+check "the five shipped adapters are discovered, in order (maya: opt-in, gated; basalt: the RTX 5090 default)" '[[ "$_o" == "llama vllm tensorfold maya basalt" ]]' "$_o"
 cp "$SB/scripts/engines/vllm.sh" "$T/sglang.sh"; sedi 's/eng_vllm_/eng_sglang_/g' "$T/sglang.sh"
 cp "$T/sglang.sh" "$SB/scripts/engines/sglang.sh"
 _o="$(_lib bash -c 'source "$REPO_DIR/scripts/lib/engine.sh"; ob_engines; source "$REPO_DIR/scripts/lib/backend.sh"; ob_backend_normalize sglang; ob_backend_normalize nonsense 2>&1')"
-check "a 4th engine is one new adapter file: listed, and a valid INFERENCE_BACKEND" \
-  '[[ "$_o" == *"llama vllm tensorfold maya sglang"* && "$_o" == *$'"'"'\nsglang\n'"'"'* && "$_o" == *"not one of"*llama ]]' "$_o"
+check "another engine is one new adapter file: listed, and a valid INFERENCE_BACKEND" \
+  '[[ "$_o" == *"llama vllm tensorfold maya basalt sglang"* && "$_o" == *$'"'"'\nsglang\n'"'"'* && "$_o" == *"not one of"*llama ]]' "$_o"
 rm -f "$SB/scripts/engines/sglang.sh"
 _o="$(_lib OB_ENGINE_HOST_CLASS= bash -c 'source "$REPO_DIR/scripts/lib/engine.sh"; ob_engine_host_class')"
 check "no GPU (nvidia-smi fails) → host class rig" '[[ "$_o" == rig ]]' "$_o"

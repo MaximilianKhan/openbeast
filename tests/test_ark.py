@@ -238,6 +238,12 @@ def test_repo_pins_and_the_catalog_agree():
     cat = C.load()
     ref = re.search(r"^LLAMA_CPP_REF=([0-9a-f]{40})$", (REPO / "scripts/llama.cpp.ref").read_text(), re.M).group(1)
     assert cat.entries["llama.cpp"].commit == ref
+    # Basalt, the RTX 5090 default engine: the reviewed pin and the env image's base digest.
+    row = re.search(r"^_ENG_BASALT_REVIEWED_DEFAULT='(v[\d.]+)\t([0-9a-f]{40})'$",
+                    (REPO / "scripts/engines/basalt.sh").read_text(), re.M)
+    assert (cat.entries["basalt"].version, cat.entries["basalt"].commit) == row.groups()
+    base = re.search(r"^ARG BASE=\S+@(sha256:[0-9a-f]{64})$", (REPO / "scripts/engines/basalt/Dockerfile").read_text(), re.M)
+    assert [a.digest for a in cat.entries["basalt"].artifacts] == [base.group(1)]
     inst = (REPO / "scripts/backends/tensorfold/install-native.sh").read_text()
     assert cat.entries["tensorfold"].version == re.search(r"^VERSION=(\S+)$", inst, re.M).group(1)
     # The default is the newest signed release with verified pins (1.3.4, 2026-11-23); the

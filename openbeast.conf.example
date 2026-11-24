@@ -147,6 +147,9 @@
 # Serve script start.sh launches when none is given on the command line
 # (also used by healthcheck.sh --restart when no supervisor is running).
 # Must name an executable in scripts/. Env override: $OPENBEAST_SERVE_SCRIPT.
+# llama.cpp only (INFERENCE_BACKEND=llama): the default below is Qwen3.8 27B
+# Uncensored MTP, what a fresh install serves before Basalt is built and the
+# RTX 5090's fallback since Inkling 2 Mini (Basalt) became its default.
 #SERVE_SCRIPT=serve-qwen38-27b-uncensored-mtp-q5.sh
 
 # Fast boot: serve the tiny Qwen3-0.6B bridge on :8080 for instant chat, then
@@ -187,7 +190,13 @@
 
 # Which OpenAI-compatible server the stack talks to. Unset = today's stack:
 # a llama-server that start.sh launches, supervises and rolls back on :8080.
-#   llama       llama-server (the default; GGUF weights, scripts/serve-*.sh)
+#   llama       llama-server (the unset default and the fallback; GGUF
+#               weights, scripts/serve-*.sh)
+#   basalt      Basalt, the RTX 5090's shipped default since 2026-11-24
+#               (Inkling 2 Mini, stock; scripts/engines/basalt.sh, a hardened
+#               container on 127.0.0.1). Set by `scripts/engine.sh use basalt`
+#               (or `use default` on a 5090), never by hand: docs/MODELS.md
+#               "Switching the RTX 5090 to its default"
 #   vllm        a vLLM server, e.g. across two DGX Sparks (scripts/backends/vllm/)
 #   tensorfold  a TensorFold server (scripts/backends/tensorfold/) — Alpha,
 #               NO API key of its own: keep it on a private link, behind a
@@ -251,7 +260,7 @@
 # vLLM host set this instead. 16384 was arm C's per-turn cap for GLM (a turn
 # capped mid-thought keeps its reasoning tail and is told to act); for
 # DeepSeek-V4.1-Flash (Mia EXL3) AGENT_PROFILE=deepseek-best (below) gives
-# 8192, and so does qwen38-best on the RTX 5090; an AGENT_MAX_TOKENS line
+# 8192, and so do inkling-best and qwen38-best on the RTX 5090; an AGENT_MAX_TOKENS line
 # here would override either. Env override:
 # $OPENBEAST_AGENT_MAX_TOKENS.
 #AGENT_MAX_TOKENS=16384
@@ -264,15 +273,23 @@
 #                   2026-11-19, eval era 036638ddd68698ce), against 61/71 for
 #                   arm T (same switches, a 16384 cap and no act nudge).
 #                   docs/SPARK_HYDRA.md, "DeepSeek best configuration (v5 T2)".
-#   qwen38-best     the same switches (one shared table in scripts/lib/conf.sh)
-#                   for the RTX 5090 default, Qwen3.8 27B Uncensored MTP Q5_K_M
+#   inkling-best    the same switches (one shared table in scripts/lib/conf.sh)
+#                   for the RTX 5090 default since 2026-11-24 (Max), Inkling 2
+#                   Mini (stock, Basalt NVFP4-MX8) on Basalt: campaign arm
+#                   I_T2_stock, T2 at one stream, scored 53/71, SCORE 78.2, #4
+#                   on the v5 board (board row INK-T2-STOCK, 2026-11-24, single
+#                   seed); level with Q38U-T2 below on the 65 units both
+#                   measured cleanly (-2, p 0.69), the arm about 3x faster.
+#                   docs/reports/DECISIONS-2026-11-24.md §10.
+#   qwen38-best     the same switches again, for the previous RTX 5090
+#                   default and its fallback, Qwen3.8 27B Uncensored MTP Q5_K_M
 #                   on llama.cpp: campaign arm Q_T2, T2 at one stream, scored
 #                   52/71, SCORE 75.6, #4 on the v5 board (board row Q38U-T2,
 #                   2026-11-23, single seed), against 39/71 (SCORE 63.3) for
 #                   its bare L0 baseline (row Q38U-L0, harness10 where Q_T2
 #                   is harness9; the rig's eval-host container, calibrated
 #                   against the Mac by inference). The 5090's default agent
-#                   setup since 2026-11-23 (Max); docs/MODELS.md and
+#                   setup 2026-11-23 to 2026-11-24 (Max); docs/MODELS.md and
 #                   docs/reports/V5_QWEN38_RTX5090-2026-11-22.md §6.
 #   none / unset    no profile: every key keeps its own default.
 #
@@ -283,7 +300,7 @@
 # nothing. AGENT_MAX_TOKENS is the one with a twist: any line of its own here
 # stops the profile's 8192 from being exported, and the runner reads the line.
 #
-# What deepseek-best / qwen38-best set, and what each does for a DAILY agent (the tool
+# What deepseek-best / inkling-best / qwen38-best set, and what each does for a DAILY agent (the tool
 # server's start_agent, beast-chat, agent.sh) as opposed to inside an eval:
 #   INFERENCE_THINKING=on    applies: thinking on (host-wide default: also
 #                            beast-gate and Open WebUI; see above)
@@ -321,7 +338,8 @@
 # Restart the stack after a change (./start.sh -d): the tool server and
 # beast-chat read these at start. Env override: $OPENBEAST_AGENT_PROFILE.
 #AGENT_PROFILE=deepseek-best      # the Spark pair (DeepSeek-V4.1-Flash)
-#AGENT_PROFILE=qwen38-best        # the RTX 5090 rig (Qwen3.8 27B Uncensored MTP)
+#AGENT_PROFILE=inkling-best       # the RTX 5090 rig, its default (Inkling 2 Mini on Basalt)
+#AGENT_PROFILE=qwen38-best        # the RTX 5090 rig on its fallback (Qwen3.8 27B Uncensored MTP)
 
 # The daily-agent switches one by one (1/0, true/false, on/off). Unset = off
 # (the runner's default) unless AGENT_PROFILE sets it. Each is exported as
@@ -346,8 +364,10 @@
 # ---------------------------------------------------------------------------
 # scripts/engine.sh writes these; you rarely set them by hand.
 #
-# The engine `engine.sh use default` picks. Unset = by host class: rig →
-# llama, DGX Spark (GB10) → tensorfold. Env: $OPENBEAST_ENGINE_DEFAULT.
+# The engine `engine.sh use default` picks. Unset = by host class: an RTX
+# 5090 rig → basalt (with its default profile, inkling2-mini-stock), any
+# other rig → llama, DGX Spark (GB10) → tensorfold. It never changes what an
+# unset conf launches (llama). Env: $OPENBEAST_ENGINE_DEFAULT.
 #ENGINE_DEFAULT=llama
 # The model profile (scripts/backends/models/<name>.env, TENSOR_PARALLEL_SIZE=1)
 # a MANAGED vllm / tensorfold serves. Written by engine.sh use --profile NAME.
@@ -358,6 +378,15 @@
 # Pins: <version>@<immutable ref>. llama.cpp's pin is scripts/llama.cpp.ref.
 #ENGINE_PIN_VLLM=v0.33.0@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e
 #ENGINE_PIN_TENSORFOLD=1.2.9@sha256:<archive sha256>
+#ENGINE_PIN_BASALT=v0.5.7@400b411c58031d064812ea21a259b2381acdaa3e
+# Basalt (scripts/engines/basalt.sh): the PR #632 patch hook (auto = apply
+# scripts/engines/patches/basalt-pr632-*.patch when present, none = the pin
+# exactly), the GPU, and the sandbox's limits (raise, never remove: a value
+# that is not a limit refuses the launch). Env: $OPENBEAST_<KEY>.
+#ENGINE_BASALT_PATCHES=auto
+#ENGINE_BASALT_GPUS=device=0
+#ENGINE_BASALT_PIDS=256
+#ENGINE_BASALT_MEMORY=32g
 # vLLM image repository (multi-arch release tags vX.Y.Z).
 #ENGINE_VLLM_IMAGE=vllm/vllm-openai
 # --enforce-eager for a managed vLLM: auto (on a GB10, for the sparse-MLA

@@ -17,6 +17,7 @@
 7. [A seed replicate is listed and never ranked (`replicate_of`)](#7-a-seed-replicate-is-listed-and-never-ranked-replicate_of)
 8. [The stock pack is its own board row; the next Inkling arm runs on it](#8-the-stock-pack-is-its-own-board-row-the-next-inkling-arm-runs-on-it)
 9. [Read the kept Basalt log with a committed tool, and replay both dlsym stops](#9-read-the-kept-basalt-log-with-a-committed-tool-and-replay-both-dlsym-stops)
+10. [Stock Inkling 2 Mini on Basalt is the RTX 5090 default](#10-stock-inkling-2-mini-on-basalt-is-the-rtx-5090-default)
 
 ---
 
@@ -284,3 +285,103 @@ with its own `/tmp` (no fixture shared with the running arm); the queue
 checks for eval-host containers only before launching an arm, and I_UP8k
 was its last. Result: control FAIL as recorded, proposed rule PASS 3 of 3,
 in both.
+
+---
+
+## 10. Stock Inkling 2 Mini on Basalt is the RTX 5090 default
+
+**Decision.** Inkling 2 Mini, Basalt's stock NVFP4-MX8 pack
+(`jesdga/Inkling-2-Mini-Basalt` @ `c2afac3a`, `Inkling-2-Mini-NVFP4-MX8.basalt`,
+sha256 `28ec7072…1b99`), served by Basalt v0.5.7 (`400b411c`) with
+`AGENT_PROFILE=inkling-best`, is the RTX 5090's default model and agent
+setup: exactly board row `INK-T2-STOCK`. **It supersedes §6's switch rule**
+(and §1's "Qwen3.8 stays"). Qwen3.8 27B Uncensored MTP Q5_K_M on llama.cpp
+with `qwen38-best` becomes the fallback and the rollback path; it stays
+measured and listed.
+
+**When / who.** Max, 2026-11-24: "the stock inkling 2 mini should be the
+default for the 5090", and the website's benchmarks page must reflect it
+"along with its scoring inclusion and all the latest runs". The repo change
+is the switch date: `main` ships it from this entry's PR. The reference rig
+applies it when its GPU frees up (I_UP8k is running on Basalt, and the
+improved #632 arm is being prepared); Max applies it by the steps in
+[MODELS.md](../MODELS.md#switching-the-rtx-5090-to-its-default-and-back),
+and [TODO.md](../TODO.md) holds the item with what to check.
+
+**What the repo now does.**
+
+- `scripts/engines/basalt.sh`: the engine adapter, closing the Strata report
+  §15.8 items (a reviewed, offline source build; the #632 patch hook; the
+  Python side pinned in a distro-package image; the hardened serve with a
+  DNS probe at every launch). How each is verified:
+  [ENGINES.md](../ENGINES.md#basalt-the-rtx-5090-default).
+- Profile `scripts/engines/basalt/profiles/inkling2-mini-stock.env` (the
+  I_T2_stock serve: `--parallel 1 --max-context 262144 --kv fp8`, DSpark at
+  the pack default, answer room auto), the pack pinned in
+  `scripts/weights.registry`.
+- Preset `AGENT_PROFILE=inkling-best`: T2's shared switch table (I_T2_stock
+  is T2 at one stream, tested against the campaign).
+- The default rule: `evals/boards/v5/board.json` `"defaults"` names each
+  platform's shipped row (validated by `evals/v5_board.py`, rendered in
+  [RESULTS.md](../RESULTS.md#shipped-default-per-platform)); `engine.sh use
+  default` on an RTX 5090 picks `basalt` and `inkling2-mini-stock`. An unset
+  `openbeast.conf` still launches llama.cpp, so a fresh install has a model
+  before Basalt is built.
+
+**The case for** ([V5_INKLING2_MINI_RTX5090-2026-11-24.md](V5_INKLING2_MINI_RTX5090-2026-11-24.md) §10):
+
+- **The top RTX 5090 row.** 53/71 scored, SCORE 78.2 (SOLVE 75.4, LANG
+  86.7), #4 on the v5 board; Qwen3.8's Q38U-T2 is 52/71, SCORE 75.6 (#6).
+- **About 3× faster.** The stock arm ran in 4 h 18 min (14:07:39 to 18:25:17
+  UTC) against about 13.5 h for Q_T2 (11.2 h main + 2.3 h repair run). On
+  replies of exactly 8,192 tokens the end-to-end rate was median 510 tok/s
+  against 142 for Q_T2 on llama.cpp (I_T2's 520 in §3.3); Basalt's own log:
+  444 tok/s decode over all replies, 88.7% of drafted tokens accepted
+  (§10.6).
+- **No unit lost, none excluded, 0 API errors**, where Q38U-T2 lost 3 units
+  to llama-server's HTTP 500 on a truncated tool call and had 3 integrity
+  exclusions.
+- **Within noise of the previous default on the units both measured.** Over
+  the 65 clean pairs: Qwen3.8 52, stock Inkling 50 (2 gained, 4 lost, −2,
+  McNemar p 0.69, MDE 10); on the board's view (68 units) level, 4 each way
+  (§10.4). The measured seed churn is 2 of 71 units (§10.2).
+
+**The case against, recorded:**
+
+- **Paired −2 on the 65 clean units.** The one-pass lead on scored passes is
+  made of units Q38U-T2 never measured (its 3 lost and 3 excluded units, of
+  which the stock arm passed 3). Not a measured gain in capability.
+- **Single seed.** The stock arm is one draw; SCORE gaps under about 3
+  points between single-seed rows are inside one seed's noise (§10.2), and
+  78.2 against 75.6 is 2.6.
+- **Basalt is young.** Created 2026-10-06, about 3,500 commits in 60 days,
+  0.5.5 → 0.5.7 in two days, 98 open issues at review (Strata report §15.2).
+  Upstream #588 is in the pin: 105 of the stock arm's 2,032 turns ended
+  empty at the 8,192 cap (5.2%); the #632 patch that would fix it is not
+  merged upstream and not yet on `main` here. Its tool-call parsing is more
+  lenient than llama.cpp's (83 capped turns still carried a call), which
+  can only raise the call success rate. A model-plus-engine change: weights,
+  engine, thinking room (6,144 against 8,192) and parser all differ from
+  Q38U-T2 at once.
+- **The adapter is new.** Its hardening is tested against a fake docker and
+  the network fix is proven live, but `--pids-limit`, `--memory`, a noexec
+  `/tmp`, the toolkit `--gpus` path and the pinned Dockerfile build have not
+  run on the rig (ENGINES.md, the table).
+- **The stock pack is not uncensored.** The fleet policy is
+  uncensored-preferred as a tie-breaker; here the measured direction
+  favoured the stock pack (§8), and Qwen3.8 Uncensored stays available as
+  the fallback.
+
+**Rollback.** Qwen3.8 on llama.cpp: `scripts/engine.sh use llama
+--serve-script serve-qwen38-27b-uncensored-mtp-q5.sh` and
+`AGENT_PROFILE=qwen38-best` (or the conf backup `engine.sh use` takes), offline
+and immediate; the Basalt build, image and pack stay on disk.
+
+**Alternatives considered.** *Keep §6's rule (wait for the improved #632
+arm and a seed repeat)*: Max's call to override it; the improved arm and
+its seed repeat still run and are recorded, and a patched build is one
+reinstall through the adapter's hook. *The Derisked pack as the default*:
+it measured below the stock pack in both draws (−4, −2) with about twice
+the empty capped turns (§8). *Switch the reference rig now*: no, it is
+running I_UP8k on Basalt; Max applies the switch when the GPU frees up.
+

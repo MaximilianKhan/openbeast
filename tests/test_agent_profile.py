@@ -85,7 +85,8 @@ def hermetic(tmp_path, monkeypatch):
 # --- the profile is arm T2 -------------------------------------------------------------
 
 #: profile name -> (campaign arm it reproduces, board row that arm earned).
-PROFILES = {"deepseek-best": ("T2", "DS-T2"), "qwen38-best": ("Q_T2", "Q38U-T2")}
+PROFILES = {"deepseek-best": ("T2", "DS-T2"), "qwen38-best": ("Q_T2", "Q38U-T2"),
+            "inkling-best": ("I_T2_stock", "INK-T2-STOCK")}
 
 
 @pytest.mark.parametrize("profile", sorted(PROFILES))
@@ -114,10 +115,31 @@ def test_q_t2_is_t2_at_one_stream():
     assert (q["jobs"], q["slots"]) == (1, 1)
 
 
-def test_the_two_names_share_one_table():
-    for key in PROFILE_KEYS:
-        assert _profile_value(key, "qwen38-best") == _profile_value(key, "deepseek-best") \
-            is not None, key
+def test_i_t2_stock_is_t2_at_one_stream():
+    """inkling-best (the RTX 5090 default since 2026-11-24) may share T2's table
+    only because I_T2_stock differs from T2 in concurrency alone: the model,
+    weights and server are the row's, not the switches."""
+    camp = C.load_campaign("v5-thinking-first")
+    t2, i = C.resolve_arm(camp, "T2"), C.resolve_arm(camp, "I_T2_stock")
+    assert i["env"] == t2["env"] and i["thinking"] == t2["thinking"]
+    assert (i["jobs"], i["slots"]) == (1, 1)
+
+
+def test_the_names_share_one_table():
+    for name in ("qwen38-best", "inkling-best"):
+        for key in PROFILE_KEYS:
+            assert _profile_value(key, name) == _profile_value(key, "deepseek-best") \
+                is not None, (name, key)
+
+
+def test_the_rig_default_preset_is_the_board_default():
+    """board.json "defaults" names each platform's shipped row and preset."""
+    import json
+    board = json.load(open(os.path.join(EVALS, "boards", "v5", "board.json")))
+    for d in board["defaults"]:
+        assert d["agent_profile"] in PROFILES and PROFILES[d["agent_profile"]][1] == d["run"], d
+        for p in d.get("previous", []):
+            assert PROFILES[p["agent_profile"]][1] == p["run"], p
 
 
 def test_every_profile_cites_a_board_row():
@@ -147,6 +169,7 @@ def test_example_documents_every_key():
     assert "EVAL-ONLY" in block and "32768" in block                 # honest about limits
     assert "qwen38-best" in block and "Q38U-T2" in block and "2026-11-23" in block
     assert "52/71" in block and "single seed" in block
+    assert "inkling-best" in block and "INK-T2-STOCK" in block and "53/71" in block
 
 
 # --- the v3 pack in production ------------------------------------------------------------

@@ -1,9 +1,10 @@
 # Engines — choose, swap, update and roll back the inference engine
 
 OpenBeast talks OpenAI-compatible HTTP to one inference server. That server, the
-**inference plane**, can be one of three engines, plus a fourth that is opt-in
-and gated (Project Maya: admitted only after it measures 1.5x llama.cpp on the
-rig, [WEIGHT_STREAMING.md](WEIGHT_STREAMING.md)). Each has defaults per host
+**inference plane**, can be one of four engines (Basalt is the RTX 5090's
+default since 2026-11-24, [below](#basalt-the-rtx-5090-default)), plus one
+that is opt-in and gated (Project Maya: admitted only after it measures 1.5x
+llama.cpp on the rig, [WEIGHT_STREAMING.md](WEIGHT_STREAMING.md)). Each has defaults per host
 class, and you can override them. `scripts/engine.sh` is the one command for
 all of it:
 
@@ -28,9 +29,10 @@ prints the conf changes and the exact launch command.
 
 | Engine | `rig` (x86_64 + RTX 5090, CUDA sm_120) | `spark` (DGX Spark GB10, aarch64, sm_121, unified memory) | Weights it serves | Managed here? |
 |---|---|---|---|---|
-| **llama** (llama.cpp `llama-server`) | **default** — every `scripts/serve-*.sh`, measured on the 5090 | builds (CUDA arm64), not the Spark default | **GGUF** only | yes, through `scripts/serve-*.sh` (unchanged) |
+| **llama** (llama.cpp `llama-server`) | **default on every rig GPU but the RTX 5090, the 5090's fallback, and what an unset conf launches** — every `scripts/serve-*.sh`, measured on the 5090 | builds (CUDA arm64), not the Spark default | **GGUF** only | yes, through `scripts/serve-*.sh` (unchanged) |
 | **vllm** (`vllm/vllm-openai`, container) | yes — one GPU, TP 1, managed | yes — TP 1 managed, or TP 1..8 across Sparks (unmanaged, `spark-node.sh`) | safetensors: BF16 / FP8 / **NVFP4** / AWQ / GPTQ. GGUF only through the out-of-tree `vllm-gguf-plugin` ("highly experimental") | TP 1 on this box: yes (`engine-serve.sh`). Otherwise unmanaged |
 | **maya** (Project Maya, built from a reviewed commit; opt-in, **gated**) | opt-in only after `scripts/engine-gate.sh` measured **≥ 1.5×** llama.cpp's decode tok/s on the same weights ([WEIGHT_STREAMING.md](WEIGHT_STREAMING.md)) | no | GGUF (GLM-5.3-Flash through `--gguf-dir`, Maya packs), EXL3. The adapter pins v1.1.65 (GLM big mode, never run). Inkling 2 Mini (`maya-ik2`, v1.1.72+) was measured outside the adapter and **not adopted** ([below](#evaluated-not-adopted)) | TP 1 on this box: yes, once the gate passes |
+| **basalt** (Basalt, built from a reviewed commit in a pinned env image; [below](#basalt-the-rtx-5090-default)) | **default on an RTX 5090** since 2026-11-24 (Inkling 2 Mini, stock pack; `use default` picks it there). sm_120 only | no | Basalt packs (`.basalt`): Inkling 2 Mini NVFP4-MX8 | TP 1 on this box: yes, a hardened container (`engine-serve.sh`) |
 | **tensorfold** (native ≥ 1.0 release binary) | yes — sm_120 kernels ship. Single-GPU fits such as Qwen3.8-27B MLX-4bit are plausible, **not qualified on a 5090** | **default** — TP 1 managed, or TP 1..8 across Sparks (unmanaged, `spark-node.sh`) | **MLX-affine 4/6/8-bit** safetensors, NVFP4 (ModelOpt), EXL3 (DeepSeek-V4.1-Flash (Mia EXL3), GLM-5.3-Flash). **No GGUF on CUDA** | TP 1 on this box: yes. Otherwise unmanaged |
 
 **The live Spark pair** serves **DeepSeek-V4.1-Flash (Mia EXL3)** by default
@@ -71,8 +73,10 @@ per Spark: a recipe on another release needs `engine.sh install` (and
 is `mac` (llama or tensorfold `macos-arm64`); everything else is a `rig`.
 `OB_ENGINE_HOST_CLASS` overrides the detection (`engine.sh`, `engine-serve.sh`
 and `engine-gate.sh` also set it themselves after detecting once, so one
-command runs `nvidia-smi` once, not once per question), and `ENGINE_DEFAULT` in
-`openbeast.conf` overrides the default engine. The runtime fallback in
+command runs `nvidia-smi` once, not once per question; the same detection
+pins the GPU's name in `OB_ENGINE_GPU_NAME`, which makes an RTX 5090 rig's
+default `basalt`), and `ENGINE_DEFAULT` in `openbeast.conf` overrides the
+default engine. The runtime fallback in
 `conf.sh` stays `llama` when `INFERENCE_BACKEND` is unset. The host-class
 default only decides what `engine.sh use default` picks and what `list` and
 `doctor` call the default, so an unset conf never changes what a box launches.
@@ -82,9 +86,11 @@ default only decides what `engine.sh use default` picks and what `list` and
 The engine decides which model files you can serve, so swapping engines nearly
 always means a different checkpoint:
 
-- **OpenBeast's default models are GGUF** (`weights.registry`; the default is
-  the uncensored Qwen3.8-27B MTP Q5_K_M). Only llama.cpp serves them
-  natively.
+- **OpenBeast's llama.cpp models are GGUF** (`weights.registry`; the
+  llama.cpp default is the uncensored Qwen3.8-27B MTP Q5_K_M). Only llama.cpp
+  serves them natively. The RTX 5090's default is a Basalt pack
+  (`Inkling-2-Mini-NVFP4-MX8.basalt`, also pinned in `weights.registry`),
+  which only Basalt serves.
 - **vLLM** wants safetensors. Use the NVFP4 build of a model on Blackwell:
   W4A4 NVFP4 has been the default on SM120/121 since v0.30.0 (#55170). Serving
   our own GGUF through `vllm-gguf-plugin` would be the only same-weights A/B
@@ -152,6 +158,7 @@ What a managed vllm / tensorfold run gets, and does not get:
 | llama | `scripts/llama.cpp.ref` `LLAMA_CPP_REF=<40-hex commit>` (tracked: what a fresh `bootstrap.sh` builds; review and commit the change) | The commit id *is* the content hash. A tag (`v1.0.0`, `b12422`) is resolved to its commit, and a local tag is never moved | `git checkout` of the old commit and rebuild. The objects are already local, so this works offline |
 | vllm | `ENGINE_PIN_VLLM=<tag>@sha256:<index digest>` after a pull; `<tag>@sha256:<image id>` after an offline install | The pull resolves the digest. `--digest` must match it, or the install is refused. Offline: every MANIFEST field must have its shape, the tarball's sha256 is checked against the MANIFEST, then the image id after `docker load`. The MANIFEST travels with the tarball, so it only proves the folder is self-consistent, and a `docker save` tarball cannot prove a registry digest at all: the pin is therefore the **image id** this box read back from docker, and the staged digest goes into the history as `staged-digest=… (unverified)`. With `--from`, `--digest` names that **image id** (`docker image inspect --format '{{.Id}}'` on the staging box) and is compared with the ID docker reports after the load; the MANIFEST's registry digest is refused there, because the folder wrote it itself | Re-pin an image still on the box (by digest, or by the image id kept in the history). No pull |
 | maya | `ENGINE_PIN_MAYA=<tag>@<40-hex commit>`, only for a version reviewed in `scripts/engines/maya.sh` (`--digest <commit>` on the command line to name another; a staged folder's MANIFEST never stands in for it). A version is `v<N>.<N>[.<N>[.<N>]]`, nothing else: it names the install directory | The commit id. Maya's own setup would fetch llama.cpp as an unhashed archive zip and pip-install unpinned packages. Instead llama.cpp is checked out at the commit its `setup.py` pins (read and compared first), and the packages come from `scripts/engines/maya/requirements.lock` with `--require-hashes`. Reinstalling a version on disk is refused while a Maya server runs from it; otherwise the old directory is moved aside and the new one renamed in. `prepare.sh` resolves the `~/.local/opt/maya` link before looking for the config Maya wrote, and records that resolved path | Relink `~/.local/opt/maya-<tag>` (offline) |
+| basalt | `ENGINE_PIN_BASALT=<tag>@<40-hex commit>`, only for a version reviewed in `scripts/engines/basalt.sh` (v0.5.7 = `400b411c`; `--digest` on the command line for another) | The commit id; the build record `OPENBEAST_BUILD` in each build dir (commit, applied patches with their sha256, the env image id, `bin/basalt` sha256). The env image's server packages are checked against exact versions after every build or load | Relink `~/.local/opt/basalt-<tag>[+<patch tag>]` whose env image is still on the box (offline) |
 | tensorfold | `ENGINE_PIN_TENSORFOLD=<version>@sha256:<archive sha256>` | `install-native.sh`: archive against `.sha256`, `.sha256` against the release's ed25519 signature (vendored key), every unpacked file against `SHA256SUMS`. It always stages into `.engines/cache/` first | Relink `~/.local/opt/tensorfold-<V>-<platform>` after `SHA256SUMS` is re-checked. Instant and offline |
 
 - `update` = install the latest **release**. llama: the highest `vX.Y.Z`
@@ -208,11 +215,13 @@ scripts/engine.sh stage llama      --version v1.0.0 /media/usb/llama
 scripts/engine.sh stage vllm       --version v0.33.0 /media/usb/vllm      # the box's own arch; docker save
 scripts/engine.sh stage tensorfold --version 1.2.9 --platform linux-aarch64 /media/usb/tf
 MAYA_STAGE_PYTHON=3.12 scripts/engine.sh stage maya --version v1.1.65 --platform manylinux_2_28_x86_64 /media/usb/maya
+scripts/engine.sh stage basalt     --version v0.5.7 /media/usb/basalt     # bare repo of the commit + the env image (docker save) + MANIFEST
 # closed box
 scripts/engine.sh install llama      --from /media/usb/llama
 scripts/engine.sh install vllm       --from /media/usb/vllm
 scripts/engine.sh install tensorfold --from /media/usb/tf
 scripts/engine.sh install maya       --from /media/usb/maya     # both commits re-verified; wheels with --no-index
+scripts/engine.sh install basalt     --from /media/usb/basalt   # commit, tarball sha256, image id, package pins re-checked; compile --network none
 ```
 
 Each folder is re-verified on the closed box: the llama commit id, the vLLM
@@ -284,44 +293,60 @@ functions out of `start.sh` verbatim and still passes, and
 - `scripts/lib/backend.sh` (not a shared hot spot): adapter-only engine names
   in `normalize`, `label` and `ready`.
 
-## Chosen for one run, not a default
+## Basalt, the RTX 5090 default
 
-An engine used for a specific measured run, outside the matrix and the
-`engine.sh` adapters. It does not serve the daily stack; the default on each
-host is unchanged.
+**Basalt** (`github.com/jesdga95/basalt`, MIT; v0.5.7 = `400b411c58031d064812ea21a259b2381acdaa3e`)
+serves the RTX 5090's default model since 2026-11-24, Inkling 2 Mini on
+Basalt's stock NVFP4-MX8 pack (Max's decision,
+[DECISIONS-2026-11-24 §10](reports/DECISIONS-2026-11-24.md#10-stock-inkling-2-mini-on-basalt-is-the-rtx-5090-default);
+board row `INK-T2-STOCK`, 53/71 scored, SCORE 78.2, single seed). It was
+chosen 2026-11-23 for the Inkling v5 runs as the one engine that drives T2
+on Inkling (thinking with `reasoning_content` and tool calls, streamed and
+not; conformance PASS) and the fastest single stream (403 / 356 tok/s code /
+prose with the Derisked pack, 376 / 307 stock, against vLLM 269 / 161 and
+Strata 201 / 131) and prefill (18-19K tok/s)
+([report §11](reports/STRATA_INKLING_5090-2026-11-23.md#11-pending-native-sq-packs-and-other-engines),
+security review [§15](reports/STRATA_INKLING_5090-2026-11-23.md#15-basalt-security-and-supply-chain-review)).
+The adapter is `scripts/engines/basalt.sh`; the profile
+`scripts/engines/basalt/profiles/inkling2-mini-stock.env`; switch and
+rollback: [MODELS.md](MODELS.md#switching-the-rtx-5090-to-its-default-and-back);
+a fresh install: [INSTALL.md](INSTALL.md#rtx-5090-the-default-model-inkling-2-mini-on-basalt).
 
-| Engine | Status | Why | How it runs | Evidence |
-|---|---|---|---|---|
-| **Basalt** (`github.com/jesdga95/basalt`, MIT; tag v0.5.7 = `400b411c58031d064812ea21a259b2381acdaa3e`, built from source offline, `bin/basalt` sha256 `5dc8a63c…`) | **Chosen 2026-11-23 for the Inkling 2 Mini v5 run (arm `I_T2`) on the RTX 5090; not yet the default, no adapter** | The only measured Inkling engine that drives T2: thinking on with `reasoning_content` and tool calls, streamed and not; conformance PASS. Fastest single stream (403 / 356 tok/s code / prose with the Derisked pack, against vLLM 269 / 161 and Strata 201 / 131) and prefill (18-19K tok/s). vLLM wins the four-stream code aggregate (902 vs 702) | `~/openbeast-runs/inkling-perf-2026-11-23/scripts/inkling-v5.sh start [derisked\|stock]` on the rig: a hardened container (no TCP egress, read-only, uid 1000, `--cap-drop ALL`, `no-new-privileges`; public DNS names still resolve on its bridge, a gap to close), `basalt serve --parallel 1 --max-context 262144 --kv fp8`, DSpark at the pack default, `--answer-room auto` (thinking capped at 6,144 of an 8,192-token turn; the close does not force an answer on Inkling, upstream #588, so some capped turns end empty), alias `inkling-2-mini` on `127.0.0.1:8099`, Bearer key. The default Qwen stack must be stopped first (`./stop.sh`; restore `./start.sh -d`) | [reports/STRATA_INKLING_5090-2026-11-23.md §11](reports/STRATA_INKLING_5090-2026-11-23.md#11-pending-native-sq-packs-and-other-engines), security review [§15](reports/STRATA_INKLING_5090-2026-11-23.md#15-basalt-security-and-supply-chain-review); [DECISIONS-2026-11-23 §11](reports/DECISIONS-2026-11-23.md#11-basalt-with-the-derisked-pack-for-the-inkling-v5-run) |
+**The review's "before default" items (§15.8) and how the adapter closes them.**
+"Tested" means `tests/test_engine_basalt.py` (a fake docker records every
+argv; no GPU); "live" means proven on the rig by the eval serves; "at the
+switch" means first checked when the rig switches ([TODO.md](TODO.md)).
 
-**Security review done 2026-11-23** ([the report §15](reports/STRATA_INKLING_5090-2026-11-23.md#15-basalt-security-and-supply-chain-review)):
-no malware, telemetry or credential access; the engine has no network code;
-the server's only fetcher (image URLs) is refused for non-loopback clients,
-which every request through the published port is. OK for the running eval.
-Before Basalt becomes a default or gets `scripts/engines/basalt.sh`:
-(1) close the sandbox's DNS channel and prove it with the probe in §15.4
-(the fix is proved: `--dns 127.0.0.1` on the same no-NAT bridge makes every
-name FAIL, [the Maya report §9.1](reports/MAYA_INKLING_5090-2026-11-23.md#91-the-dns-fix); the rig's `basalt-serve.sh` already carries it since 2026-11-23, see [TODO](TODO.md));
-(2) re-pin to a reviewed commit that fixes #588 (the answer-room close on
-Inkling); (3) pin the Python side (hashed offline wheels, or Basalt's
-`serve/tests` run once on the distro set we use); (4) an `I_T2` result that
-justifies switching from Qwen3.8, and the offline path (the source at
-the tag, the image, the converted pack) staged per [the offline rule](#offline-closed-network-offlinetrue).
-**`I_T2` result (2026-11-24): it does not justify switching.** Inkling on
-Basalt scored 49/71 (board row `INK-T2`, SCORE 76.5) against Qwen3.8's
-52/71 (`Q38U-T2`, 75.6), and 46 against 52 on the 65 units both measured
-cleanly; it ran the arm about three times faster (4.5 h against ~13.5).
-203 turns ended empty at the cap (#588). Also: keep the server log of
-every eval serve (`docker rm -f` drops it). [Report](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md).
-**Ablations (2026-11-24): still not.** Basalt's stock pack 53/71 (SCORE
-78.2), level with Qwen3.8 paired (−2 over 65 clean units); a seed repeat of
-I_T2 51/71 (2 flips). The ablation queue's three serves proved the DNS fix
-live (the in-container probe failed each time) and a log saver kept the
-server logs: on agent work DSpark accepted 90.2% / 88.7% of drafted tokens
-(token-weighted) and decode ran 484 / 444 tok/s over all replies
-(Derisked / stock, `evals/audit/basalt_log.py`). #588 is unchanged (167 and
-105 empty capped turns); the next arm patches it locally with upstream PR
-#632 ([report §10](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md#10-the-ablations-seed-noise-and-the-stock-pack-2026-11-24)).
+| Item | What the adapter does | Verified |
+|---|---|---|
+| Source at a reviewed pin, offline | Only a version in the reviewed table builds (v0.5.7 = `400b411c`); the commit id is checked after the fetch and the tree must be clean. The compile runs in the env image with `--network none`, unprivileged, `-DBASALT_MODELS=inkling2 -DCMAKE_CUDA_ARCHITECTURES=120` (the measured build, `build-basalt.sh` on the rig). Offline: `stage` / `install --from` (bare one-commit repo, the env image as a docker-save tarball, a MANIFEST with sha256 and image id), and beast-ark holds the source and the CUDA base image by digest | Tested (refusals); the measured build is live (`bin/basalt` `5dc8a63c…`); a build through the adapter: at the switch |
+| The #588 fix (upstream PR #632) | A hook: every `scripts/engines/patches/basalt-pr632-*.patch` in the checkout is applied after `git apply --check` and recorded with its sha256 (build dir `basalt-v0.5.7+pr632-<12 hex>`); none present = the pin exactly, which is what INK-T2-STOCK measured. `ENGINE_BASALT_PATCHES=none` forces the pin. **As of 2026-11-24 no such patch is on `main`**: it is coordinated with the improved Inkling arm | Tested (apply, record, refusal of a patch that does not apply) |
+| Python side pinned | No venv and no PyPI: the server runs the env image's distro `python3`. `scripts/engines/basalt/Dockerfile` pins the base by digest, every Ubuntu package by one archive snapshot (`20261124T013100Z`, when the measured image was built), and the six server packages to the exact versions the measured rows ran on (python3 3.12.3-0ubuntu2.1, jinja2 3.1.2-1ubuntu1.3, markupsafe 2.1.5-1build2, regex 0.1.20221031-2build1, psutil 5.9.8-2build2, pil 10.2.0-1ubuntu1.5); the adapter re-reads them from the built or loaded image and refuses a mismatch | Tested (the check); the Dockerfile build itself: at the switch (the measured image was built from the live archive with the same package list) |
+| No DNS, no route out | A user bridge `openbeast-basalt-net` with `enable_ip_masquerade=false` (no NAT) and `--dns 127.0.0.1` (Docker's resolver gets no upstream). **Proven at every launch:** a probe container with the server's exact sandbox flags must fail to resolve example.com, huggingface.co and github.com and fail to connect to 1.1.1.1:443 and 8.8.8.8:53, or the server is not started. An existing network of that name with NAT is refused | Live: the same bridge + `--dns 127.0.0.1` made the probe fail on three eval serves (V5 Inkling report §10.1); tested: the probe gates the launch |
+| Port on 127.0.0.1 only | `-p 127.0.0.1:<port>:<port>`; any other `INFERENCE_URL` host refuses (remote clients go through beast-gate) | Live (the eval serves); tested |
+| Read-only root, tree, weights, key | `--read-only`; the build dir, the pack file and the key file are mounted `:ro` (only those three) | Live; tested |
+| No host home | `HOME=/tmp`; no mount of `$HOME` or a parent of it | Live; tested |
+| `--cap-drop ALL`, `no-new-privileges` | Both, on the server and the probe | Live; tested |
+| Non-root | `--user <uid>:<gid>` of the operator; uid 0 refuses | Live (uid 1000); tested |
+| PID and memory limits | `--pids-limit 256`, `--memory 32g --memory-swap 32g` (no swap). The measured serve's steady state was 16 PIDs, 2.84 GiB (`docker stats`, 2026-11-24, during I_UP8k); the load peak was not measured. `ENGINE_BASALT_PIDS` / `_MEMORY` raise them; a value that is not a limit refuses | Tested; **unverified on a live serve: at the switch** |
+| `/tmp` noexec | `--tmpfs /tmp:rw,noexec,nosuid,nodev,size=8g` (the eval serves had `exec`). By the source at `400b411c`, the serve path writes no executable to `/tmp` (`temp_dir()` is used by the probe and bench programs only; the server's temp files are vision dirs, off here); CUDA's JIT cache under `HOME=/tmp` is data | Tested; **unverified on a live serve: at the switch** (if Basalt fails to start, that is the first suspect) |
+| Behind the gate, key like llama's | The engine binds `INFERENCE_URL`'s port on loopback; beast-gate and the router forward to it as to llama-server. `LLAMA_API_KEY` reaches Basalt as a 0600 file under `.run/`, mounted read-only for `--api-key-file` (never argv); no key = keyless on loopback, as llama-server | Tested (the value never appears in any argv) |
+| GPU | `--gpus device=0` (the NVIDIA Container Toolkit; `ENGINE_BASALT_GPUS`); the launch refuses a GPU whose compute capability is not 12.0 | Tested; the toolkit path: at the switch (the eval serves passed the devices by hand) |
+
+Readiness is Basalt's `/health`: 200 with `status ok`, `loaded true` and
+`service basalt` (`serve/handler.py:415-421` at the pin). Still open, not
+part of §15.8: the image is a full build image (compilers, git), more than a
+serve needs; a slim serve image is a follow-up. Basalt's own `serve/tests`
+have not been run against the distro package set (conformance and the
+thinking probes passed on it, §11.2).
+
+**History.** I_T2 (2026-11-24) did not justify switching (49/71 against
+Qwen3.8's 52/71); the ablations brought the stock pack to 53/71, level with
+Qwen3.8 paired (−2 over 65 clean units), and kept the server logs (DSpark
+accepted 88.7% of drafted tokens on the stock arm; decode 444 tok/s over
+all replies). The wrap-up kept Qwen3.8 pending an improved arm
+(DECISIONS-2026-11-24 §6); Max made the stock Inkling the default the same
+day (§10). [Report](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md).
 
 ## Evaluated, not adopted
 

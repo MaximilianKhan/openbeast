@@ -930,6 +930,12 @@ in both packs.
 
 ### 10.8 The default decision, revisited
 
+> **Superseded 2026-11-24 (Max):** the stock Inkling 2 Mini on Basalt is the
+> RTX 5090 default from that date, with Qwen3.8 as the fallback
+> ([DECISIONS-2026-11-24.md §10](DECISIONS-2026-11-24.md#10-stock-inkling-2-mini-on-basalt-is-the-rtx-5090-default),
+> the adapter `scripts/engines/basalt.sh`). The reasoning below is kept as
+> written; it is the case against that decision records.
+
 **Qwen3.8 27B Uncensored MTP with `qwen38-best` stays the RTX 5090
 default** (DECISIONS-2026-11-24 §6):
 
