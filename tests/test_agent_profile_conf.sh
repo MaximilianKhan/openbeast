@@ -9,6 +9,8 @@
 # openbeast.conf, so a rig could not run its daily agents the way the best
 # DeepSeek-V4.1-Flash (Mia EXL3) arm was measured. conf.sh now exports each
 # key, and AGENT_PROFILE=deepseek-best supplies all of them in one line.
+# AGENT_PROFILE=qwen38-best (the RTX 5090 default, arm Q_T2) is an alias for
+# the same switch table: every check below that matters runs for both names.
 #
 # Runs the REAL conf.sh against a throwaway conf in a clean env (env -i): no
 # stack, no real openbeast.conf. The reader checks pipe the exports into the
@@ -91,6 +93,64 @@ else
   fail "unknown profile: $(tr '\n' ' ' <<< "$OUT") / stderr: $(cat "$T/conf.err")"
 fi
 
+# The lint names every valid profile.
+if grep -q "is not one of: deepseek-best qwen38-best, none" "$T/conf.err"; then
+  pass "the unknown-profile warning lists deepseek-best and qwen38-best"
+else
+  fail "unknown-profile warning does not list the names: $(cat "$T/conf.err")"
+fi
+
+echo ""
+echo "=== AGENT_PROFILE=qwen38-best (the RTX 5090 default, same table) ==="
+
+DS="$(conf_eval 'AGENT_PROFILE=deepseek-best' -- "$SHOW")"
+OUT="$(conf_eval 'AGENT_PROFILE=qwen38-best' -- "$SHOW")"
+for kv in BEAST_ASSIST=1 OPENBEAST_INFERENCE_THINKING=on OPENBEAST_AGENT_MAX_TOKENS=8192 \
+          OPENBEAST_AGENT_ACT_NUDGE=1 OPENBEAST_AGENT_VERIFY_DONE=1 OPENBEAST_AGENT_ENV_BLOCK=1 \
+          OPENBEAST_AGENT_WALL_WARN=1 OPENBEAST_DIAG_EDIT_HINT=1 OPENBEAST_LANG_PACK_VARIANT=v3; do
+  want_line "$OUT" "$kv" "qwen38-best exports $kv"
+done
+if [[ ! -s "$T/conf.err" ]]; then
+  pass "qwen38-best alone produces no warnings (the lint accepts the name)"
+else
+  fail "warnings from a qwen38-best conf: $(cat "$T/conf.err")"
+fi
+if [[ "$OUT" == "$DS" ]]; then
+  pass "qwen38-best and deepseek-best export identical values"
+else
+  fail "the two names differ: $(diff <(echo "$DS") <(echo "$OUT") | tr '\n' ' ')"
+fi
+OUT="$(conf_eval 'AGENT_PROFILE="Qwen38-Best"   # Q_T2, 52/71' -- "$SHOW")"
+want_line "$OUT" OPENBEAST_AGENT_ACT_NUDGE=1 "quoted, mixed-case qwen38-best with a comment is read"
+
+# The rig's openbeast.conf today: BEAST_ASSIST=1 on its own line, no conflict.
+OUT="$(conf_eval 'BEAST_ASSIST=1
+AGENT_PROFILE=qwen38-best' -- "$SHOW")"
+if [[ "$OUT" == "$DS" && ! -s "$T/conf.err" ]]; then
+  pass "the rig's conf (BEAST_ASSIST=1 + qwen38-best) resolves exactly the profile, silently"
+else
+  fail "rig conf: $(tr '\n' ' ' <<< "$OUT") / $(cat "$T/conf.err")"
+fi
+
+# Precedence holds for the alias too.
+OUT="$(conf_eval 'AGENT_PROFILE=qwen38-best
+AGENT_ACT_NUDGE=off
+BEAST_ASSIST=0
+INFERENCE_THINKING=off
+LANG_PACK_VARIANT=v1
+AGENT_MAX_TOKENS=16384' -- "$SHOW")"
+want_line "$OUT" OPENBEAST_AGENT_ACT_NUDGE=0 "qwen38-best: AGENT_ACT_NUDGE=off in the conf wins"
+want_line "$OUT" BEAST_ASSIST=0 "qwen38-best: BEAST_ASSIST=0 in the conf wins"
+want_line "$OUT" OPENBEAST_INFERENCE_THINKING=off "qwen38-best: INFERENCE_THINKING=off in the conf wins"
+want_line "$OUT" OPENBEAST_LANG_PACK_VARIANT=v1 "qwen38-best: LANG_PACK_VARIANT=v1 in the conf wins"
+want_line "$OUT" OPENBEAST_AGENT_MAX_TOKENS=ABSENT "qwen38-best: a conf AGENT_MAX_TOKENS suppresses the 8192 export"
+want_line "$OUT" OPENBEAST_AGENT_WALL_WARN=1 "qwen38-best: keys not overridden keep the profile's value"
+OUT="$(conf_eval 'AGENT_PROFILE=qwen38-best' OPENBEAST_AGENT_VERIFY_DONE=0 OPENBEAST_AGENT_MAX_TOKENS=4096 -- "$SHOW")"
+want_line "$OUT" OPENBEAST_AGENT_VERIFY_DONE=0 "qwen38-best: env OPENBEAST_AGENT_VERIFY_DONE=0 wins"
+want_line "$OUT" OPENBEAST_AGENT_MAX_TOKENS=4096 "qwen38-best: env OPENBEAST_AGENT_MAX_TOKENS is left as set"
+OUT="$(conf_eval 'AGENT_PROFILE=deepseek-best' OPENBEAST_AGENT_PROFILE=qwen38-best -- "$SHOW")"
+want_line "$OUT" OPENBEAST_AGENT_ENV_BLOCK=1 "env OPENBEAST_AGENT_PROFILE=qwen38-best is accepted over the conf's"
+
 echo ""
 echo "=== explicit keys win over the profile ==="
 
@@ -154,15 +214,17 @@ echo ""
 echo "=== the readers agree ==="
 
 # What conf.sh exports, the real readers honour.
-OUT="$(conf_eval 'AGENT_PROFILE=deepseek-best' -- "cd '$REPO_DIR/agents' && python3 -c '
+for prof in deepseek-best qwen38-best; do
+  OUT="$(conf_eval "AGENT_PROFILE=$prof" -- "cd '$REPO_DIR/agents' && python3 -c '
 import tools
 from lang import pack_context as pc
 print(tools.diagnostics_enabled(), tools.diag_edit_hint_enabled(), tools.verify_done_enabled(), pc.pack_variant()[0])'")"
-if [[ "$OUT" == "True True True v3" ]]; then
-  pass "tools.py (diagnostics, edit hint, verify-done) and pack_context (v3) read the profile"
-else
-  fail "readers disagree: '$OUT' ($(tail -3 "$T/conf.err"))"
-fi
+  if [[ "$OUT" == "True True True v3" ]]; then
+    pass "$prof: tools.py (diagnostics, edit hint, verify-done) and pack_context (v3) read the profile"
+  else
+    fail "$prof: readers disagree: '$OUT' ($(tail -3 "$T/conf.err"))"
+  fi
+done
 
 # runner.py needs the openai package; use the eval venv when python3 lacks it.
 RPY=""
@@ -170,15 +232,17 @@ for p in python3 "$HOME/.local/opt/openbeast-eval-venv/bin/python"; do
   if command -v "$p" >/dev/null 2>&1 && "$p" -c 'import openai' 2>/dev/null; then RPY="$p"; break; fi
 done
 if [[ -n "$RPY" ]]; then
-  OUT="$(conf_eval 'AGENT_PROFILE=deepseek-best' -- "cd '$REPO_DIR/agents' && '$RPY' -c '
+  for prof in deepseek-best qwen38-best; do
+    OUT="$(conf_eval "AGENT_PROFILE=$prof" -- "cd '$REPO_DIR/agents' && '$RPY' -c '
 import runner
 print(runner.act_nudge_enabled(), runner.env_block_enabled(), runner.wall_warn_enabled(),
       runner._max_completion_tokens(), runner._inference_thinking())'")"
-  if [[ "$OUT" == "True True True 8192 on" ]]; then
-    pass "runner.py: act nudge, env block, wall warn on, cap 8192, thinking on"
-  else
-    fail "runner.py disagrees: '$OUT' ($(tail -3 "$T/conf.err"))"
-  fi
+    if [[ "$OUT" == "True True True 8192 on" ]]; then
+      pass "$prof: runner.py: act nudge, env block, wall warn on, cap 8192, thinking on"
+    else
+      fail "$prof: runner.py disagrees: '$OUT' ($(tail -3 "$T/conf.err"))"
+    fi
+  done
   # ...and never inside an eval for what the runner gates on OPENBEAST_EVAL:
   # thinking follows only the arm's own switch there.
   OUT="$(conf_eval 'AGENT_PROFILE=deepseek-best' OPENBEAST_EVAL=1 -- "cd '$REPO_DIR/agents' && '$RPY' -c '

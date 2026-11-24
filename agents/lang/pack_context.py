@@ -30,7 +30,8 @@ started in $HOME costs a few hundred stat()s, not a crawl.
 
 THE VARIANT. LANG_PACK_VARIANT = v1 (default, PACK_FILES) | v3 (the zig
 pack DeepSeek-V4.1-Flash (Mia EXL3)'s best arm T2 measured; set by
-AGENT_PROFILE=deepseek-best). Env OPENBEAST_LANG_PACK_VARIANT beats the conf.
+AGENT_PROFILE=deepseek-best or qwen38-best, which share one switch table in
+scripts/lib/conf.sh). Env OPENBEAST_LANG_PACK_VARIANT beats the conf.
 Only pinned bytes are served (PRODUCTION_VARIANT_SHA256); anything else
 serves no pack.
 
@@ -106,7 +107,8 @@ MEASURED_SHA256 = {
 
 #: Pack VARIANTS production may serve besides v1, when the operator opts in
 #: with LANG_PACK_VARIANT (env OPENBEAST_LANG_PACK_VARIANT; AGENT_PROFILE=
-#: deepseek-best in openbeast.conf sets v3). Same rule as MEASURED_SHA256:
+#: deepseek-best or qwen38-best in openbeast.conf sets v3; this module never
+#: reads AGENT_PROFILE itself, conf.sh exports the variant). Same rule as MEASURED_SHA256:
 #: only bytes a measurement used. v3 = agents/packs/zig-0.16-v3.md as
 #: v5-thinking-first arms T and T2 measured it (DeepSeek-V4.1-Flash (Mia EXL3),
 #: T2 65/71 on 2026-11-19, board row DS-T2; the results header records
