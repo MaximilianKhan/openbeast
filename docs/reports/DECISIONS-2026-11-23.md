@@ -418,10 +418,14 @@ Max approved the run; arm merged in #306 (`1199608a`); launched 20:58:42 PST.
   times slower.
 
 **Known effects on the row.** `--answer-room auto` caps thinking at 6,144 of
-T2's 8,192-token turn and then forces the answer; on llama.cpp a Qwen turn
-could think the full 8,192. Recorded in the arm's note. Basalt's code has not
-had a written review (the build is from the tag, offline, and the serve has
-no egress); that review is required before Basalt becomes a default.
+T2's 8,192-token turn and then closes the thinking; on llama.cpp a Qwen turn
+could think the full 8,192. Recorded in the arm's note. **Corrected the same
+night:** the close does not force an answer on Inkling (upstream #588), so
+some capped turns end empty at the cap; and the review, since written
+([the Strata report §15](STRATA_INKLING_5090-2026-11-23.md#15-basalt-security-and-supply-chain-review)),
+clears Basalt for this run but found that the serve's bridge still resolves
+public DNS names (no TCP egress). Its §15.8 lists what comes before Basalt
+becomes a default.
 
 **Operations.** The default Qwen stack was stopped for the run (Open WebUI and
 SearXNG with it), approved. `~/openbeast-runs/ink-I_T2-run.sh` restores it

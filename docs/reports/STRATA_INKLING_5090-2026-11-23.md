@@ -49,6 +49,13 @@
   thinking off (our T2 eval arm needs thinking on), its drafter is broken on
   CUDA at the pin, and it is alpha. The engine for the Inkling v5 run is
   Basalt v0.5.7 with the Derisked pack (§11).
+- **Basalt review ([§15](#15-basalt-security-and-supply-chain-review)).** No
+  malware, no telemetry, no network code in the engine; OK to keep serving
+  the `I_T2` eval in its sandbox. Two findings: the sandbox bridge still
+  resolves public DNS names (Docker's embedded resolver), and Basalt's
+  thinking-budget close does not force an answer on Inkling (upstream #588,
+  open): 3 of the first 18 budget wraps in the live run ended at the cap
+  with no answer (05:11Z). Not yet fit to be the 5090's default.
 
 ## 2. The pre-run security and supply-chain review
 
@@ -210,7 +217,10 @@ weights and binaries mounted :ro
 
 - `--bench` and `--dump-ref` runs: `--network none`.
 - Servers: a dedicated bridge `strata-bench-net` created with
-  `com.docker.network.bridge.enable_ip_masquerade=false` (no route out),
+  `com.docker.network.bridge.enable_ip_masquerade=false` (no NAT: no TCP
+  connection out, re-tested in [§15.4](#154-the-running-isolation); **but
+  public DNS names still resolve** through Docker's embedded resolver, a
+  one-way channel this report first claimed was closed),
   published only on `127.0.0.1:8097` (Strata) / `127.0.0.1:8098` (llama.cpp).
   Strata's `server.py` ran `--offline --api-key <scratch/strata.key>`.
 
@@ -697,10 +707,10 @@ Supply chain, Basalt: MIT, created 2026-10-06, 1,950 stars, top contributors
 published 2026-11-24 02:18Z (`gh api repos/jesdga95/basalt`, `…/contributors`,
 `…/releases`); the tag resolves to `400b411c` (`gh api
 repos/jesdga95/basalt/commits/v0.5.7`); `main` has moved since (`db8c8948` at
-03:23Z). Built from that source, offline; served with no egress. **No written
+03:23Z). Built from that source, offline; served with no TCP egress. **No written
 supply-chain review of Basalt's code was found in the investigation folder**
-(§11's brief required one): the mitigations are the source build at a tag and
-the sandbox, not a read of the code. Recorded as an open item (§12).
+(§11's brief required one): the mitigations were the source build at a tag and
+the sandbox, not a read of the code. **Done later the same night: [§15](#15-basalt-security-and-supply-chain-review).**
 
 ### 11.4 The engine choice, and why
 
@@ -729,7 +739,10 @@ at the pack default, `--answer-room auto` (the default), alias
 reserves `min(max(512, cap // 4), cap // 2)` output tokens for the answer
 (Basalt `docs/configuration/sampling.md`, "Thinking"). T2 caps a turn at
 8,192 tokens, so Basalt allows **6,144 thinking tokens**, then closes the
-thinking with the template's own close and the model must answer. On
+thinking with the template's own close. **Correction (§15.6):** the close
+does not force an answer on Inkling. Basalt writes only `<|end_message|>`,
+and the model may open a second thinking block, which then runs to the
+cap with no answer (upstream #588, open at the pin). On
 llama.cpp (Q_T2) a turn could think up to the full 8,192. This is a property
 of the serve, recorded in the arm's note, not a harness change.
 
@@ -764,8 +777,8 @@ candidate was mentioned but **not run**.
   Qwen3.8's Q38U-T2) launched 2026-11-23 20:58 PST.
 - ~~Do the SQ packs reproduce 250.3 solo and 4,089.7 at 64?~~ §11.3: SQ-20
   ~190-201 solo; ~1,400 at 64 (`--bench`), not 4,089.7.
-- **Basalt has no written code review yet** (§11.3). Before Basalt becomes a
-  default or ships in `scripts/`, do the read-only review §2 did for Strata.
+- ~~**Basalt has no written code review yet**~~ Done: [§15](#15-basalt-security-and-supply-chain-review).
+  OK for the running eval; before it becomes a default, the four items of §15.8.
 - Is the `dspark.` fix in a later upstream commit? Re-check `main` before any
   re-run: `gh api repos/Niko1221/Strata/commits/main`, then the three source
   lines in §7.
@@ -802,3 +815,352 @@ scripts/llama-serve.sh mainline 1 40960         # then the same with --base http
 | `scripts/` | every script quoted here |
 | `logs/` | builds, serves, stop/restore, pre-state |
 | `build/env/Dockerfile`, `build/strata-6a6db7ff.bundle` | the image recipe; the source at the pin, offline |
+
+## 15. Basalt security and supply-chain review
+
+> **Done 2026-11-23 ~21:00-21:20 PST (05:00-05:20Z), read only**, while the
+> `I_T2` run was serving from Basalt. Nothing from Basalt was built, installed
+> or run for this review, and the running `basalt-serve` container was only
+> inspected (`docker inspect`, `docker logs`). Review clone, full history:
+> `~/.claude/jobs/400403b4/tmp/basalt-src` on the Mac
+> (`git clone https://github.com/jesdga95/basalt` then `git checkout
+> 400b411c58031d064812ea21a259b2381acdaa3e`; `git describe --tags` = `v0.5.7`;
+> 1,527 tracked files). File:line references are to that commit. **Verified**
+> means re-checked by the command or file:line given; **claim** means
+> Basalt's own statement, not tested here.
+
+### 15.1 Verdict
+
+- **Keep serving the `I_T2` eval in the current sandbox: yes.** No malware,
+  obfuscation, telemetry or credential access found. The engine (C++/CUDA)
+  has no network code at all. The Python server's only outbound fetch
+  (image URLs) is refused for any client that is not on loopback inside the
+  container, and every request reaches it from the Docker gateway. TCP out
+  of the sandbox times out (§15.4).
+- **One isolation gap, low risk, not urgent:** the sandbox bridge resolves
+  public DNS names (Docker's embedded resolver forwards them), so a
+  compromised process could leak data one way through DNS queries. Nothing
+  in Basalt's code does this. Close it before the next start, not by
+  restarting the running eval (§15.4).
+- **One correctness finding that affects the row:** the thinking-budget close
+  does not force an answer on Inkling (upstream #588, open). In the live run,
+  3 of the first 18 budget wraps ended at the 8,192 cap with no answer
+  (§15.6).
+- **Default serve for the 5090: not yet.** The four items of §15.8 come first.
+
+### 15.2 What Basalt is (verified unless marked)
+
+| Fact | Evidence |
+|---|---|
+| A local inference engine for five MoE / dense models (Qwen3.8-Flash-Next, DeepSeek-V4.1-Flash, Qwen3.8-27B, Hy4-flash, Inkling 2 Mini) on NVIDIA Blackwell sm_120, Linux and Windows | `README.md` lines 3-5; `CMakeLists.txt` model switch `-DBASALT_MODELS` |
+| Engine: C++ and CUDA, 817 source files under `src/` and `include/` (199,722 lines); CUDA only, CPU kernels for spilled experts (AVX2 / AVX-512) | `git ls-files src include`; `include/basalt/kernels/cpu/` |
+| Server: Python stdlib `http.server`, about 15,700 lines (`serve/`, tests excluded). `bin/basalt serve` execs `python3 -m serve.server --engine-bin <itself>` (the venv's python when present, else `python3`); the server then runs the engine binary as a child (`--serve`, pipes) | `src/program/cli/serve.cpp:51-56`, `src/platform/system.cpp:152-154`, `serve/engine/process.py:319` |
+| APIs: OpenAI (`/v1/chat/completions`, `/v1/responses`) and Anthropic (`/v1/messages`); a web console; `/metrics` | `README.md` line 5; `serve/handler.py` |
+| Formats: its own `.basalt` pack (sections: tokenizer, template, experts, GGUF-encoded dense tensors, vision, meta); reads GGUF and NVFP4 / MXFP8 safetensors only in the converter | `docs/model-file.md`; `tools/convert/convert.py`; the convert log in §11.1 lists the 10 sections |
+| **DSpark** (Inkling's drafter): one block pass drafts up to 7 tokens from three dense layers over the target's visits 5, 23, 41 and its final state, plus a recurrent head; the target verifies every draft. **Claim:** greedy output with drafting equals plain greedy output | `docs/models/inkling2.md:139-145`; `docs/precision/inkling2.md:14,170-172`; `src/models/inkling2/dspark.cpp` |
+| Lineage: "Strata, the project Basalt forks (MIT)", plus Infernix kernels (Apache-2.0) and ggml (MIT) | `README.md` Credits; `THIRD_PARTY_LICENSES` |
+| Created 2026-10-06 22:17Z, MIT, 1,950 stars, 312 forks, not a GitHub fork | `gh api repos/jesdga95/basalt` |
+| 3,526 commits at the pin; 13 releases | `gh api -i 'repos/jesdga95/basalt/commits?per_page=1&sha=400b411c…'` (`page=3526` rel last); `gh api repos/jesdga95/basalt/releases --paginate --jq '.[].tag_name' \| wc -l` |
+| Contributors: `jesdga95` 2,351, `Niko1221` 534, then 52, 34, 21 | `gh api 'repos/jesdga95/basalt/contributors?per_page=10'` |
+| **Niko1221's 534 are inherited history, not active work:** his commits in the clone run 2026-09-24 to 2026-10-13, the first is "Strata: Qwen3.8-Flash-Next on a 12-24 GB NVIDIA GPU…", and the Basalt repo was created 10-06. The author of Basalt is `jesdga95` (Jesus Gulfo), commits 2026-10-03 to the pin | `git log --author=Niko1221 --format=%ad --date=short \| sort \| sed -n '1p;$p'`; `git log --reverse --format='%h %ad %an %s' \| head -3` |
+| Maturity: very young and very fast (about 3,500 commits in 60 days, 0.5.5 → 0.5.7 in two days), 98 open issues and 81 open PRs at review time | `gh api 'search/issues?q=repo:jesdga95/basalt+is:issue+is:open'` / `is:pr` |
+| Tests: 135 C++ test files (`*_test.cpp/.cu`), 104 Python test files (84 under `serve/tests`); CI runs them, actions pinned by SHA | `git ls-files \| grep -c …`; `.github/workflows/ci.yml` |
+
+Open Inkling issues relevant to us (`gh api 'search/issues?q=repo:jesdga95/basalt+is:issue+is:open+inkling'`, 14 hits):
+
+| # | Opened (Z) | Title (abridged) | Applies to `I_T2`? |
+|---|---|---|---|
+| 588 | 11-23 07:08 | after the thinking budget closes the block, the model opens a new thinking block and never answers | **yes** (§15.6); fix proposed in PR #632, open, not in the pin (`git grep answer_lead` empty) |
+| 577 | 11-23 00:18 | at temperature 0 the reasoning restarts and never emits the call (deterministic loop) | possibly (a model-at-T0 behaviour per the owner; the reporter's 50-case probe went 49 → 46/50 after a fix) |
+| 608 | 11-23 16:06 | parallel 2: engine stall after a budget wrap-up re-read 216K tokens | no (we run `--parallel 1`) |
+| 640 | 11-24 03:43 | conversation cache broken with a third chat | no (cache not configured) |
+| 581 | 11-23 04:19 | should `tool_choice=none` suppress the native call marker | no (fixed in 0.5.7 per its changelog, #580) |
+
+### 15.3 Supply chain (verified)
+
+- **Checked-in binaries:** none executable. Every tracked file was typed
+  with `git ls-files -z | xargs -0 file --mime-type`; the non-text files are
+  images (PNG, GIF, SVG), two WOFF2 fonts for the web console, one test
+  video (`tests/data/video/synth.mp4`) and five `data/profiles/*.prof`
+  (binary integer tables of expert routing rank, loaded as data;
+  `docs/configuration/index.md:112`). No ELF, PE, `.so`, jar or wheel. No
+  submodules, no Git LFS. The largest files are `docs/img/frontend.gif`
+  (690 KB) and the vendored `src/vision/stb_image.h`.
+- **Build-time downloads:** none. `CMakeLists.txt` has no `FetchContent`,
+  `ExternalProject` or `file(DOWNLOAD)`; its only `execute_process` calls
+  run `git rev-parse` / `git status` for a version stamp
+  (`cmake/git_stamp.cmake:4,9`, `CMakeLists.txt:792`) and probe a Python
+  for numpy (`CMakeLists.txt:1050`). Our build ran with `--network none`
+  and succeeded (§11.1), which confirms it.
+- **Run-time downloads, `curl | sh`, installers:** none in the engine or
+  server. `curl` / `wget` appear only in docs examples and the CI toolchain
+  action (`.github/actions/toolchain/action.yml:19`, NVIDIA's apt keyring).
+  Release archives are built and uploaded by CI (`release.yml`; v0.5.7's
+  assets' uploader is `github-actions[bot]`, `gh api
+  repos/jesdga95/basalt/releases/tags/v0.5.7`), better than Strata's
+  hand-uploaded assets, but unsigned and without attestations. We do not use
+  them.
+- **Obfuscation, exec / eval of fetched content:** none. No `eval(`,
+  `exec(`, `pickle`, `marshal`, `__import__` or `importlib` in `serve/` or
+  `tools/convert/`; the `base64` decodes are `data:` URLs and documents
+  (`serve/engine/image_source.py:184`, `serve/api/documents.py:188`). The
+  C++ tree has no `system`, `popen` or `exec*`; it spawns processes only
+  through `src/platform/process.cpp` (`posix_spawnp`, line 538) for the
+  server and its own children. Chat templates render in Jinja's
+  `ImmutableSandboxedEnvironment` (`serve/frontend.py:21,60-65`).
+- **Telemetry / phone-home:** none. `serve/util/telemetry.py` is local
+  hardware readings for `/metrics` (NVML through ctypes, psutil; lines 1-5).
+  No update check: `git grep -iE "update.?check|api.github.com|basalt.jgulfo"`
+  over `serve src include tools` finds nothing outside tests. The web
+  console's only external URLs are donate and docs links
+  (`serve/web/app.js:922-923`).
+- **Outbound network code, complete list:**
+  - Engine (C++): **none.** No socket, `netdb`, `winsock`, curl or WinHTTP
+    include anywhere under `src/`, `include/`, `tools/`.
+  - Server: `serve/engine/image_source.py` fetches `http(s)` image / video
+    URLs and reads local files, **only for a request "provably from this
+    machine"** (loopback peer, loopback Host, no forwarding headers, no
+    Origin: `serve/security.py:200-220`); any other client gets `data:` URLs
+    plus operator-allowed hosts and directories, and we allow none
+    (`image_source.py:1-5`, `docs/configuration/image-sources.md:27`:
+    "a published port's clients look remote"). In our container every
+    request arrives from the Docker gateway `172.23.0.1` through
+    `docker-proxy`, so it is remote: no URL fetch, no file read.
+    `serve/security.py:65-67` opens a UDP socket to `10.255.255.255:1` only
+    to learn its own address (a UDP connect sends nothing).
+  - Tools, not used by the server: `tools/convert/mtp_fetch.py` (downloads
+    a Qwen drafter from Hugging Face, line 31, 110; never called by
+    `convert.py`, which takes its output as `--mtp-source`),
+    `tools/community_sync.py`, `tools/llm_review.py` (CI only).
+- **Credentials, `~/.ssh`, setuid, privileges:** none. No reference to
+  `.ssh`, `id_rsa`, `.netrc`, `.aws`, `HF_TOKEN`, `keyring`, `sudo`,
+  `setuid` or capabilities in `serve/`, `src/`, `include/`,
+  `tools/convert/`. The API key is read from a file we pass
+  (`serve/security.py:35-45`) and compared in constant time
+  (`hmac.compare_digest`, line 53). It needs no privileges: it ran as uid
+  1000 with every capability dropped.
+- **CI with write access (upstream risk, not ours):** a GitHub App
+  (`basalt-code-review-bot`) is a bypass actor on `main`'s ruleset and
+  squash-merges community benchmark PRs that pass a gate plus an LLM review,
+  limited to `docs/community/runs/*.json` (`docs/development/community-automerge.md`).
+  The design checks out only the base commit. It is one more path to `main`;
+  it is why we pin a reviewed commit and never track `main`.
+- **Dependency pinning:** `requirements.txt` pins exact versions (numpy
+  2.5.3 / 2.4.6 / 2.2.6 by Python range, jinja2 3.1.6, markupsafe 3.0.3,
+  regex 2026.9.10, pyyaml 6.0.3, tqdm 4.70.1, pillow 12.3.0, pypdf 7.0.1,
+  psutil 7.2.2; lines 2-12) **without hashes**. Their `Dockerfile` installs
+  them from PyPI into a venv and uses an unpinned `nvidia/cuda:13.4.3`
+  base. We used neither.
+- **What our serve actually runs on (distro packages):** our image
+  `ob-strata-env:2026-11-23` (`sha256:0c44ed98…`, built from
+  `strata-bench-2026-11-23/build/env/Dockerfile`, base
+  `nvidia/cuda:13.0.2-devel-ubuntu24.04@sha256:5dc1bca2…`) has no venv, so
+  `bin/basalt serve` falls back to `python3` (`system.cpp:154`) with Ubuntu
+  24.04 packages (`dpkg-query -W` in a throwaway, `--network none`
+  container of the image):
+
+  | Package | In the image | Basalt pins | Used by the server for |
+  |---|---|---|---|
+  | python3 | 3.12.3-0ubuntu2.1 | ≥ 3.10 | everything |
+  | python3-jinja2 | 3.1.2-1ubuntu1.3 | 3.1.6 | the chat template (sandboxed) |
+  | python3-markupsafe | 2.1.5-1build2 | 3.0.3 | Jinja |
+  | python3-regex | 0.1.20221031-2build1 (regex 2022.10.31) | 2026.9.10 | `tools/tokenizer.py` (server-side tokenizer, `serve/server.py:243`) |
+  | python3-psutil | 5.9.8-2build2 | 7.2.2 | `/metrics` |
+  | python3-pil | 10.2.0-1ubuntu1.5 | 12.3.0 | images only |
+  | python3-numpy | 1.26.4+ds-6ubuntu1 | 2.5.3 | the converter only |
+  | python3-yaml, python3-tqdm | 6.0.1, 4.66.2 | 6.0.3, 4.70.1 | converter tools only |
+  | python3-requests | 2.31.0 | (not used) | nothing in Basalt |
+  | pypdf | **absent** | 7.0.1 | PDF documents: a request with one gets a 400 (`serve/api/documents.py:237-239`) |
+
+  Jinja 3.1.2 is older than the pin, but Ubuntu backported the sandbox
+  fixes that matter for templates from weights: CVE-2024-56201,
+  CVE-2024-56326 (1ubuntu1.2) and CVE-2025-27516 (1ubuntu1.3), per
+  `/usr/share/doc/python3-jinja2/changelog.Debian.gz` in the image. The
+  combination of these older versions with Basalt 0.5.7 is **not what
+  upstream tests**; our conformance and thinking probes passed on it (§11.2).
+
+### 15.4 The running isolation
+
+Read from `scripts/basalt-serve.sh` (called by `inkling-v5.sh start
+derisked`) and `docker inspect basalt-serve` at 2026-11-24 05:0xZ (container
+started 04:57:51Z, image `ob-strata-env:2026-11-23`):
+
+| Requirement | State | Evidence |
+|---|---|---|
+| No egress network | **TCP: none. DNS: gap** | `NetworkMode strata-bench-net`; the network is `Internal: false`, `enable_ip_masquerade: false` (`docker network inspect`). A throwaway probe container (our image, not Basalt; `--network strata-bench-net --read-only --user 1000:1000 --cap-drop ALL`, `python3 -I`) got: TCP to `1.1.1.1:443`, the LAN router `192.168.40.1:80`, the host gateway `172.23.0.1:22` and `:8099` all **timed out**; but `getaddrinfo("example.com")` = `104.20.23.154` and `huggingface.co` = `108.138.246.71`, **resolved** |
+| Weights read-only | yes | `/models` and `/models-derisked` binds `"RW": false` |
+| No host home | yes | binds are only `…/inkling-perf-2026-11-23/{build/basalt-tree,weights/…,scratch/basalt.key}` and the driver's libraries, all `:ro`; `HOME=/tmp` |
+| `--cap-drop ALL` | yes | `CapDrop ["ALL"]`, `CapAdd null`, `Privileged false` |
+| `no-new-privileges` | yes | `SecurityOpt ["no-new-privileges"]`; Docker's default seccomp profile is on (`docker info`) |
+| Non-root | yes | `User 1000:1000` |
+| Port on 127.0.0.1 only | yes | `PortBindings 8099/tcp → HostIp 127.0.0.1`; `docker-proxy -host-ip 127.0.0.1 -host-port 8099`; `ss -ltn` shows `127.0.0.1:8099` only. The server binds `0.0.0.0` inside the container, reachable only on the bridge |
+| Read-only root | yes | `ReadonlyRootfs true`; tmpfs `/tmp` 8 GB |
+| API key | yes | `--api-key-file /run/basalt.key` (`:ro`); the log says `api-key=on`; every POST is checked first (`serve/handler.py:457`), and `/metrics` and `/api/logs` on GET (`handler.py:334-342,377-407`); `/health`, the console page and its static files answer without it |
+
+**Gaps, in order of weight:**
+
+1. **DNS resolves** (above). Docker's embedded resolver (`127.0.0.11`)
+   answers from the daemon on the host, so the container can send data out
+   one way as DNS queries even with no NAT. Same gap for every server of the
+   Strata bench (§4 said "no route out"; corrected there). Basalt contains
+   no code that does this; the risk is a compromised dependency. **Fix at
+   the next start, not now:** create the network with `--internal` and put
+   a loopback-published proxy in front (an internal network does not
+   publish ports), or start the container with `--dns 127.0.0.1` so the
+   embedded resolver has no upstream; then re-run the probe above and
+   expect `dns … FAIL`. Not verified which works on this Docker; test first.
+2. `--tmpfs /tmp:…,exec`: a file written to `/tmp` can be executed. Strata's
+   serves ran without `exec`; whether Basalt needs it is untested.
+3. No `--pids-limit` or memory limit (`PidsLimit null`, `Memory 0`): a
+   runaway process could starve the host. Availability only.
+4. uid 1000 is Max's host uid. All mounts are read-only, so it grants
+   nothing extra today; a dedicated uid would be cleaner (the key file is
+   mode 600, so it would need re-owning).
+5. The image is a full build image (compilers, git, `libcurl`), more tools
+   than a serve needs.
+
+### 15.5 The converter (verified)
+
+`scripts/convert-blackfrost.sh` ran Basalt's `tools/convert/convert.py`
+with `python3 -I`, `--network none`, `--read-only`, uid 1000, `--cap-drop
+ALL`, the checkpoint mounted `:ro`, CPU only. It **executes nothing from the
+weights**:
+
+- Safetensors are parsed by hand: an 8-byte length, a JSON header, then
+  `np.fromfile` / `np.memmap` at offsets (`tools/convert/model_sections.py:540-550`,
+  `tools/convert/checkpoint.py:47-90`). No `torch`, no `safetensors`
+  library, no `pickle` (`git grep -nE "pickle|torch|trust_remote_code|transformers" -- '*.py'`
+  finds only comments and test names).
+- No `trust_remote_code` and no `transformers`: `config.json` and
+  `tokenizer.json` are read with `json.loads`
+  (`checkpoint.py:54,606-607`). The checkpoint's `auto_map` and its
+  `DWM_RECIPE/scripts/*.py` (five files) are never imported; the converter
+  only globs `*.safetensors` and reads named JSON files (`checkpoint.py:56`).
+- The checkpoint's `chat_template.jinja` is copied into the pack as text
+  (`checkpoint.py:654-657`) and later rendered sandboxed (§15.3). Its
+  sha256 `53a9035f…` equals the template of the independent Strata pack
+  `strata-Inkling-2-Mini-Strata-04996a1e`, so the Derisked edit did not
+  change the template.
+- `convert.py` puts its own directory first on `sys.path`
+  (`convert.py:111-113`) after `-I` removed it, so it imports only the
+  read-only `/opt/basalt/tools` tree.
+- The log (`logs/convert-blackfrost.log`) shows 10 sections written, no
+  network use, no `mtp_fetch` (Inkling's drafter came from the checkpoint's
+  own `mtp.safetensors`).
+
+### 15.6 Server behaviours that bear on the eval
+
+All file:line at `400b411c`.
+
+1. **The answer room does not force an answer on Inkling (upstream #588,
+   open).** `answer_budget` caps thinking at `cap - reserve`, reserve
+   `min(max(512, cap // 4), cap // 2)` (`serve/service.py:249-271`, constant
+   line 54): 6,144 of 8,192. On reaching it the server sets `budget = None`
+   and writes the dialect's `reasoning_close` (`service.py:1693-1704`),
+   which for Inkling is only `<|end_message|>`
+   (`serve/models/inkling2.py:507`: "the model opens the next block"). The
+   model may open another thinking block; with the budget gone it can think
+   to the cap, and the reply ends `length` with no content and no call
+   (`service.py:1805-1808` logs "max tokens reached while thinking, no
+   answer"). PR #632 (`Dialect.answer_lead`) would open an answer block
+   instead; it is unmerged and not in the pin.
+   **Observed in the live `I_T2` serve** (`docker logs basalt-serve`,
+   05:11:39Z, 14 minutes in): 189 replies, 187 of them with the
+   "thinking budget 6144 tokens, output cap 8192" line. **18 budget wraps:
+   14 then ended `stop` (50 to 2,041 tokens after the wrap), 4 ran to the
+   8,192 cap, and 3 of those 4 logged "no answer"** (the fourth ended
+   inside its answer). One more reply ended `length` with no wrap and no
+   warning. So far 3 of 189 replies (1.6%) are empty because of #588, and
+   the rate was rising (1 of 12 wraps at 05:09Z). A unit whose turn hits it
+   gets an empty assistant turn and either recovers on the next turn or
+   fails. Record it in the arm's note and the integrity scan, and count
+   empty `length` turns per unit when the run ends.
+2. **A long-thinking turn gets less room than on llama.cpp.** 6,144 thinking
+   tokens where Q_T2's llama.cpp serve allowed up to 8,192. Already recorded
+   in §11.4; it is the same for every Basalt arm.
+3. **No `max_tokens` means no practical cap.** An unset cap becomes the
+   context minus 8 (`service.py:1143-1145`, `serve/prompt.py:12`), so the
+   budget becomes about 196K. Our runner sends 8,192 on every agent turn
+   (the 187 lines above); 2 more had cap 1,024.
+4. **Lenient tool-call parsing.** Besides the native
+   `NAME<|content_invoke_tool_json|>{"name":…,"args":{…}}` block
+   (`inkling2.py:1-6`, block parser `_Blocks`), the server turns calls the
+   model writes in XML notation inside its answer text (`<invoke name=…>`,
+   with or without `<tool_call>` / `<function_calls>` wrappers) into real
+   tool calls when the name is one of the request's tools and the call is
+   whole and outside code (`inkling2.py:269-276`, `parse_xml` 297,
+   `_XmlCalls` 363, wired in `Inkling2Parser` 449-478). A call whose JSON
+   is whole but lacks its end marker still counts (`_whole`, 215; `finish`,
+   240). A call cut off mid-way is **not** emitted as a call
+   (`finish`, 240-266), so nothing is fabricated. This rescue is a server
+   property that a stricter serve would not have: it can only raise the
+   tool-call success rate. Fair to keep (it is what a Basalt user gets), but
+   name it when comparing with a llama.cpp row.
+5. **Thinking-loop cutter.** One token repeated 256 times in a row inside
+   the thinking closes it (`serve/config.py:656`,
+   `service.py:1596-1599`). The live log shows none so far.
+6. **History keeps reasoning.** The pack's template keeps every assistant
+   message's `reasoning_content` in the prompt (`inkling2.py:514-517`), so
+   long agent runs grow faster than on a template that drops it. It is the
+   model's own template, not a Basalt choice.
+7. **Determinism.** DSpark verifies every draft; Basalt claims greedy output
+   is unchanged by drafting (`docs/precision/inkling2.md:14`, **claim**, not
+   re-tested here). At `--parallel 1` the multi-slot issues (#608, #628)
+   do not apply.
+
+### 15.7 Commands and outputs used
+
+```text
+$ git -C basalt-src log -1 --format='%H %ad %an'; git -C basalt-src describe --tags
+400b411c58031d064812ea21a259b2381acdaa3e Mon Nov 23 21:10:39 2026 -0500 Jesus Gulfo
+v0.5.7
+$ gh api repos/jesdga95/basalt/pulls/632 --jq '"\(.state) merged=\(.merged)"'
+open merged=false
+$ ssh beast 'docker network inspect strata-bench-net' | grep -E '"Internal"|masquerade'
+    "Internal": false,
+        "com.docker.network.bridge.enable_ip_masquerade": "false"
+$ ssh beast 'docker run --rm --network strata-bench-net … ob-strata-env:2026-11-23 -I -c "<probe>"'
+dns example.com ('104.20.23.154', 443)
+dns huggingface.co ('108.138.246.71', 443)
+tcp 172.23.0.1 22 FAIL TimeoutError timed out
+tcp 192.168.40.1 80 FAIL TimeoutError timed out
+tcp 1.1.1.1 443 FAIL TimeoutError timed out
+tcp 172.23.0.1 8099 FAIL TimeoutError timed out
+$ ssh beast 'docker logs basalt-serve 2>&1 | grep -A4 "wrapping up"'   # 05:07Z, the first no-answer case
+[server] thinking budget reached (6144 tokens), wrapping up
+[server] s1 done  pp=4948/4839c 0.1s  tg=8192 495.3t/s acc=79% …  end=length …
+[server] warning: max tokens reached while thinking, no answer (set reasoning_budget_tokens, …)
+$ ssh beast 'cat ~/openbeast-runs/inkling-perf-2026-11-23/results/basalt-bin.sha256' | head -2
+63e830d670cec4041ac890a933f5b9664a9395ecbf8937aa206bfa5744edcf0e  …/build/basalt-tree/bin/basalt-vision
+5dc8a63ca0089bf8eac749b22da764349d648b7f11f881a659d2511aede84abf  …/build/basalt-tree/bin/basalt
+$ ssh beast 'git -C ~/openbeast-runs/inkling-perf-2026-11-23/build/basalt-tree status --porcelain --ignored'
+!! bin/
+$ ssh beast 'docker logs basalt-serve 2>&1 | awk "/wrapping up/{w=1;next} w&&/ done /{…print tg, end; w=0}"'   # 05:11:39Z
+6215 stop / 6194 stop / 8192 length / 6594 stop / 6197 stop / 6224 stop / 6786 stop / 6734 stop / 6204 stop
+6353 stop / 7298 stop / 7517 stop / 8192 length / 8185 stop / 6390 stop / 6461 stop / 8192 length / 8192 length
+$ ssh beast 'docker logs basalt-serve 2>&1 | grep -c "no answer"'
+3
+```
+
+The built tree is the pin with only the build's `bin/` added. Sources:
+`https://github.com/jesdga95/basalt` (tag `v0.5.7`), issues
+`https://github.com/jesdga95/basalt/issues/588`, `/577`, `/608`, `/640`,
+PR `https://github.com/jesdga95/basalt/pull/632`; the pack repo
+`https://huggingface.co/jesdga/Inkling-2-Mini-Basalt` (stock pack, §11.1).
+
+### 15.8 Before Basalt becomes the 5090's default
+
+1. **Close the DNS channel** (§15.4 gap 1) and prove it with the probe;
+   drop `exec` from `/tmp` if Basalt starts without it; add
+   `--pids-limit` and a memory limit.
+2. **Fix the answer room on Inkling:** re-pin to a reviewed commit with
+   #588 fixed (PR #632 or its successor), re-review that diff, and
+   re-check with the #588 reproduction (`max_tokens` 3000,
+   `reasoning_budget_tokens` 400) before trusting a budget wrap.
+3. **Pin the Python side:** a venv built offline from hashed wheels of
+   `requirements.txt` (staged with the source), or keep the distro set
+   above and run Basalt's own `serve/tests` against it once, offline.
+4. **An adapter** (`scripts/engines/basalt.sh`) that carries every hardening
+   flag of `basalt-serve.sh` plus items 1 and 3, the offline path staged
+   per the offline rule, and an `I_T2` result that justifies switching from
+   Qwen3.8.

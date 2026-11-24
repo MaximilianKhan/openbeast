@@ -292,11 +292,18 @@ host is unchanged.
 
 | Engine | Status | Why | How it runs | Evidence |
 |---|---|---|---|---|
-| **Basalt** (`github.com/jesdga95/basalt`, MIT; tag v0.5.7 = `400b411c58031d064812ea21a259b2381acdaa3e`, built from source offline, `bin/basalt` sha256 `5dc8a63c…`) | **Chosen 2026-11-23 for the Inkling 2 Mini v5 run (arm `I_T2`) on the RTX 5090; not yet the default, no adapter** | The only measured Inkling engine that drives T2: thinking on with `reasoning_content` and tool calls, streamed and not; conformance PASS. Fastest single stream (403 / 356 tok/s code / prose with the Derisked pack, against vLLM 269 / 161 and Strata 201 / 131) and prefill (18-19K tok/s). vLLM wins the four-stream code aggregate (902 vs 702) | `~/openbeast-runs/inkling-perf-2026-11-23/scripts/inkling-v5.sh start [derisked\|stock]` on the rig: a hardened container (no egress, read-only, uid 1000), `basalt serve --parallel 1 --max-context 262144 --kv fp8`, DSpark at the pack default, `--answer-room auto` (thinking capped at 6,144 of an 8,192-token turn), alias `inkling-2-mini` on `127.0.0.1:8099`, Bearer key. The default Qwen stack must be stopped first (`./stop.sh`; restore `./start.sh -d`) | [reports/STRATA_INKLING_5090-2026-11-23.md §11](reports/STRATA_INKLING_5090-2026-11-23.md#11-pending-native-sq-packs-and-other-engines); [DECISIONS-2026-11-23 §11](reports/DECISIONS-2026-11-23.md#11-basalt-with-the-derisked-pack-for-the-inkling-v5-run) |
+| **Basalt** (`github.com/jesdga95/basalt`, MIT; tag v0.5.7 = `400b411c58031d064812ea21a259b2381acdaa3e`, built from source offline, `bin/basalt` sha256 `5dc8a63c…`) | **Chosen 2026-11-23 for the Inkling 2 Mini v5 run (arm `I_T2`) on the RTX 5090; not yet the default, no adapter** | The only measured Inkling engine that drives T2: thinking on with `reasoning_content` and tool calls, streamed and not; conformance PASS. Fastest single stream (403 / 356 tok/s code / prose with the Derisked pack, against vLLM 269 / 161 and Strata 201 / 131) and prefill (18-19K tok/s). vLLM wins the four-stream code aggregate (902 vs 702) | `~/openbeast-runs/inkling-perf-2026-11-23/scripts/inkling-v5.sh start [derisked\|stock]` on the rig: a hardened container (no TCP egress, read-only, uid 1000, `--cap-drop ALL`, `no-new-privileges`; public DNS names still resolve on its bridge, a gap to close), `basalt serve --parallel 1 --max-context 262144 --kv fp8`, DSpark at the pack default, `--answer-room auto` (thinking capped at 6,144 of an 8,192-token turn; the close does not force an answer on Inkling, upstream #588, so some capped turns end empty), alias `inkling-2-mini` on `127.0.0.1:8099`, Bearer key. The default Qwen stack must be stopped first (`./stop.sh`; restore `./start.sh -d`) | [reports/STRATA_INKLING_5090-2026-11-23.md §11](reports/STRATA_INKLING_5090-2026-11-23.md#11-pending-native-sq-packs-and-other-engines), security review [§15](reports/STRATA_INKLING_5090-2026-11-23.md#15-basalt-security-and-supply-chain-review); [DECISIONS-2026-11-23 §11](reports/DECISIONS-2026-11-23.md#11-basalt-with-the-derisked-pack-for-the-inkling-v5-run) |
 
-Before Basalt becomes a default or gets `scripts/engines/basalt.sh`: a
-read-only code review like Strata's (none is written yet), an `I_T2` result
-that justifies switching from Qwen3.8, and the offline path (the source at
+**Security review done 2026-11-23** ([the report §15](reports/STRATA_INKLING_5090-2026-11-23.md#15-basalt-security-and-supply-chain-review)):
+no malware, telemetry or credential access; the engine has no network code;
+the server's only fetcher (image URLs) is refused for non-loopback clients,
+which every request through the published port is. OK for the running eval.
+Before Basalt becomes a default or gets `scripts/engines/basalt.sh`:
+(1) close the sandbox's DNS channel and prove it with the probe in §15.4;
+(2) re-pin to a reviewed commit that fixes #588 (the answer-room close on
+Inkling); (3) pin the Python side (hashed offline wheels, or Basalt's
+`serve/tests` run once on the distro set we use); (4) an `I_T2` result that
+justifies switching from Qwen3.8, and the offline path (the source at
 the tag, the image, the converted pack) staged per [the offline rule](#offline-closed-network-offlinetrue).
 
 ## Evaluated, not adopted
