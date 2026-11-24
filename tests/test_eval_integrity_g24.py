@@ -319,8 +319,22 @@ def test_integrity_scan_ignores_toolchains_and_fixtures(tmp_path):
         ("bash", {"command": f"grep -rn 'pub fn write' {z}/posix.zig"}, f"{z}/posix.zig:1: x"),
         ("bash", {"command": "cd /tmp/eval_codeqa && cat tests/test_x.py evals/a.json"}, "x"),
         ("read_file", {"path": "/tmp/eval_x/evals/cache/fixture.json"}, "x"),
+        # a fixture's own tests/ through a relative cd (GLM-UP 176_intermittent_500s_a)
+        ("bash", {"command": "cd /tmp/eval_shopd500 && (cd tests && shasum -a 256 *.py)"}, "x"),
     ])
     assert not S.contaminated(S.scan_transcript(str(p)))
+
+
+def test_integrity_scan_relative_cd_after_leaving_tmp_still_counts(tmp_path):
+    S = _scan_mod()
+    p = tmp_path / "agent-3.jsonl"
+    _transcript(p, "t", [
+        ("bash", {"command": "cd /Users/x/openbeast && (cd tests && cat test_a.py)"}, "x"),
+        ("bash", {"command": "cd ~ && cd openbeast && cat evals/vlib.py"}, "x"),
+    ])
+    kinds = {h["iteration"]: set(h["kinds"]) for h in S.scan_transcript(str(p))}
+    assert "tests" in kinds[1]
+    assert "evals" in kinds[2]
 
 
 def _start(path, task, ts):

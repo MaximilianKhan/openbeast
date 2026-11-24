@@ -22,8 +22,12 @@ T2 stays the best. The series is complete
 L0 26/71 → A 31/71 → B 36/71 → **C 51/71 scored, SCORE 76.7** (54 raw; the
 integrity scan of #195 withheld 122_gemm_blocked_b, _d and _e) → **E 50/71,
 SCORE 74.7** (integrity scan clean; its 122_gemm_blocked_c is a validator
-false FAIL, footnoted, not adjusted). GLM's best row stays C (thinking on), the configuration retained for GLM rollback. Arms D and F were **not run**:
-Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
+false FAIL, footnoted, not adjusted). C (thinking on) is the configuration retained for GLM rollback (the serving lines, E2a). Arms D and F were **not run**:
+Max paused the benchmark chain after E. **The GLM UP control (2026-11-23):
+UP 56/71, SCORE 81.9, GLM's best row (GLM-UP), #3**; +2 over C on the 68
+units both measured cleanly, across eras, bundled, single seed; 6 behind
+DeepSeek's UP on the same harness
+([report](reports/V5_GLM_UP-2026-11-23.md)). Claude Opus 5.5 reference ceiling:
 71/71 (68/71 at the 1x wall).
 
 **Done since the 2026-11-17 evening refresh (#205–#233, plus operator steps):**
@@ -369,6 +373,13 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   HY4-C, 55/71, SCORE 82.2, on the same tree, server and pair: T2's setup
   +5 over GLM's best (7 gained, 2 lost), helped, single seed, bundled;
   integrity scan clean (report §5).
+- [ ] **Optional: GLM at the 8,192 cap.** UP_8k (or T2) with `--model-name
+  GLM-5.3-Flash`, on the harness10 tree, read against GLM-UP. GLM has never
+  run below 16,384, and all 16 of GLM-UP's wall-hit units had 2-4 capped
+  16K thinking turns, 13 of them at 10 turns or fewer (on DeepSeek the cap
+  alone gave +3 to +4). It needs the pair on GLM for about 8.5 h. Not
+  scheduled; Max decides. A GLM U arm (U → UP) would isolate the planning
+  lines on GLM.
 - [ ] **Optional: unbundle T2 on Hy4.** One arm with T's assists at the
   16,384-token eval turn cap (no 8,192 cap, no act nudge), on the harness9 tree, read
   against H_T2 (the cap and nudge) and H_C (the assists). Only if Max wants
@@ -402,12 +413,19 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   streamed and not, a 105K needle) and conformance. GLM rows stay on v1.8.
   The image `tensorfold-glm53-spark:b9f8eb919ae0` stays on both Sparks
   (3.85 GB).
-- [ ] **The GLM UP control:** arm UP with `--model-name GLM-5.3-Flash`, after
+- [x] **The GLM UP control:** arm UP with `--model-name GLM-5.3-Flash`, after
   `beastglm`, so the UP change is measured on a second model (#234 asks for
-  it). **Ready since 2026-11-23:** the pair serves GLM's board configuration
-  (`beast-spark glm`: v1.8 `33b50fd`, DFlash2 re-pinned to the
-  byte-identical Apache-2.0 `6cc6c481`, and E2a's `openbeast.conf` lines), and
-  GLM is the boot selection until `beastds`.
+  it). **Done 2026-11-23** (10:19-18:50 PST, harness10 tree `5b198d3d`, the
+  pair on GLM's board configuration: v1.8 `33b50fd`, DFlash2 `6cc6c481`).
+  **56/71, SCORE 81.9, no unit lost; board row GLM-UP, GLM's best row, #3
+  (the ranking is unchanged).** Integrity scan: 0 contaminated after a
+  scanner fix (a relative `cd` into a fixture's own `tests/` was flagged;
+  the fix moves no other verdict). C → UP: +5 on the board, +2 over the 68
+  units both measured cleanly (4 in, 2 out, p 0.69; the other 3 are C's
+  integrity exclusions), across eras 8eaa5e5f → 9bcd5aa6, bundled, single
+  seed. DS-UP → GLM-UP: −6 (0 in, 6 out), same era and pair, single seed.
+  GLM has no U arm, so the planning lines are not isolated on GLM
+  ([report](reports/V5_GLM_UP-2026-11-23.md)).
   - [x] **After the GLM UP arm finishes (deploys, in this order; spark-1
     unless named; nothing here while any arm runs against the Sparks):**
     **Done 2026-11-23 ~18:51-19:03 PST**, all nine steps, the pair idle. Both
@@ -511,7 +529,8 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   mechanism to reuse.
 - [ ] **The research paper: per-model vs unified harness** — see 📝 RESEARCH
   PAPER below. It needs GLM's seed arm, a Qwen3.8 row, and the same arms on
-  both DeepSeek and GLM (the GLM UP control above is the first).
+  both DeepSeek and GLM (the GLM UP control above is the first, done
+  2026-11-23: GLM-UP 56/71 against DS-UP 62/71 on one harness).
 
 ## 🧮 PERFORMANCE MATRIX — engine × language-assistance × model (opened 2026-11-15)
 
@@ -754,7 +773,9 @@ Status 2026-11-22: four models measured, all single seed.
 DeepSeek-V4.1-Flash (Mia EXL3) on the thinking-first campaign has T 61,
 T_s1 61, T2 65 (SCORE 94.9, best), T3 65, U 59, UP 62, UPA 59, U_8k 63,
 UP_8k 65 and UPA_8k 62 (series complete), with a GLM UP control as the
-first cross-model arm. Hy4-flash (NVFP4) on the Spark pair has HY4-T2 60/71
+first cross-model arm (done 2026-11-23: GLM-UP 56/71, SCORE 81.9, GLM's
+best row; 6 behind DS-UP on the same harness, single seed;
+[report](reports/V5_GLM_UP-2026-11-23.md)). Hy4-flash (NVFP4) on the Spark pair has HY4-T2 60/71
 and the ablation HY4-C 55/71 ([report](reports/V5_HY4_FLASH-2026-11-22.md)).
 Qwen3.8 27B Uncensored MTP on the RTX 5090 has its L0 baseline, board row
 Q38U-L0 at 39/71 scored (profile complete; L1/L2 diagnostics, not board rows),

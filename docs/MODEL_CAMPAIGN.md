@@ -554,7 +554,7 @@ below). `--dry-run` prints them for your settings.
 | T3 | T2 | 4096 turn cap (optional, config only) | `--reasoning-budget 4096`; `OPENBEAST_AGENT_MAX_TOKENS=4096 OPENBEAST_AGENT_ACT_NUDGE=1`; only with `--only T3`; same harness9 tree and era as T2 | 2.3 | ~5.8 h | does faster iteration beat deeper single turns? (T3 vs T2 isolates the cap) **DeepSeek: no, 65/71 like T2, 3 units in and 3 out, SCORE 91.5 against 94.9; 8192 stays** |
 | U | T2 | forced-act turn instead of the act nudge + done-when-verified, 16384 cap (optional, harness10) | `--reasoning-budget 16384`; `OPENBEAST_AGENT_MAX_TOKENS=16384 OPENBEAST_AGENT_ACT_NUDGE=0 OPENBEAST_AGENT_FORCE_ACT=1 OPENBEAST_AGENT_FORCE_ACT_AFTER=2 OPENBEAST_AGENT_DONE_VERIFIED=1 OPENBEAST_AGENT_HIDE_WEB=1`; only with `--only U`; needs a harness10 tree | 2.3 | ~6-7 h for DeepSeek | does a thinking-off act turn end the capped-think stalls the text nudge could not? (U vs T2) **DeepSeek: 59/71, −6 against T2. Every forced turn acted (24 of 24), but the lost units ran out of wall at the 16384 cap; U_8k confirmed it** |
 | U_8k | U | U at T2's 8192 cap (optional, harness10) | `--reasoning-budget 8192`; `OPENBEAST_AGENT_MAX_TOKENS=8192` | 2.3 | ~6.2 h | the cap question under the forced act (U_8k vs U; read with T3) **DeepSeek: 63/71, +4 over U (the cap was the cost), −2 against T2 (within ~2 of the noise: the forced act is no better than the nudge)** |
-| UP | U | + three planning lines (optional, harness10) | `OPENBEAST_AGENT_ALGO_LINES=1`; also the GLM control (`--model-name GLM-5.3-Flash` when the pair serves GLM) | 2.3 | ~6-7 h | do "bound first / test the doubtful split against a brute force / redesign on a >5x miss" fix the wrong-algorithm failures? (UP vs U) **DeepSeek: yes at 16K, 62/71, +3 over U (4 in, 1 out)** |
+| UP | U | + three planning lines (optional, harness10) | `OPENBEAST_AGENT_ALGO_LINES=1`; also the GLM control (`--model-name GLM-5.3-Flash` when the pair serves GLM) | 2.3 | ~6-7 h | do "bound first / test the doubtful split against a brute force / redesign on a >5x miss" fix the wrong-algorithm failures? (UP vs U) **DeepSeek: yes at 16K, 62/71, +3 over U (4 in, 1 out). GLM-5.3-Flash (the control): 56/71, SCORE 81.9, GLM's best row (GLM-UP); +2 paired over GLM-C across eras (no GLM U arm, so the lines are not isolated on GLM)** |
 | UPA | UP | + the frozen algorithmic procedure pack (optional, harness10) | `OPENBEAST_ALGO_PACK=1` (`agents/packs/algo-v1.md`, sha256 `6c532400...`, packs on) | 2.3 | ~6-7 h | does a ~400-token procedure pack add to the lines? (UPA vs UP) **DeepSeek: no, 59/71, −3 against UP (0 in, 3 out) and the most unit-hours of any arm** |
 | UP_8k | UP | UP at T2's 8192 cap (optional, harness10) | `--reasoning-budget 8192`; `OPENBEAST_AGENT_MAX_TOKENS=8192` | 2.3 | ~6.2 h | the planning lines at the better cap (UP_8k vs U_8k), and the whole stack against T2 **DeepSeek: done, 65/71 (SCORE 91.4): +2 over U_8k, a tie with T2 on passes (board row DS-UP8k)** |
 | UPA_8k | UPA | UPA at T2's 8192 cap (optional, harness10) | `--reasoning-budget 8192`; `OPENBEAST_AGENT_MAX_TOKENS=8192` | 2.3 | ~6.2 h | the pack at the better cap (UPA_8k vs UP_8k) **DeepSeek: done, 62/71 (SCORE 88.0): −3 against UP_8k (board row DS-UPA8k)** |
@@ -1025,7 +1025,9 @@ python3 evals/campaign.py run --campaign v5-harness --model glm-5.3-flash --jobs
 
 The thinking-first campaign was written after C's first 21 units, and C's
 final (51/71 scored, 54 raw, against B's 36/71) bore it out. GLM has not run it as a
-campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
+campaign; it has run one of its arms, UP, as the GLM control (2026-11-23,
+56/71, now GLM's best row; [report](reports/V5_GLM_UP-2026-11-23.md)). On
+GLM, its N0 is arm B (36/71, thinking pinned off).
 
 ## 9. Next: DeepSeek v4.1 Flash ("1017"), thinking first
 
@@ -1217,10 +1219,25 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
       against 48.4 / 78.4 at 1 / 4 streams, and 1.4K against 2.0K
       prefill), so GLM rows stay on v1.8
       ([report](reports/GLM_SERVING_WINDOW-2026-11-23.md)).
-- [ ] **Next, in order:** UP on GLM-5.3-Flash as the control. The pair
-      serves GLM's board configuration since 2026-11-23 for it. Optional
-      for Hy4: T's assists without the cap and nudge (separates the bundle;
-      not scheduled).
+- [x] **UP on GLM-5.3-Flash, the control (2026-11-23).** 56/71, SCORE
+      81.9, no unit lost; GLM's best row (board row GLM-UP; GLM-C stays in
+      the runs table) and still #3. Harness10 tree `5b198d3d` (era
+      9bcd5aa6, the same as DS-UP), the pair on GLM's board configuration,
+      `--jobs 4 --slots 4` from the Mac, 8.5 h. Integrity scan 2026-11-23:
+      0 contaminated after a scanner fix (the first pass flagged a
+      fixture's own `tests/` reached through a relative `cd`; the fix
+      moves no other verdict among 1,196 transcripts). C → UP: +5 on the
+      board, +2 over the 68 units both measured cleanly (4 in, 2 out,
+      p 0.69; the other 3 are C's integrity exclusions), within noise,
+      single seed, across eras 8eaa5e5f → 9bcd5aa6 with every assist
+      switched on at once. DS-UP → GLM-UP: −6 (0 in, 6 out), same era and
+      pair, single seed. All 16 wall-hit units had 2-4 capped 16K thinking
+      turns, 13 at 10 turns or fewer
+      ([report](reports/V5_GLM_UP-2026-11-23.md)).
+- [ ] **Next, not scheduled:** GLM at the 8,192 cap (UP_8k or T2 with
+      `--model-name GLM-5.3-Flash`; GLM has never run below 16,384), and a
+      GLM U arm to isolate the planning lines on GLM. Optional for Hy4: T's
+      assists without the cap and nudge (separates the bundle).
 - [x] **Campaign report** (2026-11-20, final 2026-11-21): [the final campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md).
       Its tables come from `evals/v5_report.py`; regenerate them after each
       arm (`--write`).

@@ -162,6 +162,20 @@ def test_published_hy4_ablation():
     assert (d["compared"], d["net"], len(d["gained"]), len(d["lost"])) == (71, 5, 7, 2)
 
 
+def test_published_glm_up_control():
+    """GLM-UP 56/71 (harness10): +5 over GLM-C on the board (3 of them C's exclusions),
+    6 behind DS-UP on the same era and pair (0 gained)."""
+    r = v5_report.build("GLM-5.3-Flash", context=("DS-UP",), pairs=["C:UP", "DS-UP:UP"])
+    (u,) = [a for a in r["arms"] if a["id"] == "GLM-UP"]
+    assert (u["passed"], round(u["score"], 1), u["era"]) == (56, 81.9, "9bcd5aa6030836d1")
+    d = {(x["base"], x["arm"]): x for x in r["deltas"]}
+    c = d[("C", "UP")]
+    assert (c["net"], len(c["gained"]), c["lost"]) == (5, 7, ["163_bigint_divmod_a", "175_crdt_orset_rga"])
+    assert {"122_gemm_blocked_b", "122_gemm_blocked_d", "122_gemm_blocked_e"} <= set(c["gained"])
+    x = d[("DS-UP", "UP")]
+    assert (x["compared"], x["net"], x["gained"]) == (71, -6, [])
+
+
 def test_cli_runs_and_writes_nothing():
     before = subprocess.run(["git", "status", "--porcelain"], cwd=REPO, capture_output=True, text=True).stdout
     out = subprocess.run([sys.executable, os.path.join(REPO, "evals", "v5_report.py")],

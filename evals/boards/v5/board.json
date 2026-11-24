@@ -240,6 +240,18 @@
       "host": "1× RTX 5090, llama.cpp MTP, -np 1; rig eval-host container; calibrated 2026-11-23 against the Mac host (with DeepSeek on this same harness9 tree; carried to this model and server by inference)",
       "campaign_arm": "v5-thinking-first Q_T2",
       "note": "54/71 raw; the main file plus one rerun of its 7 lost units (r1); 3 units still lost to server_error (llama-server HTTP 500 on a truncated tool call, retried identically; docs/HARNESS_NOTES.md), counted as fails; 9 units hit the wall, 2 passed; harness9 (era 036638dd) where Q38U-L0 is harness10 (era 9bcd5aa6), so the two rows differ in era as well as arm; integrity scan 2026-11-23: 3 contaminated (the scan flagged off-host access from the agent's shell; 2 were passes), excluded; 122_gemm_blocked_d also stopped at the Linux dlsym binary check (validator note)"
+    },
+    {
+      "id": "GLM-UP",
+      "model": "GLM-5.3-Flash",
+      "config": "thinking on, campaign arm UP: U + planning lines (harness10, 16K cap)",
+      "files": [
+        "eval-glm-5-3-flash-v5-thinking-first-up-20261123-101944.json"
+      ],
+      "weights_id": "glm53f-mia-exl3-4bpw-tf-ablit",
+      "host": "DGX Spark pair, TensorFold, EXL3",
+      "campaign_arm": "v5-thinking-first UP",
+      "note": "56/71; 0 units lost; failed: 163_bigint_divmod_a, 163_bigint_divmod_e, 163_bigint_divmod_f, 168_linearizability_kv_a-f, 173_taskgroup_cancel, 175_crdt_orset_rga, 183_heston_little_trap, 190_autograd_mlp, 192_pike_regex, 195_riscv_insn_budget; 16 units hit the wall, 1 passed; the cross-model control of DS-UP (same harness10 era 9bcd5aa6, same Spark pair, from the Mac); harness10 where GLM-C is an older era (8eaa5e5f), so the two GLM rows differ in era as well as arm; integrity scan 2026-11-23: 0 contaminated (71 transcripts, 71 units; no flagged tool call after the scan's relative-cd fix)"
     }
   ],
   "not_yet_run": [
