@@ -154,8 +154,14 @@ DeepSeek's UP on the same harness
   in the gap after T_s1; `openbeast.conf.bak-20261119` kept).
   Steps: [`SPARK_HYDRA.md` E2b](SPARK_HYDRA.md#e2b-deepseek-best-configuration-v5-t2)
   "Apply on spark-1".
-- [ ] **DeepSeek tuning session** (a planned outage between eval arms;
-  `beast-spark` only, never while an arm runs). Things to measure:
+- [x] **DeepSeek tuning session** (**done 2026-11-23 19:04-20:05 PST**, Max's approval, the pair idle;
+  [report](reports/DEEPSEEK_TUNING-2026-11-23.md)). **`PARALLEL=8` is live** (runtime `scripts/local.sh`;
+  `INFERENCE_SLOTS=8` in `openbeast.conf`; backups `*.bak-20261123-tuning`): 147.4 / 133.8 tok/s aggregate at
+  8 / 6 streams against 116.5 at 4 (+27% / +15%), 1-4 streams unchanged (67.9 / 115.0 tok/s, TTFT 0.22 s,
+  prefill ~2.3K), no memory cost (spark-1 lowest 5.16 GiB under a 499K needle with 7 streams decoding),
+  conformance PASS at 4 and 8, gfunc 9/9. **The 1M window works** (needle at 999,059 tokens, 509 s; cache-hit
+  turn 3.1 s) and so does `KV_SHARD=1` (pool 2,101,248, decode -2%), but 1M costs 0.88 GiB a rank on spark-1
+  (lowest 4.26 GiB), so the window stays 524,288 until the items below free that memory. The original scope:
   - the model's full 1,048,576-token window instead of 524,288;
   - `KV_SHARD=1`, which cuts the KV pool into one part per Spark, each
     holding a whole window (documented in the recipe's `scripts/config.sh` on
@@ -166,6 +172,20 @@ DeepSeek's UP on the same harness
   ([`SPARK_HYDRA.md` G4](SPARK_HYDRA.md#g4-memory-headroom-and-the-gb10-stack-cap)),
   TTFT and decode for each setting, and keep the current settings unless one
   setting measures better without costing headroom.
+  - [ ] **spark-1 headless** (Max, sudo, a reboot): `sudo systemctl set-default multi-user.target`.
+    It frees the GNOME session (~0.45 GiB of RSS plus compositor memory) with no architecture change. The
+    first step toward 1M.
+  - [ ] **The Open WebUI off spark-1: Max's decision.** The report recommends spark-2 (+2.6 GiB headroom
+    over spark-1, offline over the fabric, the opencode-model-link tunnel pattern) over the Mac Mini. It needs
+    a new role for spark-2, a URL decision (a new URL, or spark-1's `:443` proxying to spark-2), a
+    remote-WebUI mode in `start.sh` / compose / `configure-webui.sh` / healthcheck, a volume migration
+    outage, and spark-guard rules (sudo). [Plan](reports/DEEPSEEK_TUNING-2026-11-23.md#moving-the-open-webui-off-the-head-node).
+  - [ ] **The 1M re-test** after either step: the report's probe at `CONTEXT=1048576 KV_SHARD=1`. Adopt it
+    if spark-1's lowest reading under the 999K needle and resume stays ≥ 5.1 GiB.
+  - [ ] **Prefill cut-in:** a long cold prompt blocks new requests' prompts (7 streams finished 14 requests
+    in 257 s during a 499K prefill; the same at `PARALLEL=4`). Measure the recipe's
+    `TF_FILL_CHUNKS=1 TF_FILL_FIRST=1 TF_FILL_CUT_IN=8192` against `PREFILL_INTERLEAVE_MS=250`.
+  - [ ] Thinking-on numbers at 6 and 8 streams (the session measured thinking off).
 - [ ] **The backup capture outage window** (Max to pick a time): the capture
   takes about 20 min, and drill G with the full restore drill 5 on spark-2
   takes about 2 h. The served model is down for both
@@ -902,7 +922,7 @@ escalation unresolved, all within churn); GLM's D and F only on Max's word.
   bundle, zig); the `svc:spark-hydra` Tailscale Service name (remote access
   through beast-gate is live since #155); the primary switch beast ↔
   spark-hydra on the hydra side (clients switch since #204); `PARALLEL=8`
-  (for DeepSeek: the tuning session at the top); the MTU A/B. (The native
+  (for GLM; DeepSeek's is live since the 2026-11-23 tuning session at the top); the MTU A/B. (The native
   TensorFold A/B ran on 2026-11-23 with 1.2.10, not 1.2.7: D2 served GLM at
   30.7 / 57.7 tok/s as rendered, 41.8 / 64.7 tuned, against v1.8's 48.4 / 78.4;
   [report](reports/GLM_SERVING_WINDOW-2026-11-23.md).)

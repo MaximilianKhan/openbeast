@@ -19,7 +19,16 @@ SIGTERM) is fixed since 2026-11-23 (#294; [TODO](TODO.md), the report's bug 1);
 spark-1 runs #294 (pending: deployed after the GLM UP arm, in the safe order in
 [TODO](TODO.md)).
 
-**Live deployment, 2026-11-18.** The pair serves **DeepSeek-V4.1-Flash (Mia EXL3)** by default since 2026-11-18 (`DeepSeek-V4.1-Flash-1017`, unit `deepseek-v41-inference`, enabled for boot (GLM's `spark-hydra-inference` was the boot selection during the 2026-11-23 GLM window; `beastds` restored DeepSeek the same evening, ~19:00 PST); 524,288-token window, four streams): Max's decision after hands-on testing, with v5 61/71, the board's #1 (65/71 under arm T2 since 2026-11-19, its default agent setup: [E2b](#e2b-deepseek-best-configuration-v5-t2); the preset `AGENT_PROFILE=deepseek-best` is on `main` since #232 and live in spark-1's `openbeast.conf` since 2026-11-19, E2b (out of `openbeast.conf` during the 2026-11-23 GLM window; back since that evening, after `beastds`)). **GLM-5.3-Flash is staged as the alternative** (`GLM-5.3-Flash-EXL3`, unit `spark-hydra-inference`, 1,048,576-token window): `beastglm` switches to it, `beastds` back (it stops GLM, re-selects the Mia EXL3 pack, [DeepSeek packs](#deepseek-packs-spark-deepseek-pack), and runs `activate-stock.sh`). Switch only through `beast-spark` (the `beast*` aliases, [Everyday shortcuts](#quickstart)); `activate-stock.sh` and `restore-glm.sh` are its internals, and `activate-stock.sh` never stops GLM itself. `beastup` with nothing selected picks DeepSeek. The pair serves these two models, one at a time; **Hy4-flash (NVFP4, vLLM TP2) is staged on both Sparks and measured** (`beasthy4`, never a boot default; v5 60/71 under arm H_T2, 5 units behind DeepSeek's T2 on the same harness, single seed; [Hy4-flash](#hy4-flash-nvfp4-vllm-tp2-measured)). The command center and beast-gate run on spark-1. The DeepSeek sections below record its deployment and describe the serving default; the GLM recipe, tuning measurements and rebuild examples describe the alternative, which the fresh-install checklist still builds first. (History: GLM served 2026-11-13 to 11-17, DeepSeek from 11-17, GLM again for part of 11-18, then DeepSeek by Max's decision.)
+**2026-11-23, DeepSeek tuning session ([report](reports/DEEPSEEK_TUNING-2026-11-23.md)).** DeepSeek now
+serves **8 streams** (`PARALLEL=8` in the runtime's `scripts/local.sh`, `INFERENCE_SLOTS=8` in
+`openbeast.conf`) at the same 524,288-token window: 147.4 tok/s aggregate at 8 streams and 133.8 at 6,
+against 116.5 at 4 (+27% / +15%), with 1-4 stream decode, TTFT and prefill unchanged and no memory cost.
+The full 1,048,576-token window was verified (a needle at 999,059 tokens, a cache-hit turn on it in 3.1 s)
+and so was `KV_SHARD=1`, but 1M costs 0.88 GiB a rank on spark-1, the tightest host, so it waits for spark-1
+headless and/or the WebUI moving off it (the report's plan). Rollback: `local.sh.bak-20261123-tuning` and
+`INFERENCE_SLOTS=4` (the report). After `beastglm`, set `INFERENCE_SLOTS=4` (GLM serves 4); back to 8 after `beastds`.
+
+**Live deployment, 2026-11-18.** The pair serves **DeepSeek-V4.1-Flash (Mia EXL3)** by default since 2026-11-18 (`DeepSeek-V4.1-Flash-1017`, unit `deepseek-v41-inference`, enabled for boot (GLM's `spark-hydra-inference` was the boot selection during the 2026-11-23 GLM window; `beastds` restored DeepSeek the same evening, ~19:00 PST); 524,288-token window, four streams, eight since the 2026-11-23 tuning session): Max's decision after hands-on testing, with v5 61/71, the board's #1 (65/71 under arm T2 since 2026-11-19, its default agent setup: [E2b](#e2b-deepseek-best-configuration-v5-t2); the preset `AGENT_PROFILE=deepseek-best` is on `main` since #232 and live in spark-1's `openbeast.conf` since 2026-11-19, E2b (out of `openbeast.conf` during the 2026-11-23 GLM window; back since that evening, after `beastds`)). **GLM-5.3-Flash is staged as the alternative** (`GLM-5.3-Flash-EXL3`, unit `spark-hydra-inference`, 1,048,576-token window): `beastglm` switches to it, `beastds` back (it stops GLM, re-selects the Mia EXL3 pack, [DeepSeek packs](#deepseek-packs-spark-deepseek-pack), and runs `activate-stock.sh`). Switch only through `beast-spark` (the `beast*` aliases, [Everyday shortcuts](#quickstart)); `activate-stock.sh` and `restore-glm.sh` are its internals, and `activate-stock.sh` never stops GLM itself. `beastup` with nothing selected picks DeepSeek. The pair serves these two models, one at a time; **Hy4-flash (NVFP4, vLLM TP2) is staged on both Sparks and measured** (`beasthy4`, never a boot default; v5 60/71 under arm H_T2, 5 units behind DeepSeek's T2 on the same harness, single seed; [Hy4-flash](#hy4-flash-nvfp4-vllm-tp2-measured)). The command center and beast-gate run on spark-1. The DeepSeek sections below record its deployment and describe the serving default; the GLM recipe, tuning measurements and rebuild examples describe the alternative, which the fresh-install checklist still builds first. (History: GLM served 2026-11-13 to 11-17, DeepSeek from 11-17, GLM again for part of 11-18, then DeepSeek by Max's decision.)
 
 This page takes you from bare boxes to a serving pair, start to finish, and then
 covers day-2 operations and fully offline operation. Read it top to bottom the
@@ -855,14 +864,14 @@ How to reach each box:
 |---|---|---|
 | Inference | spark-1, `systemctl --user` unit `deepseek-v41-inference` (**enabled**, serving: the default since 2026-11-18) | `Type=simple`, `WorkingDirectory=~/openbeast-recipes/deepseek-prep/runtime`, `FOREGROUND=1 PREPARE=0 ./start.sh`, `Restart=on-failure`, `RestartSec=60s`, at most 3 starts in 30 min. The runtime is Mia's two-Spark recipe at `c7f2b85`. It starts rank 1 on spark-2 over ssh, then rank 0 |
 | Containers | both | `dsv41-1017-exl3-tf` from the locally built image `tensorfold-dsv41:exl3-tp2-8a98ae503d85`, one per Spark |
-| Pack selection | spark-1, `runtime/scripts/local.sh` (managed block written by `spark-deepseek-pack.sh`; previous copy `local.sh.prev`) | `MODEL_ID=Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1.1-2.9-bpw-v2`, `MODEL_REVISION=04c13f12…` (local REV), `MODEL_SRC=~/Documents/Mia-AiLab-DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw-v2`, `WORKER_CACHE_DIR=…/worker-rank-cache-04c13f12`, `CONTEXT=524288`, `HOST=127.0.0.1`, `PORT=8000` |
+| Pack selection | spark-1, `runtime/scripts/local.sh` (managed block written by `spark-deepseek-pack.sh`; previous copy `local.sh.prev`) | `MODEL_ID=Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1.1-2.9-bpw-v2`, `MODEL_REVISION=04c13f12…` (local REV), `MODEL_SRC=~/Documents/Mia-AiLab-DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw-v2`, `WORKER_CACHE_DIR=…/worker-rank-cache-04c13f12`, `CONTEXT=524288`, `HOST=127.0.0.1`, `PORT=8000`; outside the managed block, `PARALLEL=8` since 2026-11-23 ([tuning report](reports/DEEPSEEK_TUNING-2026-11-23.md); backup `local.sh.bak-20261123-tuning`) |
 | API | spark-1 | `http://127.0.0.1:8000/v1`, model `DeepSeek-V4.1-Flash-1017`, bearer key in `~/.config/openbeast/tensorfold-api-key` (0600). Loopback only |
 | HF cache | both | `~/openbeast-models/deepseek-hf` (packs hard-linked in as snapshots; Engram base revision `1bae0e10…`, shards 47 and 48) |
 | Pack folders | both | `~/Documents/Mia-AiLab-DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw` (stock EAQ v1, the fallback) and `…-bpw-v2` (DeepSeek-V4.1-Flash (Mia EXL3), serving). spark-2's `~/Documents` mirrors spark-1's as a backup |
 | Helpers | spark-1, `~/openbeast-recipes/deepseek-prep/` | beast-spark's internals: `activate-stock.sh` (starts and verifies DeepSeek, enables it, disables GLM; it does **not** stop GLM, so `beastds` stops GLM first), `rollback/restore-glm.sh` (DeepSeek → GLM). Also `spark-deepseek-pack.sh`, `spark-deepseek-prepare-local.sh`, `verify-chat.py`, conformance records (`conformance-4/`, `conformance-v2/`) |
 | Shortcuts | spark-1, `~/.local/bin/beast-spark` + aliases in `~/.bashrc` | `beastup`, `beastdown`, `beastds`, `beastglm`, `beasthy4`, `beaststatus`: **the** switch path (from `scripts/backends/spark-beast.sh`; `spark-beast.sh install` puts it and the aliases in place) |
 | GLM unit | spark-1, `spark-hydra-inference` (**disabled** since 2026-11-18; enabled only while GLM is selected) | the staged alternative; see the GLM table below |
-| Command center | spark-1, `openbeast` (enabled) + transient `openbeast-stack` scope | as in the GLM table. `INFERENCE_MODEL` follows the selection (`restore-glm.sh` and `activate-stock.sh` rewrite it): `DeepSeek-V4.1-Flash-1017` with the default (checked 2026-11-18), `GLM-5.3-Flash-EXL3` while GLM serves. `INFERENCE_THINKING=on`, `INFERENCE_SLOTS=4`, `EDGE_GATE=true` either way |
+| Command center | spark-1, `openbeast` (enabled) + transient `openbeast-stack` scope | as in the GLM table. `INFERENCE_MODEL` follows the selection (`restore-glm.sh` and `activate-stock.sh` rewrite it): `DeepSeek-V4.1-Flash-1017` with the default (checked 2026-11-18), `GLM-5.3-Flash-EXL3` while GLM serves. `INFERENCE_THINKING=on`, `EDGE_GATE=true` either way; `INFERENCE_SLOTS=8` with DeepSeek since 2026-11-23 (its `PARALLEL=8`), 4 with GLM (set by hand after a switch: no switch script rewrites it) |
 | opencode | both, `~/.opencode/bin/opencode` v2.3.2 | provider `spark-hydra-local` at `127.0.0.1:8000`, default model `DeepSeek-V4.1-Flash-1017` (since 2026-11-18), GLM also listed; on spark-2 through the `opencode-model-link` ssh tunnel ([SELF_DEVELOPMENT.md](SELF_DEVELOPMENT.md#opencode-on-the-sparks)) |
 
 **GLM-5.3-Flash, the staged alternative (since 2026-11-18; the first deployment, 2026-11-13 to 2026-11-17, and the default for part of 2026-11-18).** Checked read-only on 2026-11-18 while it served: unit `spark-hydra-inference` (`WorkingDirectory=~/openbeast-recipes/glm53`, `FOREGROUND=1 PREPARE=0`, `Restart=on-failure`, `RestartSec=30`), container `glm53-flash-tf` from image `tensorfold-glm53:v0.6.0` on both Sparks, model id `GLM-5.3-Flash-EXL3` on `127.0.0.1:8000`, which answers without a key (v0.6.0 has no API key; a bearer header is ignored). The rest of the table is as recorded when it was set up.
@@ -2005,7 +2014,7 @@ leaves these lines alone, adjust them by hand after `beastglm` or `beastds`.
 | `INFERENCE_BACKEND` | `tensorfold` | the model is the recipe's TensorFold server |
 | `INFERENCE_URL` | `http://127.0.0.1:8000` | same box, loopback. Spawned agents follow it (conf.sh exports `OPENBEAST_AGENT_INFERENCE_URL=$INFERENCE_URL/v1`) |
 | `INFERENCE_MODEL` | `GLM-5.3-Flash-EXL3` | the served name; exported as `OPENBEAST_INFERENCE_MODEL`, which `agents/runner.py` sends |
-| `INFERENCE_SLOTS` | `4` | matches the recipe's 4 streams; beast-slot reports it. With `EDGE_MAX_INFLIGHT` unset it is also beast-gate's per-device cap, so one device (the Mac running parallel agents) may hold all 4 streams. Before the 2026-11-16 review the gate admitted 2 per device whatever the engine served; the audit showed `max_inflight` 429s with streams idle, each costing an agent turn ~7 s. Live since the 2026-11-16 restart: `/api/slot` reports `admission.per_device_inflight: 4` |
+| `INFERENCE_SLOTS` | `4` (GLM); `8` with DeepSeek since 2026-11-23 | matches the serving recipe's streams (GLM 4; DeepSeek `PARALLEL=8` since the [tuning session](reports/DEEPSEEK_TUNING-2026-11-23.md)); no switch script rewrites it, so set it after `beastglm` / `beastds`; beast-slot reports it. With `EDGE_MAX_INFLIGHT` unset it is also beast-gate's per-device cap, so one device (the Mac running parallel agents) may hold all 4 streams. Before the 2026-11-16 review the gate admitted 2 per device whatever the engine served; the audit showed `max_inflight` 429s with streams idle, each costing an agent turn ~7 s. Live since the 2026-11-16 restart: `/api/slot` reports `admission.per_device_inflight: 4` |
 | `EDGE_GATE` | `true` | beast-gate (:8090) is the one inference door (:8443) |
 | `EDGE_READ_TIMEOUT` | `3600` | seconds the gate waits for each byte from the model (default 600). A non-streaming completion sends nothing until it is done, so a long eval turn hit the gate's 504 at 600 s. Needed on any pair an eval harness targets ([F6](#f6-the-eval-harness-host-benchmarking-the-pair)) |
 | `TS_HOSTNAME` | `spark-1` | the tailnet name `setup-tailscale.sh` joins as. A Spark has no default and the script refuses without it ([E6](#e6-publish-on-the-tailnet-setup-tailscalesh-as-tailscaleds-operator)) |
@@ -2031,7 +2040,7 @@ Not set, so the defaults apply:
   model on unified memory ([G4](#g4-memory-headroom-and-the-gb10-stack-cap)).
 - `MEM_LIMIT_PCT` = `75`.
 - `EDGE_MAX_INFLIGHT` unset, so it follows `INFERENCE_SLOTS`: beast-gate
-  admits 4 concurrent generations per device key. The eval harness's agents
+  admits 4 concurrent generations per device key (8 with DeepSeek since 2026-11-23). The eval harness's agents
   all share one key; `run_eval` reads the cap from the gate (a `n=1024` chat
   request the gate refuses before forwarding anything) and clamps `--jobs`
   to it, so a `--jobs 4` profile from the Mac runs 4 workers. Before review
@@ -2215,7 +2224,8 @@ the wall warning work outside an eval would mean editing `agents/tools.py` or
 are.
 
 **Unchanged:** the serving recipe (the Mia EXL3 pack, `CONTEXT=524288`,
-`PARALLEL=4`, `THINKING=1`; nothing in `deepseek-v41-inference` changes), and
+`PARALLEL=4`, `THINKING=1`; nothing in `deepseek-v41-inference` changes; `PARALLEL` is 8 since the
+2026-11-23 tuning session, which left the preset alone and the per-stream rate at 4 streams the same), and
 **opencode**: it has no capped-think recovery, so the 8192 cap is not applied
 to its `limit.output`, which stays 32768.
 
@@ -2797,7 +2807,7 @@ records as a server error, not as the model's answer. spark-1 runs 3600.
 
 **The in-flight cap.** Every agent of a run shares the one key, and the gate
 admits `EDGE_MAX_INFLIGHT` generations per key. Unset, that is
-`INFERENCE_SLOTS` (4 on the pair), so `--jobs 4` runs 4 workers. `run_eval`
+`INFERENCE_SLOTS` (4 on the pair; 8 with DeepSeek since the 2026-11-23 tuning session), so `--jobs 4` runs 4 workers. Keep board arms at `--jobs 4`: above 4 streams each stream decodes slower (~24 tok/s at 6, ~20 at 8, against ~31 at 4), which changes wall-scaled turn budgets. `run_eval`
 reads the cap from the gate and clamps `--jobs` to it, and `profile.py`
 refuses a profile when 4 concurrent requests would draw a 429.
 
@@ -2898,7 +2908,10 @@ pair serving at `PARALLEL=4` and the full stack up, it read about **9.7-9.9 GiB*
 on 2026-11-15, and spark-2 (rank 1 only) about 11 GiB. Before adding anything to
 spark-1 (an extension, a second model, a heavy build), check that line. Do not
 try `PARALLEL=8` without raising the reserve. The recipe's notes measured rank
-0's lowest free memory at 7.0 GiB for `PARALLEL=8`.
+0's lowest free memory at 7.0 GiB for `PARALLEL=8`. (That is GLM. **DeepSeek** sizes no memory per
+stream: `PARALLEL=8` read the same as 4 within 0.1 GiB, 5.1-5.8 GiB on spark-1 and 7.7-8.4 on spark-2
+under the 2026-11-23 benches and a 499K needle, and serves since then. Its 1M window costs 0.88 GiB a rank;
+[tuning report](reports/DEEPSEEK_TUNING-2026-11-23.md#memory).)
 
 ### G5. The watchdog and self-healing
 
@@ -3664,7 +3677,8 @@ up on the operator steps named):
   `[nodes.sparks]` is already that shape.
 - Switching the primary between `beast` and `spark-hydra` on the hydra
   side. Clients switch since #204 (`openbeast-client use <rig>`, F2).
-- A `PARALLEL=8` measurement. (Native TensorFold vs the recipe: measured on
+- A `PARALLEL=8` measurement for GLM (DeepSeek's: measured and live since 2026-11-23,
+  [report](reports/DEEPSEEK_TUNING-2026-11-23.md)). (Native TensorFold vs the recipe: measured on
   2026-11-23 with 1.2.10, [report](reports/GLM_SERVING_WINDOW-2026-11-23.md).)
 - A fully offline rebuild of the pair, end to end (H9).
 - `tests/test_scripts.sh` showed 7 failures when run from a non-git copy on
