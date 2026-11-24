@@ -263,7 +263,9 @@ bad symbol, so it cannot show that `dlsym` was the only one, and no case
 ran, so correctness was never measured. Then:
 
 1. **Prefer the replay.** Replay the unit's final source under the
-   proposed rule (calibration report §6). It gives a verdict, and a
+   proposed rule (calibration report §5, "The replay under the proposed
+   rule", has the method; its script is on the rig in
+   `~/ob-cal/.claude/gemm-replay/`). It gives a verdict, and a
    verdict beats any footnote.
 2. **Without a replay, rebuild and check the binary.** The binary the
    validator checked no longer exists: it was built in a private
@@ -300,6 +302,12 @@ ran, so correctness was never measured. Then:
    replayed `122_gemm_blocked_c`, nothing has shown the solution correct.
    Then run `python3 evals/v5_board.py --write`. The unit still counts as
    not passed (the score is not adjusted).
+   **After a replay (step 1)** the note records its verdict instead,
+   e.g. Q38U-T2's: "a stop at the binary check on std's dlsym (Linux
+   host), not a measured verdict; replayed under the proposed next-era
+   rule (docs/HARNESS_NOTES.md): verdict PASS, 6 hidden cases". The score
+   is still not adjusted: the proposed rule is not the suite's rule until
+   the next era.
 
 The other Linux-host caveat remains the agent shell's missing network
 deny (HARNESS_NOTES next-era (d)).
@@ -1210,7 +1218,8 @@ GLM, its N0 is arm B (36/71, thinking pinned off).
       the network; 2 were passes), excluded. `122_gemm_blocked_d` (Rust,
       r1) stopped at the `dlsym` check: rebuilt and checked by the
       procedure above, `validator_notes` entry "verdict not measured" (the
-      unit is also excluded). L0 → Q_T2: +11 over 61 paired units (12 in,
+      unit is also excluded); later replayed under the proposed rule:
+      verdict PASS, and the note says so. L0 → Q_T2: +11 over 61 paired units (12 in,
       1 out, p 0.003), single seed, crossing harness10 → harness9 and the
       whole T2 bundle, so not attributed to one switch
       ([report](reports/V5_QWEN38_RTX5090-2026-11-22.md) §6).

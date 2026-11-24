@@ -196,7 +196,7 @@
     {
       "unit": "122_gemm_blocked_d",
       "run": "Q38U-T2",
-      "note": "verdict not measured: the validator stopped at the binary check on std's dlsym (Linux host); rebuilt binary imports no other loader or BLAS symbol"
+      "note": "a stop at the binary check on std's dlsym (Linux host), not a measured verdict; replayed under the proposed next-era rule (docs/HARNESS_NOTES.md): verdict PASS, 6 hidden cases"
     }
   ]
 }
