@@ -27,6 +27,9 @@ configuration** (`beast-spark glm`, Mia's recipe v1.8 at `33b50fd`,
   1.4K tok/s. It stays the challenger.
 - Three operational bugs surfaced. Two are fixed and merged; one is open
   (see [Bugs found](#bugs-found)).
+- *Later on 2026-11-23, all three bugs are fixed and the dense-bits key has
+  landed; only the hardware re-check of the committed render is left. See
+  [Addendum](#addendum-2026-11-23-what-landed-after-the-window).*
 
 ## The probe
 
@@ -288,3 +291,40 @@ Sparks, both rails, and the head reachable.
   command center beside rank 0 does not allow), only if a GLM speed claim
   matters again.
 - **The GLM UP control arm** runs on this serving (Max launches it).
+
+## Addendum, 2026-11-23: what landed after the window
+
+Written after the window closed. The sections above stay as they were
+recorded; this is what changed since.
+
+- **All three bugs are fixed and merged.** Bug 2 (no key after GLM) in #290,
+  bug 3 (re-running `beast-spark <recipe>` did nothing) in #291, and bug 1
+  (the 90 s command-center stop) in #294: the dashboard extension's SIGTERM
+  handler re-entered itself on a second SIGTERM and deadlocked on its own
+  lock. The Sparks' checkouts were at #292 when the window closed (spark-1
+  at `5b198d3d`, read-only), so #294 reaches them with the next pull
+  ([SPARK_HYDRA G6](../SPARK_HYDRA.md#g6-updating)).
+- **The dense-bits key landed (#293).** The recipe key `DENSE_BITS` renders
+  as the profile key `TENSORFOLD_RANK_ENV={"TF_GLM_DENSE_BITS":"4"}`, which
+  `spark-node.sh` sets on every rank. The committed recipe is now 4-bit
+  dense, `CONTEXT=524288` and `MEMORY_RESERVE_GIB=11.5`, the values measured
+  in step 5. It no longer renders bf16 dense, 245,760 and 17.5 (step 5's last
+  sentence is out of date). `TF_GLM_HEAD_BITS` is not wired yet.
+- **The engine matrix follows the serve.** `data/recipe-engines.json` records
+  D2 as served at TP2 on native 1.2.10 (`d2_served`), so `beast-recipe plan`
+  no longer lists `d2-first-serve` for this recipe. It still does at one
+  Spark, at three or more, and on 1.3.3 / 1.3.4. The GLM family's launch
+  values on 1.2.10 are the measured 11.5 GiB reserve at 524,288. Mia's 1104
+  `config.sh` default reserve is 6.5, as in the table above (read-only on
+  spark-1; the matrix had said 9.5).
+- **Only the hardware re-check is left**, in a pair-down window ([TODO](../TODO.md),
+  "hardware re-check of the committed D2 render"): `beast-recipe adopt
+  glm53-flash-exl3-native-tp2 --run`, `beast-spark
+  glm53-flash-exl3-native-tp2`, then `beast-recipe check
+  glm53-flash-exl3-native-tp2 --run --bench`. Expect the rank units to carry
+  `TF_GLM_DENSE_BITS=4` and the start line from step 5: "model 84.33 GiB;
+  4 streams at once, 3.66 GiB each at a 524288-token window, of 16.1 GiB
+  left after a 11.5 GiB reserve" (82.36 GiB was 4-bit at 245,760 / 17.5),
+  and about 41.8 / 64.7 tok/s. Rollback: `beast-spark glm`.
+- In [What remains](#what-remains), the dense-bits key and bug 1 are done.
+  Prefill, 1104 at Mia's own reserve, and the GLM UP control arm stand.

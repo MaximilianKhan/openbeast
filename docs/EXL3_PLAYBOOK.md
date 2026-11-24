@@ -214,11 +214,12 @@ is GLM-specific.
 
 The path is OpenBeast's own launcher, D2. It takes a profile, a lock, and one
 rank per Spark. The commands are in [§5.7](#57-case-b-a-native-tensorfold-profile).
-D2 has never served on this pair: SPARK_HYDRA lists GLM on native 1.2.7 as
-VERIFY ON HARDWARE. The first case-(b) model therefore also qualifies D2.
-The cheapest first run is the GLM checkpoint we already have, through
-`glm53-flash-ablit-exl3-tensorfold.env`, because its outputs can be compared
-with the recipe's.
+D2 first served on this pair on 2026-11-23: GLM-5.3-Flash (the Ablit pack)
+on native 1.2.10 at TP2, through the beast-recipe profile
+`recipe-glm53-flash-exl3-native-tp2`, conformance PASS and 9/9 checks, slower
+than Mia's v1.8 recipe ([GLM window report](reports/GLM_SERVING_WINDOW-2026-11-23.md#step-4-the-first-native-d2-serve)). So D2 is qualified at TP2 on 1.2.10; a new
+case-(b) model still needs its own first serve, as does any other engine
+release or cluster size.
 
 ### (c) An architecture no build supports
 
@@ -685,9 +686,10 @@ All MEASURED on spark-1, 2026-11-17, read-only.
 - fetch anything offline: `pull` and the update check need the network.
   `spark-node.sh` passes `--no-update-check`.
 
-It has never served on this pair. Serving GLM through it (the profile
-`glm53-flash-ablit-exl3-tensorfold`) is the open VERIFY ON HARDWARE item in
-SPARK_HYDRA D2, and the natural first run of case (b).
+It served on this pair for the first time on 2026-11-23, at 1.2.10: GLM
+through the profile `recipe-glm53-flash-exl3-native-tp2` (beast-recipe),
+conformance PASS, 30.7 / 57.7 tok/s as first rendered and 41.8 / 64.7 with
+4-bit dense linears at a 524,288 window ([GLM window report](reports/GLM_SERVING_WINDOW-2026-11-23.md#step-4-the-first-native-d2-serve)).
 
 ## 7. What to build next
 
@@ -733,16 +735,15 @@ exist.
 | `spark-glm-pack.sh` + test | about 1 day | yes, hermetically, like `test_spark_deepseek_pack.sh`; one live swap window (about 30 min, the GLM model down) to prove it |
 | `verify-chat.py --model` | 1 hour | yes |
 | `beast-spark use` dispatcher over intake | about half a day | yes (stub adapters) |
-| D2 qualification with GLM on native 1.2.7 | half a day on the pair | no: it stops the live model |
+| D2 qualification with GLM on native 1.2.10 | done 2026-11-23 (half a day on the pair) | no: it stops the live model |
 | `native` adapter + `spark-native-inference` unit | 2-3 days | partly (unit rendering, profile drafting) |
 | EAQ v1.1 exception | hours, once we have the pack | partly |
 
 **Recommended next step: `spark-glm-pack.sh` plus the `beast-spark use`
 dispatcher, about 1.5 days.** That makes case (a) one command for both
-families, and it can be built and tested off the Sparks. Then qualify D2 by
-serving the GLM checkpoint we already have on native 1.2.7. Only that tells
-us whether case (b) is a profile away or a project, and it should happen
-before a model Max cares about depends on it.
+families, and it can be built and tested off the Sparks. D2 itself is
+qualified since 2026-11-23 (GLM on native 1.2.10, TP2): case (b) is a profile
+away for a family 1.2.10 serves, at the speed that serve measured.
 
 ## 8. Candidates: evaluating a model before you bring it
 
@@ -789,7 +790,8 @@ Jayleton 2.8 bpw (CLAIMED). §3.3 has their fit estimates.
 
 - A second GLM pack has never been served. §5.6 is UNVERIFIED as a sequence.
 - The memory-capped copy (§5.3) is UNVERIFIED on the pair.
-- D2 / native 1.2.7 has never served on the pair (SPARK_HYDRA "Not done yet").
+- D2 served on the pair on 2026-11-23 (GLM, native 1.2.10, TP2; [GLM window report](reports/GLM_SERVING_WINDOW-2026-11-23.md#step-4-the-first-native-d2-serve)). The
+  committed 4-bit-dense render still needs its hardware re-check (TODO.md).
 - Native 1.2.9's families are unknown here.
 - The -v2 pack's `SHA256SUMS` is v1's and cannot verify its 24 new shards
   (SPARK_HYDRA run record). Ask Mia's lab for the real one.
