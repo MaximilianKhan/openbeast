@@ -61,12 +61,26 @@ the same value and does not conflict. **Applied on the rig 2026-11-23
 the gate; what was done and the rollback: [TODO.md](TODO.md) "`AGENT_PROFILE=qwen38-best`
 applied on the 5090 rig".
 
-**Inkling 2 Mini (evaluated 2026-11-23, not a profile).** Its speed on the
-5090 was measured with Strata and llama.cpp (138.6 and 96.9 tok/s single
-stream, the same unsloth UD-Q4_K_XL GGUF); no serve script ships and it has
-no board row yet. The v5 run (arm `I_T2`) waits on the engine choice:
-[reports/STRATA_INKLING_5090-2026-11-23.md](reports/STRATA_INKLING_5090-2026-11-23.md),
-[TODO.md](TODO.md) "Inkling 2 Mini on the 5090".
+**Inkling 2 Mini (evaluated 2026-11-23/24, not a profile).** Served for its
+v5 run by Basalt v0.5.7 from Blackfrost's Derisked weights (a
+refusal-direction edit) converted to a Basalt NVFP4-MX8 pack; no serve
+script ships (Basalt is not yet a default engine:
+[ENGINES.md](ENGINES.md#chosen-for-one-run-not-a-default)). **Its v5 result
+(2026-11-24):** arm I_T2, the default's Q_T2 setup on the same rig, tree
+and container, 49/71 scored, SCORE 76.5, #4 on the board by SCORE (one
+place above the default, level on problem-solving, wider on languages),
+single seed. Over the 65 units both rows measured cleanly the default
+passed 52 and Inkling 46 (1 gained, 7 lost, p 0.07, within churn), so
+**Qwen3.8 stays the default**. Inkling ran the arm in 4.5 h against ~13.5
+for Q_T2 (median unit 47 s against 254 s; about 520 tok/s end to end on
+full 8,192-token replies against 142). Caveats: 203 turns ended empty at
+the cap (Basalt #588), and Basalt's tool-call parsing is more lenient than
+llama.cpp's. Report:
+[V5_INKLING2_MINI_RTX5090-2026-11-24.md](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md);
+engines measured for it (Strata, llama.cpp, vLLM, Basalt):
+[reports/STRATA_INKLING_5090-2026-11-23.md](reports/STRATA_INKLING_5090-2026-11-23.md).
+Three ablation arms are queued ([TODO.md](TODO.md) "Inkling 2 Mini on the
+5090").
 
 **Qwen reasoning budget (2026-09-09):** every Qwen-family serve script (3.6
 dense + MoE + NVFP4 + all 3.8 variants — not Gemma, and the Qwen-derived

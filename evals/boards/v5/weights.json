@@ -1,5 +1,5 @@
 {
-  "description": "The exact weights, engine and serving setup behind every v5 board run (evals/v5_board.py validates it and renders the 'Weights used' block of docs/RESULTS.md). A board run names its entry with \"weights_id\" in board.json. A row on the board is a model AND its exact weights, engine and harness: a different quantization (another bpw, another variant, another pack) is a NEW entry here and a different board row, never an edit of an existing entry. Fields: repo + revision are a Hugging Face repo id and its full commit SHA when the weights are on the Hub (revision_kind \"hub\"); a pack that is not on the Hub has repo null, its local id in local_id and OpenBeast's local content id in revision (revision_kind \"local\"). \"unverified\" means we could not prove the value from a record; never guess one. Entries with no board run yet (runs: none) are recorded for when they get one.",
+  "description": "The exact weights, engine and serving setup behind every v5 board run (evals/v5_board.py validates it and renders the 'Weights used' block of docs/RESULTS.md). A board run names its entry with \"weights_id\" in board.json. A row on the board is a model AND its exact weights, engine and harness: a different quantization (another bpw, another variant, another pack) is a NEW entry here and a different board row, never an edit of an existing entry. Fields: repo + revision are a Hugging Face repo id and its full commit SHA when the weights are on the Hub (revision_kind \"hub\"); a pack that is not on the Hub has repo null, its local id in local_id and OpenBeast's local content id in revision (revision_kind \"local\"). A single file pinned by its sha256 is revision_kind \"file-sha256\": with its Hub repo (and the commit it was checked at, in revision) when it is on the Hub, or with repo null and derived_from (the source it was built from) when it was converted or built locally. \"unverified\" means we could not prove the value from a record; never guess one. Entries with no board run yet (runs: none) are recorded for when they get one.",
   "weights": {
     "dsv41f-mia-exl3-2.9bpw-eaq1.1-v2": {
       "model": "DeepSeek-V4.1-Flash (Mia EXL3)",
@@ -127,6 +127,41 @@
       "evidence": "the rig (beast), read 2026-11-22 09:40 PST: the llama-server process started 2026-11-21 18:33 PST (before Q38U-L0, 2026-11-22 00:38 PST on) runs ~/Documents/openbeast/llama.cpp/build/bin/llama-server (--version: 1.0.0-dev, build 12359, commit b1b770d90) with -m weights/Qwen3.8-27B-Uncensored-Q5_K_M.gguf -ngl 99 -c 262144 -np 1 --kv-unified -ctk q4_0 -ctv q4_0 --cache-ram 44032 --spec-type draft-mtp --spec-draft-n-max 4 --spec-draft-p-min 0.0 --reasoning-budget 20480; sha256sum of that file read the same day = 24780644…9547, the scripts/weights.registry entry (cross-checked against the Hub's LFS oid at main 45d0fc0a, uploaded in 43317b36, 2026-08-14); scripts/serve-qwen38-27b-uncensored-mtp-q5.sh. Q38U-T2: the same process, with no restart, served the whole Q_T2 arm (2026-11-23 03:57 to 17:26 PST): ps on the rig, read 2026-11-23 17:35 PST, shows pid 15606 started 2026-11-21 18:33:17 PST with the same arguments.",
       "streams": 1,
       "sampling": "server defaults; thinking on, reasoning budget 20480"
+    },
+    "inkling2-mini-blackfrost-derisked-basalt-nvfp4-mx8": {
+      "model": "Inkling 2 Mini Derisked (Basalt NVFP4-MX8)",
+      "label": "Basalt NVFP4-MX8 pack · Blackfrost Derisked · abliterated",
+      "repo": null,
+      "revision": null,
+      "revision_kind": "file-sha256",
+      "file": "Inkling-2-Mini-Derisked-NVFP4-MX8.basalt",
+      "file_sha256": "d2b01bcc1fd2dc51cbcdaecb512c56d7c5db75181fee2d9b6c944e76e217a427",
+      "file_bytes": 19606374132,
+      "derived_from": {
+        "repo": "Blackfrost-AI/Inkling-2-Mini-Derisked",
+        "revision": "31ec2eddecfdf93c8626d9e4dfc0a2aca6070900",
+        "relation": "converted on the rig 2026-11-23 20:47 PST by Basalt's own converter at the engine pin (tools/convert/convert.py @ 400b411c, the recipe of Basalt's official pack per its docs/models/inkling2.md), offline and CPU only in a --network none, read-only sandbox; the source checkpoint (one NVFP4/MXFP8 safetensors shard + mtp.safetensors, Blackfrost's 'weight-level behavioral modification' of the base) mounted read-only; nothing from the checkpoint executed (docs/reports/STRATA_INKLING_5090-2026-11-23.md §11.1, §15.5)"
+      },
+      "base_model": {
+        "repo": "thinkingmachines/Inkling-2-Mini",
+        "revision": "unverified"
+      },
+      "format": "Basalt pack (.basalt)",
+      "bpw": null,
+      "quant_detail": "NVFP4-MX8: the checkpoint's native vendor NVFP4 / MXFP8 quantization carried into Basalt's format (10 sections, 18.260 GiB, logs/convert-blackfrost.log); KLD 0.0263, top-1 92.93% against UD-Q8_K_XL (Strata report §11.2)",
+      "variant": "Blackfrost Derisked: a refusal-direction edit (48 direction sites, layers 9-18, per loop visit; the README: fewer false refusals, a refusal floor kept on clearly harmful requests); tokenizer, configuration and MTP module byte-identical to upstream per its README",
+      "abliterated": true,
+      "engine": "Basalt (C++/CUDA engine, Python stdlib server), built from source offline (-DBASALT_MODELS=inkling2, sm_120, nvcc 13.0.88)",
+      "engine_version": "jesdga95/basalt v0.5.7 @ 400b411c58031d064812ea21a259b2381acdaa3e (bin/basalt sha256 5dc8a63ca0089bf8eac749b22da764349d648b7f11f881a659d2511aede84abf); reviewed read-only, Strata report §15",
+      "image": "ob-strata-env:2026-11-23 (sha256:0c44ed984067fe0c4149aa1c0d27e4eeac48f5f278bde580c12e7aebd9038698; Ubuntu 24.04 + CUDA 13.0.2; the Basalt tree mounted read-only, the server on distro Python packages, §15.3)",
+      "recipe": "rig scripts in ~/openbeast-runs/inkling-perf-2026-11-23/scripts/: inkling-v5.sh start derisked -> basalt-serve.sh 1 262144 fp8 (the copy before the DNS fix, kept as basalt-serve.sh.orig-20261123): basalt serve --alias inkling-2-mini --parallel 1 --max-context 262144 --kv fp8, --answer-room auto (default)",
+      "drafter": "DSpark, in-checkpoint (the checkpoint's mtp.safetensors, carried into the pack; the pack's default draft length)",
+      "kv_dtype": "fp8 (--kv fp8)",
+      "context": 262144,
+      "streams": 1,
+      "sampling": "server defaults; thinking on (Inkling's template default); the runner's 8,192-token turn cap leaves 6,144 thinking tokens under --answer-room auto (Basalt serve/service.py:249-271)",
+      "hosts": "1× RTX 5090",
+      "evidence": "the rig (beast): ~/openbeast-runs/ink-I_T2-switch-20261123-2057.log shows the default stack stopped 20:57:43 PST, the basalt-serve container started 20:57:51 (id 27ee46cd31f0…), /v1/models answering inkling-2-mini (n_ctx 262144) and the pack re-hashed at 20:57:58 = d2b01bcc…a427, the same sum the converter wrote (weights/basalt-blackfrost-derisked/sha256.txt, 20:47); the source checkpoint's revision 31ec2edd… from its .cache/huggingface metadata (/mnt/9100s4tb/weights/Blackfrost-AI-Inkling-2-Mini-Derisked/, read 2026-11-24); docker inspect basalt-serve at 2026-11-24 05:0xZ (Strata report §15.4: started 04:57:51Z, image above, read-only rootfs and binds, uid 1000, --cap-drop ALL, port 127.0.0.1:8099); the build tree at 400b411c with only bin/ added (git status --ignored). The container ran with no restart policy until ink-I_T2-run.sh removed it at 2026-11-24 01:29:33 PST, after I_T2's last unit (ink-I_T2-run.out); all 71 rows report model inkling-2-mini and 0 API errors. Its docker log went with it (json-file driver), so the per-reply server lines are not kept."
     }
   }
 }

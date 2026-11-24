@@ -153,6 +153,8 @@ def weights_problems(board: dict, weights: dict) -> list[str]:
             bad.append(f"weights {wid}: a local pack needs repo null, a local_id and its 40-hex local revision")
         if kind == "file-sha256" and not re.match(r"^[0-9a-f]{64}$", str(w.get("file_sha256"))):
             bad.append(f"weights {wid}: a file-pinned entry needs file and file_sha256")
+        if kind == "file-sha256" and not w["repo"] and not (w.get("derived_from") or {}).get("repo"):
+            bad.append(f"weights {wid}: a locally built file (repo null) needs derived_from: what it was built from")
         if not isinstance(w["abliterated"], bool):
             bad.append(f"weights {wid}: abliterated must be true or false")
         if w["bpw"] is not None and not isinstance(w["bpw"], (int, float)):
@@ -418,6 +420,9 @@ def _weights_cell(r: dict, prefix: str) -> str:
         return f"{w['label']} · [{w['repo']}@{w['revision'][:8]}]({w['hub_url']})"
     if w["revision_kind"] == "local":
         return f"{w['label']} · [local pack @{w['revision'][:8]}]({prefix}{WEIGHTS_ANCHOR})"
+    if w["revision_kind"] == "file-sha256" and not w["repo"]:
+        # a file converted or built locally, pinned by its sha256 (not on the Hub)
+        return f"{w['label']} · [local file sha256 {w['file_sha256'][:8]}]({prefix}{WEIGHTS_ANCHOR})"
     return w["label"]
 
 
@@ -538,6 +543,9 @@ def render_weights(b: dict, prefix: str = "") -> str:
             weights = (f"local pack `{w['local_id']}`, local revision `{w['revision']}` "
                        "(OpenBeast's content id: not a Hub commit"
                        + (f"; fingerprint `{w['fingerprint'][:16]}…`" if w.get("fingerprint") else "") + ")")
+        elif w["revision_kind"] == "file-sha256" and not w["repo"]:
+            weights = (f"local file `{w['file']}` (sha256 `{w['file_sha256']}`; built here, not on the Hub: "
+                       "see Derived from)")
         elif w["revision_kind"] == "file-sha256":
             weights = f"`{w['repo']}`, file `{w['file']}` (sha256 `{w['file_sha256']}`)"
             if _SHA.match(str(w.get("revision"))):

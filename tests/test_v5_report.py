@@ -176,6 +176,19 @@ def test_published_glm_up_control():
     assert (x["compared"], x["net"], x["gained"]) == (71, -6, [])
 
 
+def test_published_inkling_against_qwen38():
+    """INK-T2 49/71 (SCORE 76.5) on Q38U-T2's harness9 tree, one stream, the same rig container:
+    above it on SCORE, -4 on the board's view (Q38U-T2's excluded passes count as its fails)."""
+    r = v5_report.build("Inkling 2 Mini Derisked (Basalt NVFP4-MX8)", context=("Q38U-T2",), pairs=["Q38U-T2:I_T2"])
+    (i,) = [a for a in r["arms"] if a["id"] == "INK-T2"]
+    assert (i["passed"], round(i["score"], 1), i["era"], i["turn_cap"]) == (49, 76.5, "036638ddd68698ce", 8192)
+    assert (i["wall_hits"], i["lost"], i["excluded"]) == (0, {}, [])
+    (d,) = r["deltas"]
+    assert (d["compared"], d["net"]) == (68, -4)
+    assert sorted(d["gained"]) == ["122_gemm_blocked_b", "124_rkf45", "126_hmac_scratch"]
+    assert len(d["lost"]) == 7 and "163_bigint_divmod_a" in d["lost"]
+
+
 def test_cli_runs_and_writes_nothing():
     before = subprocess.run(["git", "status", "--porcelain"], cwd=REPO, capture_output=True, text=True).stdout
     out = subprocess.run([sys.executable, os.path.join(REPO, "evals", "v5_report.py")],

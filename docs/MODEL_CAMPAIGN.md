@@ -266,7 +266,14 @@ ran, so correctness was never measured. Then:
    proposed rule (calibration report §5, "The replay under the proposed
    rule", has the method; its script is on the rig in
    `~/ob-cal/.claude/gemm-replay/`). It gives a verdict, and a
-   verdict beats any footnote.
+   verdict beats any footnote. For a new attempt, copy `replay.py` into
+   a new directory beside it and list only that attempt (INK-T2's:
+   `~/ob-cal/.claude/gemm-replay-ink/`, which adds a `heredoc` shell edit
+   for a `gemm.rs` written by `cat > … << 'EOF'`), so the earlier
+   replays' files stay as they were. Run each step inside the container
+   as `scripts/eval-host-container.sh run -- nice -n 10 python3 …`
+   (`rebuild`, then `grade NAME --original` as the control, then `grade
+   NAME` three times); about 10 s of CPU in all.
 2. **Without a replay, rebuild and check the binary.** The binary the
    validator checked no longer exists: it was built in a private
    directory (`vlib.start_build`), and the unit's cleanup removes
@@ -305,9 +312,11 @@ ran, so correctness was never measured. Then:
    **After a replay (step 1)** the note records its verdict instead,
    e.g. Q38U-T2's: "a stop at the binary check on std's dlsym (Linux
    host), not a measured verdict; replayed under the proposed next-era
-   rule (docs/HARNESS_NOTES.md): verdict PASS, 6 hidden cases". The score
-   is still not adjusted: the proposed rule is not the suite's rule until
-   the next era.
+   rule (docs/HARNESS_NOTES.md): verdict PASS, 6 hidden cases" (INK-T2's
+   says "verdict not measured" in so many words: "a stop at the binary
+   check on std's dlsym (Linux host): verdict not measured; replayed
+   under …"). The score is still not adjusted: the proposed rule is not
+   the suite's rule until the next era.
 
 The other Linux-host caveat remains the agent shell's missing network
 deny (HARNESS_NOTES next-era (d)).
@@ -569,7 +578,7 @@ below). `--dry-run` prints them for your settings.
 | H_T2 | T2 | T2 exactly, against the Hy4 server (optional, harness9) | T2's flags with `"model": "Hy4-flash (NVFP4)"`, `"served_model": "Hy4-flash-NVFP4"`; thinking at Hy4's default reasoning_effort high; only with `--only H_T2` (or a `--model-name` starting with Hy4-flash: `recommend.composite_by_model`); needs a harness9 tree | 2.3 | ~6.1 h | T2 on a second model (read against DS-T2: a different model, weights and engine) **Hy4-flash (NVFP4): 60/71 (board row HY4-T2)** |
 | H_C | — | GLM's best (v5-harness arm C) on Hy4 (optional, harness9) | thinking on, wall-scaled turns, wall x2, every T assist off, the 16,384-token eval turn cap (no 8K cap or act nudge); only with `--only H_C`; the same harness9 tree as H_T2 | 2.3 | ~7.4 h | H_T2 vs H_C on one model and one harness isolates the T2 additions (assists + 8K cap + nudge) **Hy4-flash (NVFP4): 55/71 (board row HY4-C), 5 below H_T2** |
 | Q_T2 | T2 | T2 at one stream, against the RTX 5090 default (optional, harness9) | T2's flags and switches with `"jobs": 1, "slots": 1`, `"model": "Qwen3.8 27B Uncensored MTP Q5_K_M"`, `"served_model": "Qwen3.8 27B Uncensored MTP Q5"`; only with `--only Q_T2` (or a `--model-name` starting with Qwen3.8 27B Uncensored MTP); needs a harness9 tree; run from the rig's eval-host container | 2.3 | ~18 h estimated; 11.2 h for the main pass + 2.3 h for the r1 rerun | T2 on the RTX 5090 default (read against Q38U-L0, which is harness10: the pair crosses an era) **Qwen3.8 27B Uncensored MTP: 52/71 scored (54 raw), SCORE 75.6, #4 (board row Q38U-T2); 3 lost, 3 excluded; L0 → Q_T2 +11 over 61 paired units** |
-| I_T2 | T2 | Q_T2's settings against Inkling 2 Mini on Basalt (optional, harness9) | T2's flags and switches with `"jobs": 1, "slots": 1`, `"model": "Inkling 2 Mini Derisked (Basalt NVFP4-MX8)"`, `"served_model": "inkling-2-mini"`; Basalt v0.5.7 (`400b411c`), the Blackfrost Derisked pack converted to `.basalt` (sha256 `d2b01bcc…`), `--parallel 1 --max-context 262144 --kv fp8 --answer-room auto` (thinking capped at 6,144 of the 8,192-token turn, then the answer is forced); only with `--only I_T2` (or a `--model-name` starting with Inkling 2 Mini); harness9 tree `f38a29c7`; run from the rig's eval-host container | 2.3 | 5-12 h (UNVERIFIED) | Inkling 2 Mini against Qwen3.8's Q38U-T2 (52/71) on one harness, one host, one stream **running from 2026-11-23** |
+| I_T2 | T2 | Q_T2's settings against Inkling 2 Mini on Basalt (optional, harness9) | T2's flags and switches with `"jobs": 1, "slots": 1`, `"model": "Inkling 2 Mini Derisked (Basalt NVFP4-MX8)"`, `"served_model": "inkling-2-mini"`; Basalt v0.5.7 (`400b411c`), the Blackfrost Derisked pack converted to `.basalt` (sha256 `d2b01bcc…`), `--parallel 1 --max-context 262144 --kv fp8 --answer-room auto` (thinking capped at 6,144 of the 8,192-token turn, then closed; the close does not force an answer on Inkling, upstream #588); only with `--only I_T2` (or a `--model-name` starting with Inkling 2 Mini); harness9 tree `f38a29c7`; run from the rig's eval-host container | 2.3 | 5-12 h estimated; **4.5 h measured** | Inkling 2 Mini against Qwen3.8's Q38U-T2 (52/71) on one harness, one host, one stream **Inkling 2 Mini Derisked: 49/71 scored, SCORE 76.5, #4 (board row INK-T2); 0 lost, 0 excluded; paired with Q38U-T2: −6 over 65 units (p 0.07); Qwen3.8 stays the default** |
 | I_T2_s1 | I_T2 | I_T2 under `--seed 1` (optional, harness9; `noise_of: I_T2`) | `--seed 1`; Derisked pack. Basalt honours a request seed on Inkling (`request_prefill.cpp`; unseeded requests take a clock seed, so I_T2 itself is a fresh draw, unlike the Spark server's fixed seed); a seeded request keeps DSpark drafts by the plain rule (`draw_drafts=false`) | 2.3 | ~1.5-2 h (UNVERIFIED) | the Inkling noise margin **queued 2026-11-23 (`~/openbeast-runs/ink-ablations-queue.sh`)** |
 | I_T2_stock | I_T2 | I_T2 on Basalt's stock pack (optional, harness9) | I_T2 exactly, `inkling-v5.sh start stock` (`c2afac3a`, `28ec7072…`); `--model-name "Inkling 2 Mini (Basalt NVFP4-MX8, stock)"`; the queue checks the pack with `docker inspect` (the alias is the same for both packs) | 2.3 | ~1.5-2 h (UNVERIFIED) | the derisking edit's effect (control) **queued 2026-11-23** |
 | I_UP8k | UP_8k | UP_8k at one stream on Inkling, Derisked pack (optional, harness10) | UP_8k exactly with `"jobs": 1, "slots": 1`; harness10 tree (era `9bcd5aa6`), no `--arm-tree` | 2.3 | ~1.5-2 h (UNVERIFIED) | DeepSeek's other 65/71 setup against I_T2 (crosses the era, as DS-UP8k vs DS-T2) **queued 2026-11-23** |
@@ -1247,6 +1256,26 @@ GLM, its N0 is arm B (36/71, thinking pinned off).
       pair, single seed. All 16 wall-hit units had 2-4 capped 16K thinking
       turns, 13 at 10 turns or fewer
       ([report](reports/V5_GLM_UP-2026-11-23.md)).
+- [x] **I_T2, T2 on Inkling 2 Mini Derisked at one stream (2026-11-24).**
+      49/71 scored, SCORE 76.5, #4 by SCORE (board row INK-T2), single
+      seed. Basalt v0.5.7 (`400b411c`) from the Blackfrost Derisked pack
+      converted to `.basalt` (sha256 `d2b01bcc…`), harness9 tree
+      `f38a29c7`, the rig's eval-host container, `--jobs 1 --slots 1`,
+      4 h 31 min; no unit lost; 0 units at the wall, 21 at the turn limit.
+      Integrity scan 2026-11-24: 0 contaminated (5 refused `web_search`
+      calls in 4 units; no shell route off the host). `122_gemm_blocked_d`
+      (Rust) stopped at the `dlsym` check: replayed under the proposed
+      rule by the procedure above (PASS, 6 hidden cases, 3 of 3), note
+      recorded, not adjusted. 203 turns ended empty at the 8,192 cap
+      (Basalt #588) in 21 units, counted from the transcripts with
+      `evals/audit/capped_turns.py` because the server log went with the
+      container. Q38U-T2 → INK-T2 over the 65 units both measured
+      cleanly: 52 → 46 (1 in, 7 out, p 0.07, within churn): Qwen3.8
+      stays the 5090 default. Same arm, tree, host and streams; model,
+      weights and engine differ
+      ([report](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md)).
+      **For a Basalt arm:** save `docker logs basalt-serve` before the
+      stop, and count capped turns with `capped_turns.py` after the scan.
 - [ ] **Next, not scheduled:** GLM at the 8,192 cap (UP_8k or T2 with
       `--model-name GLM-5.3-Flash`; GLM has never run below 16,384), and a
       GLM U arm to isolate the planning lines on GLM. Optional for Hy4: T's
