@@ -30,6 +30,21 @@
       "unit": "192_pike_regex",
       "run": "Q38U-L0",
       "reason": "contaminated: the integrity scan flagged off-host access from the agent's shell (integrity scan 2026-11-22; on Linux the agent shell has no network deny, evals/README.md residual gaps)"
+    },
+    {
+      "unit": "122_gemm_blocked_d",
+      "run": "Q38U-T2",
+      "reason": "contaminated: the integrity scan flagged off-host access from the agent's shell (integrity scan 2026-11-23; on Linux the agent shell has no network deny, evals/README.md residual gaps)"
+    },
+    {
+      "unit": "124_rkf45",
+      "run": "Q38U-T2",
+      "reason": "contaminated: the integrity scan flagged off-host access from the agent's shell (integrity scan 2026-11-23; on Linux the agent shell has no network deny, evals/README.md residual gaps)"
+    },
+    {
+      "unit": "126_hmac_scratch",
+      "run": "Q38U-T2",
+      "reason": "contaminated: the integrity scan flagged off-host access from the agent's shell (integrity scan 2026-11-23; on Linux the agent shell has no network deny, evals/README.md residual gaps)"
     }
   ],
   "validator_notes": [
@@ -177,6 +192,11 @@
       "unit": "49_markov_steady_state",
       "run": "DS-T",
       "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "122_gemm_blocked_d",
+      "run": "Q38U-T2",
+      "note": "verdict not measured: the validator stopped at the binary check on std's dlsym (Linux host); rebuilt binary imports no other loader or BLAS symbol"
     }
   ]
 }

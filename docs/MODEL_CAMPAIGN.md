@@ -560,6 +560,7 @@ below). `--dry-run` prints them for your settings.
 | UPA_8k | UPA | UPA at T2's 8192 cap (optional, harness10) | `--reasoning-budget 8192`; `OPENBEAST_AGENT_MAX_TOKENS=8192` | 2.3 | ~6.2 h | the pack at the better cap (UPA_8k vs UP_8k) **DeepSeek: done, 62/71 (SCORE 88.0): −3 against UP_8k (board row DS-UPA8k)** |
 | H_T2 | T2 | T2 exactly, against the Hy4 server (optional, harness9) | T2's flags with `"model": "Hy4-flash (NVFP4)"`, `"served_model": "Hy4-flash-NVFP4"`; thinking at Hy4's default reasoning_effort high; only with `--only H_T2` (or a `--model-name` starting with Hy4-flash: `recommend.composite_by_model`); needs a harness9 tree | 2.3 | ~6.1 h | T2 on a second model (read against DS-T2: a different model, weights and engine) **Hy4-flash (NVFP4): 60/71 (board row HY4-T2)** |
 | H_C | — | GLM's best (v5-harness arm C) on Hy4 (optional, harness9) | thinking on, wall-scaled turns, wall x2, every T assist off, the 16,384-token eval turn cap (no 8K cap or act nudge); only with `--only H_C`; the same harness9 tree as H_T2 | 2.3 | ~7.4 h | H_T2 vs H_C on one model and one harness isolates the T2 additions (assists + 8K cap + nudge) **Hy4-flash (NVFP4): 55/71 (board row HY4-C), 5 below H_T2** |
+| Q_T2 | T2 | T2 at one stream, against the RTX 5090 default (optional, harness9) | T2's flags and switches with `"jobs": 1, "slots": 1`, `"model": "Qwen3.8 27B Uncensored MTP Q5_K_M"`, `"served_model": "Qwen3.8 27B Uncensored MTP Q5"`; only with `--only Q_T2` (or a `--model-name` starting with Qwen3.8 27B Uncensored MTP); needs a harness9 tree; run from the rig's eval-host container | 2.3 | ~18 h estimated; 11.2 h for the main pass + 2.3 h for the r1 rerun | T2 on the RTX 5090 default (read against Q38U-L0, which is harness10: the pair crosses an era) **Qwen3.8 27B Uncensored MTP: 52/71 scored (54 raw), SCORE 75.6, #4 (board row Q38U-T2); 3 lost, 3 excluded; L0 → Q_T2 +11 over 61 paired units** |
 | T_j2 | T | 2 concurrent units (optional) | `"jobs": 2, "slots": 2` in the arm (wins over the CLI); only with `--only T_j2` or `--include T_j2` | 2.3 | ~7.7 h (~9 h for DeepSeek) | the contention model: same tokens per unit, at 2 streams (see the note below) |
 
 **DeepSeek's composite is T2 (2026-11-19).** DeepSeek-V4.1-Flash (Mia EXL3)
@@ -1194,7 +1195,23 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
       measured; next-era fix, per-run note until then) and the missing
       Linux network deny on the agent's shell. Diagnostics only, no board row
       ([report](reports/V5_EVAL_HOST_CALIBRATION-2026-11-23.md)). Q_T2 is
-      affected only if its Rust GEMM uses threads.
+      affected only if its Rust GEMM uses threads (it was: below). The
+      integrity rescan with the recorded command (2026-11-23, after Q_T2):
+      71 + 7 + 11 transcripts, 0 contaminated, as reported.
+- [x] **Q_T2, T2 on the RTX 5090 default at one stream (2026-11-23).**
+      52/71 scored (54 raw), SCORE 75.6, #4 and the model's best row
+      (board row Q38U-T2; Q38U-L0 stays in the runs table). Harness9 tree
+      `f38a29c7`, the rig's eval-host container, `--jobs 1 --slots 1`; the
+      main pass (11.2 h) lost 7 units to llama-server's truncated-tool-call
+      500, the r1 rerun recovered 4 and 3 stay lost (counted as fails).
+      Integrity scan 2026-11-23: 3 contaminated (the agent's shell reached
+      the network; 2 were passes), excluded. `122_gemm_blocked_d` (Rust,
+      r1) stopped at the `dlsym` check: rebuilt and checked by the
+      procedure above, `validator_notes` entry "verdict not measured" (the
+      unit is also excluded). L0 → Q_T2: +11 over 61 paired units (12 in,
+      1 out, p 0.003), single seed, crossing harness10 → harness9 and the
+      whole T2 bundle, so not attributed to one switch
+      ([report](reports/V5_QWEN38_RTX5090-2026-11-22.md) §6).
 - [x] **The GLM recipe engine update (1104), tested on its own
       (2026-11-23):** it does not beat v1.8 on the pair (41.3 / 66.8 tok/s
       against 48.4 / 78.4 at 1 / 4 streams, and 1.4K against 2.0K

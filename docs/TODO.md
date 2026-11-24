@@ -290,10 +290,14 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   any thread, and `122_gemm_blocked` rejects a binary that imports
   `dlsym`, so a threaded Rust GEMM stops at the binary check: verdict not
   measured. (2) The agent's shell has no network deny on Linux (it cost
-  Q38U-L0 one excluded pass). Q_T2 (running in the container) is affected
-  by (1) only if its Rust GEMM uses threads; handle a hit by the replay or
-  the rebuild-and-check procedure ([`MODEL_CAMPAIGN.md`, eval host in a
-  container](MODEL_CAMPAIGN.md#eval-host-in-a-container-linux)).
+  Q38U-L0 one excluded pass). **Q_T2 done 2026-11-23:** board row
+  Q38U-T2, 52/71 scored (54 raw; 3 units excluded, the agent's shell
+  reached the network on Linux, 2 of them passes), SCORE 75.6, #4 and the
+  model's best row; 3 units lost to the truncated-tool-call 500 after one
+  rerun; its Rust `122_gemm_blocked_d` hit (1) and was rebuilt and
+  checked by the procedure ([`MODEL_CAMPAIGN.md`, eval host in a
+  container](MODEL_CAMPAIGN.md#eval-host-in-a-container-linux)):
+  `validator_notes` "verdict not measured" (report §6).
   Still open: the Linux network deny (HARNESS_NOTES next-era (d)) before
   more rig rows.
 - [ ] **Next suite/era: the `122_gemm_blocked` `dlsym` rule** (Rust
@@ -302,18 +306,16 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   libc exports `dlopen` and C token pasting dodges the lint; add the C
   token-pasting test;
   [HARNESS_NOTES](HARNESS_NOTES.md#next-era-the-122_gemm_blocked-dlsym-rule-on-linux-2026-11-23)).
-  After Q_T2 finishes, replay the calibration's three Rust
-  `122_gemm_blocked_d` solutions on the rig under the proposed rule
-  (calibration report §6).
-- [ ] **Rescan the calibration's integrity with the recorded command**
-  (needs the rig's transcripts; after Q_T2 finishes, never during it).
-  The 2026-11-23 scan's command line was not recorded. On the rig, from a
-  checkout at `f38a29c7` (`~/ob-cal/.claude/worktrees/h9`), run the
-  command in the sealed `evals/audit/reviews/ds-t2-cal-integrity-2026-11-23.md`
-  (`--tz UTC`, `--until` per pass: CAL 2026-11-23T05:11:56,
-  R1 2026-11-23T07:12:05, R2 2026-11-23T11:57:00 from the run log).
-  Expect 71 + 7 + 11 transcripts, 0 contaminated; record the result in
-  that review.
+  Q_T2 has finished: replay the calibration's three Rust
+  `122_gemm_blocked_d` solutions, plus Q38U-T2's (its source is
+  recovered in the sealed `q38u-t2-integrity-2026-11-23.md`; it is
+  excluded, so a verdict changes no score), on the rig under the proposed
+  rule (calibration report §6), when the rig's CPU is free.
+- [x] **Rescan the calibration's integrity with the recorded command**
+  (done 2026-11-23, on the rig after Q_T2): the command in the sealed
+  `evals/audit/reviews/ds-t2-cal-integrity-2026-11-23.md`, `--tz UTC`
+  and `--until` per pass. 71 + 7 + 11 transcripts, 0 contaminated, as
+  expected; recorded in that review.
 - [x] **HG_T2 (Hy4-flash-abliterated, Mix-256G GGUF over llama.cpp RPC)
   ABANDONED 2026-11-23 (Max).** Stopped at 16/71 units, most at the wall:
   at about 5.3 tok/s per stream at 4 (21.3 aggregate) the row would
@@ -716,8 +718,9 @@ UP_8k 65 and UPA_8k 62 (series complete), with a GLM UP control as the
 first cross-model arm. Hy4-flash (NVFP4) on the Spark pair has HY4-T2 60/71
 and the ablation HY4-C 55/71 ([report](reports/V5_HY4_FLASH-2026-11-22.md)).
 Qwen3.8 27B Uncensored MTP on the RTX 5090 has its L0 baseline, board row
-Q38U-L0 at 39/71 scored (profile complete; L1/L2 diagnostics, not board rows;
-[report](reports/V5_QWEN38_RTX5090-2026-11-22.md)). The cross-model reading
+Q38U-L0 at 39/71 scored (profile complete; L1/L2 diagnostics, not board rows),
+and arm Q_T2 (T2 at one stream), board row Q38U-T2 at 52/71 scored, its best
+([report](reports/V5_QWEN38_RTX5090-2026-11-22.md)). The cross-model reading
 is in [HARNESS_NOTES.md](HARNESS_NOTES.md). The GLM status as of 2026-11-17
 (evening) follows; it was GLM only at that point. GLM's arms L0 26
 → A 31 → B 36 → C 51/71 scored (54 raw; thinking) → E 50/71, against the

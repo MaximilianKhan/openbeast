@@ -49,7 +49,26 @@ python3 evals/audit/integrity_scan.py --tz UTC --logs-dir <the rig's ~/ob-cal/.c
 ```
 
 `--tz UTC`: the container writes naive UTC timestamps. The transcripts are
-on the rig only. This rescan has **not** been run (it needs the rig's logs,
-and the rig is running Q_T2): pending in docs/TODO.md. Expected result:
-the same 71 + 7 + 11 transcripts attributed, 0 contaminated; any
-difference is a finding, not a formality.
+on the rig only.
+
+## The rescan (run 2026-11-23 ~17:35 PST, on the rig, after Q_T2)
+
+Run exactly as above, from a scratch export of origin/main at `d87211f1`
+(`~/ob-scan-d87211f1`, `git archive`; its `$D` is the committed
+diagnostics directory) with `T=~/ob-cal/.claude/worktrees/h9` (at
+`f38a29c7`, clean) and `--json /tmp/cal-rescan.json`.
+
+Result, as expected:
+
+- `CAL`: 71 transcripts, 71 units, 71 scored rows, 0 unattributed,
+  **0 contaminated**. Attempts only: `168_linearizability_kv_d`
+  (`web_search`, refused), `173_taskgroup_cancel` (`fetch`, refused).
+- `R1`: 7 transcripts, 7 units, 0 unattributed, **0 contaminated**.
+  Attempt only: `173_taskgroup_cancel` (`fetch`, refused).
+- `R2`: 11 transcripts, 11 units, 0 unattributed, **0 contaminated**.
+  Attempts only: `168_linearizability_kv_d` (`web_search`, refused; the
+  unit passed), `173_taskgroup_cancel` (`fetch`, refused).
+
+No shell network access in any of the three passes. The calibration's
+integrity result now rests on a recorded command, not only on the
+report's account; the TODO item is closed.

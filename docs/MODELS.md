@@ -18,14 +18,16 @@ variants trade a little accuracy for 30–50% more speed per token. The DGX
 Spark pair serves its own models (below); its default, DeepSeek-V4.1-Flash
 (Mia EXL3), leads the v5 board.
 
-**The default's v5 result (2026-11-22):** 39/71 scored (40 raw), SCORE
-63.3, on the bare L0 profile (harness10, thinking on, reasoning budget
-20480), #4 on the [v5 board](RESULTS.md#v5-leaderboard--best-configuration-per-model)
-by SCORE. Four units were lost to llama-server's HTTP 500 on a truncated
-tool call and count as fails, and one pass was excluded by the integrity
-scan. It was driven from the rig's eval-host container, a harness host not
-yet calibrated against the Mac that drove the Spark rows. The profile's L1
-and L2 arms are running. Report:
+**The default's v5 result (2026-11-23):** 52/71 scored (54 raw), SCORE
+75.6, under campaign arm Q_T2 (T2's switches at one stream: thinking on,
+the T assists and packs, an 8,192-token per-turn cap, the act nudge, wall
+×2; harness9), #4 on the [v5 board](RESULTS.md#v5-leaderboard--best-configuration-per-model)
+by SCORE, single seed. Three units were lost to llama-server's HTTP 500 on
+a truncated tool call and count as fails; two passes were excluded by the
+integrity scan (the agent's shell reached the network; on Linux it has no
+network deny). The bare L0 profile (2026-11-22, harness10) scored 39/71
+(SCORE 63.3). Both were driven from the rig's eval-host container,
+calibrated against the Mac on 2026-11-23 by inference. Report:
 [V5_QWEN38_RTX5090-2026-11-22.md](reports/V5_QWEN38_RTX5090-2026-11-22.md).
 
 **Qwen reasoning budget (2026-09-09):** every Qwen-family serve script (3.6
