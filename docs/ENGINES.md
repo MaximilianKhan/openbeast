@@ -320,7 +320,7 @@ switch" means first checked when the rig switches ([TODO.md](TODO.md)).
 | Item | What the adapter does | Verified |
 |---|---|---|
 | Source at a reviewed pin, offline | Only a version in the reviewed table builds (v0.5.7 = `400b411c`); the commit id is checked after the fetch and the tree must be clean. The compile runs in the env image with `--network none`, unprivileged, `-DBASALT_MODELS=inkling2 -DCMAKE_CUDA_ARCHITECTURES=120` (the measured build, `build-basalt.sh` on the rig). Offline: `stage` / `install --from` (bare one-commit repo, the env image as a docker-save tarball, a MANIFEST with sha256 and image id), and beast-ark holds the source and the CUDA base image by digest | Tested (refusals); the measured build is live (`bin/basalt` `5dc8a63c…`); a build through the adapter: at the switch |
-| The #588 fix (upstream PR #632) | A hook: every `scripts/engines/patches/basalt-pr632-*.patch` in the checkout is applied after `git apply --check` and recorded with its sha256 (build dir `basalt-v0.5.7+pr632-<12 hex>`); none present = the pin exactly, which is what INK-T2-STOCK measured. `ENGINE_BASALT_PATCHES=none` forces the pin. **As of 2026-11-24 no such patch is on `main`**: it is coordinated with the improved Inkling arm | Tested (apply, record, refusal of a patch that does not apply) |
+| The #588 fix (upstream PR #632) | A hook: every `scripts/engines/patches/basalt-pr632-*.patch` in the checkout is applied after `git apply --check` and recorded with its sha256 (build dir `basalt-v0.5.7+pr632-<12 hex>`); none present = the pin exactly, which is what INK-T2-STOCK measured. `ENGINE_BASALT_PATCHES=none` forces the pin. **From 2026-11-24 (Max) the patch is on `main`**: `scripts/engines/patches/basalt-pr632-55f9be17.patch` (PR head `55f9be17`, body sha256 `af15ee07…`; Python server only), so a build through the adapter is the pin plus it; the rig's eval serves use the same patch in a copy of the measured build tree (`scripts/engines/basalt-apply-pr632.sh`, engine binaries unchanged). Review: [Strata report §16](reports/STRATA_INKLING_5090-2026-11-23.md#16-openbeasts-local-patch-for-upstream-588-pr-632) | Tested (apply, record, refusal of a patch that does not apply); **live**: the patched tree served on the rig 2026-11-24, #588 probe 0 empty of 16 where the pin gave 5, conformance PASS c=1 and c=4 (Strata report §16.6) |
 | Python side pinned | No venv and no PyPI: the server runs the env image's distro `python3`. `scripts/engines/basalt/Dockerfile` pins the base by digest, every Ubuntu package by one archive snapshot (`20261124T013100Z`, when the measured image was built), and the six server packages to the exact versions the measured rows ran on (python3 3.12.3-0ubuntu2.1, jinja2 3.1.2-1ubuntu1.3, markupsafe 2.1.5-1build2, regex 0.1.20221031-2build1, psutil 5.9.8-2build2, pil 10.2.0-1ubuntu1.5); the adapter re-reads them from the built or loaded image and refuses a mismatch | Tested (the check); the Dockerfile build itself: at the switch (the measured image was built from the live archive with the same package list) |
 | No DNS, no route out | A user bridge `openbeast-basalt-net` with `enable_ip_masquerade=false` (no NAT) and `--dns 127.0.0.1` (Docker's resolver gets no upstream). **Proven at every launch:** a probe container with the server's exact sandbox flags must fail to resolve example.com, huggingface.co and github.com and fail to connect to 1.1.1.1:443 and 8.8.8.8:53, or the server is not started. An existing network of that name with NAT is refused | Live: the same bridge + `--dns 127.0.0.1` made the probe fail on three eval serves (V5 Inkling report §10.1); tested: the probe gates the launch |
 | Port on 127.0.0.1 only | `-p 127.0.0.1:<port>:<port>`; any other `INFERENCE_URL` host refuses (remote clients go through beast-gate) | Live (the eval serves); tested |
@@ -336,9 +336,10 @@ switch" means first checked when the rig switches ([TODO.md](TODO.md)).
 Readiness is Basalt's `/health`: 200 with `status ok`, `loaded true` and
 `service basalt` (`serve/handler.py:415-421` at the pin). Still open, not
 part of §15.8: the image is a full build image (compilers, git), more than a
-serve needs; a slim serve image is a follow-up. Basalt's own `serve/tests`
-have not been run against the distro package set (conformance and the
-thinking probes passed on it, §11.2).
+serve needs; a slim serve image is a follow-up. Basalt's whole `serve/tests`
+has not been run against the distro package set (conformance and the
+thinking probes passed on it, §11.2); its Inkling dialect and thinking-budget
+tests have (28 OK in the measured image, with the #632 patch; Strata report §16.6).
 
 **History.** I_T2 (2026-11-24) did not justify switching (49/71 against
 Qwen3.8's 52/71); the ablations brought the stock pack to 53/71, level with
@@ -347,7 +348,6 @@ accepted 88.7% of drafted tokens on the stock arm; decode 444 tok/s over
 all replies). The wrap-up kept Qwen3.8 pending an improved arm
 (DECISIONS-2026-11-24 §6); Max made the stock Inkling the default the same
 day (§10). [Report](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md).
-
 ## Evaluated, not adopted
 
 Engines measured on our hardware and deliberately left out of the matrix.

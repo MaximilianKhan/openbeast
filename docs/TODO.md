@@ -454,7 +454,39 @@ DeepSeek's UP on the same harness
     (53/71), `I_UP8k` launched 10:25:27. A log saver
     (`~/openbeast-runs/basalt-logsaver.sh`) kept each container's server log
     in `~/openbeast-runs/basalt-server-logs/`.
-- [x] **Basalt code review** done 2026-11-23 (read only, the Strata report
+- [x] **DONE 2026-11-24 14:28 PST: `I_UP8k`** (the queue's last arm,
+  `QUEUE DONE`, `RESTORE OK`): 49/71, the same count as `I_T2`; its
+  forced-act turn made a call in 18 of 68 turns (`enable_thinking: false`
+  is not a hard switch on Inkling). Read in
+  [the Inkling report §12](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md#12-the-improved-arm-i_t3-2026-11-24).
+  Not on the board yet (wrap-up: sealed integrity review, `dlsym` replay).
+  Its scan flags `163_bigint_divmod_c`: a `find /` listed the reference
+  file names under the mounted tree, reading them was refused by the eval
+  guard, the unit failed.
+- [ ] **READY, not launched (Max launches): arm `I_T3`, Inkling's improved
+  composite** ([DECISIONS-2026-11-24 §12](reports/DECISIONS-2026-11-24.md#12-the-improved-inkling-arm-i_t3-turns-cap-patch)):
+  `I_T2_stock` (the stock pack, §8) + `--turns-per-wall-s 5` + a 16,384
+  cap + `--answer-room 8192` + the PR #632 patch (§11). Launch on the rig:
+  `setsid nohup ~/openbeast-runs/ink-I_T3-run.sh > ~/openbeast-runs/ink-I_T3-run.out 2>&1 < /dev/null &`
+  (`PACK=derisked` in front runs it on the Derisked pack instead). It
+  checks the queue is done and no eval runs, the trees (`~/ob-ink3` at
+  this PR's merge, `~/ob-ink3/.claude/worktrees/h9` at `f38a29c7`, era
+  `036638dd`), the image and the patched tree's hashes; stops the default
+  stack and restores it on exit; gates on the serve's args, mount, DNS
+  fix, a chat and a #588 probe; keeps the server log in
+  `~/openbeast-runs/basalt-server-logs/basalt-I_T3-<ts>.log`. ETA
+  UNVERIFIED ~8-10 h. After: integrity scan, `capped_turns.py`,
+  `evals/audit/basalt_log.py` on the kept log, the `dlsym` procedure, the
+  paired tests against `I_T2_stock` and Q38U-T2 (report §12 recipe), then
+  §6's switch rule. Follow-ups `I_T3_t15`, `I_T3_8k` and a seed repeat only
+  with Max's go.
+- [ ] **Next era (runner): do not execute a tool call from a reply that
+  ended `length`.** Basalt returns a call the cap cut with its arguments
+  closed into valid JSON, and the runner runs it: 51-82 truncated
+  heredocs per Inkling arm (report §12.2). Return "your call was cut by
+  the output cap: re-issue it whole, or split it" instead, as a model-turn
+  error (with HARNESS_NOTES next-era (a), the llama.cpp side of the same
+  fault).- [x] **Basalt code review** done 2026-11-23 (read only, the Strata report
   [§15](reports/STRATA_INKLING_5090-2026-11-23.md#15-basalt-security-and-supply-chain-review)):
   no malware, telemetry or credential access, no network code in the
   engine; OK to keep serving `I_T2` in its sandbox.
@@ -467,8 +499,8 @@ DeepSeek's UP on the same harness
   probe that gates every launch; `/tmp` is noexec and PIDs and memory are
   limited (unverified live); the Python side is a pinned distro-package
   image (`scripts/engines/basalt/Dockerfile`); the #588 fix is a hook that
-  applies `scripts/engines/patches/basalt-pr632-*.patch` when that file
-  lands (it is not on `main` yet: the improved arm's agent adds it). The
+  applies `scripts/engines/patches/basalt-pr632-*.patch` (**on `main` from
+  2026-11-24**: `basalt-pr632-55f9be17.patch`, DECISIONS-2026-11-24 §11). The
   server log: the adapter runs the container in the foreground, so Basalt's
   log goes to the stack's inference log like llama-server's (no
   `docker logs` needed).
@@ -508,14 +540,22 @@ DeepSeek's UP on the same harness
   `qwen38-best` application was). Rollback if any check fails: the
   MODELS.md block (Qwen3.8 on llama.cpp, `qwen38-best`).
 - [ ] **Basalt after the switch**: the #632 patch through the adapter's hook
-  once its file is on `main` (a reinstall builds `basalt-v0.5.7+pr632-…`;
+  (its file is on `main` from 2026-11-24; a reinstall builds `basalt-v0.5.7+pr632-…`;
   rerun the #588 reproduction, `max_tokens` 3000 and
   `reasoning_budget_tokens` 400, before trusting a budget wrap), and the
   profile's `ANSWER_ROOM` per that arm's decision; a re-pin to an upstream
   release that merges #632 (a new review row); Basalt's own `serve/tests`
   once against the distro package set; a slim serve image (the env image
   carries the compilers).
-- [ ] **Strata forces Inkling's thinking off** (`HAS_THINKING = False`,
+- [ ] **Drop the local PR #632 patch when upstream merges it**: check
+  `gh api repos/jesdga95/basalt/pulls/632 --jq '{state,merged,merge_commit_sha}'`
+  (open, not merged on 2026-11-24 ~17:00Z). When merged: re-pin the adapter
+  to a reviewed release that contains it (a new review row), re-run the
+  #588 probe (`scripts/engines/basalt_probe_588.py` with
+  `scripts/engines/probes/probe-163rs-it39.json`, the one that reproduces
+  it), then remove `scripts/engines/patches/basalt-pr632-55f9be17.patch`,
+  `scripts/engines/basalt-apply-pr632.sh` and the rig's
+  `inkling-v5.sh --patch` (DECISIONS-2026-11-24 §11).- [ ] **Strata forces Inkling's thinking off** (`HAS_THINKING = False`,
   every reasoning effort normalized to `"none"`, in
   `terminal/strata_control/inkling_family.py` and
   `terminal/serve/inkling_dialect.py` at `6a6db7ff`). So Strata cannot serve

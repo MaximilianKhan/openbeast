@@ -1184,3 +1184,192 @@ PR `https://github.com/jesdga95/basalt/pull/632`; the pack repo
    flag of `basalt-serve.sh` plus items 1 and 3, the offline path staged
    per the offline rule, and an `I_T2` result that justifies switching from
    Qwen3.8.
+
+## 16. OpenBeast's local patch for upstream #588 (PR #632)
+
+> **Decided 2026-11-24 (Max): apply Basalt PR #632 as our local patch
+> whenever we serve Inkling on Basalt, until upstream merges it.** Reviewed
+> 2026-11-24 ~09:00-10:00 PST, read only, from the §15 review clone
+> (`git fetch origin pull/632/head`). Decision record:
+> [DECISIONS-2026-11-24.md §6](DECISIONS-2026-11-24.md#6-basalt-pr-632-as-our-local-patch-for-inkling).
+> This closes §15.8 item 2 by a local patch rather than a re-pin.
+> Validated live on the rig 2026-11-24 14:29-15:01 PST (§16.6).
+
+### 16.1 What it is
+
+| | |
+|---|---|
+| Upstream | `jesdga95/basalt` PR #632, "inkling2: open answer block after thinking-budget wrap-up", author `giveen`, opened 2026-11-23 21:36Z, **open, not merged** at 2026-11-24 ~17:00Z (`gh api repos/jesdga95/basalt/pulls/632`: `state open, merged false, mergeable_state clean`); closes issue #588 (open) |
+| Head (pinned) | `55f9be172f247e50b623295662e2a5babbfbeeaa`, the PR's only commit (2026-11-23 21:35:26Z) |
+| Merge base | `8ef6bdc6897a9554adaf300e874208308c96e87a` (2026-11-23, older than our pin) |
+| Upstream review | the owner asked for the bot review (`/review`, 01:23Z); `basalt-code-review-bot` (an LLM): "Verdict: Product decision … No findings". No human review, no merge |
+| Our file | [`scripts/engines/patches/basalt-pr632-55f9be17.patch`](../../scripts/engines/patches/basalt-pr632-55f9be17.patch): a provenance header, then `git diff --full-index 8ef6bdc6 55f9be17` |
+| Patch sha256 | body (from the first `diff --git` line): **`af15ee07ecddababe54b57ae68b78b0d526602156332333ae50ba3f36748c0cd`**; `gh pr diff 632` differs only in the abbreviated `index` lines |
+| Applies to our pin | exactly: the four pre-image blobs are v0.5.7's own (`git rev-parse 400b411c:<file>` = the patch's `index` pre-images), so the patched files are byte-identical to the PR head's (`cbb44d7b` `serve/models/__init__.py`, `ed946aab` `serve/models/inkling2.py`, `77f27530` `serve/service.py`, `528caf51` `serve/tests/test_inkling2_dialect.py`). Building the PR head itself would not do: its base is older than v0.5.7 (173 files differ from the pin) |
+| Size | 4 files, +32 / −2: two behavioural lines in `service.py`, one class attribute each in `models/__init__.py` and `models/inkling2.py`, one regression test |
+
+### 16.2 The change, line by line
+
+1. `serve/models/__init__.py:12`: `Dialect.answer_lead = ""`, a new
+   attribute every dialect inherits. Empty, so DeepSeek, Qwen and Hy4 are
+   unchanged (`reasoning_close + ""` is what they had).
+2. `serve/models/inkling2.py:508`: `Inkling2.answer_lead = HEADER + TEXT`,
+   i.e. `<|message_model|><|content_text|>`, the template's own opening of
+   an answer block.
+3. `serve/service.py:1687` (`ended_thinking`: the model ended its turn
+   while still thinking) and `:1695` (`wrap`: the thinking budget, the
+   loop cutter or `/v1/answer_now` closed the thinking): the tokens the
+   server appends become `reasoning_close + (force or answer_lead)` instead
+   of `reasoning_close + (force or "")`. `force` is the opening of a
+   forced tool call (a named `tool_choice`); when one is set, nothing
+   changes. Our runner never sends a named `tool_choice`, so on every eval
+   wrap Inkling now gets `<|end_message|><|message_model|><|content_text|>`
+   and continues inside an answer block, where it cannot open a second
+   thinking block (the #588 path). The appended tokens go through the
+   same `parser.feed` and count against `max_new` as before (the room
+   check right after is unchanged).
+4. The test scripts an engine that reopens thinking unless the continuation
+   prompt ends in `HEADER + TEXT`, and asserts the second prompt ends that
+   way and the answer arrives.
+
+### 16.3 Safety
+
+- **Python only, in `serve/`.** No C++, CUDA or build file; no new import,
+  file, network, subprocess or permission. Nothing in it reads input from
+  the request; the appended text is two fixed special tokens of the
+  model's own template.
+- **The engine binary is not rebuilt.** The server is not in the image:
+  `basalt-serve.sh` mounts the whole build tree read-only at `/opt/basalt`
+  and runs `/opt/basalt/bin/basalt serve`, which execs `python3 -m
+  serve.server` from that tree (§15.2); the image `ob-strata-env:2026-11-23`
+  supplies only `python3` and its distro packages (§15.3). So a copy of the
+  tree with the patch applied is the whole change, and its `bin/` must hash
+  the same as the unpatched tree's (checked by the apply script).
+- **Sandbox unchanged**: the same `basalt-serve.sh` flags (§15.4, plus the
+  `--dns 127.0.0.1` fix); only the mounted tree differs.
+
+### 16.4 Behaviour, and the risk we accept
+
+What changes is what Inkling may write after a forced close: an answer
+text block first, rather than whatever block it picks. Measured on the
+unpatched server in `I_T2_s1` (all 1,911 agent replies matched to the
+server log by timestamp; `docker logs` saved by the queue's log saver,
+`~/openbeast-runs/basalt-server-logs/basalt-20261124-022403-131da79751c8.log`):
+
+| After a budget wrap (491 replies) | n |
+|---|---:|
+| ended `stop` with a tool call (the model opened a call block itself) | 253 |
+| ended at the cap, empty: no content, no call (**#588**) | 167 |
+| ended at the cap with a call the cap cut | 38 |
+| ended `stop` with nothing | 33 |
+
+The server's own "no answer" count for the arm was 167, the same as the
+transcripts' empty capped turns. So #588 took 34% of the wraps and 8.7% of
+all replies. **The risk**: under the patch the 253 wraps that went
+straight to a call must now write some text first and then open a call
+block. The model does write text and then a call in one turn: in `I_T2_s1` all
+219 replies that carried text also carried a tool call, logged after the
+text (the runner logs `assistant` before `tool_call`),
+and the server parses a call after a text block (and an XML call inside
+the text, §15.6 item 4). Whether the call rate after a wrap holds is
+checked live before the improved arm starts (§16.6), against the
+unpatched server on the same requests.
+
+### 16.5 Tests (offline, before any serve)
+
+- On the Mac, the pin plus the patch, Python 3.15 venv with jinja2 3.1.6,
+  markupsafe 3.0.3, regex, numpy, pyyaml (no pypdf, no pillow):
+  `PYTHONPATH=.:tools python -m unittest serve.tests.test_inkling2_dialect
+  serve.tests.test_thinking_budget_dialects`: **28 tests, OK** (the PR's
+  own claim, reproduced). The whole `serve/tests` (`unittest discover`):
+  pin 1,327 run, patched 1,328 run, **the same 23 failures and errors in
+  both** (all in `test_documents` and `test_vision_pixel_budget`: pypdf and
+  pillow absent), so the patch adds one passing test and breaks none.
+- On the rig, in the serving image (`--network none`, read-only, the
+  patched tree mounted): `serve.tests.test_inkling2_dialect`, recorded in
+  §16.6.
+
+### 16.6 Applied on the rig, and validated (2026-11-24 14:29-15:01 PST)
+
+After `QUEUE DONE` (14:28:14; `I_UP8k` ran on the unpatched tree like the
+other three ablations). Files in `~/openbeast-runs/ink-I_T3-prep/` (the
+patch, `basalt-apply-pr632.sh` sha256 `3471448a…`, the probe `basalt_probe_588.py`
+`7847075b…`, the validation scripts `pr632-validate{,2,3,4}.sh`) and
+results in `~/openbeast-runs/inkling-perf-2026-11-23/results/pr632-validation/`
+(`probe-*.json`, `conformance-pr632-c{1,4}/`); each serve's log in
+`…/logs/basalt-serve-20261124-14{3332,3645,3820,4405,4915,5321,5658}.log`
+and `-150059.log`.
+
+**The tree.** `basalt-apply-pr632.sh build/basalt-tree build/basalt-tree-pr632`
+(offline; 22:29:34Z): the four patched files equal the PR head's blobs,
+`bin/` unchanged (`bin/basalt` `5dc8a63ca0089bf8eac749b22da764349d648b7f11f881a659d2511aede84abf`,
+as built). `build/basalt-tree-pr632/OPENBEAST-PATCH.txt` records:
+
+| File | sha256 |
+|---|---|
+| `serve/models/__init__.py` | `95c8e6500746312f00de8482f1bbcc2f2f923d3d203292cab35da69f5259292f` |
+| `serve/models/inkling2.py` | `5b41eec104fedf113dabe0cba137f7552bdd9ba5f6a4caaee418469c5bc499e9` |
+| `serve/service.py` | `8ca03d3466883d3ed906e9a63722bc99f7ef28958ab6affe86222776d4d0983e` |
+| `serve/tests/test_inkling2_dialect.py` | `994a877ff7d7ac9681798d33f60626680fb36364db009665c143c58732bef61e` |
+
+**Basalt's own test, in the serving image.** `docker run --rm --network
+none --read-only --user 1000:1000 --cap-drop ALL … ob-strata-env:2026-11-23
+python3 -m unittest serve.tests.test_inkling2_dialect
+serve.tests.test_thinking_budget_dialects` with the tree mounted at
+`/opt/basalt`: patched **28 tests OK**, unpatched 27 OK (the image's
+distro Python packages, §15.3).
+
+**Serve scripts.** `scripts/basalt-serve.sh` now takes `BASALT_TREE`
+(default: the unpatched tree) and `inkling-v5.sh start [pack] [--patch
+pr632|none] [basalt args…]` defaults to `--patch pr632` and saves the
+server log on `stop` (`logs/basalt-serve-<ts>.log`); originals kept as
+`*.orig-20261124`. Changed only after `QUEUE DONE`.
+
+**The probes** (`scripts/engines/basalt_probe_588.py`; requests in
+`scripts/engines/probes/`, rebuilt from `I_T2` / `I_T2_s1` turns that went
+empty on the unpatched server, `rebuild_deep_probes.py` says how; the
+Derisked pack; non-streamed, temperature 0.6, as the runner sends):
+
+| Round | Serve | Requests × n | Empty (#588) | Tool call | Server: wraps / "no answer" |
+|---|---|---|---:|---:|---|
+| 1 | unpatched, `auto` | 2 turn-2 prompts × 6 + the issue's shape × 6 | 0 / 18 | 12 / 12 agent | 16 / 0 |
+| 1 | **patched**, `auto` | the same | 0 / 18 | 12 / 12 agent | 16 / 0 |
+| 2 | unpatched, `auto` | 6 prompts (4 deep turns) × 4 | **3 / 24** (all `163rs-it39`, 3 of 4) | 21 / 24 | 15 / 3 |
+| 2 | **patched**, `auto` | the same | **0 / 24** | 24 / 24 | 17 / 0 |
+| 3 | unpatched, `auto` | `163rs-it39` × 12 | **2 / 12** | 10 / 12 | 10 / 2 |
+| 3 | **patched**, `auto` | the same | **0 / 12** | 12 / 12 (9 ended `length`) | 10 / 0 |
+| 4 | **patched, `--answer-room 8192`** (I_T3's serve), max_tokens 16,384 | `163rs-it39` × 12 | 0 / 12 | 11 / 12 (1 ended `length` with a call) | 7 / 1 (below) |
+| 1 | patched, `--answer-room 8192`, max_tokens 16,384 | 2 turn-2 prompts × 3 | 0 / 6 | 6 / 6 | |
+
+- **The fix works where #588 reproduces.** Only `probe-163rs-it39`
+  (`I_T2`'s `163_bigint_divmod_e`, turn 39, 88K characters of history)
+  reproduced it: unpatched 5 empty of 16, patched 0 of 16 (Fisher exact,
+  two-sided, p 0.043). Shallow prompts wrap without it on either tree.
+- **The call rate after a wrap held** (the §16.4 risk): every patched
+  agent reply in rounds 1-3 made a tool call (48 / 48), against 43 / 48
+  unpatched; the patched replies write a line of text first (58-165
+  characters) and then the call, as expected.
+- **At `--answer-room auto` the patch moves the failure to a cut call.**
+  In round 3, 9 of the 12 patched replies ended at the 8,192 cap still
+  writing their call in the 2,048 tokens left after the wrap (unpatched:
+  5). That is the §11.3 cut-call harm of the Inkling report, and why
+  `I_T3` also gives the answer 8,192 tokens: in round 4 one reply of 12
+  ended at the cap with a call.
+- **One residual shape.** Round 4's eleventh reply (index 10)
+  answered with 11,224 characters of text after the wrap and then opened
+  a new thinking block and thought to the 16,384 cap; the server logged
+  "no answer" (it ended inside thinking), the client got the text, no
+  call. The patch stops the model reopening thinking right after the
+  close, not after an answer it chose to end. 1 of 12 here.
+- **Conformance** on the patched `--answer-room 8192` serve
+  (`scripts/backends/conformance.sh` from `~/ob-ink2`): **c=1 PASS, c=4
+  PASS** (tools, tool_result, parallel, max_tokens; 4 / 4 concurrent).
+- **The default stack** was stopped for each round and restored after
+  (`RESTORE OK`, gate 200 and a chat, at 14:38:27, 14:49:22, 14:57:06 and
+  15:01:06).
+
+### 16.7 When to drop it
+
+When `gh api repos/jesdga95/basalt/pulls/632 --jq .merged` is `true` (or
+#588 is fixed another way) and we re-pin to a reviewed release past it.
+TODO in [TODO.md](../TODO.md).

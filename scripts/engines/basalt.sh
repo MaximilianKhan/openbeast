@@ -161,9 +161,10 @@ _eng_basalt_fetch() {
 # ── the #588 fix: the PR #632 patch hook ───────────────────────────────────
 # _eng_basalt_patches — the patch files a build applies, sorted, one per line:
 # scripts/engines/patches/basalt-pr632-*.patch when present, nothing under
-# ENGINE_BASALT_PATCHES=none. As of 2026-11-24 no such file is on main: a
-# build is the reviewed pin exactly. The patch is coordinated separately
-# (the improved Inkling arm); it lands as a reviewed file in this checkout,
+# ENGINE_BASALT_PATCHES=none. From 2026-11-24 (Max) main carries
+# basalt-pr632-55f9be17.patch (upstream PR #632 head 55f9be17, Python server
+# only; review: docs/reports/STRATA_INKLING_5090-2026-11-23.md section 16),
+# so a build is the reviewed pin plus it. A reviewed file in this checkout,
 # never a download.
 _eng_basalt_patches() {
   local mode f
