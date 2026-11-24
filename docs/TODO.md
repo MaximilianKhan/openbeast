@@ -325,7 +325,8 @@ DeepSeek's UP on the same harness
   rerun; its Rust `122_gemm_blocked_d` hit (1) and was rebuilt and
   checked by the procedure ([`MODEL_CAMPAIGN.md`, eval host in a
   container](MODEL_CAMPAIGN.md#eval-host-in-a-container-linux)):
-  `validator_notes` "verdict not measured" (report §6).
+  `validator_notes` "verdict not measured" (report §6), since replayed
+  under the proposed rule: verdict PASS (the item below).
   Still open: the Linux network deny (HARNESS_NOTES next-era (d)) before
   more rig rows.
 - [ ] **Next suite/era: the `122_gemm_blocked` `dlsym` rule** (Rust
@@ -334,11 +335,21 @@ DeepSeek's UP on the same harness
   libc exports `dlopen` and C token pasting dodges the lint; add the C
   token-pasting test;
   [HARNESS_NOTES](HARNESS_NOTES.md#next-era-the-122_gemm_blocked-dlsym-rule-on-linux-2026-11-23)).
-  Q_T2 has finished: replay the calibration's three Rust
-  `122_gemm_blocked_d` solutions, plus Q38U-T2's (its source is
-  recovered in the sealed `q38u-t2-integrity-2026-11-23.md`; it is
-  excluded, so a verdict changes no score), on the rig under the proposed
-  rule (calibration report §6), when the rig's CPU is free.
+  The replays below are evidence for it: four threaded Rust solutions
+  that the current rule stops are correct.
+- [x] **Replay the four `122_gemm_blocked_d` Rust solutions under the
+  proposed `dlsym` rule** (done 2026-11-23, on the rig after Q_T2): the
+  calibration's cal, r1 and r2 attempts and Q38U-T2's r1 attempt. Each
+  final `gemm.rs` was recovered from its transcript (writes and edits
+  replayed in order, r1's `sed -i` and r2's python `str.replace` shell
+  edits re-run exactly; none skipped) and validated by the harness9
+  lifecycle in the eval-host container with a patched copy of the
+  validator. **Replayed under the proposed rule: verdict PASS, all four**
+  (6 hidden cases, three runs each; the unpatched copy reproduces the
+  `imports dlsym` FAIL). No score moves: the calibration files are
+  diagnostics and Q38U-T2's unit is excluded (its `validator_notes`
+  entry now records the replay). Calibration report §5, Qwen3.8 report
+  §6.
 - [x] **Rescan the calibration's integrity with the recorded command**
   (done 2026-11-23, on the rig after Q_T2): the command in the sealed
   `evals/audit/reviews/ds-t2-cal-integrity-2026-11-23.md`, `--tz UTC`

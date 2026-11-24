@@ -23,7 +23,9 @@
   for any thread, and the `122_gemm_blocked` validator rejects any binary
   that imports `dlsym`, so a threaded Rust GEMM stops at the binary check
   on a Linux host, unscored. `122_gemm_blocked_d` stopped this way in all
-  three attempts. (2) The agent's shell has no network deny on Linux
+  three attempts; replayed under the proposed rule, all three pass (§5),
+  so the bug cost the calibration arm one unit (61/71 under the proposed
+  rule). (2) The agent's shell has no network deny on Linux
   (HARNESS_NOTES next-era (d)); it cost board row `Q38U-L0` one excluded
   pass; the integrity scan flagged no shell network access in these passes. The other differences are on
   wall-bound hard units, most of which flip between attempts on the rig
@@ -31,7 +33,8 @@
   them, `173_taskgroup_cancel` and `183_heston_little_trap` (§4).
 - **Consequence.** The rig container can be a harness host, with the two
   known effects above as caveats. Q_T2, the RTX 5090 full arm now running in the same container on
-  the frozen harness9 tree, is affected only if its Rust GEMM uses threads
+  the frozen harness9 tree, was affected: its r1 attempt at the unit
+  stopped at the same check, and it too passes under the proposed rule
   (§5).
 
 ## 2. Setup
@@ -200,10 +203,68 @@ threads (pthreads in glibc ≥ 2.34) and Go (`CGO_ENABLED=0`, static) import
 no `dlsym`.
 
 **What the three failures do and do not say.** The validator stopped at
-the binary check, so the solution's correctness was never measured. The
-three rig attempts are unscored rather than wrong. Whether they would have
-passed is unknown until they are replayed under a corrected rule (not done:
-§6).
+the binary check, so the solution's correctness was never measured by the
+run. The three rig attempts were unscored rather than wrong. The replay
+below measured it.
+
+**The replay under the proposed rule (2026-11-23): all three PASS, and
+Q_T2's r1 attempt too.** Four `122_gemm_blocked_d` solutions had stopped
+at the binary check: the calibration's three (cal, r1, r2) and Q_T2's r1
+attempt ([Qwen3.8 report](V5_QWEN38_RTX5090-2026-11-22.md) §6). Each was
+replayed on the rig, after Q_T2, with the rig otherwise idle except for
+its daily Qwen3.8 serve.
+
+| Attempt | Transcript (on the rig) | Final `gemm.rs` recovered from | sha256 (first 16) | Original rule | Proposed rule |
+|---|---|---|---|---|---|
+| cal | `~/ob-cal/.claude/worktrees/h9/agents/logs/agent-20261123-005732-859221fe.jsonl` | 2 `write_file` + 2 `edit_file` | `935d53e4a5a24b92` | FAIL, `imports dlsym` | **PASS**, 6 hidden cases (3 of 3 runs) |
+| r1 | `…/agent-20261123-061158-c2800d7d.jsonl` | 1 `write_file` + 4 `edit_file` + 3 `sed -i` | `219083dc77b7fc38` | FAIL, `imports dlsym` | **PASS**, 6 hidden cases (3 of 3) |
+| r2 | `…/agent-20261123-081207-77ab0c71.jsonl` | 1 `write_file` + 4 python `str.replace` heredocs | `edef0400ce2441f1` | FAIL, `imports dlsym` | **PASS**, 6 hidden cases (3 of 3) |
+| Q_T2 r1 | `~/ob-q38/.claude/worktrees/h9/agents/logs/agent-20261123-231113-84abeed3.jsonl` | 1 `write_file` + 15 `edit_file` | `285e627eedfb2b4a` | FAIL, `imports dlsym` | **PASS**, 6 hidden cases (3 of 3) |
+
+- **Recovering the source.** The `write_file` and `edit_file` calls on
+  `/tmp/eval_gemm/gemm.rs` were replayed in transcript order with the
+  harness's own semantics (`agents/tools.py`: an exact `old_string` that
+  must occur once). Every `old_string` matched exactly once, and every
+  post-edit window the tool printed matched the replayed file line for
+  line (2, 4, 0 and 15 windows). The shell edits are deterministic and
+  were reproduced by re-running exactly those commands in the eval-host
+  container: r1's three GNU `sed -i` (transcript lines 25, 37, 44) and
+  r2's four `python3 - <<'EOF'` heredocs of `str.replace` (lines 18, 21,
+  24, 27; every pattern matched). r1's own later `sed -n '50,80p' gemm.rs`
+  and `grep -n cp.add gemm.rs` outputs match the replay byte for byte.
+  No other command wrote `gemm.rs` (the rest only built it, ran it, or
+  wrote other files). The tool-write counts match each file's
+  `harness.diag_exposure` (`writes` 4, 5, 1 and 16). Q_T2's sha256 is the
+  one the sealed rebuild-and-check recorded (`285e627e…`). None was
+  skipped.
+- **The validator.** The harness9 tree's own lifecycle (`run_eval`:
+  cleanup, setup, `run_pre_validate`, `run_validation` at timeout scale
+  2.0, the runs' `wall_scale`, cleanup), run in
+  `openbeast-eval-host:8d1e28442569` through
+  `scripts/eval-host-container.sh run` (`nice -n 10`), so the hidden
+  cases, the CPU budget (12 s, fixed) and the isolation are the unit's.
+  The only change: the unit's validation script was replaced in memory by
+  a copy whose `guard_binary` applies the proposed rule (HARNESS_NOTES
+  next-era): in the Rust variant, on ELF, an undefined `dlsym` is allowed
+  when no other undefined symbol matches `_BAD_IMPORT`. The `_BAD_DEFINED`
+  check, the `NEEDED` check, the source lint and the `/proc/<pid>/maps`
+  watch are unchanged. No task file and no era-hashed file was edited.
+  The replay script, the patched validator copy and the four sources are
+  on the rig in `~/ob-cal/.claude/gemm-replay/`.
+- **The control.** With the unpatched validator, all four reproduce the
+  recorded line (`the multiply must be your own code: the binary imports
+  dlsym`), so the recovered sources build the binaries the runs judged.
+  Under the proposed rule each printed `allowed dlsym` (the only matching
+  import) and then `OK: 6 hidden cases`, in each of three runs; the
+  N = 2048 case's seed and checked rows are fresh on every run.
+
+**What it changes.** Replayed under the proposed rule: verdict PASS, for
+all four. Nothing on the board moves: the calibration files are
+diagnostics, and Q_T2's unit is excluded as contaminated (its
+`validator_notes` entry now records the replay). For the calibration, the
+`dlsym` bug cost the arm one unit: under the proposed rule cal is 61/71
+(against `DS-T2`'s 65), r1 3/7 and r2 6/11. The files themselves are not
+rewritten.
 
 **Committed rows hit.** None of the committed v5 board rows. Every Spark
 row ran from the Mac. The only other `dlopen`/`dlsym` failures on the
@@ -226,7 +287,9 @@ L0's row is `server_error`.
 
 **Q_T2.** Q_T2, the RTX 5090 default's T2 arm, runs in the same container
 on the frozen harness9 tree, so it has the same rule. Its
-`122_gemm_blocked_d` is affected only if its Rust GEMM uses threads.
+`122_gemm_blocked_d` is affected only if its Rust GEMM uses threads. It
+was: Q_T2's r1 attempt stopped at the same check, and it passes under the
+proposed rule (the replay above).
 
 **What is done about it.**
 
@@ -239,8 +302,8 @@ on the frozen harness9 tree, so it has the same rule. Its
   has no row or file yet, so no entry is added now. When a Linux-host run
   lands on the board with a Rust `122_gemm_blocked_*` row whose failure
   line is `the binary imports dlsym`, the verdict was not measured: the
-  validator stopped at the binary check on std's `dlsym`. Prefer the §6
-  replay, which gives a verdict. Without it, rebuild the binary (the
+  validator stopped at the binary check on std's `dlsym`. Prefer the
+  replay (above), which gives a verdict. Without it, rebuild the binary (the
   validator built it in a private directory that no longer exists) and
   check both of its symbol tables before writing any note. The note says
   "verdict not measured", never "false FAIL": unlike `GLM-E`'s replayed
@@ -250,13 +313,10 @@ on the frozen harness9 tree, so it has the same rule. Its
 
 ## 6. Not done
 
-- **A replay of the three Rust solutions under a corrected rule.** It would
-  turn "unscored" into a verdict. It needs a scratch copy of the harness9
-  tree with the proposed rule, run on the rig. It was not run because the
-  N = 2048 case is a multi-threaded 12 s CPU job and Q_T2 was running on
-  the same box. Two of the three final sources were edited through shell
-  commands, so rebuild them from the agent workspace snapshot or the
-  transcript with care. Do it after Q_T2 finishes.
+- ~~A replay of the three Rust solutions under a corrected rule.~~ Done
+  2026-11-23 after Q_T2 finished, with Q_T2's r1 attempt as a fourth: all
+  four PASS under the proposed rule (§5, "The replay under the proposed
+  rule").
 - **A second full arm on the rig.** One calibration arm plus two partial
   passes is what was run. A clean full arm would give a like-for-like
   second figure against 65. It is not needed for the verdict, because every
@@ -267,6 +327,8 @@ on the frozen harness9 tree, so it has the same rule. Its
 - `evals/boards/v5/diagnostics/eval-deepseek-v4-1-flash-v5-thinking-first-t2-20261122-230335.json`: the calibration arm.
 - `evals/boards/v5/diagnostics/eval-deepseek-v4-1-flash-v5-thinking-first-t2-rerun-20261123-051155.json`: r1.
 - `evals/boards/v5/diagnostics/eval-deepseek-v4-1-flash-v5-thinking-first-t2-redo-fails-20261123-071205.json`: r2.
+- On the rig: the `dlsym` replay (script, patched validator copy, the four
+  recovered sources) in `~/ob-cal/.claude/gemm-replay/`.
 - On the rig: the transcripts in `~/ob-cal/.claude/worktrees/h9/agents/logs/`,
   the campaign log in `~/ob-cal/evals/results/campaigns/v5-thinking-first-deepseek-v4-1-flash/`,
   and the run logs in `~/openbeast-runs/cal-*.out`. These result files carry

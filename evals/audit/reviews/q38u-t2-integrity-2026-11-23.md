@@ -104,9 +104,14 @@ it is also excluded above.
 
 ## Follow-up
 
-- Add this unit's source to the pending replay of the calibration's
-  three Rust `122_gemm_blocked_d` solutions under the proposed rule
-  (docs/TODO.md); a replay verdict would not change the score (the unit
-  is excluded).
+- ~~Add this unit's source to the pending replay of the calibration's
+  three Rust `122_gemm_blocked_d` solutions under the proposed rule.~~
+  Done 2026-11-23: the same source (sha256 `285e627e…`, recovered again
+  independently from the transcript) passes the 6 hidden cases under the
+  proposed rule, three runs of three; the unpatched validator reproduces
+  the `imports dlsym` stop. The `validator_notes` entry now records the
+  replay verdict. No score change: the unit stays excluded for the
+  shell's off-host read above, which a replay does not undo
+  (calibration report §5).
 - The Linux agent shell's network deny (HARNESS_NOTES next-era (d)) now
   accounts for 6 exclusions over two rig rows.
