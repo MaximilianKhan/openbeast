@@ -249,7 +249,7 @@ def test_committed_board_numbers():
     assert {k: runs[k]["passed"] for k in runs} == {
         "GLM-L0": 26, "GLM-A": 31, "GLM-B": 36, "GLM-C": 51, "GLM-E": 50, "DS-T": 61, "DS-T2": 65, "DS-Ts1": 61, "DS-T3": 65,
         "DS-U": 59, "DS-UP": 62, "DS-UPA": 59, "DS-U8k": 63, "DS-UP8k": 65, "DS-UPA8k": 62, "HY4-T2": 60, "HY4-C": 55, "Q38U-L0": 39, "Q38U-T2": 52,
-        "GLM-UP": 56, "OPUS-REF": 71}
+        "GLM-UP": 56, "INK-T2": 49, "OPUS-REF": 71}
     assert runs["GLM-C"]["passed_raw"] == 54  # 122 b/d/e excluded: contaminated (G25 scan)
     assert runs["GLM-E"]["passed_raw"] == 50  # scan clean; 122_c is a noted validator false FAIL
     assert runs["DS-T"]["passed_raw"] == 61  # scan clean (2026-11-18); first run under review 1118
@@ -267,6 +267,11 @@ def test_committed_board_numbers():
     # GLM-UP: one file, 0 lost; the first scan flagged 176_a (a fixture's own tests/), fixed: 0 contaminated
     assert (runs["GLM-UP"]["passed_raw"], runs["GLM-UP"]["excluded"]) == (56, {})
     assert round(runs["GLM-UP"]["score"], 1) == 81.9
+    # INK-T2: one file, 0 lost, scan clean; 122_d stopped at the Linux dlsym check (replayed: PASS, not adjusted)
+    assert (runs["INK-T2"]["passed_raw"], runs["INK-T2"]["excluded"]) == (49, {})
+    assert list(runs["INK-T2"]["validator_notes"]) == ["122_gemm_blocked_d"]
+    # SOLVE ties Q38U-T2 (72.31); LANG (89.09 vs 85.64) puts it above on SCORE with 3 fewer scored passes
+    assert (round(runs["INK-T2"]["score"], 1), round(runs["INK-T2"]["solve"], 2)) == (76.5, round(runs["Q38U-T2"]["solve"], 2))
     assert runs["OPUS-REF"]["passed_strict_wall"] == 68
     # the 5090's 4 units lost to llama-server's HTTP 500 on a truncated tool call
     assert runs["Q38U-L0"]["lost"] == {u: "server_error" for u in (
@@ -277,18 +282,21 @@ def test_committed_board_numbers():
     assert all(not r["lost"] for k, r in runs.items() if k not in ("Q38U-L0", "Q38U-T2"))
     best = {r["model"]: r["id"] for r in b["best"]}
     assert best == {"GLM-5.3-Flash": "GLM-UP", "DeepSeek-V4.1-Flash (Mia EXL3)": "DS-T2", "Claude Opus 5.5": "OPUS-REF",
-                    "Hy4-flash (NVFP4)": "HY4-T2", "Qwen3.8 27B Uncensored MTP (the shipped default)": "Q38U-T2"}
+                    "Hy4-flash (NVFP4)": "HY4-T2", "Qwen3.8 27B Uncensored MTP (the shipped default)": "Q38U-T2",
+                    "Inkling 2 Mini Derisked (Basalt NVFP4-MX8)": "INK-T2"}
     # the ranking, by SCORE; the reference last and unranked
     assert [(r["id"], round(r["score"], 1)) for r in b["best"]] == [
-        ("DS-T2", 94.9), ("HY4-T2", 83.4), ("GLM-UP", 81.9), ("Q38U-T2", 75.6), ("OPUS-REF", 100.0)]
+        ("DS-T2", 94.9), ("HY4-T2", 83.4), ("GLM-UP", 81.9), ("INK-T2", 76.5), ("Q38U-T2", 75.6), ("OPUS-REF", 100.0)]
     assert b["not_yet_run"] == ["Qwen3.6 27B (v4 #1)"]
     # every run names its exact weights; one weights entry per model today
     ds, glm = "dsv41f-mia-exl3-2.9bpw-eaq1.1-v2", "glm53f-mia-exl3-4bpw-tf-ablit"
     hy4, q38 = "hy4-flash-nvfp4-atakans", "qwen38-27b-uncensored-mtp-q5km"
+    ink = "inkling2-mini-blackfrost-derisked-basalt-nvfp4-mx8"
     assert {k: runs[k]["weights_id"] for k in runs} == {
         **{k: ds for k in runs if k.startswith("DS-")}, **{k: glm for k in runs if k.startswith("GLM-")},
-        "HY4-T2": hy4, "HY4-C": hy4, "Q38U-L0": q38, "Q38U-T2": q38, "OPUS-REF": "anthropic-api-claude-opus-5-5"}
-    assert [r["weights_id"] for r in b["best"]] == [ds, hy4, glm, q38, "anthropic-api-claude-opus-5-5"]
+        "HY4-T2": hy4, "HY4-C": hy4, "Q38U-L0": q38, "Q38U-T2": q38, "INK-T2": ink,
+        "OPUS-REF": "anthropic-api-claude-opus-5-5"}
+    assert [r["weights_id"] for r in b["best"]] == [ds, hy4, glm, ink, q38, "anthropic-api-claude-opus-5-5"]
     w = b["weights"][ds]
     assert (w["format"], w["bpw"], w["abliterated"], w["revision_kind"]) == ("EXL3", 2.9, False, "local")
     assert w["revision"] == "04c13f12b83d57487912d87d0f1677b076810954" and w["repo"] is None
@@ -301,6 +309,11 @@ def test_committed_board_numbers():
     q = b["weights"][q38]
     assert (q["revision_kind"], q["file_sha256"], q["abliterated"]) == (
         "file-sha256", "24780644a95f759a9aeeb228c3d852028f2fd40ce0b74d68134246ec4a959547", True)
+    i = b["weights"][ink]  # converted on the rig: no Hub repo, pinned by the pack's sha256, with its source
+    assert (i["revision_kind"], i["repo"], i["file_sha256"], i["abliterated"]) == (
+        "file-sha256", None, "d2b01bcc1fd2dc51cbcdaecb512c56d7c5db75181fee2d9b6c944e76e217a427", True)
+    assert i["derived_from"]["revision"] == "31ec2eddecfdf93c8626d9e4dfc0a2aca6070900"
+    assert "400b411c58031d064812ea21a259b2381acdaa3e" in i["engine_version"]
     # token usage (prompt, completion, units without usage), exact
     assert {k: (runs[k]["tokens"]["prompt"], runs[k]["tokens"]["completion"], runs[k]["tokens"]["missing"])
             for k in runs} == {
@@ -311,11 +324,12 @@ def test_committed_board_numbers():
         "DS-UPA": (28279120, 3264679, 0), "DS-U8k": (30429276, 2519544, 0), "DS-UP8k": (26876212, 2456141, 0),
         "DS-UPA8k": (27402927, 2520048, 0), "HY4-T2": (47921687, 1605430, 0), "HY4-C": (35144307, 1967131, 0),
         "Q38U-L0": (15413787, 3452557, 0), "Q38U-T2": (57838480, 4697822, 0), "GLM-UP": (17278440, 2144728, 0),
-            "OPUS-REF": (0, 0, 71)}
+        "INK-T2": (70883493, 5367401, 0), "OPUS-REF": (0, 0, 71)}
     assert runs["DS-T2"]["tokens"]["per_pass"] == 473490 and runs["DS-T2"]["tokens"]["total"] == 30776845
     assert runs["HY4-T2"]["tokens"]["per_pass"] == 825452 and runs["HY4-T2"]["tokens"]["total"] == 49527117
     assert runs["HY4-C"]["tokens"]["per_pass"] == 674753 and runs["HY4-C"]["tokens"]["total"] == 37111438
     assert runs["Q38U-T2"]["tokens"]["per_pass"] == 1202621 and runs["Q38U-T2"]["tokens"]["total"] == 62536302
+    assert runs["INK-T2"]["tokens"]["per_pass"] == 1556141 and runs["INK-T2"]["tokens"]["total"] == 76250894
 
 
 def test_two_quantizations_of_one_model_are_two_rows(tmp_path):
@@ -359,6 +373,27 @@ def test_weights_are_validated(tmp_path):
         assert "weights.json" in str(e)
     else:
         raise AssertionError("build accepted a run without weights")
+
+
+def test_a_locally_built_file_is_pinned_by_sha256_with_its_source(tmp_path):
+    """A pack converted on our own host (INK-T2's Basalt pack, 2026-11-24) is on no Hub repo: it is
+    a file-sha256 entry with repo null, and must name what it was built from."""
+    bd = board(tmp_path)
+    d = str(tmp_path)
+    sha = "d" * 64
+    local = {**wentry("Model N", "pack · local · stock"), "repo": None, "revision": None,
+             "revision_kind": "file-sha256", "file": "n.pack", "file_sha256": sha}
+    probs = v5_board.weights_problems(bd, {**WEIGHTS, "n-local": local})
+    assert any("n-local: a locally built file (repo null) needs derived_from" in p for p in probs)
+    local["derived_from"] = {"repo": "org/Model-N-src", "revision": "c" * 40, "relation": "converted here"}
+    assert not v5_board.weights_problems(bd, {**WEIGHTS, "n-local": local})
+    bd["runs"][2]["weights_id"] = "n-local"
+    b = v5_board.build(bd, base_dir=d, manifest=MANIFEST, weights={**WEIGHTS, "n-local": local})
+    assert v5_board.hub_url(local) is None
+    assert "pack · local · stock · [local file sha256 dddddddd](docs/RESULTS.md#weights-used)" in v5_board.render_board(b)
+    md = v5_board.render_weights(b)
+    assert f"local file `n.pack` (sha256 `{sha}`; built here, not on the Hub" in md
+    assert "[`org/Model-N-src` @ `" + "c" * 40 + "`]" in md and "`None`" not in md
 
 
 def test_docs_are_current():

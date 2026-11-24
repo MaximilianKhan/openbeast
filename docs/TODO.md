@@ -293,9 +293,23 @@ DeepSeek's UP on the same harness
 
 **Open — Inkling 2 Mini on the 5090 (2026-11-23):**
 
-- [ ] **RUNNING since 2026-11-23 20:58:42 PST: the Inkling 2 Mini v5 run,
-  arm `I_T2`** (#306: T2's switches at one stream, as Q_T2 was for Qwen3.8,
-  so the row compares with `Q38U-T2`'s 52/71). Engine and why:
+- [x] **DONE 2026-11-24 01:29 PST: the Inkling 2 Mini v5 run, arm `I_T2`,
+  board row `INK-T2`: 49/71 scored, SCORE 76.5, #4 by SCORE (one above
+  Q38U-T2's 52/71, 75.6), single seed**; 4 h 31 min, no unit lost, integrity
+  scan 0 contaminated; `122_gemm_blocked_d` stopped at the `dlsym` check
+  and replayed under the proposed rule: PASS (validator note, not
+  adjusted); 203 empty capped turns (#588) in 21 units, 17 of them fails;
+  88 capped turns still carried a tool call (lenient parsing). Paired with
+  Q38U-T2 over 65 units: 46 vs 52 (1 gained, 7 lost, p 0.07, within
+  churn). **Qwen3.8 stays the 5090 default** (decision:
+  [DECISIONS-2026-11-24](reports/DECISIONS-2026-11-24.md#1-qwen38-stays-the-rtx-5090-default-after-i_t2)).
+  Report: [V5_INKLING2_MINI_RTX5090-2026-11-24.md](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md).
+  The launcher restored the default stack (`RESTORE OK` 01:29:42, gate
+  `:8091` 200 and a chat). The Basalt server log went with the container
+  (`docker rm -f`, json-file logging), so the counts above are from the
+  transcripts (`evals/audit/capped_turns.py`). The record of the run as
+  it was launched (#306: T2's switches at one stream, as Q_T2 was for
+  Qwen3.8, so the row compares with `Q38U-T2`'s 52/71). Engine and why:
   [the Strata report §11](reports/STRATA_INKLING_5090-2026-11-23.md#11-pending-native-sq-packs-and-other-engines),
   [DECISIONS-2026-11-23 §11](reports/DECISIONS-2026-11-23.md#11-basalt-with-the-derisked-pack-for-the-inkling-v5-run).
   - **Serve:** Basalt v0.5.7 (`400b411c`) from the Blackfrost Derisked pack
@@ -335,9 +349,9 @@ DeepSeek's UP on the same harness
     05:11Z, `docker logs basalt-serve | grep -c "no answer"`). Count them
     per unit in the integrity scan and name them in the row's note
     ([report §15.6](reports/STRATA_INKLING_5090-2026-11-23.md#156-server-behaviours-that-bear-on-the-eval)).
-  - **After:** integrity scan, the `dlsym` procedure, `campaign.py report`,
-    a board row and a report (as V5_QWEN38_RTX5090). Qwen3.8 with
-    `qwen38-best` stays the default unless Max decides otherwise.
+  - **After (done 2026-11-24):** integrity scan, the `dlsym` procedure (the
+    replay), the board row, the report, the default decision (Qwen3.8 with
+    `qwen38-best` stays).
 - [ ] **QUEUED (armed 2026-11-23 21:46:38 PST, waiting): three Inkling
   ablation arms after `I_T2` and the Maya benchmark** (Max approved; arms
   in #309, merge `d41c2c47`; reasoning in
@@ -391,7 +405,14 @@ DeepSeek's UP on the same harness
   - **Waits forever** if `I_T2`'s launcher dies without a `RESTORE` line or
     Maya never writes `GPU-RELEASED`; check the `WAIT:` lines.
   - **After:** per arm the integrity scan, the `dlsym` procedure, the #588
-    count (logged per arm), then the comparisons in DECISIONS §12.
+    count (logged per arm by the queue from the server; recount from the
+    transcripts with `evals/audit/capped_turns.py <scan.json>`, as for
+    `I_T2`), then the comparisons in DECISIONS §12. `I_T2`'s results file
+    for `--baseline` is
+    `~/ob-ink/.claude/worktrees/h9/evals/results/eval-inkling-2-mini-derisked-basalt-nvfp4-mx8-v5-thinking-first-i-t2-20261124-045843.json`
+    (committed in `evals/boards/v5/` under the same name). Status
+    2026-11-24 01:34 PST: `I_T2`'s launcher logged `RESTORE OK`; the queue
+    waits only on Maya's `GPU-RELEASED`.
 - [x] **Basalt code review** done 2026-11-23 (read only, the Strata report
   [§15](reports/STRATA_INKLING_5090-2026-11-23.md#15-basalt-security-and-supply-chain-review)):
   no malware, telemetry or credential access, no network code in the
@@ -411,7 +432,13 @@ DeepSeek's UP on the same harness
   - pin the Python side (hashed offline wheels of `requirements.txt`, or
     Basalt's `serve/tests` run once on the Ubuntu 24.04 packages we use);
   - then `scripts/engines/basalt.sh` with every hardening flag
-    ([ENGINES.md](ENGINES.md#chosen-for-one-run-not-a-default)).
+    ([ENGINES.md](ENGINES.md#chosen-for-one-run-not-a-default));
+  - keep the server log of every eval serve: `docker logs basalt-serve >
+    <run>/basalt-serve.log 2>&1` before each `inkling-v5.sh stop`
+    (`docker rm -f` drops it, and the rig logs to json-file). `I_T2`'s log
+    was lost this way, so its #588 and lenient-parse counts have no
+    server-side cross-check (Inkling report §6.3). The ablation queue logs
+    only the "no answer" count.
 - [ ] **Strata forces Inkling's thinking off** (`HAS_THINKING = False`,
   every reasoning effort normalized to `"none"`, in
   `terminal/strata_control/inkling_family.py` and
@@ -518,8 +545,10 @@ DeepSeek's UP on the same harness
   libc exports `dlopen` and C token pasting dodges the lint; add the C
   token-pasting test;
   [HARNESS_NOTES](HARNESS_NOTES.md#next-era-the-122_gemm_blocked-dlsym-rule-on-linux-2026-11-23)).
-  The replays below are evidence for it: four threaded Rust solutions
-  that the current rule stops are correct.
+  The replays below are evidence for it: five threaded Rust solutions
+  that the current rule stops are correct (the four below, plus
+  INK-T2's, replayed 2026-11-24: PASS, 6 hidden cases, 3 of 3 runs;
+  `~/ob-cal/.claude/gemm-replay-ink/`; Inkling report §3.6).
 - [x] **Replay the four `122_gemm_blocked_d` Rust solutions under the
   proposed `dlsym` rule** (done 2026-11-23, on the rig after Q_T2): the
   calibration's cal, r1 and r2 attempts and Q38U-T2's r1 attempt. Each
@@ -974,7 +1003,10 @@ and the ablation HY4-C 55/71 ([report](reports/V5_HY4_FLASH-2026-11-22.md)).
 Qwen3.8 27B Uncensored MTP on the RTX 5090 has its L0 baseline, board row
 Q38U-L0 at 39/71 scored (profile complete; L1/L2 diagnostics, not board rows),
 and arm Q_T2 (T2 at one stream), board row Q38U-T2 at 52/71 scored, its best
-([report](reports/V5_QWEN38_RTX5090-2026-11-22.md)). The cross-model reading
+([report](reports/V5_QWEN38_RTX5090-2026-11-22.md)). Inkling 2 Mini Derisked
+on Basalt, the same arm on the same rig, board row INK-T2 at 49/71 scored
+(SCORE 76.5, above Q38U-T2 on SCORE, 6 behind it paired; Qwen3.8 stays the
+default; [report](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md)). The cross-model reading
 is in [HARNESS_NOTES.md](HARNESS_NOTES.md). The GLM status as of 2026-11-17
 (evening) follows; it was GLM only at that point. GLM's arms L0 26
 → A 31 → B 36 → C 51/71 scored (54 raw; thinking) → E 50/71, against the

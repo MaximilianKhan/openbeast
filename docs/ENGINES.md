@@ -305,6 +305,12 @@ Inkling); (3) pin the Python side (hashed offline wheels, or Basalt's
 `serve/tests` run once on the distro set we use); (4) an `I_T2` result that
 justifies switching from Qwen3.8, and the offline path (the source at
 the tag, the image, the converted pack) staged per [the offline rule](#offline-closed-network-offlinetrue).
+**`I_T2` result (2026-11-24): it does not justify switching.** Inkling on
+Basalt scored 49/71 (board row `INK-T2`, SCORE 76.5) against Qwen3.8's
+52/71 (`Q38U-T2`, 75.6), and 46 against 52 on the 65 units both measured
+cleanly; it ran the arm about three times faster (4.5 h against ~13.5).
+203 turns ended empty at the cap (#588). Also: keep the server log of
+every eval serve (`docker rm -f` drops it). [Report](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md).
 
 ## Evaluated, not adopted
 
