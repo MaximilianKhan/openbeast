@@ -410,9 +410,12 @@ DeepSeek's UP on the same harness
     `I_T2`), then the comparisons in DECISIONS §12. `I_T2`'s results file
     for `--baseline` is
     `~/ob-ink/.claude/worktrees/h9/evals/results/eval-inkling-2-mini-derisked-basalt-nvfp4-mx8-v5-thinking-first-i-t2-20261124-045843.json`
-    (committed in `evals/boards/v5/` under the same name). Status
-    2026-11-24 01:34 PST: `I_T2`'s launcher logged `RESTORE OK`; the queue
-    waits only on Maya's `GPU-RELEASED`.
+    (committed in `evals/boards/v5/` under the same name). **Started
+    2026-11-24 01:56 PST** after Maya's `GPU-RELEASED` (01:56): serve check
+    passed with `--dns 127.0.0.1` (the in-container DNS probe FAILs, as
+    intended), the seed probe gave identical seeded replies and different
+    unseeded ones, and `I_T2_s1` launched 01:56:53
+    (`~/openbeast-runs/beast-inkling-I_T2_s1-20261124-0156.out`).
 - [x] **Basalt code review** done 2026-11-23 (read only, the Strata report
   [§15](reports/STRATA_INKLING_5090-2026-11-23.md#15-basalt-security-and-supply-chain-review)):
   no malware, telemetry or credential access, no network code in the
@@ -424,7 +427,8 @@ DeepSeek's UP on the same harness
     plus a loopback proxy, or `--dns 127.0.0.1`, then the §15.4 probe must
     print `dns … FAIL` (**done 2026-11-23 in the rig's `basalt-serve.sh`
     with `--dns 127.0.0.1`, probe FAIL as expected; first live Basalt start
-    with it is the ablation queue's, see above**); drop `exec` from `/tmp` if Basalt runs without it;
+    with it is the ablation queue's, see above**; the same flag also served
+    Maya on 2026-11-24 with the port working, [the Maya report §9.1](reports/MAYA_INKLING_5090-2026-11-23.md#91-the-dns-fix)); drop `exec` from `/tmp` if Basalt runs without it;
     add `--pids-limit` and a memory limit;
   - re-pin past upstream #588 (PR #632 or successor: after a thinking-budget
     wrap Inkling can open a second thinking block and end empty at the cap)
@@ -445,6 +449,20 @@ DeepSeek's UP on the same harness
   `terminal/serve/inkling_dialect.py` at `6a6db7ff`). So Strata cannot serve
   `I_T2`; on Strata only a thinking-off arm is possible, which would not be
   comparable with T2 rows. Re-check before choosing Strata for any eval.
+- [x] **Project Maya for Inkling 2 Mini** evaluated 2026-11-24 01:38-01:56
+  (v1.1.76 `8c618a59`, built offline, the stock unsloth Old_Support
+  UD-Q4_K_XL): **not adopted**. Single stream 329 / 204 tok/s code / prose
+  against Basalt's 376 / 307; 4 streams 350 / 354 against 702 / 624; prefill ~6K
+  against 18-19K. It cannot load the Derisked model. KLD 0.0137 (best measured
+  on the 4-bit file), conformance PASS at c=1 and c=4
+  ([reports/MAYA_INKLING_5090-2026-11-23.md](reports/MAYA_INKLING_5090-2026-11-23.md),
+  [DECISIONS-2026-11-23 §13](reports/DECISIONS-2026-11-23.md#13-project-maya-for-inkling-review-measure-not-adopted)).
+- [ ] **Maya revisit conditions** (no action until one holds): a reviewed
+  release that reads `inkling2_loop` GGUFs or the Derisked checkpoint;
+  prose drafting no longer below plain decode, and drafting kept under
+  `--parallel`; prefill above ~6K tok/s. The GLM adapter
+  (`scripts/engines/maya.sh`, v1.1.65) stays as it is; reviewing a v1.1.72+
+  row for it is a separate job.
 - [ ] **The Strata DSpark CUDA bug, upstream** (optional, Max's call). It is
   **already reported** (#6762, CUDA; dupes #6784, #6852, #6876; SYCL twin
   #6717), and a comment on #6762 proposes the same one-line fix as our
@@ -796,7 +814,9 @@ and the variables added later.
     27B fails, run paired; a full v5 cell is 2–3 GPU days;
   - [ ] Project Maya on the same GLM weights: `scripts/engine-gate.sh maya
     --profile glm53-flash-abl-q2kxl --serve-script serve-glm53-flash-abl-q2kxl-big.sh`.
-    SCORE rows only if it passes 1.5×.
+    SCORE rows only if it passes 1.5×. (The adapter pins v1.1.65; Maya was
+    first run on the rig for Inkling, 2026-11-24, outside the adapter:
+    [the Maya report](reports/MAYA_INKLING_5090-2026-11-23.md).)
   Each finished row moves its slug out of `BENCH_EXCLUDED` into `MODELS`.
 - [ ] **Flash-Next on 0xSero's SGLang+EXL3 engine: trial per the report**
   ([reviews/WEIGHT_STREAMING_0XSERO-2026-11-17.md](reviews/WEIGHT_STREAMING_0XSERO-2026-11-17.md)).

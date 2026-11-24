@@ -12,6 +12,10 @@
 > "Basalt" candidate) followed the same evening; its results and the engine
 > choice (Basalt v0.5.7 with the Blackfrost Derisked pack, arm `I_T2`) are in
 > [§11](#11-pending-native-sq-packs-and-other-engines).
+>
+> A third candidate, Project Maya (`maya-ik2`), was reviewed and measured on
+> 2026-11-24 and not adopted: [MAYA_INKLING_5090-2026-11-23.md](MAYA_INKLING_5090-2026-11-23.md).
+> Its §9.1 proves the fix for this report's §15.4 DNS gap (`--dns 127.0.0.1`).
 
 ## 1. Summary
 

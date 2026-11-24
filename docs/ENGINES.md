@@ -30,7 +30,7 @@ prints the conf changes and the exact launch command.
 |---|---|---|---|---|
 | **llama** (llama.cpp `llama-server`) | **default** — every `scripts/serve-*.sh`, measured on the 5090 | builds (CUDA arm64), not the Spark default | **GGUF** only | yes, through `scripts/serve-*.sh` (unchanged) |
 | **vllm** (`vllm/vllm-openai`, container) | yes — one GPU, TP 1, managed | yes — TP 1 managed, or TP 1..8 across Sparks (unmanaged, `spark-node.sh`) | safetensors: BF16 / FP8 / **NVFP4** / AWQ / GPTQ. GGUF only through the out-of-tree `vllm-gguf-plugin` ("highly experimental") | TP 1 on this box: yes (`engine-serve.sh`). Otherwise unmanaged |
-| **maya** (Project Maya, built from a reviewed commit; opt-in, **gated**) | opt-in only after `scripts/engine-gate.sh` measured **≥ 1.5×** llama.cpp's decode tok/s on the same weights ([WEIGHT_STREAMING.md](WEIGHT_STREAMING.md)) | no | GGUF (GLM-5.3-Flash through `--gguf-dir`, Maya packs), EXL3 | TP 1 on this box: yes, once the gate passes |
+| **maya** (Project Maya, built from a reviewed commit; opt-in, **gated**) | opt-in only after `scripts/engine-gate.sh` measured **≥ 1.5×** llama.cpp's decode tok/s on the same weights ([WEIGHT_STREAMING.md](WEIGHT_STREAMING.md)) | no | GGUF (GLM-5.3-Flash through `--gguf-dir`, Maya packs), EXL3. The adapter pins v1.1.65 (GLM big mode, never run). Inkling 2 Mini (`maya-ik2`, v1.1.72+) was measured outside the adapter and **not adopted** ([below](#evaluated-not-adopted)) | TP 1 on this box: yes, once the gate passes |
 | **tensorfold** (native ≥ 1.0 release binary) | yes — sm_120 kernels ship. Single-GPU fits such as Qwen3.8-27B MLX-4bit are plausible, **not qualified on a 5090** | **default** — TP 1 managed, or TP 1..8 across Sparks (unmanaged, `spark-node.sh`) | **MLX-affine 4/6/8-bit** safetensors, NVFP4 (ModelOpt), EXL3 (DeepSeek-V4.1-Flash (Mia EXL3), GLM-5.3-Flash). **No GGUF on CUDA** | TP 1 on this box: yes. Otherwise unmanaged |
 
 **The live Spark pair** serves **DeepSeek-V4.1-Flash (Mia EXL3)** by default
@@ -299,7 +299,9 @@ no malware, telemetry or credential access; the engine has no network code;
 the server's only fetcher (image URLs) is refused for non-loopback clients,
 which every request through the published port is. OK for the running eval.
 Before Basalt becomes a default or gets `scripts/engines/basalt.sh`:
-(1) close the sandbox's DNS channel and prove it with the probe in §15.4;
+(1) close the sandbox's DNS channel and prove it with the probe in §15.4
+(the fix is proved: `--dns 127.0.0.1` on the same no-NAT bridge makes every
+name FAIL, [the Maya report §9.1](reports/MAYA_INKLING_5090-2026-11-23.md#91-the-dns-fix); the rig's `basalt-serve.sh` already carries it since 2026-11-23, see [TODO](TODO.md));
 (2) re-pin to a reviewed commit that fixes #588 (the answer-room close on
 Inkling); (3) pin the Python side (hashed offline wheels, or Basalt's
 `serve/tests` run once on the distro set we use); (4) an `I_T2` result that
@@ -320,11 +322,18 @@ Each line says why, so the question is not reopened without new evidence.
 | Engine | Status | Why not | Evidence |
 |---|---|---|---|
 | **Strata** (`Niko1221/Strata`, MIT; `strata-inkling` built from source at `6a6db7ff`, binary sha256 `11df1066…`) | **Evaluated 2026-11-23 on the RTX 5090 with Inkling 2 Mini (unsloth UD-Q4_K_XL GGUF); not adopted** | (1) It forces Inkling's thinking off (`HAS_THINKING = False`; every effort normalizes to `"none"`), and our best agent setup is thinking-first (T2), so it cannot run arm `I_T2`. (2) Its DSpark drafter dies at startup on CUDA with a GGUF drafter (`dspark.layers.N` vs `layers.N`; upstream #6762, a one-line fix not merged at the pin). (3) Alpha: open 5090 hangs at high concurrency and long prefill, reasoning-channel bugs, one author. (4) Its release binaries, images and `curl \| sh` installer have no provenance; only a reviewed source build in a locked-down container is acceptable. What it does well: 1.43x llama.cpp single-stream on the same tensors (138.6 vs 96.9 tok/s), 1.5-2.0x prefill, conformance PASS. The "4,087 tok/s" claim is its own 64-request aggregate (4,089.7), not single-stream | [reports/STRATA_INKLING_5090-2026-11-23.md](reports/STRATA_INKLING_5090-2026-11-23.md); earlier, for weight streaming: [WEIGHT_STREAMING.md](WEIGHT_STREAMING.md#why-maya-and-not-strata) |
+| **Project Maya** for Inkling (`mw00/project-maya`, MIT; v1.1.76 = `8c618a5994e25932ff4977498d6195f8b80f91bb`, `maya-ik2` built from source offline, sha256 `61598619…`) | **Evaluated 2026-11-24 on the RTX 5090 with Inkling 2 Mini (stock, unsloth Old_Support UD-Q4_K_XL GGUF); not adopted** | (1) Slower than Basalt on the same probes: single stream 329 / 204 tok/s code / prose (Basalt stock 376 / 307), 4-stream aggregate 350 / 354 (702 / 624; drafting turns off under `--parallel`), prefill ~6K (18-19K). (2) It cannot load the eval's Derisked model: it reads only `inkling2`-keyed GGUFs with NVFP4 / Q8_0 experts, which among our files is just the Old_Support UD-Q4_K_XL. (3) "Experimental preview", Blackwell untested upstream. What it does well: KLD 0.0137 / top-1 94.81% against Q8 (llama.cpp 0.0162 on the same tensors), byte-identical greedy output with drafting, conformance PASS at c=1 and c=4, thinking and tool calls separated. "Similar numbers to Basalt" holds only for single code prompts (one reached 513) | [reports/MAYA_INKLING_5090-2026-11-23.md](reports/MAYA_INKLING_5090-2026-11-23.md) |
 
 Revisit Strata only if (a) a thinking mode for Inkling lands, (b) the DSpark
 fix is in a reviewed commit, and (c) its own SQ packs beat Basalt (the report's §11: SQ-20 201 / 131 tok/s
 against Basalt's 403 / 356, and ~1,400 at 64 streams, not 4,089.7). There is no `scripts/engines/strata.sh`
 adapter, and none is planned.
+
+Revisit Maya for Inkling only if (a) a reviewed release reads `inkling2_loop`
+GGUFs or the Derisked checkpoint, (b) its prose drafting stops running below its
+plain decode and `--parallel` keeps drafting, and (c) its prefill moves off ~6K tok/s
+([the Maya report §11](reports/MAYA_INKLING_5090-2026-11-23.md#11-verdict)). The GLM
+adapter (`scripts/engines/maya.sh`, v1.1.65) is unaffected.
 
 ## Research notes (primary sources, read 2026-11-15)
 
@@ -332,7 +341,10 @@ adapter, and none is planned.
   cache and `glm5-next`. The serve-script flag audit against v1.0.0, and the
   DNS-rebinding Host guard serve.sh had to accommodate (#32098), are in
   [WEIGHT_STREAMING.md](WEIGHT_STREAMING.md) "The llama.cpp v1.0.0 pin".
-- **Project Maya** v1.1.65 (lightweight tag on `c81fab6c…`, 2026-11-16 UTC,
+- **Project Maya**: the adapter's reviewed version is still v1.1.65 (GLM
+  only; Inkling arrived in v1.1.72). The Inkling evaluation reviewed v1.1.76
+  (`8c618a59`, 2026-11-23 23:08Z): [reports/MAYA_INKLING_5090-2026-11-23.md](reports/MAYA_INKLING_5090-2026-11-23.md).
+  Earlier note: v1.1.65 (lightweight tag on `c81fab6c…`, 2026-11-16 UTC,
   no release assets; `thomas9120/project-maya` is a fork). The facts the
   adapter depends on, and why Strata has no adapter, are in
   [WEIGHT_STREAMING.md](WEIGHT_STREAMING.md) "The engine gate".

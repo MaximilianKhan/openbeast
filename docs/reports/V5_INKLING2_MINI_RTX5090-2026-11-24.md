@@ -497,8 +497,10 @@ paired reading beside it. Recorded in
 ## 8. Next: three ablations queued
 
 Queued since 2026-11-23 21:46 PST (`~/openbeast-runs/ink-ablations-queue.sh`;
-DECISIONS-2026-11-23 §12), waiting for the Maya benchmark to release the
-GPU; each one stream, Basalt alias `inkling-2-mini`:
+DECISIONS-2026-11-23 §12); the queue started at 2026-11-24 01:56 PST,
+when the Maya benchmark released the GPU, with `I_T2_s1` (its serve passed
+the check with the DNS fix on; the in-container DNS probe fails, as
+intended). Each one stream, Basalt alias `inkling-2-mini`:
 
 1. **`I_T2_s1`**: I_T2 + `--seed 1`, the noise margin (Basalt honours a
    request seed; I_T2 itself was a clock-seeded draw).
