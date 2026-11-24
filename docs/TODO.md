@@ -338,6 +338,60 @@ DeepSeek's UP on the same harness
   - **After:** integrity scan, the `dlsym` procedure, `campaign.py report`,
     a board row and a report (as V5_QWEN38_RTX5090). Qwen3.8 with
     `qwen38-best` stays the default unless Max decides otherwise.
+- [ ] **QUEUED (armed 2026-11-23 21:46:38 PST, waiting): three Inkling
+  ablation arms after `I_T2` and the Maya benchmark** (Max approved; arms
+  in #309, merge `d41c2c47`; reasoning in
+  [DECISIONS-2026-11-23 §12](reports/DECISIONS-2026-11-23.md#12-queue-three-inkling-ablation-arms-behind-i_t2)).
+  In order, each ~1.5-2 h (UNVERIFIED; `I_T2` did 30/71 units in ~40 min),
+  one stream, Basalt alias `inkling-2-mini`:
+  1. `I_T2_s1`: `I_T2` + `--seed 1`, `noise_of: I_T2` (the noise margin);
+     Derisked pack; harness9 tree.
+  2. `I_T2_stock`: `I_T2` on Basalt's stock pack (`inkling-v5.sh start
+     stock`), model name `Inkling 2 Mini (Basalt NVFP4-MX8, stock)` (the
+     control for the derisking edit); harness9 tree.
+  3. `I_UP8k`: DeepSeek's `UP_8k` setup at one stream, Derisked pack;
+     harness10 tree (era `9bcd5aa6`, checked at queue start).
+  - **Queue:** `~/openbeast-runs/ink-ablations-queue.sh` (setsid nohup,
+    pid 3634234 at launch), output `~/openbeast-runs/ink-ablations-queue.out`.
+    It polls every 2 min, logging each poll, until `ink-I_T2-run.out` says
+    `RESTORE OK` or `RESTORE FAILED` **and**
+    `~/openbeast-runs/maya-2026-11-23/GPU-RELEASED` exists. Then per arm:
+    `./stop.sh`, `inkling-v5.sh start <pack>`, serve check (`/v1/models`,
+    a chat, and `docker inspect basalt-serve` args naming the expected
+    pack, recorded with the container's DNS setting), the arm in the
+    eval-host container, `inkling-v5.sh stop`. A failed serve check skips
+    that arm and the queue goes on. At exit, always: `inkling-v5.sh stop`,
+    `./start.sh -d`, gate `:8091` check (200 and a chat) with
+    `~/.config/openbeast/rig-eval.key`, then `RESTORE OK|FAILED` and
+    `QUEUE DONE` in the `.out`.
+  - **Trees:** `~/ob-ink2` (detached worktree of `~/ob-eval-container` at
+    `d41c2c47`, era `9bcd5aa6`) and `~/ob-ink2/.claude/worktrees/h9` at
+    `f38a29c7` (era `036638dd`); image `openbeast-eval-host:8d1e28442569`
+    (the tag `scripts/eval-host-container.sh tag` computes in `~/ob-ink2`).
+    `~/ob-ink` is not used. Campaign logs
+    `~/openbeast-runs/beast-inkling-<arm>-<ts>.out`; state in
+    `~/ob-ink2/evals/results/campaigns/v5-thinking-first-inkling-2-mini-derisked-basalt-nvfp4-mx8/`
+    (`I_T2_s1`, `I_UP8k`) and `…-inkling-2-mini-basalt-nvfp4-mx8-stock/`
+    (`I_T2_stock`). `I_T2`'s row is in `~/ob-ink`'s state, so compare by
+    results file (`campaign.py report --baseline I_T2=<I_T2 results json>`).
+  - **DNS fix in these serves:** `scripts/basalt-serve.sh` (under
+    `~/openbeast-runs/inkling-perf-2026-11-23/`, original kept as
+    `basalt-serve.sh.orig-20261123`) now starts `basalt-serve` with
+    `--dns 127.0.0.1`. Probe on `strata-bench-net`: without it
+    `example.com` resolved, with it `gaierror -3`. The queue re-probes from
+    inside `basalt-serve` per arm. If a serve check fails with the fix, the
+    arm retries once with `BASALT_DNS_OPEN=1` (the old serve), logged.
+  - **Stop safely.** Before any arm has started (still waiting): `pkill -f
+    ink-ablations-queue.sh` is fine (it has touched nothing). Once arms run,
+    do **not** kill the script (it owns the restore): `touch
+    ~/openbeast-runs/ink-ablations-queue.STOP` (no further arm starts),
+    then stop the running arm's eval container:
+    `docker stop $(docker ps -q --filter ancestor=openbeast-eval-host:8d1e28442569)`.
+    The script logs the exit, stops Basalt and restores the default stack.
+  - **Waits forever** if `I_T2`'s launcher dies without a `RESTORE` line or
+    Maya never writes `GPU-RELEASED`; check the `WAIT:` lines.
+  - **After:** per arm the integrity scan, the `dlsym` procedure, the #588
+    count (logged per arm), then the comparisons in DECISIONS §12.
 - [x] **Basalt code review** done 2026-11-23 (read only, the Strata report
   [§15](reports/STRATA_INKLING_5090-2026-11-23.md#15-basalt-security-and-supply-chain-review)):
   no malware, telemetry or credential access, no network code in the
@@ -345,12 +399,12 @@ DeepSeek's UP on the same harness
 - [ ] **Basalt follow-ups before it becomes a default** (§15.8 of that
   report; none touches the running eval):
   - close the DNS channel of `strata-bench-net` (public names resolve
-    through Docker's embedded resolver; TCP out is blocked). **The fix is
-    proved (2026-11-24):** `--dns 127.0.0.1` on the same bridge makes
-    example.com / huggingface.co / github.com FAIL while the published port
-    works (Maya's serve ran that way; [the Maya report §9.1](reports/MAYA_INKLING_5090-2026-11-23.md#91-the-dns-fix),
-    `~/openbeast-runs/maya-2026-11-23/scripts/dns-probe.sh`). Left: add the
-    flag to `basalt-serve.sh` at its next start and re-run the probe; drop `exec` from `/tmp` if Basalt runs without it;
+    through Docker's embedded resolver; TCP out is blocked): `--internal`
+    plus a loopback proxy, or `--dns 127.0.0.1`, then the §15.4 probe must
+    print `dns … FAIL` (**done 2026-11-23 in the rig's `basalt-serve.sh`
+    with `--dns 127.0.0.1`, probe FAIL as expected; first live Basalt start
+    with it is the ablation queue's, see above**; the same flag also served
+    Maya on 2026-11-24 with the port working, [the Maya report §9.1](reports/MAYA_INKLING_5090-2026-11-23.md#91-the-dns-fix)); drop `exec` from `/tmp` if Basalt runs without it;
     add `--pids-limit` and a memory limit;
   - re-pin past upstream #588 (PR #632 or successor: after a thinking-budget
     wrap Inkling can open a second thinking block and end empty at the cap)
@@ -372,7 +426,7 @@ DeepSeek's UP on the same harness
   against 18-19K. It cannot load the Derisked model. KLD 0.0137 (best measured
   on the 4-bit file), conformance PASS at c=1 and c=4
   ([reports/MAYA_INKLING_5090-2026-11-23.md](reports/MAYA_INKLING_5090-2026-11-23.md),
-  [DECISIONS-2026-11-23 §12](reports/DECISIONS-2026-11-23.md#12-project-maya-for-inkling-review-measure-not-adopted)).
+  [DECISIONS-2026-11-23 §13](reports/DECISIONS-2026-11-23.md#13-project-maya-for-inkling-review-measure-not-adopted)).
 - [ ] **Maya revisit conditions** (no action until one holds): a reviewed
   release that reads `inkling2_loop` GGUFs or the Derisked checkpoint;
   prose drafting no longer below plain decode, and drafting kept under

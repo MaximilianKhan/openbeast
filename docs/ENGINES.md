@@ -301,7 +301,7 @@ which every request through the published port is. OK for the running eval.
 Before Basalt becomes a default or gets `scripts/engines/basalt.sh`:
 (1) close the sandbox's DNS channel and prove it with the probe in §15.4
 (the fix is proved: `--dns 127.0.0.1` on the same no-NAT bridge makes every
-name FAIL, [the Maya report §9.1](reports/MAYA_INKLING_5090-2026-11-23.md#91-the-dns-fix); add it to `basalt-serve.sh` at the next start);
+name FAIL, [the Maya report §9.1](reports/MAYA_INKLING_5090-2026-11-23.md#91-the-dns-fix); the rig's `basalt-serve.sh` already carries it since 2026-11-23, see [TODO](TODO.md));
 (2) re-pin to a reviewed commit that fixes #588 (the answer-room close on
 Inkling); (3) pin the Python side (hashed offline wheels, or Basalt's
 `serve/tests` run once on the distro set we use); (4) an `I_T2` result that
