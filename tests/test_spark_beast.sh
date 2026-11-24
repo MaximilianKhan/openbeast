@@ -37,6 +37,8 @@ case "$op" in
   is-activating) exit 1 ;;
   start) for u; do echo "start $u" >> "$LOG"; [[ "$u" == openbeast.service && -f "$ST/fail-cc-start" ]] && exit 1; [[ "$u" == hy4-vllm-inference.service && -f "$ST/fail-hy4" ]] || [[ "$u" == beast-recipe-* && -f "$ST/fail-recipe" ]] || touch "$ST/$u.active"; done ;;
   stop) for u; do echo "stop $u" >> "$LOG"; rm -f "$ST/$u.active"; done ;;
+  enable) for u; do echo "enable $u" >> "$LOG"; touch "$ST/$u.enabled"; done ;;
+  disable) for u; do echo "disable $u" >> "$LOG"; rm -f "$ST/$u.enabled"; done ;;
 esac
 S
 # curl: serves the active unit's model id (or $ST/served-override); logs argv and fd 3.
@@ -412,13 +414,15 @@ if run demo && [[ "$(calls)" == "stop deepseek-v41-inference.service;start $RU;$
    && grep -q "the command center is up (second try)" "$T/out" && ! grep -q "NOT activated" "$T/out"; then
   pass "recipe: a failed command-center restart is retried (stop, reset-failed, start); the switch stands"
 else fail "recipe cc retry: $(calls) / $(cat "$T/out")"; fi
-# ... and when the command center does not come up at all: a warning, exit 0, still no rollback
+# ... and when the command center does not come up at all: a warning, exit 3 (the model serves,
+# beast-gate is down), still no rollback
 reset; touch "$ST/$RU.installed" "$ST/deepseek-v41-inference.service.active" "$ST/fail-cc-restart" "$ST/fail-cc-start"
-if run demo && [[ -f "$ST/$RU.active" ]] && [[ ! -f "$ST/deepseek-v41-inference.service.active" ]] \
+run demo; rc=$?
+if (( rc == 3 )) && [[ -f "$ST/$RU.active" ]] && [[ ! -f "$ST/deepseek-v41-inference.service.active" ]] \
    && grep -q "WARNING: the command center did not start; the model serves and the switch stands" "$T/out" \
    && grep -q "systemctl --user start openbeast" "$T/out" && ! grep -q "start deepseek" "$LOG"; then
-  pass "recipe: a command center that will not start is a warning (exit 0), never a rollback of a serving model"
-else fail "recipe cc down: $(calls) / $(cat "$T/out")"; fi
+  pass "recipe: a command center that will not start is a warning with exit 3 (partial), never a rollback of a serving model"
+else fail "recipe cc down (exit $rc): $(calls) / $(cat "$T/out")"; fi
 # hy4 the same
 reset; touch "$ST/$HY4U.installed" "$ST/deepseek-v41-inference.service.active" "$ST/deepseek-v41-inference.service.enabled" "$ST/fail-cc-restart"
 if run hy4 && [[ "$(calls)" == "stop deepseek-v41-inference.service;start $HY4U;$CC_RETRY" ]] \
@@ -427,10 +431,11 @@ if run hy4 && [[ "$(calls)" == "stop deepseek-v41-inference.service;start $HY4U;
 else fail "hy4 cc retry: $(calls) / $(cat "$T/out")"; fi
 # beastup: a failed command-center start is retried too, then a warning
 reset; touch "$ST/spark-hydra-inference.service.enabled" "$ST/fail-cc-start"
-if run up && [[ "$(calls)" == "start spark-hydra-inference.service;start openbeast.service;stop openbeast.service;reset-failed openbeast.service openbeast-stack.service;start openbeast.service" ]] \
+run up; rc=$?
+if (( rc == 3 )) && [[ "$(calls)" == "start spark-hydra-inference.service;start openbeast.service;stop openbeast.service;reset-failed openbeast.service openbeast-stack.service;start openbeast.service" ]] \
    && grep -q "WARNING: the command center did not start" "$T/out"; then
-  pass "up: a failed command-center start is retried once, then a warning (exit 0: the model serves)"
-else fail "up cc retry: $(calls) / $(cat "$T/out")"; fi
+  pass "up: a failed command-center start is retried once, then a warning (exit 3: the model serves, the command center is down)"
+else fail "up cc retry (exit $rc): $(calls) / $(cat "$T/out")"; fi
 # beastglm: restore-glm.sh failing at its LAST step (the command-center restart) with GLM
 # selected and serving: exit 0, the command center restarted by beast-spark
 reset; touch "$ST/deepseek-v41-inference.service.active" "$ST/deepseek-v41-inference.service.enabled"
@@ -447,6 +452,57 @@ if ! run glm && [[ "$(calls)" == restore-glm ]] && grep -q "restore-glm.sh faile
   pass "glm: restore-glm.sh failing before GLM runs: exit non-zero, nothing papered over"
 else fail "glm early failure: $(calls) / $(cat "$T/out")"; fi
 cp "$T/restore-glm.ok" "$T/prep/rollback/restore-glm.sh"
+
+# beastds: activate-stock.sh (spark-1's copy) restarts the command center BEFORE it enables
+# DeepSeek and disables GLM, under set -e. When that restart fails, DeepSeek serves and
+# use-model.sh has written openbeast.conf: beast-spark finishes the enablement itself, restarts
+# the command center (cc_up), exits 0, and never rolls back to GLM.
+cp "$T/prep/activate-stock.sh" "$T/activate-stock.ok"
+cat > "$T/prep/activate-stock.sh" <<'S'
+echo activate >> "$LOG"
+touch "$ST/deepseek-v41-inference.service.active"
+sleep 1.1   # the stamp check is -nt; one-second mtimes on some filesystems
+[[ -f "$ST/no-use-model" ]] || printf 'OK   conformance PASSED\nwrote INFERENCE_MODEL="DeepSeek-V4.1-Flash-1017" -> openbeast.conf\n' > "$SB_PREP/use-model.log"
+exit 1   # systemctl --user restart openbeast.service failed; enable/disable never ran
+S
+reset; rm -f "$T/prep/use-model.log"; touch "$ST/spark-hydra-inference.service.active" "$ST/spark-hydra-inference.service.enabled"
+printf 'LLAMA_API_KEY=\n' >> "$T/openbeast.conf"
+if run ds && [[ "$(calls)" == "stop spark-hydra-inference.service;activate;enable deepseek-v41-inference.service;disable spark-hydra-inference.service;restart openbeast.service" ]] \
+   && [[ -f "$ST/deepseek-v41-inference.service.enabled" && ! -f "$ST/spark-hydra-inference.service.enabled" ]] \
+   && [[ "$(sed -n 's/^LLAMA_API_KEY=//p' "$T/openbeast.conf")" == '"SECRETKEY123"' ]] \
+   && grep -q "WARNING: activate-stock.sh exited 1 after the canary" "$T/out" && ! grep -q "restore-glm" "$LOG" \
+   && grep -q 'selected: ds' "$T/out"; then
+  pass "ds: activate-stock.sh failing at its command-center restart: DeepSeek enabled, GLM disabled, key synced, cc restarted, no rollback"
+else fail "ds cc: $(calls) / $(cat "$T/out")"; fi
+# ... the same with the command center down for good: exit 3, DeepSeek still selected
+reset; rm -f "$T/prep/use-model.log"; touch "$ST/spark-hydra-inference.service.active" "$ST/spark-hydra-inference.service.enabled" "$ST/fail-cc-restart" "$ST/fail-cc-start"
+run ds; rc=$?
+if (( rc == 3 )) && [[ -f "$ST/deepseek-v41-inference.service.enabled" ]] && ! grep -q "restore-glm" "$LOG"; then
+  pass "ds: the command center down after DeepSeek is activated: exit 3, no rollback"
+else fail "ds cc down (exit $rc): $(calls) / $(cat "$T/out")"; fi
+# ... but a failure BEFORE use-model.sh wrote openbeast.conf (canary, conformance) still rolls back to GLM,
+# even though DeepSeek answers
+reset; rm -f "$T/prep/use-model.log"; touch "$ST/spark-hydra-inference.service.active" "$ST/spark-hydra-inference.service.enabled" "$ST/no-use-model"
+if ! run ds && [[ "$(calls)" == "stop spark-hydra-inference.service;activate;restore-glm" ]] && grep -q "GLM is serving again" "$T/out" \
+   && grep -q "before DeepSeek was activated" "$T/out"; then
+  pass "ds: activate-stock.sh failing before openbeast.conf (canary/conformance): GLM restored, non-zero"
+else fail "ds early failure: $(calls) / $(cat "$T/out")"; fi
+# ... and a use-model.log left by an EARLIER run does not count
+reset; touch "$ST/spark-hydra-inference.service.active" "$ST/spark-hydra-inference.service.enabled" "$ST/no-use-model"
+printf 'wrote INFERENCE_MODEL="DeepSeek-V4.1-Flash-1017"\n' > "$T/prep/use-model.log"; touch -t 202001010000 "$T/prep/use-model.log"
+if ! run ds && [[ "$(calls)" == "stop spark-hydra-inference.service;activate;restore-glm" ]]; then
+  pass "ds: a stale use-model.log (an earlier run) is not taken for this run's activation"
+else fail "ds stale use-model.log: $(calls) / $(cat "$T/out")"; fi
+cp "$T/activate-stock.ok" "$T/prep/activate-stock.sh"; rm -f "$T/prep/use-model.log"
+
+# beasthy4 while Hy4 already serves (as for a recipe): the key is synced and the command center
+# restarted; with nothing to change it is only started (it used to be left as it was)
+reset; touch "$ST/$HY4U.installed" "$ST/$HY4U.active"
+printf 'INFERENCE_MODEL="Hy4-flash-NVFP4"\nINFERENCE_BACKEND="vllm"\nLLAMA_API_KEY=\n' >> "$T/openbeast.conf"
+if run hy4 && [[ "$(calls)" == "restart openbeast.service" ]] && [[ "$(sed -n 's/^LLAMA_API_KEY=//p' "$T/openbeast.conf")" == '"SECRETKEY123"' ]] \
+   && run hy4 && [[ "$(calls)" == "restart openbeast.service;start openbeast.service" ]]; then
+  pass "hy4 already serving: key synced + command center restarted; again: only started"
+else fail "hy4 already serving: $(calls) / $(cat "$T/out")"; fi
 
 echo "=== $PASS passed, $FAIL failed ==="
 (( FAIL == 0 ))

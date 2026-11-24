@@ -382,6 +382,46 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   (`beast-spark glm`: v1.8 `33b50fd`, DFlash2 re-pinned to the
   byte-identical Apache-2.0 `6cc6c481`, and E2a's `openbeast.conf` lines), and
   GLM is the boot selection until `beastds`.
+  - [ ] **After the GLM UP arm finishes (pending deploys, in this order; spark-1
+    unless named; nothing here while any arm runs against the Sparks):**
+    1. `cd ~/openbeast && git pull` on spark-1 and spark-2 (both to the same
+       commit), then on spark-1 `beast-spark install` (installs #294's
+       beast-spark retry, the exit-3 contract and the `ds` fix of the
+       2026-11-23 review). Re-install the command-center unit from the
+       template (it gains `TimeoutStopSec=120`; the installed copy predates it
+       and also the template's `After=` comment change):
+       `sed "s|@REPO@|$HOME/openbeast|" scripts/openbeast.service > ~/.config/systemd/user/openbeast.service && systemctl --user daemon-reload`.
+    2. `systemctl --user stop openbeast` (this stop still runs the OLD
+       dashboard handler, which the pull does not replace in the running
+       process: it can take the full timeout).
+    3. If it times out or hangs: `systemctl --user kill -s KILL openbeast-stack;
+       systemctl --user reset-failed openbeast openbeast-stack`.
+    4. `systemctl --user start openbeast` (the new dashboard, `openbeast-stack`
+       with `TimeoutStopSec=30s`).
+    5. `rm -f ~/openbeast/.run/dashboard-*.json.tmp.*` (5 strays on spark-1 on
+       2026-11-23; the new dashboard also sweeps those of dead pids at start).
+    6. #285 and the Hy4 start/stop race fixes, while Hy4 is NOT running
+       (`systemctl --user is-active hy4-vllm-inference` says inactive):
+       `~/openbeast/scripts/backends/spark-hy4-stage.sh install` (copies
+       start/stop/config and the unit, daemon-reload). The installed
+       `~/openbeast-recipes/hy4-vllm/{start,stop,config}.sh` differ from the
+       checkout's until then (checked read-only 2026-11-23).
+    7. `beastds`, then check `systemctl --user is-enabled deepseek-v41-inference`
+       says enabled and `spark-hydra-inference` disabled (`beaststatus`:
+       `selected: ds`). An exit 3 means DeepSeek serves but the command center
+       is down: `journalctl --user -u openbeast -n 50`, then `systemctl --user
+       start openbeast`.
+    8. Restore DeepSeek's agent preset: add `AGENT_PROFILE=deepseek-best` back
+       to `~/openbeast/openbeast.conf` (and drop GLM's E2a lines,
+       [SPARK_HYDRA.md E2b](SPARK_HYDRA.md#e2b-deepseek-best-configuration-v5-t2)),
+       then `systemctl --user restart openbeast`.
+    9. Optional, outside the repo: reorder spark-1's
+       `~/openbeast-recipes/deepseek-prep/activate-stock.sh` so the
+       `systemctl --user restart openbeast.service` line (25) comes AFTER the
+       `enable deepseek-v41-inference` / `disable spark-hydra-inference` lines
+       (26-27). `beast-spark ds` handles the current order since the 2026-11-23
+       review, so this only matters for a hand run of the script. Back it up
+       first (`cp -p activate-stock.sh activate-stock.sh.bak-<date>`).
 - [x] **The command-center restart after a model switch** (found 2026-11-23,
   [report](reports/GLM_SERVING_WINDOW-2026-11-23.md#bugs-found); **fixed
   2026-11-23**). The `python3` was the dashboard extension: a stop sends it
@@ -395,11 +435,15 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   waits (bounded) for a stack unit still stopping instead of exiting 1;
   beast-gate, the tool server and the router bound uvicorn's graceful
   shutdown to 5 s; and `beast-spark` retries a failed command-center restart
-  once and never rolls back or fails a switch whose model serves. Tests:
+  once and never rolls back or fails a switch whose model serves (exit 3
+  when the command center stays down: the 2026-11-23 review). Tests:
   `tests/test_dashboard_stop.py`, `test_spark_beast.sh`, `test_lifecycle.sh`.
-  Takes effect on spark-1 after `git pull` + `beast-spark install` and one
-  command-center restart; `systemctl --user stop openbeast` before a switch
-  is no longer needed after that.
+  **Not deployed yet (#294):** spark-1 and spark-2 run `5b198d3d` (#292). It
+  takes effect only after the safe order under "The GLM UP control" above
+  (after the arm, never mid-arm): the first stop still runs the OLD dashboard
+  handler, so it can hit the very 90 s race it fixes. Until then keep the
+  workaround, `systemctl --user stop openbeast` before a switch; after it,
+  that is no longer needed.
 - [ ] **k-seed noise run** — the same arm at `--seed 1` (and 2) to put a noise
   floor under every single-seed delta above (G12; the campaign's seed arm).
   Arm F would have been the first such run; it did not run.
@@ -724,7 +768,9 @@ escalation unresolved, all within churn); GLM's D and F only on Max's word.
     9/9 checks through the gate. As rendered (bf16 dense linears, 245,760 window, 17.5 GiB
     reserve) it gives 30.7 / 57.7 tok/s at 1 / 4 streams and 1.4K prefill, against v1.8's
     48.4 / 78.4 and 2.0K. `KV_POOL_GIB` has no native flag. The drafter lock is #289. Two
-    switch bugs were fixed on the way: #290 and #291, `LLAMA_API_KEY` after GLM.
+    switch bugs were fixed on the way: #290 (`LLAMA_API_KEY` after GLM: a keyed
+    recipe or Hy4 started after GLM got 401s through the gate) and #291 (an
+    already-serving recipe syncs the key and brings the command center up).
   - [x] the D2 dense-bits profile key: native 1.2.10 reads `TF_GLM_DENSE_BITS` (4/6/8/16), and
     the profile grammar could not pass it. **Key added 2026-11-23**: recipe key `DENSE_BITS`
     (validated against the engine family's `env` entry in `data/recipe-engines.json`; refused on

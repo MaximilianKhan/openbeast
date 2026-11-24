@@ -17,8 +17,20 @@ GRACE="${HY4_STOP_GRACE_S:-60}"
 # First the mark: systemd runs this (ExecStop) while start.sh still supervises, and
 # start.sh sees the ranks end before any SIGTERM reaches it; the mark tells it the
 # end is deliberate, so it exits 0 and the unit ends "inactive", not "failed".
-mkdir -p "$(dirname "$HY4_STOP_MARK")" 2>/dev/null && date +%s > "$HY4_STOP_MARK" 2>/dev/null ||
+# It records when, and each rank's state BEFORE this stop ("rankN=<Running> <ExitCode>",
+# "gone -" / "unknown -" when there is no container or no answer): start.sh polls rank 1
+# only every third poll, so a rank that crashed just before a stop must still read as a
+# crash (rankN=false ...), not as this stop. Written whole (temp file, then mv).
+r0=$("$HY4_DOCKER" inspect -f '{{.State.Running}} {{.State.ExitCode}}' "$HY4_CONTAINER" 2>/dev/null || echo "gone -")
+r1=$("$HY4_SSH" -o BatchMode=yes -o ConnectTimeout=10 "$HY4_WORKER" \
+     "docker inspect -f '{{.State.Running}} {{.State.ExitCode}}' $HY4_CONTAINER 2>/dev/null || echo 'gone -'" 2>/dev/null || echo "unknown -")
+if mkdir -p "$(dirname "$HY4_STOP_MARK")" 2>/dev/null &&
+   printf '%s\nrank0=%s\nrank1=%s\n' "$(date +%s)" "${r0:-gone -}" "${r1:-unknown -}" > "$HY4_STOP_MARK.tmp.$$" 2>/dev/null &&
+   mv -f "$HY4_STOP_MARK.tmp.$$" "$HY4_STOP_MARK" 2>/dev/null; then :
+else
+  rm -f "$HY4_STOP_MARK.tmp.$$" 2>/dev/null
   hy4_log "WARNING: could not write $HY4_STOP_MARK: the unit may end \"failed\" after this stop"
+fi
 rc=0
 if "$HY4_DOCKER" container inspect "$HY4_CONTAINER" >/dev/null 2>&1; then
   hy4_log "stopping rank 0 ($HY4_CONTAINER)"

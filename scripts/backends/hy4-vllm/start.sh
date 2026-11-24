@@ -9,7 +9,11 @@
 #   start.sh             foreground (the unit): stays attached to rank 0's log,
 #                        stops both ranks and exits non-zero when either ends
 #                        (a crash: the unit shows "failed"); exits 0 when they end
-#                        because stop.sh stopped them (HY4_STOP_MARK) or on SIGTERM/INT
+#                        because stop.sh stopped them (HY4_STOP_MARK) or on SIGTERM/INT,
+#                        and when stop.sh ran while it was still starting (nothing is
+#                        left running). A rank already dead when stop.sh ran (its mark
+#                        records both ranks' state), or a mark older than
+#                        HY4_STOP_MARK_MAX_AGE_S (300) when a rank ends, is a crash: exit 1
 #   start.sh --print     print the checks' results and both docker commands; start nothing
 #   FOREGROUND=0 start.sh   start both ranks and return
 #
@@ -35,10 +39,13 @@ PRINT=0
 case "${1:-}" in
   --print|--dry-run) PRINT=1 ;;
   "") ;;
-  -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
   *) die "unknown argument: $1 (see --help)" ;;
 esac
 FOREGROUND="${FOREGROUND:-1}"
+# A stop mark left before this start (an earlier stop) is not this run's: cleared first, so a
+# stop.sh run from here on (by hand, or the unit's ExecStop during the checks) is seen below.
+(( PRINT )) || rm -f "$HY4_STOP_MARK"
 
 hy4_check_settings
 on_worker() { "$HY4_SSH" -o BatchMode=yes -o ConnectTimeout=10 "$HY4_WORKER" "$@"; }
@@ -124,13 +131,32 @@ if (( PRINT )); then
 fi
 
 # ---- 6. start: stale containers gone, worker first, then the head
-rm -f "$HY4_STOP_MARK"   # a stop before this start is not this run's stop
+stop_both() { bash "$HERE/stop.sh" >/dev/null 2>&1 || true; }
+# stop.sh (the unit's ExecStop, or by hand) marks a deliberate stop before it stops
+# the ranks; systemd sends SIGTERM only after ExecStop returns, so the loop below
+# sees the ranks end first and must not call that a crash.
+stopping() { [[ -f "$HY4_STOP_MARK" ]]; }
+# A stop that came while this was still starting: whatever started is stopped, exit 0. Checked
+# before rank 1 and after each docker run (a stop.sh between a check and a run finds no container
+# to stop, so the check after the run catches it).
+stop_requested() {
+  stopping || return 0
+  log "stop.sh ran while starting ($1): not starting; stopping whatever started"
+  trap - TERM INT; stop_both; exit 0
+}
+# The trap goes in before the first docker run: a SIGTERM between the two runs (or during
+# memguard's start) used to kill this script with rank 1 left running on the worker.
+LOGPID=""
+# (`|| true`: under set -e a failed kill, the log follower already gone, made this exit 1)
+trap 'trap - TERM INT; [[ -z "$LOGPID" ]] || kill "$LOGPID" 2>/dev/null || true; stop_both; exit 0' TERM INT
+stop_requested "before rank 1"
 dk rm -f "$HY4_CONTAINER" >/dev/null 2>&1 || true
 on_worker "docker rm -f $(q "$HY4_CONTAINER") >/dev/null 2>&1 || true"
 hy4_refuse_protected "$CACHE" "write the cache in"
 mkdir -p "$CACHE"
 log "starting rank 1 on $HY4_WORKER (headless)"
 on_worker "mkdir -p $(q "$CACHE") && $(q "${WORKER_CMD[@]}") >/dev/null" || die "rank 1 did not start on $HY4_WORKER"
+stop_requested "after rank 1"
 log "starting rank 0 here, serving $HY4_SERVED on http://$HY4_HOST:$HY4_PORT once rank 1 has joined (first start: ~10 min of kernel autotune, kept in $CACHE)"
 export VLLM_API_KEY="$KEY"
 if ! "${HEAD_CMD[@]}" >/dev/null; then
@@ -138,6 +164,7 @@ if ! "${HEAD_CMD[@]}" >/dev/null; then
   die "rank 0 did not start"
 fi
 unset VLLM_API_KEY KEY
+stop_requested "after rank 0"
 
 # ---- 7. memguard on both Sparks (they exit when the container ends)
 if awk -v g="$HY4_MEMGUARD_GIB" 'BEGIN { exit !(g > 0) }'; then
@@ -150,17 +177,26 @@ if awk -v g="$HY4_MEMGUARD_GIB" 'BEGIN { exit !(g > 0) }'; then
   log "memguard: floor $HY4_MEMGUARD_GIB GiB on both Sparks ($MG_LOG)"
 fi
 
-(( FOREGROUND )) || { log "started (FOREGROUND=0): logs: docker logs -f $HY4_CONTAINER; stop: $HERE/stop.sh"; exit 0; }
+(( FOREGROUND )) || { trap - TERM INT; log "started (FOREGROUND=0): logs: docker logs -f $HY4_CONTAINER; stop: $HERE/stop.sh"; exit 0; }
 
 # ---- 8. foreground: rank 0's log to the journal; either rank ending ends both
-stop_both() { bash "$HERE/stop.sh" >/dev/null 2>&1 || true; }
-# stop.sh (the unit's ExecStop, or by hand) marks a deliberate stop before it stops
-# the ranks; systemd sends SIGTERM only after ExecStop returns, so the loop below
-# sees the ranks end first and must not call that a crash.
-stopping() { [[ -f "$HY4_STOP_MARK" ]]; }
-LOGPID=""
-# (`|| true`: under set -e a failed kill, the log follower already gone, made this exit 1)
-trap 'trap - TERM INT; [[ -z "$LOGPID" ]] || kill "$LOGPID" 2>/dev/null || true; stop_both; exit 0' TERM INT
+# deliberate RANK STATE: a rank that ended while the stop mark exists is a deliberate stop only
+# when the mark is recent (a stop.sh that failed long ago and left the pair running is not this
+# end) and neither rank was already dead when stop.sh looked (rank1=false ...: rank 1 is polled
+# every third poll, so a crash just before a stop would otherwise be recorded as clean).
+MARK_MAX_AGE="${HY4_STOP_MARK_MAX_AGE_S:-300}"
+deliberate() {
+  stopping || return 1
+  local at age dead
+  at=$(head -1 "$HY4_STOP_MARK" 2>/dev/null || true)
+  if [[ "$at" =~ ^[0-9]+$ ]]; then
+    age=$(( $(date +%s) - at ))
+    if (( age > MARK_MAX_AGE )); then log "$1 ended ($2); the stop mark is ${age}s old (> ${MARK_MAX_AGE}s): not this stop's"; return 1; fi
+  fi
+  dead=$(sed -n 's/^\(rank[01]\)=false \(.*\)$/\1 (exit code \2)/p' "$HY4_STOP_MARK" 2>/dev/null | paste -sd, - || true)
+  if [[ -n "$dead" ]]; then log "$1 ended ($2) during a stop, but $dead had already ended before stop.sh stopped the pair: a crash"; return 1; fi
+  return 0
+}
 dk logs -f "$HY4_CONTAINER" 2>&1 & LOGPID=$!
 rc=0 n=0
 while :; do
@@ -168,7 +204,7 @@ while :; do
   n=$((n + 1))
   st=$(dk inspect -f '{{.State.Running}} {{.State.ExitCode}}' "$HY4_CONTAINER" 2>/dev/null || echo "gone -")
   if [[ "$st" != true* ]]; then
-    if stopping; then log "rank 0 ended ($st): stopped on purpose (stop.sh)"; rc=0; break; fi
+    if deliberate "rank 0" "$st"; then log "rank 0 ended ($st): stopped on purpose (stop.sh)"; rc=0; break; fi
     log "rank 0 ended ($st): stopping rank 1"; rc=1; break
   fi
   if (( n % 3 == 0 )); then
@@ -177,7 +213,7 @@ while :; do
       # unknown: ssh failed; one more look before ending a healthy pair over a blip
       ws=$(on_worker "docker inspect -f '{{.State.Running}}' $(q "$HY4_CONTAINER")" 2>/dev/null || echo unknown)
       if [[ "$ws" != true ]]; then
-        if stopping; then log "rank 1 on $HY4_WORKER ended ($ws): stopped on purpose (stop.sh)"; rc=0; break; fi
+        if deliberate "rank 1 on $HY4_WORKER" "$ws"; then log "rank 1 on $HY4_WORKER ended ($ws): stopped on purpose (stop.sh)"; rc=0; break; fi
         log "rank 1 on $HY4_WORKER is not running ($ws): stopping rank 0"; rc=1; break
       fi
     fi

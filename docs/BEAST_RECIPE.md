@@ -478,11 +478,16 @@ BACKEND, WAIT_S, and TENSORFOLD_VERSION for a native recipe; parsed by
 `beast-spark hy4` does: it stops the model that serves (DeepSeek, GLM, Hy4 or
 another recipe; their boot enablement stays), starts the recipe's unit, waits
 for its served id, sets `INFERENCE_BACKEND` and `INFERENCE_MODEL` in
-openbeast.conf, restarts the command center, and on any failure stops it and
-brings the previous model back. A successful switch records the previous
+openbeast.conf, restarts the command center, and on any failure before the
+recipe serves stops it and brings the previous model back. Once the recipe
+serves nothing rolls back: a command-center restart that fails is retried once,
+then `beast-spark` warns and exits 3 (the model serves, the command center and
+beast-gate are down). A successful switch records the previous
 selection in `recipes.d/.previous` (`PREVIOUS=none` when nothing served:
 rollback is then `beast-spark down`); `beast-recipe rollback --run` runs
-`beast-spark <previous>`. `ds`, `glm`, `up`, `down` and `hy4` stop an adopted
+`beast-spark <previous>` and returns its exit code; a 3 there (the previous
+model serves, the command center does not) is printed as "rollback is PARTIAL"
+with the command to bring the command center up. `ds`, `glm`, `up`, `down` and `hy4` stop an adopted
 recipe (`hy4` before Hy4 starts, and a failed `hy4` brings the recipe back),
 and `ds`/`glm`/`up`/`down` point openbeast.conf back at the selected model.
 `--write-family --run` adds the recipe to `data/spark-families.json` so

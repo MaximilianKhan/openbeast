@@ -823,6 +823,17 @@ if [[ "$_GRACE" =~ ^[0-9]+$ && "$_EXTRA" =~ ^[0-9]+$ ]] \
 else
   fail "openbeast.service TimeoutStartSec='$_UTMO' is not above the launcher's deadline (grace '$_GRACE' + '$_EXTRA')"
 fi
+# ...and its stop must outlast stop.sh's own waits: 20 s for the supervisor, then
+# openbeast-stack's TimeoutStopSec (start.sh's OB_STACK_STOP_TIMEOUT_S), with room
+# for the containers after (unset, it was systemd's 90 s; review 2026-11-23).
+_STMO="$(sed -n 's/^TimeoutStopSec=//p' "$REPO_DIR/scripts/openbeast.service")"
+_SSTK="$(sed -n 's/^OB_STACK_STOP_TIMEOUT_S=\([0-9]*\)$/\1/p' "$REPO_DIR/start.sh")"
+_SSUP="$(sed -n 's/^  for _i in \$(seq 1 \([0-9]*\)); do$/\1/p' "$REPO_DIR/stop.sh" | head -1)"
+if [[ "$_STMO" =~ ^[0-9]+$ && "$_SSTK" =~ ^[0-9]+$ && "$_SSUP" =~ ^[0-9]+$ ]] && (( _STMO >= _SSUP + _SSTK + 60 )); then
+  pass "openbeast.service TimeoutStopSec ($_STMO) outlasts stop.sh's waits (${_SSUP}s supervisor + ${_SSTK}s stack) by 60 s or more"
+else
+  fail "openbeast.service TimeoutStopSec='$_STMO' vs stop.sh's waits ('$_SSUP' + '$_SSTK' + 60)"
+fi
 # The watchdog is installed by `./start.sh -d` (ops review: spark-1 was
 # rebuilt from the runbook without it, and a dead :3001 / :8090 stayed dead).
 # ensure_watchdog_timer, run against a stub systemctl and a sandbox HOME.

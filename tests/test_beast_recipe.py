@@ -76,7 +76,7 @@ def stubs(tmp_path):
                      '  *rev-parse*) echo "${STUB_WORKER_HEAD:-$(git rev-parse HEAD)}" ;;\n'
                      'esac\n'
                      'cat > /dev/null 2>&1 < /dev/stdin || true\n'
-                     "exit 0\n")
+                     + ('exit "${STUB_BEAST_SPARK_RC:-0}"\n' if name == "beast-spark" else "exit 0\n"))
         f.chmod(0o755)
     return b, log
 
@@ -1136,6 +1136,19 @@ def test_init_refuses_a_reserved_name_and_reads_a_dspark_folder(tmp_path, monkey
     assert recipe.detect_drafter({}, {}, data, "minimax_m3_vl", ["dspark/config.json", "dspark/model-dspark-00001.safetensors"])[0] \
         == "in-checkpoint:dspark"
     assert any(d.get("method") == "dspark" for d in data["drafters"]["minimax_m3_vl"])
+
+
+def test_rollback_with_the_command_center_down_is_partial(stubs, tmp_path):
+    # beast-spark exits 3 when the previous model serves again but openbeast.service (beast-gate) did not
+    # come up: rollback is neither a success (0) nor a failed rollback (1); it says so and exits 3
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / ".previous").write_text("PREVIOUS=ds\nRECIPE=x\n")
+    out = cli(["rollback", "--run"], stubs, env={"BEAST_RECIPE_STATE_DIR": str(state), "STUB_BEAST_SPARK_RC": "3"})
+    assert out.returncode == 3 and calls(stubs) == ["beast-spark ds"]
+    assert "PARTIAL" in out.stderr and "systemctl --user start openbeast" in out.stderr
+    fail = cli(["rollback", "--run"], stubs, env={"BEAST_RECIPE_STATE_DIR": str(state), "STUB_BEAST_SPARK_RC": "1"})
+    assert fail.returncode == 1 and "PARTIAL" not in fail.stderr
 
 
 def test_rollback_from_nothing_is_down_and_down_returns_its_code(stubs, tmp_path):
