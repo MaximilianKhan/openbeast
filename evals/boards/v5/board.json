@@ -212,7 +212,7 @@
         "eval-qwen3-8-27b-uncensored-mtp-q5-k-m-L0-20261122-083815.json"
       ],
       "weights_id": "qwen38-27b-uncensored-mtp-q5km",
-      "host": "1× RTX 5090, llama.cpp MTP, -np 1; rig eval-host container; not calibrated against the Mac host",
+      "host": "1× RTX 5090, llama.cpp MTP, -np 1; rig eval-host container; calibrated 2026-11-23 against the Mac host (on harness9 with DeepSeek; carried to this harness10 row by inference)",
       "campaign_arm": "profile L0",
       "note": "40/71 raw; 4 units lost to server_error (llama-server HTTP 500 on a truncated tool call, retried identically; docs/HARNESS_NOTES.md), counted as fails; integrity scan 2026-11-22: 3 contaminated (the scan flagged off-host access from the agent's shell; 1 was a pass), excluded"
     },

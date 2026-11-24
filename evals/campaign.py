@@ -175,6 +175,15 @@ def validate_campaign(camp: dict) -> list[str]:
         if not isinstance(cbm, dict):
             errs.append("recommend.composite_by_model must map a model name to an arm")
             cbm = {}
+        slugs: dict = {}
+        for name in cbm:
+            k = slugify(name)
+            if k in slugs:
+                # composite_for takes the longest matching key; two keys with
+                # one slug are the same length, so neither rule can choose.
+                errs.append(f"recommend.composite_by_model: {slugs[k]!r} and {name!r} are the "
+                            f"same model key ({k!r}); the longest-match rule cannot choose")
+            slugs.setdefault(k, name)
         for name, aid in cbm.items():
             if aid not in ids:
                 errs.append(f"recommend.composite_by_model[{name!r}]: no arm {aid!r}")
@@ -216,13 +225,21 @@ def composite_for(camp: dict, model_name: str | None) -> tuple[str | None, str]:
     recommend.composite_by_model gets its own arm (DeepSeek-V4.1-Flash: T2,
     65/71 against T's 61/71); every other model the campaign's composite. The
     match is on slugs: the key, or the key followed by more words
-    ("DeepSeek-V4.1-Flash (Mia EXL3)" matches "DeepSeek-V4.1-Flash")."""
+    ("DeepSeek-V4.1-Flash (Mia EXL3)" matches "DeepSeek-V4.1-Flash"). When
+    several keys match ("Hy4-flash" and "Hy4-flash-abliterated" both match
+    "Hy4-flash-abliterated (GGUF)"), the longest key wins, whatever the
+    file's order; validate_campaign refuses two keys with the same slug."""
     rec = camp.get("recommend") or {}
-    slug = slugify(model_name or "")
+    if not model_name:
+        return rec.get("composite"), "recommend.composite"
+    slug = slugify(model_name)
+    best = None
     for name, aid in (rec.get("composite_by_model") or {}).items():
         key = slugify(name)
-        if model_name and (slug == key or slug.startswith(key + "-")):
-            return aid, f"recommend.composite_by_model[{name!r}]"
+        if (slug == key or slug.startswith(key + "-")) and (best is None or len(key) > best[0]):
+            best = (len(key), name, aid)
+    if best:
+        return best[2], f"recommend.composite_by_model[{best[1]!r}]"
     return rec.get("composite"), "recommend.composite"
 
 

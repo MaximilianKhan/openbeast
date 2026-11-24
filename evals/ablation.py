@@ -18,8 +18,11 @@ Validity. A pair is dropped (and listed) when either row is not a model
 verdict: an infrastructure reason (setup_failed, server_error, env_error,
 validator_timeout, skipped_cache_miss, low_disk, server_unhealthy), a
 signal death (exit < -1), a zero-token failure with a normal exit (a dead
-server), API errors, a fork/thread EAGAIN validator death, or a unit the
-arm did not measure (not_in_arm, budget_skip).
+server), API errors, a fork/thread EAGAIN validator death, a unit the
+arm did not measure (not_in_arm, budget_skip), or a unit the board withholds
+from that run's score (evals/boards/v5/exclusions.json, matched by the run's
+board.json id or the file's name): reason `contaminated` (an integrity-scan
+exclusion) or `excluded` (any other withheld unit).
 
 Stratified L2 (the profile's first budget cut). Every L0 failure is rerun
 and a seeded fraction f of L0 passes; the rest are `not_in_arm`. Rescues b
@@ -68,7 +71,8 @@ CHURN = {"zig": 0.30, "go": 0.12, "c": 0.12, "cpp": 0.12, "rust": 0.12,
 INVALID_REASONS = frozenset({"setup_failed", "server_unhealthy", "skipped_cache_miss",
                              "low_disk", "server_error", "env_error", "validator_timeout",
                              "interpreter_error",
-                             "not_in_arm", "budget_skip"})
+                             "not_in_arm", "budget_skip",
+                             "contaminated", "excluded"})
 EAGAIN_RE = re.compile(r"Resource temporarily unavailable|SystemResources|"
                        r"thread constructor failed|pthread_create failed|"
                        r"fork: retry|can't start new thread")
@@ -402,7 +406,47 @@ def render(rep: dict) -> str:
 
 def _load(path: str) -> dict:
     with open(path) as f:
-        return json.load(f)
+        return apply_exclusions(json.load(f), path)
+
+
+def _board_inputs() -> tuple[dict, dict]:
+    import v5_board  # lazy: only the CLI reads the committed board
+    try:
+        board = v5_board.load_board()
+    except (OSError, ValueError):
+        board = {"runs": []}
+    return board, v5_board.load_exclusions()
+
+
+def apply_exclusions(results: dict, path: str, exclusions: dict | None = None,
+                     board: dict | None = None) -> dict:
+    """Mark the units the board withholds from this file's run (exclusions.json
+    "exclusions", the same entries evals/v5_board.py applies) so pair() drops
+    them: reason `contaminated` for an integrity exclusion, else `excluded`.
+    An entry names its run by board.json id ("run") or by a file name
+    ("file"); naming neither applies everywhere. A file no board row lists
+    matches only "file" entries and entries naming neither."""
+    if exclusions is None or board is None:
+        b, e = _board_inputs()
+        board = b if board is None else board
+        exclusions = e if exclusions is None else exclusions
+    base = os.path.basename(path)
+    run_ids = {r.get("id") for r in board.get("runs") or [] if base in (r.get("files") or [])}
+    hits = {}
+    for e in exclusions.get("exclusions") or []:
+        if e.get("run") is not None and e["run"] not in run_ids:
+            continue
+        if e.get("file") is not None and e["file"] != base:
+            continue
+        hits[e["unit"]] = e.get("reason") or ""
+    for t in results.get("tasks") or []:
+        why = hits.get(t.get("id"))
+        if why is None:
+            continue
+        t["excluded_reason"] = why
+        t["reason_before_exclusion"] = t.get("reason")
+        t["reason"] = "contaminated" if why.startswith("contaminated") else "excluded"
+    return results
 
 
 def main(argv=None) -> int:
