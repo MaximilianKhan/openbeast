@@ -1035,6 +1035,65 @@ def test_inkling_composite_is_i_t2_and_others_keep_theirs():
     assert not C.validate_campaign(camp)
 
 
+# --- 13c. Inkling ablations: I_T2_s1 (noise), I_T2_stock (pack control), I_UP8k (UP_8k) ----
+#
+# Queued 2026-11-23 behind I_T2 on the rig. Each changes exactly one thing
+# against the arm it is read with; all stay one-stream on the Basalt alias.
+
+INK_STOCK = "Inkling 2 Mini (Basalt NVFP4-MX8, stock)"
+INK_ABL = ("I_T2_s1", "I_T2_stock", "I_UP8k")
+
+
+def test_inkling_ablations_are_optional_one_stream_on_the_basalt_alias():
+    camp = C.load_campaign(TF)
+    for aid in INK_ABL:
+        spec = C.arm_spec(camp, aid)
+        assert spec["optional"] is True and spec["jobs"] == 1 and spec["slots"] == 1, aid
+        assert spec["served_model"] == "inkling-2-mini", aid
+        assert "UNVERIFIED" in spec["note"] and "Max 2026-11-23" in spec["note"], aid
+        assert aid not in C.run_order(camp), aid
+        assert C.served_model_mismatch(camp, [aid], "Qwen3.8 27B Uncensored MTP Q5"), aid
+        assert C.served_model_mismatch(camp, [aid], "inkling-2-mini") == [], aid
+    assert not C.validate_campaign(camp)
+
+
+def test_i_t2_s1_is_i_t2_plus_seed_1_and_its_noise_arm():
+    camp = C.load_campaign(TF)
+    s1, i = C.resolve_arm(camp, "I_T2_s1"), C.resolve_arm(camp, "I_T2")
+    assert C.arg_value(s1["args"], "--seed") == "1" and C.arg_value(i["args"], "--seed") is None
+    assert [x for x in s1["args"] if x not in ("--seed", "1")] == i["args"]
+    assert s1["env"] == i["env"] and s1.get("requires") == i.get("requires")
+    spec = C.arm_spec(camp, "I_T2_s1")
+    assert spec["noise_of"] == "I_T2" and spec["model"] == INK
+    for fact in ("request_prefill.cpp", "steady_clock", "draw_drafts"):   # the seed evidence
+        assert fact in spec["note"], fact
+
+
+def test_i_t2_stock_is_i_t2_with_its_own_model_name():
+    camp = C.load_campaign(TF)
+    assert C.resolve_arm(camp, "I_T2_stock") == C.resolve_arm(camp, "I_T2")
+    spec = C.arm_spec(camp, "I_T2_stock")
+    assert spec["model"] == INK_STOCK and spec["model"] != INK
+    assert C.slugify(C.arm_model_name(camp, INK_STOCK, "I_T2_stock")) != \
+        C.slugify(C.arm_model_name(camp, INK, "I_T2"))
+    assert C.state_dir_for("/t", camp, INK_STOCK) != C.state_dir_for("/t", camp, INK)
+    assert C.composite_for(camp, INK_STOCK)[0] == "I_T2"
+    for fact in ("c2afac3a", "28ec7072", "docker inspect", "Inkling-2-Mini-NVFP4-MX8.basalt"):
+        assert fact in spec["note"], fact
+
+
+def test_i_up8k_is_up_8k_at_one_stream_on_harness10():
+    camp = C.load_campaign(TF)
+    x, up = C.resolve_arm(camp, "I_UP8k"), C.resolve_arm(camp, "UP_8k")
+    assert x["args"] == up["args"] and x["env"] == up["env"] and x.get("requires") == up.get("requires")
+    assert C.arg_value(x["args"], "--reasoning-budget") == "8192"
+    assert x["env"]["OPENBEAST_AGENT_FORCE_ACT"] == "1" and x["env"]["OPENBEAST_AGENT_ACT_NUDGE"] == "0"
+    assert x["env"]["OPENBEAST_AGENT_ALGO_LINES"] == "1" and x["env"]["OPENBEAST_AGENT_DONE_VERIFIED"] == "1"
+    spec = C.arm_spec(camp, "I_UP8k")
+    assert spec["base"] == "UP_8k" and spec["model"] == INK
+    assert "9bcd5aa6" in spec["note"] and "no --arm-tree" in spec["note"]
+
+
 # --- 14. Hy4-flash-abliterated (Mix-256G GGUF): HG_T2, H_T2's settings on the GGUF server ------
 
 HG = "Hy4-flash-abliterated (Mix-256G GGUF)"
