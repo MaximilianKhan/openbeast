@@ -249,7 +249,7 @@ def test_committed_board_numbers():
     assert {k: runs[k]["passed"] for k in runs} == {
         "GLM-L0": 26, "GLM-A": 31, "GLM-B": 36, "GLM-C": 51, "GLM-E": 50, "DS-T": 61, "DS-T2": 65, "DS-Ts1": 61, "DS-T3": 65,
         "DS-U": 59, "DS-UP": 62, "DS-UPA": 59, "DS-U8k": 63, "DS-UP8k": 65, "DS-UPA8k": 62, "HY4-T2": 60, "HY4-C": 55, "Q38U-L0": 39, "Q38U-T2": 52,
-        "GLM-UP": 56, "INK-T2": 49, "OPUS-REF": 71}
+        "GLM-UP": 56, "INK-T2": 49, "INK-T2-S1": 51, "INK-T2-STOCK": 53, "OPUS-REF": 71}
     assert runs["GLM-C"]["passed_raw"] == 54  # 122 b/d/e excluded: contaminated (G25 scan)
     assert runs["GLM-E"]["passed_raw"] == 50  # scan clean; 122_c is a noted validator false FAIL
     assert runs["DS-T"]["passed_raw"] == 61  # scan clean (2026-11-18); first run under review 1118
@@ -272,6 +272,15 @@ def test_committed_board_numbers():
     assert list(runs["INK-T2"]["validator_notes"]) == ["122_gemm_blocked_d"]
     # SOLVE ties Q38U-T2 (72.31); LANG (89.09 vs 85.64) puts it above on SCORE with 3 fewer scored passes
     assert (round(runs["INK-T2"]["score"], 1), round(runs["INK-T2"]["solve"], 2)) == (76.5, round(runs["Q38U-T2"]["solve"], 2))
+    # INK-T2-S1: INK-T2 under seed 1, a replicate (never ranked): +2 passes, the same SOLVE, LANG 96.4
+    assert (runs["INK-T2-S1"]["passed_raw"], runs["INK-T2-S1"]["excluded"], runs["INK-T2-S1"]["replicate_of"]) == (51, {}, "INK-T2")
+    assert (round(runs["INK-T2-S1"]["score"], 1), round(runs["INK-T2-S1"]["solve"], 2)) == (78.3, round(runs["INK-T2"]["solve"], 2))
+    assert runs["DS-Ts1"]["replicate_of"] == "DS-T"
+    # INK-T2-STOCK: Basalt's stock pack, its own (model, weights) row; scan clean, the same dlsym stop
+    assert (runs["INK-T2-STOCK"]["passed_raw"], runs["INK-T2-STOCK"]["excluded"]) == (53, {})
+    assert round(runs["INK-T2-STOCK"]["score"], 1) == 78.2
+    for k in ("INK-T2-S1", "INK-T2-STOCK"):
+        assert list(runs[k]["validator_notes"]) == ["122_gemm_blocked_d"]
     assert runs["OPUS-REF"]["passed_strict_wall"] == 68
     # the 5090's 4 units lost to llama-server's HTTP 500 on a truncated tool call
     assert runs["Q38U-L0"]["lost"] == {u: "server_error" for u in (
@@ -283,20 +292,25 @@ def test_committed_board_numbers():
     best = {r["model"]: r["id"] for r in b["best"]}
     assert best == {"GLM-5.3-Flash": "GLM-UP", "DeepSeek-V4.1-Flash (Mia EXL3)": "DS-T2", "Claude Opus 5.5": "OPUS-REF",
                     "Hy4-flash (NVFP4)": "HY4-T2", "Qwen3.8 27B Uncensored MTP (the shipped default)": "Q38U-T2",
-                    "Inkling 2 Mini Derisked (Basalt NVFP4-MX8)": "INK-T2"}
+                    "Inkling 2 Mini Derisked (Basalt NVFP4-MX8)": "INK-T2",
+                    "Inkling 2 Mini (Basalt NVFP4-MX8)": "INK-T2-STOCK"}
     # the ranking, by SCORE; the reference last and unranked
     assert [(r["id"], round(r["score"], 1)) for r in b["best"]] == [
-        ("DS-T2", 94.9), ("HY4-T2", 83.4), ("GLM-UP", 81.9), ("INK-T2", 76.5), ("Q38U-T2", 75.6), ("OPUS-REF", 100.0)]
+        ("DS-T2", 94.9), ("HY4-T2", 83.4), ("GLM-UP", 81.9), ("INK-T2-STOCK", 78.2), ("INK-T2", 76.5), ("Q38U-T2", 75.6),
+        ("OPUS-REF", 100.0)]
+    # INK-T2-S1 scores above INK-T2 (78.3) and still is not the Derisked row: a replicate never ranks
+    assert "INK-T2-S1" not in [r["id"] for r in b["best"]]
     assert b["not_yet_run"] == ["Qwen3.6 27B (v4 #1)"]
     # every run names its exact weights; one weights entry per model today
     ds, glm = "dsv41f-mia-exl3-2.9bpw-eaq1.1-v2", "glm53f-mia-exl3-4bpw-tf-ablit"
     hy4, q38 = "hy4-flash-nvfp4-atakans", "qwen38-27b-uncensored-mtp-q5km"
-    ink = "inkling2-mini-blackfrost-derisked-basalt-nvfp4-mx8"
+    ink, inks = "inkling2-mini-blackfrost-derisked-basalt-nvfp4-mx8", "inkling2-mini-basalt-nvfp4-mx8-stock"
     assert {k: runs[k]["weights_id"] for k in runs} == {
         **{k: ds for k in runs if k.startswith("DS-")}, **{k: glm for k in runs if k.startswith("GLM-")},
-        "HY4-T2": hy4, "HY4-C": hy4, "Q38U-L0": q38, "Q38U-T2": q38, "INK-T2": ink,
+        "HY4-T2": hy4, "HY4-C": hy4, "Q38U-L0": q38, "Q38U-T2": q38, "INK-T2": ink, "INK-T2-S1": ink,
+        "INK-T2-STOCK": inks,
         "OPUS-REF": "anthropic-api-claude-opus-5-5"}
-    assert [r["weights_id"] for r in b["best"]] == [ds, hy4, glm, ink, q38, "anthropic-api-claude-opus-5-5"]
+    assert [r["weights_id"] for r in b["best"]] == [ds, hy4, glm, inks, ink, q38, "anthropic-api-claude-opus-5-5"]
     w = b["weights"][ds]
     assert (w["format"], w["bpw"], w["abliterated"], w["revision_kind"]) == ("EXL3", 2.9, False, "local")
     assert w["revision"] == "04c13f12b83d57487912d87d0f1677b076810954" and w["repo"] is None
@@ -314,6 +328,13 @@ def test_committed_board_numbers():
         "file-sha256", None, "d2b01bcc1fd2dc51cbcdaecb512c56d7c5db75181fee2d9b6c944e76e217a427", True)
     assert i["derived_from"]["revision"] == "31ec2eddecfdf93c8626d9e4dfc0a2aca6070900"
     assert "400b411c58031d064812ea21a259b2381acdaa3e" in i["engine_version"]
+    st = b["weights"][inks]  # Basalt's stock pack: on the Hub, pinned by its sha256 and the commit it came from
+    assert (st["revision_kind"], st["repo"], st["revision"], st["file_sha256"], st["abliterated"]) == (
+        "file-sha256", "jesdga/Inkling-2-Mini-Basalt", "c2afac3adb772e14d77b2ea2ac7068ad4460e932",
+        "28ec70723feaa037942a02f55b9d5e898276f3e62a3b1fa083745f932a041b99", False)
+    assert st["base_model"]["revision"] == "unverified" and "400b411c58031d064812ea21a259b2381acdaa3e" in st["engine_version"]
+    assert st["hub_url"] == ("https://huggingface.co/jesdga/Inkling-2-Mini-Basalt/blob/"
+                             "c2afac3adb772e14d77b2ea2ac7068ad4460e932/Inkling-2-Mini-NVFP4-MX8.basalt")
     # token usage (prompt, completion, units without usage), exact
     assert {k: (runs[k]["tokens"]["prompt"], runs[k]["tokens"]["completion"], runs[k]["tokens"]["missing"])
             for k in runs} == {
@@ -324,12 +345,15 @@ def test_committed_board_numbers():
         "DS-UPA": (28279120, 3264679, 0), "DS-U8k": (30429276, 2519544, 0), "DS-UP8k": (26876212, 2456141, 0),
         "DS-UPA8k": (27402927, 2520048, 0), "HY4-T2": (47921687, 1605430, 0), "HY4-C": (35144307, 1967131, 0),
         "Q38U-L0": (15413787, 3452557, 0), "Q38U-T2": (57838480, 4697822, 0), "GLM-UP": (17278440, 2144728, 0),
-        "INK-T2": (70883493, 5367401, 0), "OPUS-REF": (0, 0, 71)}
+        "INK-T2": (70883493, 5367401, 0), "INK-T2-S1": (64747685, 4959068, 0),
+        "INK-T2-STOCK": (64862866, 4900235, 0), "OPUS-REF": (0, 0, 71)}
     assert runs["DS-T2"]["tokens"]["per_pass"] == 473490 and runs["DS-T2"]["tokens"]["total"] == 30776845
     assert runs["HY4-T2"]["tokens"]["per_pass"] == 825452 and runs["HY4-T2"]["tokens"]["total"] == 49527117
     assert runs["HY4-C"]["tokens"]["per_pass"] == 674753 and runs["HY4-C"]["tokens"]["total"] == 37111438
     assert runs["Q38U-T2"]["tokens"]["per_pass"] == 1202621 and runs["Q38U-T2"]["tokens"]["total"] == 62536302
     assert runs["INK-T2"]["tokens"]["per_pass"] == 1556141 and runs["INK-T2"]["tokens"]["total"] == 76250894
+    assert runs["INK-T2-S1"]["tokens"]["per_pass"] == 1366799 and runs["INK-T2-S1"]["tokens"]["total"] == 69706753
+    assert runs["INK-T2-STOCK"]["tokens"]["per_pass"] == 1316285 and runs["INK-T2-STOCK"]["tokens"]["total"] == 69763101
 
 
 def test_two_quantizations_of_one_model_are_two_rows(tmp_path):
@@ -353,6 +377,31 @@ def test_two_quantizations_of_one_model_are_two_rows(tmp_path):
     weights_md = v5_board.render_weights(b)
     assert "**Model M · EXL3 3.5 bpw · v1 · stock** (`m-35`)" in weights_md
     assert "| Board runs | M35 |" in weights_md and "| Board runs | M-weak, M-strong |" in weights_md
+
+
+def test_a_seed_replicate_is_listed_but_never_ranked(tmp_path):
+    """A seed repeat of a run (DS-Ts1, INK-T2-S1, 2026-11-24) names it with replicate_of: it is scored
+    and listed with every run, and never chosen as the best row even when it scores higher, so the
+    board never ranks the better of two draws of one setup."""
+    bd = board(tmp_path)
+    d = str(tmp_path)
+    bd["runs"].append({"id": "M-weak-s1", "model": "Model M", "weights_id": "m-29", "config": "seed 1",
+                       "replicate_of": "M-weak",
+                       "files": [write(d, "mw1.json", results([row("1_a_py", True), row("1_a_go", True),
+                                                               row("2_b", True)]))]})
+    b = v5_board.build(bd, base_dir=d, manifest=MANIFEST, weights=WEIGHTS)
+    runs = {r["id"]: r for r in b["runs"]}
+    assert runs["M-weak-s1"]["passed"] == 3 and runs["M-weak-s1"]["replicate_of"] == "M-weak"
+    assert {r["model"]: r["id"] for r in b["best"]}["Model M"] == "M-strong"   # not the 3/3 replicate
+    assert "seed replicate of M-weak: never the ranked row" in v5_board.render_runs(b)
+    # the replicate must name another run of the same model and weights, and an original
+    for bad, why in (("nope", "is not another board run"), ("N", "needs the same model and weights"),
+                     ("M-weak-s1", "is not another board run")):
+        bd["runs"][-1]["replicate_of"] = bad
+        assert any(why in p for p in v5_board.weights_problems(bd, WEIGHTS)), bad
+    bd["runs"].append({**bd["runs"][-1], "id": "M-weak-s2", "replicate_of": "M-weak-s1"})
+    bd["runs"][-2]["replicate_of"] = "M-weak"
+    assert any("itself a replicate" in p for p in v5_board.weights_problems(bd, WEIGHTS))
 
 
 def test_weights_are_validated(tmp_path):

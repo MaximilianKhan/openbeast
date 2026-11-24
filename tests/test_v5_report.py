@@ -189,6 +189,25 @@ def test_published_inkling_against_qwen38():
     assert len(d["lost"]) == 7 and "163_bigint_divmod_a" in d["lost"]
 
 
+def test_published_inkling_seed_and_stock():
+    """I_T2_s1 (seed 1) and I_T2_stock (Basalt's stock pack), 2026-11-24: the seed flipped 2 units, both
+    gains; the stock pack against Derisked +4 (5 gained, 1 lost), and level with Q38U-T2 on the board's view."""
+    r = v5_report.build("Inkling 2 Mini Derisked (Basalt NVFP4-MX8)", context=("INK-T2-STOCK", "Q38U-T2"),
+                        pairs=["I_T2:I_T2_s1", "I_T2:INK-T2-STOCK", "I_T2_s1:INK-T2-STOCK", "Q38U-T2:INK-T2-STOCK"])
+    (s1,) = [a for a in r["arms"] if a["id"] == "INK-T2-S1"]
+    assert (s1["passed"], round(s1["score"], 1), s1["era"], s1["wall_hits"], s1["lost"]) == (
+        51, 78.3, "036638ddd68698ce", 0, {})
+    d = {(x["base"], x["arm"]): x for x in r["deltas"]}
+    seed = d[("I_T2", "I_T2_s1")]
+    assert (seed["compared"], seed["net"], sorted(seed["gained"]), seed["lost"]) == (
+        71, 2, ["122_gemm_blocked_e", "158_karatsuba_bytes_c"], [])
+    st = d[("I_T2", "INK-T2-STOCK")]
+    assert (st["compared"], st["net"], len(st["gained"]), st["lost"]) == (71, 4, 5, ["178_codebase_qa"])
+    assert d[("I_T2_s1", "INK-T2-STOCK")]["net"] == 2
+    q = d[("Q38U-T2", "INK-T2-STOCK")]
+    assert (q["compared"], q["net"], len(q["gained"]), len(q["lost"])) == (68, 0, 4, 4)
+
+
 def test_cli_runs_and_writes_nothing():
     before = subprocess.run(["git", "status", "--porcelain"], cwd=REPO, capture_output=True, text=True).stdout
     out = subprocess.run([sys.executable, os.path.join(REPO, "evals", "v5_report.py")],

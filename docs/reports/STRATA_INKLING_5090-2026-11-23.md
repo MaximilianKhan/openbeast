@@ -1082,6 +1082,9 @@ All file:line at `400b411c`.
    from the transcripts (the server log went with the container): 203 empty
    capped turns in 21 units, 199 of them in 17 of the 22 failed units
    ([V5_INKLING2_MINI_RTX5090-2026-11-24.md](V5_INKLING2_MINI_RTX5090-2026-11-24.md) §6.1).
+   **In the ablations** (server logs kept): 167 "no answer" replies in
+   `I_T2_s1` (Derisked, seed 1) and 105 in `I_T2_stock` (the stock pack),
+   equal to the transcript counts (that report §10.3, §10.6).
 2. **A long-thinking turn gets less room than on llama.cpp.** 6,144 thinking
    tokens where Q_T2's llama.cpp serve allowed up to 8,192. Already recorded
    in §11.4; it is the same for every Basalt arm.
@@ -1104,7 +1107,9 @@ All file:line at `400b411c`.
    tool-call success rate. Fair to keep (it is what a Basalt user gets), but
    name it when comparing with a llama.cpp row. **In `I_T2`:** 88 turns ended at the
    cap still carrying a tool call (Q_T2 on llama.cpp: 5); the XML path is
-   not countable from the transcripts (report §6.2).
+   not countable from the transcripts (report §6.2). `I_T2_s1`: 73,
+   `I_T2_stock`: 83; the kept server logs do not name the parser path
+   either.
 5. **Thinking-loop cutter.** One token repeated 256 times in a row inside
    the thinking closes it (`serve/config.py:656`,
    `service.py:1596-1599`). The live log shows none so far.

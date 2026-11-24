@@ -313,6 +313,15 @@ Basalt scored 49/71 (board row `INK-T2`, SCORE 76.5) against Qwen3.8's
 cleanly; it ran the arm about three times faster (4.5 h against ~13.5).
 203 turns ended empty at the cap (#588). Also: keep the server log of
 every eval serve (`docker rm -f` drops it). [Report](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md).
+**Ablations (2026-11-24): still not.** Basalt's stock pack 53/71 (SCORE
+78.2), level with Qwen3.8 paired (−2 over 65 clean units); a seed repeat of
+I_T2 51/71 (2 flips). The ablation queue's three serves proved the DNS fix
+live (the in-container probe failed each time) and a log saver kept the
+server logs: on agent work DSpark accepted 90.2% / 88.7% of drafted tokens
+(token-weighted) and decode ran 484 / 444 tok/s over all replies
+(Derisked / stock, `evals/audit/basalt_log.py`). #588 is unchanged (167 and
+105 empty capped turns); the next arm patches it locally with upstream PR
+#632 ([report §10](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md#10-the-ablations-seed-noise-and-the-stock-pack-2026-11-24)).
 
 ## Evaluated, not adopted
 
