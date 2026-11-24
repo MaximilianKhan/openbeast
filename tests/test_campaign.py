@@ -998,6 +998,43 @@ def test_q38_composite_is_q_t2_and_others_keep_theirs():
     assert C.served_model_mismatch(camp, ["Q_T2"], "Qwen3.8 27B Uncensored MTP Q5") == []
 
 
+# --- 13b. Inkling 2 Mini (Basalt, Derisked pack): I_T2, Q_T2's settings on the Basalt server ----
+#
+# I_T2 is T2's switches at one stream, as Q_T2, so its row compares with Q38U-T2.
+# served_model keeps it off the Qwen serve (and any other).
+
+INK = "Inkling 2 Mini Derisked (Basalt NVFP4-MX8)"
+
+
+def test_i_t2_is_q_t2_on_the_basalt_server():
+    camp = C.load_campaign(TF)
+    i, q, t2 = C.resolve_arm(camp, "I_T2"), C.resolve_arm(camp, "Q_T2"), C.resolve_arm(camp, "T2")
+    assert i == q
+    assert i["args"] == t2["args"] and i["env"] == t2["env"] and i.get("requires") == t2.get("requires")
+    spec = C.arm_spec(camp, "I_T2")
+    assert spec["base"] == "T2" and spec["optional"] is True
+    assert spec["jobs"] == 1 and spec["slots"] == 1
+    assert spec["model"] == INK and spec["served_model"] == "inkling-2-mini"
+    assert C.arg_value(i["args"], "--reasoning-budget") == "8192"
+    assert C.arg_value(i["args"], "--thinking") == "on"
+    for fact in ("400b411c", "d2b01bcc1fd2dc51", "--answer-room auto", "6,144", "UNVERIFIED", "f38a29c7"):
+        assert fact in spec["note"], fact
+
+
+def test_inkling_composite_is_i_t2_and_others_keep_theirs():
+    camp = C.load_campaign(TF)
+    for name in (INK, "Inkling 2 Mini", "Inkling 2 Mini (stock Basalt NVFP4-MX8)"):
+        assert C.composite_for(camp, name)[0] == "I_T2", name
+    assert C.composite_for(camp, "Inkling 2")[0] == "T"            # another Inkling is not this row
+    assert C.composite_for(camp, Q38)[0] == "Q_T2"
+    assert C.composite_for(camp, DS)[0] == "T2"
+    assert C.composite_for(camp, HY4)[0] == "H_T2"
+    assert "I_T2" not in C.run_order(camp)
+    assert C.served_model_mismatch(camp, ["I_T2"], "Qwen3.8 27B Uncensored MTP Q5")
+    assert C.served_model_mismatch(camp, ["I_T2"], "inkling-2-mini") == []
+    assert not C.validate_campaign(camp)
+
+
 # --- 14. Hy4-flash-abliterated (Mix-256G GGUF): HG_T2, H_T2's settings on the GGUF server ------
 
 HG = "Hy4-flash-abliterated (Mix-256G GGUF)"
