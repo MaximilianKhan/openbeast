@@ -278,25 +278,49 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   ([report](reports/V5_QWEN38_RTX5090-2026-11-22.md)). **L1/L2 done
   2026-11-22, the profile is complete (retired):** diagnostics only, not
   board rows (`evals/boards/v5/diagnostics/`); zig 0 → 4 of 6 with packs,
-  L2 4 → 2 on zig, L0 → L2 +4 over 36 compiled units, all within churn;
+  L2 4 → 2 on zig, L0 → L2 +4 over 35 compiled units, all within churn;
   integrity scan clean (report §5). **Cross-host calibration done
   2026-11-23** ([report](reports/V5_EVAL_HOST_CALIBRATION-2026-11-23.md)):
   DeepSeek T2 rerun from the rig container scored 60/71 against the Mac's
   65; contention-free, 2/7 on the flips and 5/11 on the fails. No host
-  effect except one validator bug: on Linux, Rust's std imports `dlsym`
-  for any thread, and `122_gemm_blocked` rejects a binary that imports
-  `dlsym`, so a threaded Rust GEMM is a false FAIL. Q_T2 (running in the
-  container) is affected only if its Rust GEMM uses threads; footnote a
-  hit with a per-run validator note ([`MODEL_CAMPAIGN.md`, eval host in a
+  effect detected beyond run-to-run variation, from one calibration arm
+  (harness9; carried to harness10 rows such as Q38U-L0 by inference); the
+  data cannot separate a host effect from bad draws on `173` and `183`.
+  Two known host effects. (1) On Linux, Rust's std imports `dlsym` for
+  any thread, and `122_gemm_blocked` rejects a binary that imports
+  `dlsym`, so a threaded Rust GEMM stops at the binary check: verdict not
+  measured. (2) The agent's shell has no network deny on Linux (it cost
+  Q38U-L0 one excluded pass). Q_T2 (running in the container) is affected
+  by (1) only if its Rust GEMM uses threads; handle a hit by the replay or
+  the rebuild-and-check procedure ([`MODEL_CAMPAIGN.md`, eval host in a
   container](MODEL_CAMPAIGN.md#eval-host-in-a-container-linux)).
   Still open: the Linux network deny (HARNESS_NOTES next-era (d)) before
   more rig rows.
-- [ ] **Next suite/era: the `122_gemm_blocked` `dlsym` rule** (allow
-  `dlsym` when the binary imports no loader and no BLAS-like symbol;
+- [ ] **Next suite/era: the `122_gemm_blocked` `dlsym` rule** (Rust
+  variant only: allow `dlsym` when no other symbol matches `_BAD_IMPORT`
+  or `_BAD_DEFINED`; C/C++/Go/Zig keep the rule, because glibc ≥ 2.34
+  libc exports `dlopen` and C token pasting dodges the lint; add the C
+  token-pasting test;
   [HARNESS_NOTES](HARNESS_NOTES.md#next-era-the-122_gemm_blocked-dlsym-rule-on-linux-2026-11-23)).
   After Q_T2 finishes, replay the calibration's three Rust
   `122_gemm_blocked_d` solutions on the rig under the proposed rule
   (calibration report §6).
+- [ ] **Rescan the calibration's integrity with the recorded command**
+  (needs the rig's transcripts; after Q_T2 finishes, never during it).
+  The 2026-11-23 scan's command line was not recorded. On the rig, from a
+  checkout at `f38a29c7` (`~/ob-cal/.claude/worktrees/h9`), run the
+  command in the sealed `evals/audit/reviews/ds-t2-cal-integrity-2026-11-23.md`
+  (`--tz UTC`, `--until` per pass: CAL 2026-11-23T05:11:56,
+  R1 2026-11-23T07:12:05, R2 2026-11-23T11:57:00 from the run log).
+  Expect 71 + 7 + 11 transcripts, 0 contaminated; record the result in
+  that review.
+- [x] **HG_T2 (Hy4-flash-abliterated, Mix-256G GGUF over llama.cpp RPC)
+  ABANDONED 2026-11-23 (Max).** Stopped at 16/71 units, most at the wall:
+  at about 5.3 tok/s per stream at 4 (21.3 aggregate) the row would
+  measure the RPC serve speed, not the model. Not a board row. The arm
+  stays in the campaign file with its note; its
+  `recommend.composite_by_model` entry is removed
+  ([`MODEL_CAMPAIGN.md`](MODEL_CAMPAIGN.md)).
 - [x] **DeepSeek-V4.1-Flash (Mia EXL3) thinking-first campaign:** complete
   2026-11-21 ([final report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md); [`MODEL_CAMPAIGN.md` §9](MODEL_CAMPAIGN.md#9-next-deepseek-v41-flash-1017-thinking-first)).
   On the board (2026-11-21): T 61, T_s1 61, **T2 65** (best, SCORE 94.9),
@@ -658,8 +682,9 @@ paused the chain). Evidence that bears on the question: the
 language-specific residue under thinking (HARNESS_NOTES) and the Droid prior
 art (`reviews/HARNESS_PRIOR_ART-2026-11-16.md`: the "unified harness, rich
 static knowledge" pole). Next: the
-same arms on further models (Qwen3.8's L1/L2 are done: zig packs help,
-diagnostics and escalation unresolved, all within churn); GLM's D and F only on Max's word.
+same arms on further models (Qwen3.8's L1/L2 are done: zig packs +4 of
+6, p 0.125, the same direction as GLM but within churn; diagnostics and
+escalation unresolved, all within churn); GLM's D and F only on Max's word.
 
 ## 🟩 DGX SPARK INFERENCE — LIVE 2026-11-13 as spark-hydra
 

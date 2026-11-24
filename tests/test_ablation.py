@@ -232,3 +232,40 @@ def test_profile_mode_reads_the_three_arms(tmp_path, capsys):
     reps = json.loads(out.read_text())
     assert [(r["a"]["file_arm"], r["b"]["file_arm"]) for r in reps] == \
         [("L0", "L1"), ("L1", "L2"), ("L0", "L2")]
+
+
+# --- integrity exclusions (evals/boards/v5/exclusions.json) -------------------------
+
+def test_board_exclusions_drop_the_unit_as_contaminated():
+    board = {"runs": [{"id": "R-L0", "files": ["eval-m-L0-1.json"]}]}
+    excl = {"exclusions": [
+        {"unit": "u2_f", "run": "R-L0", "reason": "contaminated: the scan flagged it"},
+        {"unit": "u3_f", "file": "eval-m-L0-1.json", "reason": "withheld for another reason"},
+        {"unit": "u1_f", "run": "OTHER", "reason": "contaminated: another run"},
+        {"unit": "u4_f", "file": "eval-m-L1-1.json", "reason": "contaminated: another file"}]}
+    a = _results([_row("u1_f", False), _row("u2_f", True), _row("u3_f", True),
+                  _row("u4_f", False)], "L0")
+    b = _results([_row("u1_f", True), _row("u2_f", True), _row("u3_f", True),
+                  _row("u4_f", True)], "L1")
+    A.apply_exclusions(a, "/x/eval-m-L0-1.json", excl, board)
+    pairs, dropped, _ = A.pair(a, b)
+    assert [p[0] for p in pairs] == ["u1_f", "u4_f"]
+    assert dict(dropped) == {"u2_f": "contaminated", "u3_f": "excluded"}
+    # a file no board row lists matches only file entries (and entries naming neither)
+    b2 = _results([_row("u4_f", True), _row("u1_f", True)], "L1")
+    A.apply_exclusions(b2, "eval-m-L1-1.json", excl, board)
+    assert [t.get("reason") for t in b2["tasks"]] == ["contaminated", None]
+
+
+def test_cli_drops_q38u_l0s_contaminated_unit(capsys):
+    """The committed Q38U-L0 file withholds 163_bigint_divmod_e (contaminated):
+    the L0 -> L2 contrast must not pair it."""
+    d = ROOT / "evals" / "boards" / "v5"
+    l0 = d / "eval-qwen3-8-27b-uncensored-mtp-q5-k-m-L0-20261122-083815.json"
+    l2 = d / "diagnostics" / "eval-qwen3-8-27b-uncensored-mtp-q5-k-m-L2-20261122-192701.json"
+    if not (l0.exists() and l2.exists()):
+        pytest.skip("committed Q38U files not present")
+    rep = A.report(A._load(str(l0)), A._load(str(l2)))
+    assert ("163_bigint_divmod_e", "contaminated") in [tuple(x) for x in rep["dropped"]]
+    rust = next(r for r in rep["contrasts"] if r["contrast"] == "rust")
+    assert rust["n"] == 6

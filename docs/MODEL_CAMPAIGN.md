@@ -228,11 +228,21 @@ same command and the same Spark server as board row `DS-T2` (65/71, from
 the Mac); only the harness host changed. The calibration arm scored
 60/71. Contention-free follow-ups scored 2/7 on the flipped units and
 5/11 on every calibration fail. A fails-only redo can only add passes, so
-it shows host parity, not a score. **Verdict: no host effect except one
-validator bug.** The other differences are run-to-run variation on
-wall-bound hard units, which flip between attempts on the rig itself.
-Python is the same pinned 3.12.16. Time per unit is level (0.99), and so
-are tokens (0.97). No board row; the files are in
+it shows host parity, not a score. **Verdict: no host effect detected
+beyond run-to-run variation, from one calibration arm; two known host
+effects:** the `dlsym` validator bug (below) and the agent shell's
+missing network deny on Linux (HARNESS_NOTES next-era (d)), which cost
+`Q38U-L0` one excluded pass. The other differences are on wall-bound hard
+units, most of which flip between attempts on the rig itself; on two
+(`173_taskgroup_cancel`, `183_heston_little_trap`) the data cannot
+separate a host effect from bad draws. Python is the same pinned 3.12.16.
+Time over all 71 units is level (rig/Mac 0.99 by sum, tokens 0.97), but
+that is dominated by the units at the 3,600 s wall; on the 58 units that
+finished under the wall on both hosts, time is 1.05 by sum and 1.16 by
+the median per-unit ratio, total tokens 1.03, and completion tokens per
+wall-second 30.3 against the Mac's 32.2 (report §4). The calibration ran
+on harness9 (era 036638dd); a harness10 row from the container (such as
+`Q38U-L0`) inherits it by inference. No board row; the files are in
 `evals/boards/v5/diagnostics/`. Full write-up:
 [reports/V5_EVAL_HOST_CALIBRATION-2026-11-23.md](reports/V5_EVAL_HOST_CALIBRATION-2026-11-23.md).
 
@@ -241,19 +251,58 @@ Rust's std on Linux/glibc imports `dlsym` whenever a program spawns a
 thread. The `122_gemm_blocked` validators reject any binary that imports
 `dlsym` (the rule against a `dlopen`-loaded BLAS). So on a Linux harness
 host, a threaded Rust GEMM fails with `the binary imports dlsym` before
-any case runs. On the Mac it passes. The fix is a next-era proposal
+any case runs: the verdict is not measured. On the Mac, std imports no
+`dlsym` for a thread, so a threaded Rust binary passes the binary check
+there. The fix is a next-era proposal
 ([HARNESS_NOTES](HARNESS_NOTES.md#next-era-the-122_gemm_blocked-dlsym-rule-on-linux-2026-11-23));
 the tasks stay as they are mid-campaign. **Until then, for every
-Linux-host run that goes on the board:** read its `122_gemm_blocked_*`
-rust row. If the only failure line is `the binary imports dlsym`, check
-the built binary: `nm -D` shows no `dlopen`/`dlmopen`/`dlvsym` and no
-BLAS-like name. If both hold, add a `validator_notes` entry for that unit
-and run to `evals/boards/v5/exclusions.json`, as `GLM-E`'s
-`122_gemm_blocked_c` has. The note says: validator false FAIL on a Linux
-host, std's `dlsym`, correctness not measured. Then run `python3
-evals/v5_board.py --write`. The unit still counts as not passed (the
-score is not adjusted). The other Linux-host caveat remains the agent
-shell's missing network deny (HARNESS_NOTES next-era (d)).
+Linux-host run that goes on the board,** read its `122_gemm_blocked_*`
+rust row. If its failure line is `the binary imports dlsym`, that line
+says only that the validator stopped there: `fail()` exits on the first
+bad symbol, so it cannot show that `dlsym` was the only one, and no case
+ran, so correctness was never measured. Then:
+
+1. **Prefer the replay.** Replay the unit's final source under the
+   proposed rule (calibration report §6). It gives a verdict, and a
+   verdict beats any footnote.
+2. **Without a replay, rebuild and check the binary.** The binary the
+   validator checked no longer exists: it was built in a private
+   directory (`vlib.start_build`), and the unit's cleanup removes
+   `/tmp/eval_gemm`. Recover the final `gemm.rs` (the agent workspace
+   snapshot, or the transcript's last write plus any shell edits after
+   it), and rebuild it inside the eval-host container with its pinned
+   rustc (1.100.0) and the validator's build command:
+   `rustc -O --edition 2021 gemm.rs -o gemm`.
+3. **Check both symbol tables.** The validator's `_elf` reads `.dynsym`
+   and `.symtab`, so `nm -D` (dynamic only) is not enough. Use `readelf`
+   over both, and test the names against the validator's own patterns,
+   copied from the `122_gemm_blocked` validator in
+   `evals/tasks/122_gemm_blocked.json`: `_BAD_IMPORT` (case-insensitive)
+   with `dlsym` removed, applied to the undefined symbols, and
+   `_BAD_DEFINED` applied to the defined ones. Both must find nothing,
+   and every `NEEDED` library must match `_LINUX_LIB`:
+
+   ```bash
+   readelf -W --dyn-syms --syms gemm | awk '$7=="UND" && $8!=""{sub(/@.*/,"",$8); print $8}' | sort -u \
+     | grep -Ei 'dlopen|dlmopen|dlvsym|dl_open|NSAddImage|NSAddLibrary|NSLinkModule|NSCreateObjectFile|NSLookup|shared_cache|gemm|blas|lapack|vdsp|bnns|catlas|cuda|mkl_|lazy_load'
+   readelf -W --dyn-syms --syms gemm | awk '$7!="UND" && $8!=""{print $8}' | sort -u \
+     | grep -E 'DynLib|dlopen|_dl_open|dl_map_object'
+   readelf -d gemm | grep NEEDED
+   ```
+
+   (The patterns here are copied from the harness9/harness10 validator.
+   Re-copy them from the task file if it has changed.)
+4. **Only if both greps print nothing,** add a `validator_notes` entry
+   for that unit and run to `evals/boards/v5/exclusions.json`. The note
+   says: "verdict not measured: the validator stopped at the binary check
+   on std's dlsym (Linux host); rebuilt binary imports no other loader or
+   BLAS symbol". Never write "validator false FAIL": unlike `GLM-E`'s
+   replayed `122_gemm_blocked_c`, nothing has shown the solution correct.
+   Then run `python3 evals/v5_board.py --write`. The unit still counts as
+   not passed (the score is not adjusted).
+
+The other Linux-host caveat remains the agent shell's missing network
+deny (HARNESS_NOTES next-era (d)).
 
 **1c. The gate admits `--jobs` concurrent requests.** Nothing to run by
 hand: `profile.py` and `campaign.py run` both call
@@ -1115,6 +1164,15 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
       13 wall hits against H_T2's 5, three before 12 turns. Integrity scan
       clean. Board row HY4-C; HY4-T2 stays Hy4's best. Hy4 is served by
       hand only; the pair is back on DeepSeek.
+- [x] **HG_T2, Hy4-flash-abliterated (Mix-256G GGUF), ABANDONED
+      (2026-11-23, Max).** H_T2's settings on OrcaRouter's abliterated GGUF
+      through llama.cpp RPC over the pair. Stopped at 16/71 units: at 8.5
+      tok/s for one stream and about 5.3 per stream at 4 (21.3 aggregate),
+      an 8K thinking turn takes about 25 min, so the row would measure the
+      RPC serve speed more than the model. Not a board row; this model is
+      not tested. The arm stays in `evals/campaigns/v5-thinking-first.json`
+      with its ABANDONED note; its `recommend.composite_by_model` entry is
+      removed.
 - [x] **The RTX 5090 default's L0 (2026-11-22).** Qwen3.8 27B Uncensored
       MTP: 39/71 scored (40 raw), SCORE 63.3, 4 units lost to a runner
       retry loop; driven from the rig's eval-host container (calibrated
@@ -1123,16 +1181,18 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
 - [x] **The RTX 5090 default's L1 and L2 (2026-11-22), profile complete
       (retired).** Diagnostics only, not board rows, in
       `evals/boards/v5/diagnostics/`. L0 → L1 zig 0 → 4 of 6; L1 → L2 zig
-      4 → 2; L0 → L2 over 36 compiled units 19 → 23 (+4, p 0.29); all
+      4 → 2; L0 → L2 over 35 compiled units 19 → 23 (+4, p 0.29); all
       within churn, single seed, uncalibrated host. Integrity scan
       2026-11-22: 0 contaminated, no unit withheld (sealed notes in
       `evals/audit/reviews/`). Report §5.
 - [x] **The eval-host container calibration (2026-11-23).** DeepSeek T2
       rerun from the rig's container against the Mac's `DS-T2` (65/71):
       60/71, then 2/7 on the flips and 5/11 on the fails, contention-free.
-      No host effect except the Rust `dlsym` validator bug on
-      `122_gemm_blocked` (Linux only; next-era fix, per-run validator note
-      until then). Diagnostics only, no board row
+      No host effect detected beyond run-to-run variation, from one
+      calibration arm (harness9); two known host effects: the Rust `dlsym`
+      validator bug on `122_gemm_blocked` (Linux only, the verdict is not
+      measured; next-era fix, per-run note until then) and the missing
+      Linux network deny on the agent's shell. Diagnostics only, no board row
       ([report](reports/V5_EVAL_HOST_CALIBRATION-2026-11-23.md)). Q_T2 is
       affected only if its Rust GEMM uses threads.
 - [x] **The GLM recipe engine update (1104), tested on its own

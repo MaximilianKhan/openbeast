@@ -28,6 +28,7 @@ server or toolchain is needed. Pinned here:
      thinking is kept only beyond it and priced; the report renders the
      recommended config and the thinking-vs-no-thinking section.
 """
+import copy
 import json
 import os
 import sys
@@ -1010,11 +1011,39 @@ def test_hg_t2_is_h_t2_on_the_gguf_server():
     assert spec["model"] == HG and spec["served_model"] == "Hy4-flash-abliterated-Mix-256G"
 
 
-def test_abliterated_gguf_composite_is_hg_t2_and_nvfp4_keeps_h_t2():
+def test_hg_t2_is_abandoned_so_it_is_no_model_composite():
+    """HG_T2 was abandoned 2026-11-23 (16/71 units, serve-speed bound): the arm
+    stays with its ABANDONED note, but no model's composite points at it."""
     camp = C.load_campaign(TF)
-    for name in (HG, "Hy4-flash-abliterated"):
-        assert C.composite_for(camp, name)[0] == "HG_T2", name
+    assert "HG_T2" not in camp["recommend"]["composite_by_model"].values()
+    assert "ABANDONED 2026-11-23" in C.arm_spec(camp, "HG_T2")["note"]
     assert C.composite_for(camp, HY4)[0] == "H_T2"
     assert C.composite_for(camp, "Hy4-flash")[0] == "H_T2"
     assert C.served_model_mismatch(camp, ["HG_T2"], "Hy4-flash-NVFP4")
     assert C.served_model_mismatch(camp, ["HG_T2"], "Hy4-flash-abliterated-Mix-256G") == []
+
+
+# --- 15. composite_by_model: the longest matching key wins, in any file order ------
+
+def _cbm_camp(cbm):
+    camp = copy.deepcopy(C.load_campaign(TF))
+    camp["recommend"]["composite_by_model"] = cbm
+    return camp
+
+
+def test_composite_for_takes_the_longest_key_whatever_the_order():
+    fwd = _cbm_camp({"Hy4-flash-abliterated": "Q_T2", "Hy4-flash": "H_T2"})
+    rev = _cbm_camp({"Hy4-flash": "H_T2", "Hy4-flash-abliterated": "Q_T2"})
+    for camp in (fwd, rev):
+        assert C.composite_for(camp, "Hy4-flash-abliterated (Mix-256G GGUF)") == \
+            ("Q_T2", "recommend.composite_by_model['Hy4-flash-abliterated']")
+        assert C.composite_for(camp, HY4)[0] == "H_T2"
+        assert C.composite_for(camp, "Hy4")[0] == "T"
+        assert C.composite_for(camp, None)[0] == "T"
+        assert not [e for e in C.validate_campaign(camp) if "composite_by_model" in e]
+
+
+def test_validate_refuses_two_keys_with_one_slug():
+    camp = _cbm_camp({"Hy4-flash": "H_T2", "hy4 flash": "T2"})
+    errs = [e for e in C.validate_campaign(camp) if "same model key" in e]
+    assert errs and "hy4-flash" in errs[0]
