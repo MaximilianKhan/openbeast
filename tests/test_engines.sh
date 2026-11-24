@@ -230,6 +230,8 @@ echo "Library: engines, host class, defaults, conf writes"
 _lib() { env -i "${BASE_ENV[@]}" REPO_DIR="$SB" "$@"; }
 _o="$(_lib bash -c 'source "$REPO_DIR/scripts/lib/engine.sh"; ob_engines')"
 check "the five shipped adapters are discovered, in order (maya: opt-in, gated; basalt: the RTX 5090 default)" '[[ "$_o" == "llama vllm tensorfold maya basalt" ]]' "$_o"
+_o="$(_lib bash -c 'source "$REPO_DIR/scripts/lib/engine.sh"; [[ -f "$OB_ENGINE_ADAPTER_DIR/basalt-apply-pr632.sh" ]] && echo present; ob_engine_valid basalt-apply-pr632 && echo valid; ob_engine_valid basalt && echo basalt-ok')"
+check "a helper script beside the adapters (basalt-apply-pr632.sh, no eng_* functions) is not an engine" '[[ "$_o" == $'"'"'present\nbasalt-ok'"'"' ]]' "$_o"
 cp "$SB/scripts/engines/vllm.sh" "$T/sglang.sh"; sedi 's/eng_vllm_/eng_sglang_/g' "$T/sglang.sh"
 cp "$T/sglang.sh" "$SB/scripts/engines/sglang.sh"
 _o="$(_lib bash -c 'source "$REPO_DIR/scripts/lib/engine.sh"; ob_engines; source "$REPO_DIR/scripts/lib/backend.sh"; ob_backend_normalize sglang; ob_backend_normalize nonsense 2>&1')"
