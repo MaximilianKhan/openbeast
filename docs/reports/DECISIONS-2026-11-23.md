@@ -26,6 +26,7 @@
 9. [Strata: review, build, benchmark, not adopted](#9-strata-review-build-benchmark-not-adopted)
 10. [Install the NVIDIA Container Toolkit on the rig](#10-install-the-nvidia-container-toolkit-on-the-rig)
 11. [Basalt with the Derisked pack for the Inkling v5 run](#11-basalt-with-the-derisked-pack-for-the-inkling-v5-run)
+12. [Queue three Inkling ablation arms behind I_T2](#12-queue-three-inkling-ablation-arms-behind-i_t2)
 
 ---
 
@@ -432,3 +433,88 @@ SearXNG with it), approved. `~/openbeast-runs/ink-I_T2-run.sh` restores it
 when the campaign exits, whatever the exit code: `inkling-v5.sh stop`,
 `./start.sh -d`, then a gate `:8091` check with the rig-eval key, all logged
 to `~/openbeast-runs/ink-I_T2-run.out`.
+
+---
+
+## 12. Queue three Inkling ablation arms behind I_T2
+
+**Decision.** Queue three optional one-stream arms on the RTX 5090 rig, to run
+back to back once `I_T2` has finished and restored the default stack **and**
+the Maya benchmark has released the GPU: `I_T2_s1`, `I_T2_stock`, `I_UP8k`
+(#309, merge `d41c2c47`). Serve them with the DNS-channel fix on.
+
+**When / who.** Max approved, 2026-11-23 evening; queue armed 21:46:38 PST
+(`~/openbeast-runs/ink-ablations-queue.sh`, output `ink-ablations-queue.out`).
+
+**Why each arm, and what it isolates.**
+
+- *`I_T2_s1`* (`I_T2` + `--seed 1`, `noise_of: I_T2`): one row cannot say
+  whether a later gap is real. Its flips against `I_T2` set the noise margin
+  the other two comparisons are read against, as `T_s1` did for `T`.
+  **How the seed travels** (source read, not yet probed): `run_eval --seed 1`
+  sets `OPENBEAST_AGENT_SEED`; the runner sends `seed: 1` on every request at
+  temperature 0.6 (`agents/runner.py` `_seed_kwargs`). Basalt `400b411c` uses
+  the request seed when given, else a `steady_clock` value
+  (`src/program/serve/request_prefill.cpp`), and Inkling samples with those
+  parameters (`src/models/inkling2/session.cpp`, counter-based Philox draws).
+  So Basalt **does** honour the seed, and unlike the Spark server (a fixed
+  seed when none is sent) `I_T2` was already a fresh draw: `I_T2_s1` is a
+  second draw. One side effect: a seeded request sets `draw_drafts=false`,
+  so DSpark's drafts are kept by the plain rule rather than exact
+  speculative sampling. Both sample from the model's distribution; speed
+  (acceptance) may differ. The queue logs a seeded repeat probe (two identical
+  seed-1 requests, then two unseeded) as runtime evidence.
+- *`I_T2_stock`* (`I_T2` exactly, Basalt's stock pack `c2afac3a`): the
+  control for the derisking edit. The weights are the only change (same
+  binary, flags, harness, host), so a gap beyond the noise margin is the
+  edit's effect on coding. The edit measurably moves the distribution (KLD
+  0.0263 vs 0.0128; §11), which is why the control is worth 2 h. Both packs
+  serve the alias `inkling-2-mini`, so preflight cannot tell them apart: the
+  queue checks `docker inspect basalt-serve` for
+  `/models/Inkling-2-Mini-NVFP4-MX8.basalt` before launching and logs the
+  args. The model name `Inkling 2 Mini (Basalt NVFP4-MX8, stock)` gives the
+  rows their own slug, cache keys and state (pinned by a test).
+- *`I_UP8k`* (`UP_8k` at one stream): DeepSeek's other 65/71 setup (forced-act
+  turn, planning lines, done-when-verified, 8,192 cap). On DeepSeek it tied
+  T2 on passes (65 vs 65, SCORE 91.4 vs 94.9), so the two setups were not
+  separated there; Inkling, ~400 tok/s at one stream, may separate them. It
+  crosses the era (harness9 `036638dd` → harness10 `9bcd5aa6`), as DS-UP8k vs
+  DS-T2 did: setup against setup, not one switch.
+
+**Evidence for the trees.** `~/ob-ink` (I_T2's tree, main `1199608a`) and the
+new `~/ob-ink2` (`d41c2c47`) both compute era `9bcd5aa6030836d1`
+(`evals/cache.py current_era`, run with `python3 -B` on the rig), DS-UP_8k's
+era, so no separate pinned worktree was needed for `I_UP8k`; it runs from
+`~/ob-ink2` with no `--arm-tree`. The harness9 arms run from
+`~/ob-ink2/.claude/worktrees/h9` at `f38a29c7` (era `036638dd`), I_T2's.
+`scripts/eval-host-container.sh tag` in `~/ob-ink2` gives
+`openbeast-eval-host:8d1e28442569`. A `--dry-run` of each arm in that
+container resolved the expected switches (`I_T2_s1`: `--seed 1` added to
+I_T2's; `I_UP8k`: `FORCE_ACT=1`, `ACT_NUDGE=0`, `ALGO_LINES=1`,
+`DONE_VERIFIED=1`, `HIDE_WEB=1`, 8,192). A separate tree, not `~/ob-ink`,
+because `I_T2` was running from it. Separate state means `I_T2`'s row is
+compared by results file (`--baseline`), not in one state.
+
+**The DNS fix** (Strata report §15.4 gap 1). `basalt-serve.sh` now passes
+`--dns 127.0.0.1`, so Docker's embedded resolver has no upstream. Probe
+2026-11-23 (Docker 29.9.2, a throwaway `python3 -I` container on
+`strata-bench-net`, same hardening flags): without it, `example.com` and
+`huggingface.co` resolved; with it, both `gaierror [Errno -3]`. Basalt's
+serving path resolves no names (the only resolver use is image-URL fetching
+in `serve/engine/image_source.py`, unused by the eval). It cannot be tried
+against a live Basalt start while `I_T2` holds the GPU, so the queue keeps a
+fallback: a failed serve check with the fix retries once with
+`BASALT_DNS_OPEN=1` (the old serve) and logs it. The running `I_T2` serve was
+not restarted. Rejected: `--internal` plus a loopback proxy (more moving
+parts, an extra process in the request path, for the same result).
+
+**Alternatives considered.** One campaign invocation for all three arms: no,
+the pack changes between arms and the stock arm needs its own model name.
+Running the arms in `I_T2`'s state dir: not reachable from the eval container
+(it mounts only its own tree). Gating launch on preflight's `served_model`:
+insufficient for the stock control (same alias), hence the `docker inspect`
+check.
+
+**Operations.** Stop safely: `touch ~/openbeast-runs/ink-ablations-queue.STOP`,
+then `docker stop` the eval container; never kill the script once arms run
+(it owns the restore). See [TODO](../TODO.md).
