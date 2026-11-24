@@ -26,6 +26,7 @@
 9. [Strata: review, build, benchmark, not adopted](#9-strata-review-build-benchmark-not-adopted)
 10. [Install the NVIDIA Container Toolkit on the rig](#10-install-the-nvidia-container-toolkit-on-the-rig)
 11. [Basalt with the Derisked pack for the Inkling v5 run](#11-basalt-with-the-derisked-pack-for-the-inkling-v5-run)
+12. [Project Maya for Inkling: review, measure, not adopted](#12-project-maya-for-inkling-review-measure-not-adopted)
 
 ---
 
@@ -432,3 +433,57 @@ SearXNG with it), approved. `~/openbeast-runs/ink-I_T2-run.sh` restores it
 when the campaign exits, whatever the exit code: `inkling-v5.sh stop`,
 `./start.sh -d`, then a gate `:8091` check with the rig-eval key, all logged
 to `~/openbeast-runs/ink-I_T2-run.out`.
+
+---
+
+## 12. Project Maya for Inkling: review, measure, not adopted
+
+**Decision.** Project Maya (`mw00/project-maya`) is **not adopted** for Inkling
+2 Mini on the 5090. Basalt stays the Inkling engine. Our existing Maya adapter
+(GLM big mode, v1.1.65) is unchanged. The sandbox's DNS gap now has a
+proved fix (`--dns 127.0.0.1`).
+
+**When / who.** Max asked (2026-11-23 evening) after hearing Maya "gets
+similar numbers to Basalt". The read-only review ran 21:30-21:45 while `I_T2`
+held the GPU. The build and measurements ran 2026-11-24 01:38-01:56, after
+`I_T2`'s `RESTORE OK` (01:29:42). The default stack was stopped 01:40 and
+restored 01:55, the gate verified 01:56:04, and `GPU-RELEASED` written
+01:56:06 for the queued arms.
+
+**Reason and evidence** ([MAYA_INKLING_5090-2026-11-23.md](MAYA_INKLING_5090-2026-11-23.md)):
+
+- **The rumour does not hold.** On Basalt's own probes, with the stock
+  model, Maya runs at 329 / 204 tok/s code / prose single stream against
+  Basalt's 376 / 307. Four streams give 350 / 354 against 702 / 624 (Maya
+  turns drafting off under `--parallel`), and prefill is ~6K against 18-19K
+  (report §10). No published source had a 5090 Maya figure beyond one third
+  party's 233-301 on an unmerged conversion (report §3.2).
+- **It cannot run the eval's model.** `maya-ik2` reads only `inkling2`-keyed
+  GGUFs with NVFP4 / Q8_0 experts. Among our files that is unsloth's
+  Old_Support UD-Q4_K_XL, the stock model. It cannot read the current
+  unsloth files (`inkling2_loop`), orcarouter's, the Derisked safetensors or
+  the Basalt / Strata packs (report §6, with file:line).
+- **Safe to test, not to default.** There is no malware, telemetry or engine
+  network code. The server's default-on network features (update check and
+  self-update, model pull / delete, image-URL fetch when vision is configured)
+  were switched off and sandboxed (report §7, §9). It is an "experimental
+  preview", and Blackwell is untested upstream.
+
+**What it does well (recorded so the question is not reopened blind).** The
+best KLD on the 4-bit file: 0.0137 at FP8 KV (0.0127 at FP16) against
+llama.cpp's 0.0162 on the same tensors. Greedy output is byte-identical with
+drafting on and off. Conformance PASS at c=1 and c=4, thinking kept on and
+separated, tool calls streamed and not.
+
+**Alternatives considered.** Running Maya on the Derisked weights through
+the third-party converter of upstream issue #1115: rejected, because the
+converter is unreviewed and unmerged and the measured gap is too large to
+close by changing the weights. Measuring through our `engine.sh` adapter:
+not possible, because the adapter pins v1.1.65, which predates Inkling.
+
+**Side result.** The DNS gap of
+[the Strata report §15.4](STRATA_INKLING_5090-2026-11-23.md#154-the-running-isolation)
+is closable on this Docker: `--dns 127.0.0.1` on the no-NAT bridge made
+every lookup FAIL while the published port worked (report §9.1). Basalt can
+take the same flag at its next start ([TODO](../TODO.md)).
+
