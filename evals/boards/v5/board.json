@@ -227,6 +227,19 @@
       "host": "DGX Spark pair, vLLM TP2 + EP, NVFP4",
       "campaign_arm": "v5-thinking-first H_C",
       "note": "55/71; 0 units lost; failed: 122_gemm_blocked_d, 122_gemm_blocked_e, 158_karatsuba_bytes_d, 163_bigint_divmod_b, 163_bigint_divmod_c, 163_bigint_divmod_f, 168_linearizability_kv_b, 168_linearizability_kv_c, 168_linearizability_kv_e, 168_linearizability_kv_f, 173_taskgroup_cancel, 183_heston_little_trap, 190_autograd_mlp, 192_pike_regex, 195_riscv_insn_budget, 36_black_scholes_f; the ablation of HY4-T2: same harness9 tree, served model and Spark pair; 13 units hit the wall, 4 passed; integrity scan 2026-11-22: 0 contaminated (71 transcripts, 71 units; four web_search calls in two units, all refused by the eval guard (attempts))"
+    },
+    {
+      "id": "Q38U-T2",
+      "model": "Qwen3.8 27B Uncensored MTP (the shipped default)",
+      "config": "thinking on, campaign arm Q_T2 = T2's switches at one stream (--jobs 1 --slots 1): T + 8192-token per-turn thinking cap + act nudge; harness9 (review 1118 sandbox + partial stats + eval fetch guard)",
+      "files": [
+        "eval-qwen3-8-27b-uncensored-mtp-q5-k-m-v5-thinking-first-q-t2-20261123-115749.json",
+        "eval-qwen3-8-27b-uncensored-mtp-q5-k-m-v5-thinking-first-q-t2-20261123-231112.json"
+      ],
+      "weights_id": "qwen38-27b-uncensored-mtp-q5km",
+      "host": "1× RTX 5090, llama.cpp MTP, -np 1; rig eval-host container; calibrated 2026-11-23 against the Mac host (with DeepSeek on this same harness9 tree; carried to this model and server by inference)",
+      "campaign_arm": "v5-thinking-first Q_T2",
+      "note": "54/71 raw; the main file plus one rerun of its 7 lost units (r1); 3 units still lost to server_error (llama-server HTTP 500 on a truncated tool call, retried identically; docs/HARNESS_NOTES.md), counted as fails; 9 units hit the wall, 2 passed; harness9 (era 036638dd) where Q38U-L0 is harness10 (era 9bcd5aa6), so the two rows differ in era as well as arm; integrity scan 2026-11-23: 3 contaminated (the scan flagged off-host access from the agent's shell; 2 were passes), excluded; 122_gemm_blocked_d also stopped at the Linux dlsym binary check (validator note)"
     }
   ],
   "not_yet_run": [

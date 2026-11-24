@@ -248,7 +248,8 @@ def test_committed_board_numbers():
     assert b["units"] == 71 and b["bases"] == 34
     assert {k: runs[k]["passed"] for k in runs} == {
         "GLM-L0": 26, "GLM-A": 31, "GLM-B": 36, "GLM-C": 51, "GLM-E": 50, "DS-T": 61, "DS-T2": 65, "DS-Ts1": 61, "DS-T3": 65,
-        "DS-U": 59, "DS-UP": 62, "DS-UPA": 59, "DS-U8k": 63, "DS-UP8k": 65, "DS-UPA8k": 62, "HY4-T2": 60, "HY4-C": 55, "Q38U-L0": 39, "OPUS-REF": 71}
+        "DS-U": 59, "DS-UP": 62, "DS-UPA": 59, "DS-U8k": 63, "DS-UP8k": 65, "DS-UPA8k": 62, "HY4-T2": 60, "HY4-C": 55, "Q38U-L0": 39, "Q38U-T2": 52,
+        "OPUS-REF": 71}
     assert runs["GLM-C"]["passed_raw"] == 54  # 122 b/d/e excluded: contaminated (G25 scan)
     assert runs["GLM-E"]["passed_raw"] == 50  # scan clean; 122_c is a noted validator false FAIL
     assert runs["DS-T"]["passed_raw"] == 61  # scan clean (2026-11-18); first run under review 1118
@@ -258,24 +259,32 @@ def test_committed_board_numbers():
     assert round(runs["HY4-C"]["score"], 1) == 82.2  # HY4-T2 (83.4) stays Hy4's best row
     assert runs["Q38U-L0"]["passed_raw"] == 40  # 126 (a pass), 163_e, 192 excluded: the shell reached the network
     assert sorted(runs["Q38U-L0"]["excluded"]) == ["126_hmac_scratch", "163_bigint_divmod_e", "192_pike_regex"]
+    assert runs["Q38U-T2"]["passed_raw"] == 54  # main file (71) + the r1 rerun of 7 lost units, harness9
+    # 124 and 126 (passes) and 122_d (r1) excluded: the shell reached the network (scan 2026-11-23)
+    assert sorted(runs["Q38U-T2"]["excluded"]) == ["122_gemm_blocked_d", "124_rkf45", "126_hmac_scratch"]
+    assert list(runs["Q38U-T2"]["validator_notes"]) == ["122_gemm_blocked_d"]  # dlsym: verdict not measured
+    assert round(runs["Q38U-T2"]["score"], 1) == 75.6
     assert runs["OPUS-REF"]["passed_strict_wall"] == 68
     # the 5090's 4 units lost to llama-server's HTTP 500 on a truncated tool call
     assert runs["Q38U-L0"]["lost"] == {u: "server_error" for u in (
         "122_gemm_blocked_c", "122_gemm_blocked_d", "124_rkf45", "173_taskgroup_cancel")}
-    assert all(not r["lost"] for k, r in runs.items() if k != "Q38U-L0")
+    # Q_T2: 7 lost in the main file, 4 recovered by the r1 rerun; the same 500 kept 3
+    assert runs["Q38U-T2"]["lost"] == {u: "server_error" for u in (
+        "168_linearizability_kv_f", "175_crdt_orset_rga", "190_autograd_mlp")}
+    assert all(not r["lost"] for k, r in runs.items() if k not in ("Q38U-L0", "Q38U-T2"))
     best = {r["model"]: r["id"] for r in b["best"]}
     assert best == {"GLM-5.3-Flash": "GLM-C", "DeepSeek-V4.1-Flash (Mia EXL3)": "DS-T2", "Claude Opus 5.5": "OPUS-REF",
-                    "Hy4-flash (NVFP4)": "HY4-T2", "Qwen3.8 27B Uncensored MTP (the shipped default)": "Q38U-L0"}
+                    "Hy4-flash (NVFP4)": "HY4-T2", "Qwen3.8 27B Uncensored MTP (the shipped default)": "Q38U-T2"}
     # the ranking, by SCORE; the reference last and unranked
     assert [(r["id"], round(r["score"], 1)) for r in b["best"]] == [
-        ("DS-T2", 94.9), ("HY4-T2", 83.4), ("GLM-C", 76.7), ("Q38U-L0", 63.3), ("OPUS-REF", 100.0)]
+        ("DS-T2", 94.9), ("HY4-T2", 83.4), ("GLM-C", 76.7), ("Q38U-T2", 75.6), ("OPUS-REF", 100.0)]
     assert b["not_yet_run"] == ["Qwen3.6 27B (v4 #1)"]
     # every run names its exact weights; one weights entry per model today
     ds, glm = "dsv41f-mia-exl3-2.9bpw-eaq1.1-v2", "glm53f-mia-exl3-4bpw-tf-ablit"
     hy4, q38 = "hy4-flash-nvfp4-atakans", "qwen38-27b-uncensored-mtp-q5km"
     assert {k: runs[k]["weights_id"] for k in runs} == {
         **{k: ds for k in runs if k.startswith("DS-")}, **{k: glm for k in runs if k.startswith("GLM-")},
-        "HY4-T2": hy4, "HY4-C": hy4, "Q38U-L0": q38, "OPUS-REF": "anthropic-api-claude-opus-5-5"}
+        "HY4-T2": hy4, "HY4-C": hy4, "Q38U-L0": q38, "Q38U-T2": q38, "OPUS-REF": "anthropic-api-claude-opus-5-5"}
     assert [r["weights_id"] for r in b["best"]] == [ds, hy4, glm, q38, "anthropic-api-claude-opus-5-5"]
     w = b["weights"][ds]
     assert (w["format"], w["bpw"], w["abliterated"], w["revision_kind"]) == ("EXL3", 2.9, False, "local")
@@ -298,10 +307,11 @@ def test_committed_board_numbers():
         "DS-T3": (38279928, 2260595, 0), "DS-U": (23588215, 2792411, 0), "DS-UP": (24624938, 2878231, 0),
         "DS-UPA": (28279120, 3264679, 0), "DS-U8k": (30429276, 2519544, 0), "DS-UP8k": (26876212, 2456141, 0),
         "DS-UPA8k": (27402927, 2520048, 0), "HY4-T2": (47921687, 1605430, 0), "HY4-C": (35144307, 1967131, 0),
-        "Q38U-L0": (15413787, 3452557, 0), "OPUS-REF": (0, 0, 71)}
+        "Q38U-L0": (15413787, 3452557, 0), "Q38U-T2": (57838480, 4697822, 0), "OPUS-REF": (0, 0, 71)}
     assert runs["DS-T2"]["tokens"]["per_pass"] == 473490 and runs["DS-T2"]["tokens"]["total"] == 30776845
     assert runs["HY4-T2"]["tokens"]["per_pass"] == 825452 and runs["HY4-T2"]["tokens"]["total"] == 49527117
     assert runs["HY4-C"]["tokens"]["per_pass"] == 674753 and runs["HY4-C"]["tokens"]["total"] == 37111438
+    assert runs["Q38U-T2"]["tokens"]["per_pass"] == 1202621 and runs["Q38U-T2"]["tokens"]["total"] == 62536302
 
 
 def test_two_quantizations_of_one_model_are_two_rows(tmp_path):
