@@ -291,7 +291,7 @@ def test_committed_board_numbers():
     assert all(not r["lost"] for k, r in runs.items() if k not in ("Q38U-L0", "Q38U-T2"))
     best = {r["model"]: r["id"] for r in b["best"]}
     assert best == {"GLM-5.3-Flash": "GLM-UP", "DeepSeek-V4.1-Flash (Mia EXL3)": "DS-T2", "Claude Opus 5.5": "OPUS-REF",
-                    "Hy4-flash (NVFP4)": "HY4-T2", "Qwen3.8 27B Uncensored MTP (the shipped default)": "Q38U-T2",
+                    "Hy4-flash (NVFP4)": "HY4-T2", "Qwen3.8 27B Uncensored MTP": "Q38U-T2",
                     "Inkling 2 Mini Derisked (Basalt NVFP4-MX8)": "INK-T2",
                     "Inkling 2 Mini (Basalt NVFP4-MX8)": "INK-T2-STOCK"}
     # the ranking, by SCORE; the reference last and unranked

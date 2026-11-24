@@ -35,6 +35,17 @@ otherwise the board would rank the better of two draws of one setup, a
 selection effect that a single-seed row of another model does not get. The
 run it replicates is the one that ranks (the first, pre-planned draw).
 
+SHIPPED DEFAULTS. The board ranks by SCORE; which row a platform SHIPS as its
+default is a separate, human decision, recorded in board.json "defaults": one
+entry per platform naming the run whose model, weights and agent setup that
+platform serves by default, since when, the decision that made it so, and the
+previous defaults ("previous", newest first). It is the one source of truth the
+docs and the website read for "the rig's default" (never the rank, never a
+hand-kept name). defaults_problems() checks every entry names a ranked board
+run (not a reference, not a seed replicate), once per platform, with ISO dates
+in order; render_defaults() writes the <!-- v5-defaults --> block of
+docs/RESULTS.md.
+
 The board is generated between markers in README.md and docs/RESULTS.md
 (<!-- v5-board:start --> / <!-- v5-board:end -->); docs/RESULTS.md also holds
 every run of every model (<!-- v5-runs:start --> / <!-- v5-runs:end -->),
@@ -95,7 +106,8 @@ MANIFEST = os.path.join(EVALS_DIR, "suites", "v5.json")
 # Docs that hold a generated block, and the path prefix from that doc to the
 # repo root (for links to the result files).
 DOCS = {"README.md": "", os.path.join("docs", "RESULTS.md"): "../"}
-BLOCKS = {"v5-board": "board", "v5-runs": "runs", "v5-tokens": "tokens", "v5-weights": "weights"}
+BLOCKS = {"v5-board": "board", "v5-runs": "runs", "v5-tokens": "tokens", "v5-weights": "weights",
+          "v5-defaults": "defaults"}
 # Where a weights cell links when the weights have no Hub revision (the
 # generated "Weights used" block), relative to the repo root.
 WEIGHTS_ANCHOR = "docs/RESULTS.md#weights-used"
@@ -192,6 +204,50 @@ def weights_problems(board: dict, weights: dict) -> list[str]:
             bad.append(f"run {r['id']}: a seed replicate needs the same model and weights as {rep}")
         elif base.get("replicate_of"):
             bad.append(f"run {r['id']}: replicate_of names {rep}, itself a replicate: name the original")
+    return bad
+
+
+_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+DEFAULT_REQUIRED = ("platform", "label", "run", "agent_profile", "since", "decision")
+
+
+def defaults_problems(board: dict) -> list[str]:
+    """Why board.json "defaults" is not usable ([] = fine). Module docstring, SHIPPED DEFAULTS."""
+    bad = []
+    ids = {r["id"]: r for r in board.get("runs", [])}
+    seen = set()
+
+    def usable(where: str, rid) -> None:
+        r = ids.get(rid)
+        if r is None:
+            bad.append(f"{where}: run {rid!r} is not a board run")
+        elif r.get("reference"):
+            bad.append(f"{where}: run {rid} is a reference ledger, never a shipped default")
+        elif r.get("replicate_of"):
+            bad.append(f"{where}: run {rid} is a seed replicate; name the run it replicates ({r['replicate_of']})")
+
+    for i, d in enumerate(board.get("defaults", [])):
+        where = f"defaults[{i}]"
+        missing = [k for k in DEFAULT_REQUIRED if not d.get(k)]
+        if missing:
+            bad.append(f"{where}: missing {', '.join(missing)}")
+            continue
+        where = f"default {d['platform']}"
+        if d["platform"] in seen:
+            bad.append(f"{where}: two defaults for one platform")
+        seen.add(d["platform"])
+        usable(where, d["run"])
+        if not _DATE.match(str(d["since"])):
+            bad.append(f"{where}: since {d['since']!r} is not YYYY-MM-DD")
+        for j, p in enumerate(d.get("previous", [])):
+            pw = f"{where} previous[{j}]"
+            usable(pw, p.get("run"))
+            if p.get("run") == d["run"]:
+                bad.append(f"{pw}: the previous default is the current one")
+            if not (_DATE.match(str(p.get("from", ""))) and _DATE.match(str(p.get("until", "")))):
+                bad.append(f"{pw}: from / until must be YYYY-MM-DD")
+            elif not p["from"] <= p["until"] <= d["since"]:
+                bad.append(f"{pw}: dates out of order (from {p['from']}, until {p['until']}, current since {d['since']})")
     return bad
 
 
@@ -404,7 +460,7 @@ def build(board: dict | None = None, base_dir: str = BOARD_DIR,
     manifest = manifest if manifest is not None else load_manifest()
     exclusions = exclusions if exclusions is not None else load_exclusions()
     weights = weights if weights is not None else load_weights()
-    problems = weights_problems(board, weights)
+    problems = weights_problems(board, weights) + defaults_problems(board)
     if problems:
         raise ValueError("weights.json / board.json: " + "; ".join(problems))
     runs = []
@@ -420,7 +476,8 @@ def build(board: dict | None = None, base_dir: str = BOARD_DIR,
             "weights": {wid: {**w, "id": wid, "hub_url": hub_url(w),
                               "runs": [r["id"] for r in runs if r["weights_id"] == wid]}
                         for wid, w in weights.items() if wid in used},
-            "not_yet_run": board.get("not_yet_run", [])}
+            "not_yet_run": board.get("not_yet_run", []),
+            "defaults": board.get("defaults", [])}
 
 
 # --- rendering ------------------------------------------------------------------------
@@ -650,8 +707,25 @@ def render_tokens(b: dict, prefix: str = "") -> str:
     return "\n".join(lines + ["", TOKENS_NOTE])
 
 
+def render_defaults(b: dict, prefix: str = "") -> str:
+    """The shipped default per platform (board.json "defaults"), with its measured row."""
+    runs = {r["id"]: r for r in b["runs"]}
+    lines = ["<!-- generated by evals/v5_board.py: do not hand-edit -->", "",
+             "| Platform | Default model | Weights | Row | Passed | SCORE | Agent setup | Since | Decision | Previous default |",
+             "|---|---|---|---|---:|---:|---|---|---|---|"]
+    for d in b.get("defaults", []):
+        r = runs[d["run"]]
+        prev = "; ".join(f"{runs[p['run']]['model']} (`{p['run']}`, `AGENT_PROFILE={p['agent_profile']}`), "
+                         f"{p['from']} to {p['until']}" + (f", now the {p['role']}" if p.get("role") else "")
+                         for p in d.get("previous", [])) or "—"
+        lines.append(f"| {d['label']} | **{r['model']}** | {_weights_cell(r, prefix)} | `{r['id']}` | "
+                     f"{r['passed']}/{r['units']} | {r['score']:.1f} | `AGENT_PROFILE={d['agent_profile']}` | "
+                     f"{d['since']} | [record]({prefix}{d['decision']}) | {prev} |")
+    return "\n".join(lines)
+
+
 RENDER = {"board": render_board, "runs": render_runs, "tokens": render_tokens,
-          "weights": render_weights}
+          "weights": render_weights, "defaults": render_defaults}
 
 
 def splice(text: str, name: str, body: str) -> str | None:
