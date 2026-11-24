@@ -207,7 +207,7 @@
     },
     {
       "id": "Q38U-L0",
-      "model": "Qwen3.8 27B Uncensored MTP (the shipped default)",
+      "model": "Qwen3.8 27B Uncensored MTP",
       "config": "thinking on (reasoning budget 20480), runner defaults, the L0 profile (bare); harness10",
       "files": [
         "eval-qwen3-8-27b-uncensored-mtp-q5-k-m-L0-20261122-083815.json"
@@ -231,7 +231,7 @@
     },
     {
       "id": "Q38U-T2",
-      "model": "Qwen3.8 27B Uncensored MTP (the shipped default)",
+      "model": "Qwen3.8 27B Uncensored MTP",
       "config": "thinking on, campaign arm Q_T2 = T2's switches at one stream (--jobs 1 --slots 1): T + 8192-token per-turn thinking cap + act nudge; harness9 (review 1118 sandbox + partial stats + eval fetch guard)",
       "files": [
         "eval-qwen3-8-27b-uncensored-mtp-q5-k-m-v5-thinking-first-q-t2-20261123-115749.json",
@@ -294,5 +294,35 @@
   ],
   "not_yet_run": [
     "Qwen3.6 27B (v4 #1)"
+  ],
+  "defaults": [
+    {
+      "platform": "spark-pair",
+      "label": "2× DGX Spark",
+      "run": "DS-T2",
+      "agent_profile": "deepseek-best",
+      "since": "2026-11-19",
+      "decision": "docs/SPARK_HYDRA.md#e2b-deepseek-best-configuration-v5-t2",
+      "note": "DeepSeek-V4.1-Flash (Mia EXL3) is the pair's default model since 2026-11-18 (Max, after hands-on testing); its T2 agent setup (AGENT_PROFILE=deepseek-best) since 2026-11-19"
+    },
+    {
+      "platform": "rtx5090",
+      "label": "1× RTX 5090",
+      "run": "INK-T2-STOCK",
+      "agent_profile": "inkling-best",
+      "since": "2026-11-24",
+      "decision": "docs/reports/DECISIONS-2026-11-24.md#10-stock-inkling-2-mini-on-basalt-is-the-rtx-5090-default",
+      "note": "Max, 2026-11-24: the stock Inkling 2 Mini (Basalt NVFP4-MX8 pack) on Basalt v0.5.7, scripts/engines/basalt.sh, profile inkling2-mini-stock; the default of what main ships from this date; the reference rig switches when its GPU frees up (docs/TODO.md)",
+      "previous": [
+        {
+          "run": "Q38U-T2",
+          "agent_profile": "qwen38-best",
+          "from": "2026-11-23",
+          "until": "2026-11-24",
+          "role": "fallback",
+          "note": "Qwen3.8 27B Uncensored MTP Q5_K_M on llama.cpp, the rig's default model 2026-08-19 to 2026-11-24 and its qwen38-best setup from 2026-11-23; the fallback and the rollback path"
+        }
+      ]
+    }
   ]
 }

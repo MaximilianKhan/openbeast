@@ -291,7 +291,7 @@ def test_committed_board_numbers():
     assert all(not r["lost"] for k, r in runs.items() if k not in ("Q38U-L0", "Q38U-T2"))
     best = {r["model"]: r["id"] for r in b["best"]}
     assert best == {"GLM-5.3-Flash": "GLM-UP", "DeepSeek-V4.1-Flash (Mia EXL3)": "DS-T2", "Claude Opus 5.5": "OPUS-REF",
-                    "Hy4-flash (NVFP4)": "HY4-T2", "Qwen3.8 27B Uncensored MTP (the shipped default)": "Q38U-T2",
+                    "Hy4-flash (NVFP4)": "HY4-T2", "Qwen3.8 27B Uncensored MTP": "Q38U-T2",
                     "Inkling 2 Mini Derisked (Basalt NVFP4-MX8)": "INK-T2",
                     "Inkling 2 Mini (Basalt NVFP4-MX8)": "INK-T2-STOCK"}
     # the ranking, by SCORE; the reference last and unranked
@@ -443,6 +443,50 @@ def test_a_locally_built_file_is_pinned_by_sha256_with_its_source(tmp_path):
     md = v5_board.render_weights(b)
     assert f"local file `n.pack` (sha256 `{sha}`; built here, not on the Hub" in md
     assert "[`org/Model-N-src` @ `" + "c" * 40 + "`]" in md and "`None`" not in md
+
+
+def test_shipped_defaults_are_validated_and_rendered(tmp_path):
+    """board.json "defaults" (2026-11-24): the platform's shipped row, separate from the rank. It must
+    name a real, ranked-kind run (no reference, no seed replicate), once per platform, dates in order."""
+    bd = board(tmp_path)
+    d = str(tmp_path)
+    bd["runs"].append({"id": "M-weak-s1", "model": "Model M", "weights_id": "m-29", "config": "seed 1",
+                       "replicate_of": "M-weak", "files": bd["runs"][0]["files"]})
+    good = {"platform": "rig", "label": "1x GPU", "run": "M-weak", "agent_profile": "x-best", "since": "2026-11-24",
+            "decision": "docs/d.md#1", "previous": [{"run": "N", "agent_profile": "y-best", "from": "2026-11-01",
+                                                      "until": "2026-11-24", "role": "fallback"}]}
+    bd["defaults"] = [good]
+    assert v5_board.defaults_problems(bd) == []
+    b = v5_board.build(bd, base_dir=d, manifest=MANIFEST, weights=WEIGHTS)
+    md = v5_board.render_defaults(b)
+    assert "| 1x GPU | **Model M** |" in md and "`M-weak`" in md and "`AGENT_PROFILE=x-best`" in md
+    assert "2026-11-01 to 2026-11-24, now the fallback" in md and "[record](docs/d.md#1)" in md
+    # the default is the rank's business only by coincidence: a weaker row may be the default
+    assert {r["model"]: r["id"] for r in b["best"]}["Model M"] == "M-strong"
+    for change, why in (({"run": "nope"}, "is not a board run"), ({"run": "M-weak-s1"}, "is a seed replicate"),
+                        ({"since": "24 Nov"}, "is not YYYY-MM-DD"), ({"agent_profile": ""}, "missing agent_profile"),
+                        ({"previous": [{**good["previous"][0], "until": "2026-11-30"}]}, "dates out of order"),
+                        ({"previous": [{**good["previous"][0], "run": "M-weak"}]}, "is the current one")):
+        bd["defaults"] = [{**good, **change}]
+        assert any(why in p for p in v5_board.defaults_problems(bd)), change
+    bd["defaults"] = [good, good]
+    assert any("two defaults for one platform" in p for p in v5_board.defaults_problems(bd))
+    try:
+        v5_board.build(bd, base_dir=d, manifest=MANIFEST, weights=WEIGHTS)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("build accepted two defaults for one platform")
+
+
+def test_committed_defaults():
+    """The RTX 5090 ships INK-T2-STOCK since 2026-11-24 (Max), Q38U-T2 its fallback; the pair ships DS-T2."""
+    bd = v5_board.load_board()
+    assert v5_board.defaults_problems(bd) == []
+    d = {x["platform"]: x for x in bd["defaults"]}
+    assert (d["rtx5090"]["run"], d["rtx5090"]["since"], d["rtx5090"]["agent_profile"]) == ("INK-T2-STOCK", "2026-11-24", "inkling-best")
+    assert [(p["run"], p["role"]) for p in d["rtx5090"]["previous"]] == [("Q38U-T2", "fallback")]
+    assert (d["spark-pair"]["run"], d["spark-pair"]["agent_profile"]) == ("DS-T2", "deepseek-best")
 
 
 def test_docs_are_current():

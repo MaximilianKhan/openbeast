@@ -291,7 +291,7 @@ DeepSeek's UP on the same harness
   by hand. Commands, what the restart does, and the offline reinstall from the
   pacman cache: [INSTALL.md](INSTALL.md#gpu-in-docker-the-nvidia-container-toolkit).
 
-**Open — Inkling 2 Mini on the 5090 (2026-11-23):**
+**Open — Inkling 2 Mini on the 5090 (2026-11-23; the 5090 default since 2026-11-24, the rig switch pending, below):**
 
 - [x] **DONE 2026-11-24 01:29 PST: the Inkling 2 Mini v5 run, arm `I_T2`,
   board row `INK-T2`: 49/71 scored, SCORE 76.5, #4 by SCORE (one above
@@ -369,7 +369,7 @@ DeepSeek's UP on the same harness
     kept and read with the new `evals/audit/basalt_log.py`: they match the
     transcripts exactly; decode 484 / 444 tok/s, drafts accepted 90.2% /
     88.7%.
-  - **Qwen3.8 stays the 5090 default** until the improved arm below.
+  - **Qwen3.8 stays the 5090 default** until the improved arm below. *(Superseded the same day: Max made the stock Inkling the default, DECISIONS-2026-11-24 §10.)*
 - [ ] **RUNNING (started 2026-11-24 10:25 PST): `I_UP8k`**, the third arm
   (DeepSeek's UP_8k at one stream, Derisked pack, harness10 tree
   `~/ob-ink2` at `d41c2c47`), unit 32/71 at 11:01 PST, ETA ~14:40 PST
@@ -458,34 +458,63 @@ DeepSeek's UP on the same harness
   [§15](reports/STRATA_INKLING_5090-2026-11-23.md#15-basalt-security-and-supply-chain-review)):
   no malware, telemetry or credential access, no network code in the
   engine; OK to keep serving `I_T2` in its sandbox.
-- [ ] **Basalt follow-ups before it becomes a default** (§15.8 of that
-  report; none touches the running eval):
-  - close the DNS channel of `strata-bench-net` (public names resolve
-    through Docker's embedded resolver; TCP out is blocked): `--internal`
-    plus a loopback proxy, or `--dns 127.0.0.1`, then the §15.4 probe must
-    print `dns … FAIL` (**done 2026-11-23 in the rig's `basalt-serve.sh`
-    with `--dns 127.0.0.1`, probe FAIL as expected; proven on the ablation
-    queue's three live Basalt starts on 2026-11-24, the in-container probe
-    failing each time**; the same flag also served
-    Maya on 2026-11-24 with the port working, [the Maya report §9.1](reports/MAYA_INKLING_5090-2026-11-23.md#91-the-dns-fix)); drop `exec` from `/tmp` if Basalt runs without it;
-    add `--pids-limit` and a memory limit;
-  - re-pin past upstream #588 (PR #632 or successor: after a thinking-budget
-    wrap Inkling can open a second thinking block and end empty at the cap)
-    and re-review the diff;
-  - pin the Python side (hashed offline wheels of `requirements.txt`, or
-    Basalt's `serve/tests` run once on the Ubuntu 24.04 packages we use);
-  - then `scripts/engines/basalt.sh` with every hardening flag
-    ([ENGINES.md](ENGINES.md#chosen-for-one-run-not-a-default));
-  - keep the server log of every eval serve: `docker logs basalt-serve >
-    <run>/basalt-serve.log 2>&1` before each `inkling-v5.sh stop`
-    (`docker rm -f` drops it, and the rig logs to json-file). `I_T2`'s log
-    was lost this way, so its #588 and lenient-parse counts have no
-    server-side cross-check (Inkling report §6.3). **Partly done
-    2026-11-24:** `~/openbeast-runs/basalt-logsaver.sh` follows every
-    `basalt-serve` the ablation queue starts (`docker logs -f --timestamps`
-    to `~/openbeast-runs/basalt-server-logs/`); read with
-    `evals/audit/basalt_log.py`. It lives on the rig only and stops with the
-    queue: the engine adapter should do the same for every serve.
+- [x] **Basalt follow-ups before it becomes a default** (§15.8 of that
+  report): **closed in `scripts/engines/basalt.sh` on 2026-11-24**, when
+  Max made the stock Inkling the 5090 default (DECISIONS-2026-11-24 §10).
+  Each item and how it is verified (tests, live, or at the switch):
+  [ENGINES.md](ENGINES.md#basalt-the-rtx-5090-default). The DNS fix is the
+  rig's proven one (a no-NAT bridge plus `--dns 127.0.0.1`), now with a
+  probe that gates every launch; `/tmp` is noexec and PIDs and memory are
+  limited (unverified live); the Python side is a pinned distro-package
+  image (`scripts/engines/basalt/Dockerfile`); the #588 fix is a hook that
+  applies `scripts/engines/patches/basalt-pr632-*.patch` when that file
+  lands (it is not on `main` yet: the improved arm's agent adds it). The
+  server log: the adapter runs the container in the foreground, so Basalt's
+  log goes to the stack's inference log like llama-server's (no
+  `docker logs` needed).
+- [ ] **Switch the 5090 rig to Inkling 2 Mini (Basalt): Max, after the GPU
+  frees up** (I_UP8k and the improved #632 arm first; nothing on the rig
+  changed for this PR). Steps and rollback:
+  [MODELS.md](MODELS.md#switching-the-rtx-5090-to-its-default-and-back).
+  Before: `git pull --ff-only` in `~/Documents/openbeast`; the toolkit's
+  `docker run --gpus device=0` works; `scripts/engine.sh install basalt`
+  (builds the env image from the pinned Dockerfile: **its first build**, so
+  check `dpkg-query` pins pass and `bin/basalt` builds; compare its sha256
+  with the measured `5dc8a63c…`: a different compiler path may differ, the
+  commit is the pin); the pack: the rig already has it at
+  `~/openbeast-runs/inkling-perf-2026-11-23/weights/basalt-Inkling-2-Mini-c2afac3a/`,
+  so copy (or hard-link) it into `WEIGHTS_DIR` and
+  `scripts/verify-weights.sh --file Inkling-2-Mini-NVFP4-MX8.basalt`. Check
+  after the switch:
+  - **the gate**: `GET /v1/models` through beast-gate lists
+    `inkling-2-mini`; a chat answers with thinking on; a remote client
+    (Tailscale) works through the gate, and `:8080` is not reachable off
+    the box (`ss -ltn`: `127.0.0.1:8080` only);
+  - **the sandbox**: the launch log's `sandbox probe: no DNS, no TCP out`;
+    `docker inspect` of `openbeast-engine-basalt-<8hex>` shows
+    `ReadonlyRootfs`, `CapDrop [ALL]`, `Dns [127.0.0.1]`, `PidsLimit 256`,
+    32 GiB memory, the noexec `/tmp`; **if Basalt fails to start, try the
+    noexec `/tmp` first** (record the result in ENGINES.md either way);
+    peak memory and PIDs during a long agent turn (`docker stats`) against
+    the limits;
+  - **conformance**: `scripts/backends/conformance.sh --url
+    http://127.0.0.1:8080 --model inkling-2-mini` at c=1, PASS with
+    `reasoning_content` separated (key from `LLAMA_API_KEY`);
+  - **the dashboard**: the slot card shows one slot and the model
+    `inkling-2-mini`; `scripts/engine.sh status` and `doctor` show basalt
+    v0.5.7 at its pin, ready, and "default engine here: basalt";
+  - `AGENT_PROFILE=inkling-best` in the rig's conf; a spawned agent answers.
+  Then tick this item with the date, and note it in MODELS.md (as the
+  `qwen38-best` application was). Rollback if any check fails: the
+  MODELS.md block (Qwen3.8 on llama.cpp, `qwen38-best`).
+- [ ] **Basalt after the switch**: the #632 patch through the adapter's hook
+  once its file is on `main` (a reinstall builds `basalt-v0.5.7+pr632-…`;
+  rerun the #588 reproduction, `max_tokens` 3000 and
+  `reasoning_budget_tokens` 400, before trusting a budget wrap), and the
+  profile's `ANSWER_ROOM` per that arm's decision; a re-pin to an upstream
+  release that merges #632 (a new review row); Basalt's own `serve/tests`
+  once against the distro package set; a slim serve image (the env image
+  carries the compilers).
 - [ ] **Strata forces Inkling's thinking off** (`HAS_THINKING = False`,
   every reasoning effort normalized to `"none"`, in
   `terminal/strata_control/inkling_family.py` and
@@ -1068,11 +1097,12 @@ Q38U-L0 at 39/71 scored (profile complete; L1/L2 diagnostics, not board rows),
 and arm Q_T2 (T2 at one stream), board row Q38U-T2 at 52/71 scored, its best
 ([report](reports/V5_QWEN38_RTX5090-2026-11-22.md)). Inkling 2 Mini Derisked
 on Basalt, the same arm on the same rig, board row INK-T2 at 49/71 scored
-(SCORE 76.5, above Q38U-T2 on SCORE, 6 behind it paired; Qwen3.8 stays the
-default; [report](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md)); its seed
+(SCORE 76.5, above Q38U-T2 on SCORE, 6 behind it paired; Qwen3.8 stayed the
+default then; [report](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md)); its seed
 repeat INK-T2-S1 51/71 (2 units flipped; never ranked) and the stock-pack
 control INK-T2-STOCK 53/71 (SCORE 78.2, the top 5090 row; level with
-Q38U-T2 paired; report §10). The cross-model reading
+Q38U-T2 paired; report §10), the RTX 5090 default since 2026-11-24
+(DECISIONS-2026-11-24 §10). The cross-model reading
 is in [HARNESS_NOTES.md](HARNESS_NOTES.md). The GLM status as of 2026-11-17
 (evening) follows; it was GLM only at that point. GLM's arms L0 26
 → A 31 → B 36 → C 51/71 scored (54 raw; thinking) → E 50/71, against the

@@ -608,7 +608,12 @@ No other manual config needed — the mounted file handles the rest.
 
 ## 5. Start the stack
 
-The default model is **Qwen3.8 27B Uncensored MTP Q5_K_M** (JonathanColetti
+**On an RTX 5090 the default model is Inkling 2 Mini (stock) on Basalt**
+since 2026-11-24: a second step after this one, [below](#rtx-5090-the-default-model-inkling-2-mini-on-basalt).
+`./start.sh` with an unset conf always serves llama.cpp, so a fresh box has
+a working model before Basalt is built.
+
+The llama.cpp default model (the RTX 5090's fallback) is **Qwen3.8 27B Uncensored MTP Q5_K_M** (JonathanColetti
 abliteration) — 140 tok/s at the full native 262K context, the fastest
 uncensored config we ship and the roomiest default (4.76 GB free). It pins `-np 1` (an upstream MTP constraint: concurrent requests
 serialize), so a multi-user rig wants `serve-qwen38-27b-uncensored-q5.sh`
@@ -673,6 +678,57 @@ To stop everything:
 ```bash
 ./stop.sh
 ```
+
+### RTX 5090: the default model, Inkling 2 Mini on Basalt
+
+The RTX 5090's shipped default since 2026-11-24 (Max;
+[DECISIONS-2026-11-24 §10](reports/DECISIONS-2026-11-24.md#10-stock-inkling-2-mini-on-basalt-is-the-rtx-5090-default))
+is Inkling 2 Mini, Basalt's stock NVFP4-MX8 pack
+(`jesdga/Inkling-2-Mini-Basalt` @ `c2afac3a`, sha256 `28ec7072…1b99`,
+19.6 GB), served by Basalt v0.5.7 (`400b411c`) through
+`scripts/engines/basalt.sh` (profile `inkling2-mini-stock`) with
+`AGENT_PROFILE=inkling-best`: the serve and agent setup of board row
+`INK-T2-STOCK` (53/71 scored, SCORE 78.2, single seed). Any other GPU keeps
+llama.cpp. What you need beyond §1-§5: the NVIDIA Container Toolkit
+([above](#gpu-in-docker-the-nvidia-container-toolkit); Basalt runs in a
+container with `--gpus`), ~20 GB more disk for the pack and ~4 GB for the
+env image.
+
+**Connected rig** (the build pulls the CUDA base image by digest and the
+Ubuntu packages from one archive snapshot; the compile itself runs with no
+network):
+
+```bash
+./scripts/engine.sh install basalt                          # source @ 400b411c, env image, offline compile; pins ENGINE_PIN_BASALT
+./scripts/fetch-weight.sh Inkling-2-Mini-NVFP4-MX8.basalt   # 19.6 GB, size + sha256 against scripts/weights.registry
+./scripts/engine.sh use default --dry-run                   # on a 5090: basalt, profile inkling2-mini-stock, loopback :8080
+./scripts/engine.sh use default                             # writes openbeast.conf (backup kept), restarts a running stack
+# then one line in openbeast.conf, and a restart:
+#   AGENT_PROFILE=inkling-best
+./stop.sh && ./start.sh -d
+./scripts/backends/conformance.sh --url http://127.0.0.1:8080 --model inkling-2-mini   # key: LLAMA_API_KEY in the env
+```
+
+**Closed rig (offline)**, per [the offline rule](#9-offline--air-gapped-install):
+
+```bash
+# on a connected x86_64 box with docker and this checkout
+./scripts/engine.sh stage basalt --version v0.5.7 /media/usb/basalt      # bare repo of 400b411c + the env image (docker save) + MANIFEST (sha256, image id)
+hf download jesdga/Inkling-2-Mini-Basalt Inkling-2-Mini-NVFP4-MX8.basalt \
+  --revision c2afac3adb772e14d77b2ea2ac7068ad4460e932 --local-dir /media/usb/weights
+# on the rig
+OFFLINE=true ./scripts/engine.sh install basalt --from /media/usb/basalt  # every hash and the commit re-checked, compile with --network none
+cp /media/usb/weights/Inkling-2-Mini-NVFP4-MX8.basalt "$WEIGHTS_DIR"/ && ./scripts/verify-weights.sh --file Inkling-2-Mini-NVFP4-MX8.basalt
+./scripts/engine.sh use default        # then AGENT_PROFILE=inkling-best, ./stop.sh && ./start.sh -d, as above
+```
+
+beast-ark also carries the Basalt source at the pin and the CUDA base image by
+digest (`agents/ark/catalog.toml` entry `basalt`; [BEAST_ARK.md](BEAST_ARK.md)).
+
+**Back to llama.cpp** (the fallback, offline, instant):
+`./scripts/engine.sh use llama --serve-script serve-qwen38-27b-uncensored-mtp-q5.sh`
+and `AGENT_PROFILE=qwen38-best`, then `./stop.sh && ./start.sh -d`. The full
+switch and rollback steps, with what to check: [MODELS.md](MODELS.md#switching-the-rtx-5090-to-its-default-and-back).
 
 ## 6. Verify
 

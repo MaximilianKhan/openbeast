@@ -222,6 +222,11 @@ cmd_use() {
   else
     [[ -z "$SERVE" ]] || die "--serve-script is a llama.cpp launcher; $ENGINE takes --profile NAME"
     PROFILE="${PROFILE:-$(ob_engine_conf_get ENGINE_PROFILE)}"
+    # An adapter may name the profile it ships by default (basalt: the RTX
+    # 5090's inkling2-mini-stock), so `use default` is one command.
+    if [[ -z "$PROFILE" ]] && ob_engine_has "$ENGINE" default_profile; then
+      PROFILE="$(ob_engine_call "$ENGINE" default_profile)"
+    fi
     if [[ $managed -eq 1 ]]; then
       ob_engine_can_manage "$ENGINE" || die "the $ENGINE adapter has no single-host launcher — run it elsewhere and pass --url"
       [[ -n "$PROFILE" ]] || die "managed $ENGINE needs a model profile: --profile NAME (scripts/backends/models/, TENSOR_PARALLEL_SIZE=1) — or, for a server this stack does not launch (rank 0 of a Spark pair on this box), --unmanaged --url URL"
@@ -264,7 +269,7 @@ cmd_use() {
     fi
     if [[ -n "$PROFILE" ]]; then
       served="$PF_SERVED_MODEL_NAME"
-      if [[ "$ENGINE" == vllm ]]; then slots="${PF_MAX_NUM_SEQS:-}"; else slots="${PF_TENSORFOLD_PARALLEL:-}"; fi
+      if [[ "$ENGINE" == vllm ]]; then slots="${PF_MAX_NUM_SEQS:-}"; else slots="${PF_TENSORFOLD_PARALLEL:-${PF_PARALLEL:-}}"; fi
       [[ "$slots" =~ ^[1-9][0-9]*$ ]] || slots=""
       [[ -n "$served" ]] && sets+=("INFERENCE_MODEL=\"$served\"")
       if [[ -n "$slots" ]]; then sets+=("INFERENCE_SLOTS=$slots"); else unsets+=(INFERENCE_SLOTS); fi
@@ -305,6 +310,9 @@ cmd_use() {
   echo "openbeast.conf updated${_OB_ENGINE_CONF_BACKED_UP:+ (backup: $_OB_ENGINE_CONF_BACKED_UP)}."
   if [[ "$ENGINE" != llama && -n "$PROFILE" ]]; then
     echo "  Prove the model before trusting it: scripts/backends/conformance.sh --url $url --model '$served'"
+    if [[ -n "${PF_AGENT_PROFILE:-}" && "$(ob_engine_conf_get AGENT_PROFILE)" != "$PF_AGENT_PROFILE" ]]; then
+      echo "  Its measured agent setup is AGENT_PROFILE=$PF_AGENT_PROFILE (openbeast.conf now: $(ob_engine_conf_get AGENT_PROFILE || true)); set that line by hand (docs/MODELS.md)."
+    fi
   fi
   if [[ $running -eq 1 && $NORESTART -eq 0 ]]; then
     read -r -a _c <<< "$(start_cmd)"

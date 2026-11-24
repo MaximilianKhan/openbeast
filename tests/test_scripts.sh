@@ -1443,15 +1443,23 @@ fi
 # Whitespace-normalised: prose wraps, and a doc test that silently depends on
 # where a line breaks is a trap for whoever reflows the paragraph. README.md
 # genuinely wraps this phrase mid-name.
+# Two defaults since 2026-11-24: the llama.cpp default above (what an unset
+# conf serves, the RTX 5090's fallback) and the RTX 5090's shipped default,
+# Inkling 2 Mini on Basalt (evals/boards/v5/board.json "defaults").
 DOC_BAD=""
 for _doc in README.md docs/MODELS.md docs/FEATURES.md; do
-  tr '\n' ' ' < "$REPO_DIR/$_doc" | tr -s ' ' \
-    | grep -qi "Qwen3.8 27B Uncensored MTP Q5" || DOC_BAD="$DOC_BAD $_doc"
+  _flat="$(tr '\n' ' ' < "$REPO_DIR/$_doc" | tr -s ' ')"
+  grep -qi "Qwen3.8 27B Uncensored MTP Q5" <<< "$_flat" || DOC_BAD="$DOC_BAD $_doc(llama.cpp-default)"
+  grep -qi "Inkling 2 Mini" <<< "$_flat" && grep -qi "default" <<< "$_flat" && grep -q "basalt" <<< "$_flat" \
+    || DOC_BAD="$DOC_BAD $_doc(5090-default)"
 done
+_board_5090="$(python3 -c 'import json,sys; print(next(d["run"] for d in json.load(open(sys.argv[1]))["defaults"] if d["platform"] == "rtx5090"))' "$REPO_DIR/evals/boards/v5/board.json" 2>/dev/null)"
+_prof_row="$(sed -n 's/^MEASURED_ROW=//p' "$REPO_DIR/scripts/engines/basalt/profiles/inkling2-mini-stock.env")"
+[[ -n "$_board_5090" && "$_board_5090" == "$_prof_row" ]] || DOC_BAD="$DOC_BAD board-default($_board_5090)!=profile($_prof_row)"
 if [[ -z "$DOC_BAD" ]]; then
-  pass "README/MODELS/FEATURES name the shipped default model"
+  pass "README/MODELS/FEATURES name the llama.cpp default and the RTX 5090 default; board and profile agree"
 else
-  fail "docs do not name the shipped default (Qwen3.8 27B Uncensored MTP Q5):$DOC_BAD"
+  fail "the defaults drifted (Qwen3.8 27B Uncensored MTP Q5 for llama.cpp, Inkling 2 Mini on basalt for the 5090):$DOC_BAD"
 fi
 
 if grep -q 'inference-audit.jsonl' "$REPO_DIR/scripts/logrotate-openbeast.conf"; then

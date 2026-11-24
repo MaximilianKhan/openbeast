@@ -4787,6 +4787,31 @@ note = "The commit is scripts/llama.cpp.ref's LLAMA_CPP_REF (tests/test_ark.py h
 git_size = 513333248
 
 [[entry]]
+name = "basalt"
+category = "ai"
+description = "Basalt at OpenBeast's reviewed pin: the RTX 5090's default engine (Inkling 2 Mini)"
+homepage = "https://github.com/jesdga95/basalt"
+license = "MIT"
+version = "v0.5.7"
+profiles = ["core"]
+update = "manual"
+git = "https://github.com/jesdga95/basalt.git"
+tag = "v0.5.7"
+commit = "400b411c58031d064812ea21a259b2381acdaa3e"
+note = "The commit is scripts/engines/basalt.sh's reviewed pin (tests/test_ark.py holds them equal); reviewed read-only in docs/reports/STRATA_INKLING_5090-2026-11-23.md section 15. Build it the supported way, offline: scripts/engine.sh stage basalt on a connected box (bare repo + the env image, docker save, sha256 + image id in a MANIFEST), then scripts/engine.sh install basalt --from DIR. The env image's base is the nvidia/cuda artifact below, by digest; its Ubuntu packages come from the snapshot named in scripts/engines/basalt/Dockerfile. The pack (Inkling-2-Mini-NVFP4-MX8.basalt) is a weight: scripts/weights.registry."
+git_size = 40907776
+
+[[artifact]]
+entry = "basalt"
+kind = "oci"
+image = "docker.io/nvidia/cuda"
+tag = "13.0.2-devel-ubuntu24.04"
+digest = "sha256:5dc1bca23d05bd37b011be68ec470c03b403a5da07ec3a86e41af9470e9d0cc6"
+platforms = ["linux/amd64"]
+verified = "registry"
+platform_sizes = ["linux/amd64=3971549339"]
+
+[[entry]]
 name = "vllm"
 category = "ai"
 description = "vLLM wheels with their full dependency closure (torch, CUDA libraries), for CPython 3.12"

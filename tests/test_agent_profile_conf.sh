@@ -94,32 +94,34 @@ else
 fi
 
 # The lint names every valid profile.
-if grep -q "is not one of: deepseek-best qwen38-best, none" "$T/conf.err"; then
-  pass "the unknown-profile warning lists deepseek-best and qwen38-best"
+if grep -q "is not one of: deepseek-best qwen38-best inkling-best, none" "$T/conf.err"; then
+  pass "the unknown-profile warning lists deepseek-best, qwen38-best and inkling-best"
 else
   fail "unknown-profile warning does not list the names: $(cat "$T/conf.err")"
 fi
 
 echo ""
-echo "=== AGENT_PROFILE=qwen38-best (the RTX 5090 default, same table) ==="
+echo "=== AGENT_PROFILE=inkling-best / qwen38-best (the RTX 5090 default and its fallback, same table) ==="
 
 DS="$(conf_eval 'AGENT_PROFILE=deepseek-best' -- "$SHOW")"
-OUT="$(conf_eval 'AGENT_PROFILE=qwen38-best' -- "$SHOW")"
-for kv in BEAST_ASSIST=1 OPENBEAST_INFERENCE_THINKING=on OPENBEAST_AGENT_MAX_TOKENS=8192 \
-          OPENBEAST_AGENT_ACT_NUDGE=1 OPENBEAST_AGENT_VERIFY_DONE=1 OPENBEAST_AGENT_ENV_BLOCK=1 \
-          OPENBEAST_AGENT_WALL_WARN=1 OPENBEAST_DIAG_EDIT_HINT=1 OPENBEAST_LANG_PACK_VARIANT=v3; do
-  want_line "$OUT" "$kv" "qwen38-best exports $kv"
+for name in inkling-best qwen38-best; do
+  OUT="$(conf_eval "AGENT_PROFILE=$name" -- "$SHOW")"
+  for kv in BEAST_ASSIST=1 OPENBEAST_INFERENCE_THINKING=on OPENBEAST_AGENT_MAX_TOKENS=8192 \
+            OPENBEAST_AGENT_ACT_NUDGE=1 OPENBEAST_AGENT_VERIFY_DONE=1 OPENBEAST_AGENT_ENV_BLOCK=1 \
+            OPENBEAST_AGENT_WALL_WARN=1 OPENBEAST_DIAG_EDIT_HINT=1 OPENBEAST_LANG_PACK_VARIANT=v3; do
+    want_line "$OUT" "$kv" "$name exports $kv"
+  done
+  if [[ ! -s "$T/conf.err" ]]; then
+    pass "$name alone produces no warnings (the lint accepts the name)"
+  else
+    fail "warnings from a $name conf: $(cat "$T/conf.err")"
+  fi
+  if [[ "$OUT" == "$DS" ]]; then
+    pass "$name and deepseek-best export identical values"
+  else
+    fail "the two names differ: $(diff <(echo "$DS") <(echo "$OUT") | tr '\n' ' ')"
+  fi
 done
-if [[ ! -s "$T/conf.err" ]]; then
-  pass "qwen38-best alone produces no warnings (the lint accepts the name)"
-else
-  fail "warnings from a qwen38-best conf: $(cat "$T/conf.err")"
-fi
-if [[ "$OUT" == "$DS" ]]; then
-  pass "qwen38-best and deepseek-best export identical values"
-else
-  fail "the two names differ: $(diff <(echo "$DS") <(echo "$OUT") | tr '\n' ' ')"
-fi
 OUT="$(conf_eval 'AGENT_PROFILE="Qwen38-Best"   # Q_T2, 52/71' -- "$SHOW")"
 want_line "$OUT" OPENBEAST_AGENT_ACT_NUDGE=1 "quoted, mixed-case qwen38-best with a comment is read"
 
@@ -214,7 +216,7 @@ echo ""
 echo "=== the readers agree ==="
 
 # What conf.sh exports, the real readers honour.
-for prof in deepseek-best qwen38-best; do
+for prof in deepseek-best qwen38-best inkling-best; do
   OUT="$(conf_eval "AGENT_PROFILE=$prof" -- "cd '$REPO_DIR/agents' && python3 -c '
 import tools
 from lang import pack_context as pc
@@ -232,7 +234,7 @@ for p in python3 "$HOME/.local/opt/openbeast-eval-venv/bin/python"; do
   if command -v "$p" >/dev/null 2>&1 && "$p" -c 'import openai' 2>/dev/null; then RPY="$p"; break; fi
 done
 if [[ -n "$RPY" ]]; then
-  for prof in deepseek-best qwen38-best; do
+  for prof in deepseek-best qwen38-best inkling-best; do
     OUT="$(conf_eval "AGENT_PROFILE=$prof" -- "cd '$REPO_DIR/agents' && '$RPY' -c '
 import runner
 print(runner.act_nudge_enabled(), runner.env_block_enabled(), runner.wall_warn_enabled(),

@@ -1164,6 +1164,12 @@ PR `https://github.com/jesdga95/basalt/pull/632`; the pack repo
 
 ### 15.8 Before Basalt becomes the 5090's default
 
+> **2026-11-24:** Basalt is the 5090's default (DECISIONS-2026-11-24 §10).
+> Items 1, 3 and 4 are closed in `scripts/engines/basalt.sh`, and item 2 is a
+> hook that applies the PR #632 patch file once it is on `main`; what is
+> verified and what waits for the rig's switch:
+> [ENGINES.md](../ENGINES.md#basalt-the-rtx-5090-default).
+
 1. **Close the DNS channel** (§15.4 gap 1) and prove it with the probe;
    drop `exec` from `/tmp` if Basalt starts without it; add
    `--pids-limit` and a memory limit.

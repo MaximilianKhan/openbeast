@@ -65,3 +65,13 @@ faf5d5ba25954a2c1cbc78c50760e1a76fdc70c5a4b737adc5b39b4afb549a3d	9430112	Huihui-
 31aefea9acef3aac7de7c8f428f4bf610ffdcbf61f04501b67f63668d21a62bc	49294976064	Huihui-GLM-5.3-Flash-abliterated-UD-Q2_K_XL-00002-of-00004.gguf	huihui-ai/Huihui-GLM-5.3-Flash-abliterated-GGUF	UD-Q2_K_XL/GLM-5.3-Flash-UD-Q2_K_XL-00002-of-00004.gguf
 920e266344e8545d085c761214a8060bd80fedaf22631fcfc3c49139ea40901c	49949266176	Huihui-GLM-5.3-Flash-abliterated-UD-Q2_K_XL-00003-of-00004.gguf	huihui-ai/Huihui-GLM-5.3-Flash-abliterated-GGUF	UD-Q2_K_XL/GLM-5.3-Flash-UD-Q2_K_XL-00003-of-00004.gguf
 80797dab6507510f5e4149ea02cc50470a9be2883bcd873c99d2fdc384037671	9466399712	Huihui-GLM-5.3-Flash-abliterated-UD-Q2_K_XL-00004-of-00004.gguf	huihui-ai/Huihui-GLM-5.3-Flash-abliterated-GGUF	UD-Q2_K_XL/GLM-5.3-Flash-UD-Q2_K_XL-00004-of-00004.gguf
+# Inkling 2 Mini, Basalt NVFP4-MX8 pack (stock): the RTX 5090 default since
+# 2026-11-24, served by scripts/engines/basalt.sh (profile inkling2-mini-stock),
+# NOT a GGUF and never loaded by llama.cpp. Basalt's own pack of Thinking
+# Machines' release, published as jesdga/Inkling-2-Mini-Basalt; fetched and
+# verified on the reference rig 2026-11-23 at Hub revision
+# c2afac3adb772e14d77b2ea2ac7068ad4460e932 (sha256 = the sum Basalt's
+# docs/models/inkling2.md publishes at 400b411c), re-hashed 2026-11-24 after
+# the INK-T2-STOCK arm. evals/boards/v5/weights.json
+# inkling2-mini-basalt-nvfp4-mx8-stock has the evidence.
+28ec70723feaa037942a02f55b9d5e898276f3e62a3b1fa083745f932a041b99	19606374189	Inkling-2-Mini-NVFP4-MX8.basalt	jesdga/Inkling-2-Mini-Basalt	-

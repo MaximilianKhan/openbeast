@@ -17,6 +17,8 @@
 #   tensorfold  ENGINE_PIN_TENSORFOLD=<version>@sha256:<archive sha256>
 #   maya        ENGINE_PIN_MAYA=<tag>@<40-hex commit> (reviewed per version in
 #               scripts/engines/maya.sh; gated, see ob_engine_gate_ok)
+#   basalt      ENGINE_PIN_BASALT=<tag>@<40-hex commit> (reviewed per version in
+#               scripts/engines/basalt.sh; the RTX 5090 default since 2026-11-24)
 # History: $OB_ENGINE_STATE_DIR/history.tsv (append-only; rollback reads it),
 # conf backups: $OB_ENGINE_STATE_DIR/conf-backups/ (one per conf write).
 #
@@ -27,7 +29,7 @@ OB_ENGINE_ADAPTER_DIR="${OB_ENGINE_ADAPTER_DIR:-$REPO_DIR/scripts/engines}"
 OB_ENGINE_STATE_DIR="${OPENBEAST_ENGINE_STATE_DIR:-$REPO_DIR/.engines}"
 # The ones that ship, in display order; any other adapter file is appended.
 # maya is opt-in and gated (ob_engine_gate_ok): listed, never a default.
-OB_ENGINES_SHIPPED="llama vllm tensorfold maya"
+OB_ENGINES_SHIPPED="llama vllm tensorfold maya basalt"
 
 # ob_engines — every engine with an adapter, shipped ones first.
 ob_engines() {
@@ -85,9 +87,17 @@ ob_engine_host_class() {
   if [[ -n "${OB_ENGINE_HOST_CLASS:-}" ]]; then
     printf '%s\n' "$OB_ENGINE_HOST_CLASS"; return 0
   fi
+  _ob_engine_classify
+  printf '%s\n' "$_OB_ENGINE_CLASS"
+}
+
+# _ob_engine_classify — detect in THIS shell: sets _OB_ENGINE_CLASS and, on a
+# rig, _OB_ENGINE_GPU (the first GPU's name, "none" without one).
+_ob_engine_classify() {
+  _OB_ENGINE_GPU=""
   # OB_ENGINE_UNAME: tests/test_engines.sh runs the Linux detection on a Mac.
   if [[ "${OB_ENGINE_UNAME:-$(uname -s 2>/dev/null)}" == Darwin ]]; then
-    printf 'mac\n'; return 0
+    _OB_ENGINE_CLASS=mac; return 0
   fi
   if ! declare -F ob_detect_gpu >/dev/null 2>&1 \
      && [[ -f "$REPO_DIR/scripts/lib/hardware.sh" ]]; then
@@ -96,9 +106,10 @@ ob_engine_host_class() {
   fi
   if declare -F ob_detect_gpu >/dev/null 2>&1; then
     ob_detect_gpu >/dev/null 2>&1 || true
-    if [[ "${OB_GPU_UNIFIED:-0}" -eq 1 ]]; then printf 'spark\n'; return 0; fi
+    if [[ "${OB_GPU_UNIFIED:-0}" -eq 1 ]]; then _OB_ENGINE_CLASS=spark; return 0; fi
   fi
-  printf 'rig\n'
+  _OB_ENGINE_CLASS=rig
+  _OB_ENGINE_GPU="${OB_GPU_NAME:-none}"
 }
 
 # ob_engine_host_class_pin — detect the host class once and pin it in
@@ -108,7 +119,16 @@ ob_engine_host_class() {
 # times per command (list, status, use maya's profile checks, the launch
 # --print). Call it from a script's top level, never from inside $(...).
 ob_engine_host_class_pin() {
-  [[ -n "${OB_ENGINE_HOST_CLASS:-}" ]] || OB_ENGINE_HOST_CLASS="$(ob_engine_host_class)"
+  if [[ -z "${OB_ENGINE_HOST_CLASS:-}" ]]; then
+    # In this shell, not $(...): the one detection also names the GPU, which
+    # the rig's default engine needs (ob_engine_gpu_is_5090); a subshell
+    # would lose it and cost a second nvidia-smi run.
+    _ob_engine_classify
+    OB_ENGINE_HOST_CLASS="$_OB_ENGINE_CLASS"
+    if [[ -n "$_OB_ENGINE_GPU" && -z "${OB_ENGINE_GPU_NAME:-}" ]]; then
+      OB_ENGINE_GPU_NAME="$_OB_ENGINE_GPU"; export OB_ENGINE_GPU_NAME
+    fi
+  fi
   export OB_ENGINE_HOST_CLASS
 }
 
@@ -122,7 +142,8 @@ ob_engine_arch() {
 }
 
 # ob_engine_default [class] — the engine OpenBeast picks for a host class:
-# rig → llama (GGUF, the measured default), spark → tensorfold (unified
+# rig → basalt on an RTX 5090 (the shipped default since 2026-11-24), llama
+# on any other rig GPU (GGUF), spark → tensorfold (unified
 # memory, TP across Sparks), mac → llama. ENGINE_DEFAULT (conf / env
 # OPENBEAST_ENGINE_DEFAULT) overrides when it names an adapter.
 ob_engine_default() {
@@ -134,8 +155,27 @@ ob_engine_default() {
   fi
   case "$c" in
     spark) printf 'tensorfold\n' ;;
+    rig)
+      # The RTX 5090 ships Inkling 2 Mini on Basalt (Max, 2026-11-24;
+      # board.json "defaults"). Any other rig GPU keeps llama.cpp: the
+      # Basalt build is sm_120 only and the pack needs ~32 GB.
+      if [[ -f "$OB_ENGINE_ADAPTER_DIR/basalt.sh" ]] && ob_engine_gpu_is_5090; then
+        printf 'basalt\n'
+      else
+        printf 'llama\n'
+      fi ;;
     *)     printf 'llama\n' ;;
   esac
+}
+
+# ob_engine_gpu_is_5090 — the first GPU is an RTX 5090 (OB_ENGINE_GPU_NAME
+# overrides the nvidia-smi read, for tests).
+ob_engine_gpu_is_5090() {
+  local n="${OB_ENGINE_GPU_NAME:-}"
+  if [[ -z "$n" ]]; then
+    n="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -n1 || true)"
+  fi
+  [[ "$n" == *"RTX 5090"* ]]
 }
 
 # ── openbeast.conf: read and write single keys ─────────────────────────────

@@ -10,15 +10,37 @@ default via `SERVE_SCRIPT` in `openbeast.conf`. Capability rankings (where a
 model has been benchmarked) are in the [eval leaderboard](RESULTS.md) and
 [`evals/README.md`](../evals/README.md).
 
-The default is **Qwen3.8 27B Uncensored MTP Q5_K_M** at the full native 262K
-context (changed 2026-08-19 from Heretic v2 27B MTP Q5_K_M, which it beats on
+**The RTX 5090's default since 2026-11-24 is Inkling 2 Mini (stock) on
+Basalt** (Max's decision,
+[DECISIONS-2026-11-24 §10](reports/DECISIONS-2026-11-24.md#10-stock-inkling-2-mini-on-basalt-is-the-rtx-5090-default)):
+Basalt v0.5.7 (`400b411c`) through `scripts/engines/basalt.sh`, profile
+`inkling2-mini-stock` (the stock pack `jesdga/Inkling-2-Mini-Basalt` @
+`c2afac3a`, `Inkling-2-Mini-NVFP4-MX8.basalt`, sha256 `28ec7072…1b99`;
+`--parallel 1 --max-context 262144 --kv fp8`, DSpark at the pack default,
+answer room auto), agent setup `AGENT_PROFILE=inkling-best`: exactly board
+row `INK-T2-STOCK`, **53/71 scored, SCORE 78.2** (SOLVE 75.4, LANG 86.7), #4
+on the v5 board and the top RTX 5090 row, 2026-11-24, single seed, 0 units
+lost, 0 excluded. It is the shipped default of `main` from that date; the
+reference rig switches when its GPU frees up ([TODO.md](TODO.md) "Switch the
+5090 rig to Inkling 2 Mini"). How to switch and roll back:
+[below](#switching-the-rtx-5090-to-its-default-and-back); a fresh install:
+[INSTALL.md](INSTALL.md#rtx-5090-the-default-model-inkling-2-mini-on-basalt).
+Why, and the case against (a paired −2 on the 65 clean units, one seed, a
+young engine with upstream #588 unfixed in the pin): the decision record.
+The source of truth for "the rig's default" is `evals/boards/v5/board.json`
+`"defaults"` ([RESULTS.md](RESULTS.md#shipped-default-per-platform)).
+
+**The llama.cpp default, and the RTX 5090's fallback, is Qwen3.8 27B
+Uncensored MTP Q5_K_M** at the full native 262K context: what an unset
+`openbeast.conf` serves, what `bootstrap.sh` downloads, the default on every
+other rig GPU, and the rollback path from Inkling (changed 2026-08-19 from Heretic v2 27B MTP Q5_K_M, which it beats on
 speed *and* headroom — see the Qwen3.8-27B-Uncensored section below); the dense
 **Qwen3.6-27B Q5_K_XL** tops the v4 capability board (the rig lineup), and the **35B-A3B MoE**
 variants trade a little accuracy for 30–50% more speed per token. The DGX
 Spark pair serves its own models (below); its default, DeepSeek-V4.1-Flash
 (Mia EXL3), leads the v5 board.
 
-**The default's v5 result (2026-11-23):** 52/71 scored (54 raw), SCORE
+**Qwen3.8's v5 result (2026-11-23; the 5090 default until 2026-11-24):** 52/71 scored (54 raw), SCORE
 75.6, under campaign arm Q_T2 (T2's switches at one stream: thinking on,
 the T assists and packs, an 8,192-token per-turn cap, the act nudge, wall
 ×2; harness9), #4 on the [v5 board](RESULTS.md#v5-leaderboard--best-configuration-per-model)
@@ -30,8 +52,8 @@ network deny). The bare L0 profile (2026-11-22, harness10) scored 39/71
 calibrated against the Mac on 2026-11-23 by inference. Report:
 [V5_QWEN38_RTX5090-2026-11-22.md](reports/V5_QWEN38_RTX5090-2026-11-22.md).
 
-**The RTX 5090's default agent setup is `AGENT_PROFILE=qwen38-best`
-(2026-11-23, Max).** One line in `openbeast.conf`. It sets exactly arm
+**Qwen3.8's agent setup is `AGENT_PROFILE=qwen38-best`
+(2026-11-23, Max; the 5090's default setup until 2026-11-24, now its fallback's).** One line in `openbeast.conf`. It sets exactly arm
 Q_T2's switches for this host's own agents (the tool server's
 `start_agent`, beast-chat, `agent.sh`): `INFERENCE_THINKING=on`,
 `AGENT_MAX_TOKENS=8192`, `AGENT_ACT_NUDGE=1`, `BEAST_ASSIST=1`,
@@ -61,11 +83,11 @@ the same value and does not conflict. **Applied on the rig 2026-11-23
 the gate; what was done and the rollback: [TODO.md](TODO.md) "`AGENT_PROFILE=qwen38-best`
 applied on the 5090 rig".
 
-**Inkling 2 Mini (evaluated 2026-11-23/24, not a profile).** Served for its
-v5 run by Basalt v0.5.7 from Blackfrost's Derisked weights (a
-refusal-direction edit) converted to a Basalt NVFP4-MX8 pack; no serve
-script ships (Basalt is not yet a default engine:
-[ENGINES.md](ENGINES.md#chosen-for-one-run-not-a-default)). **Its v5 result
+**Inkling 2 Mini (evaluated 2026-11-23/24; the stock pack is the 5090
+default since 2026-11-24).** The first v5 run served Blackfrost's Derisked
+weights (a refusal-direction edit) converted to a Basalt NVFP4-MX8 pack;
+the default is Basalt's stock pack, served by `scripts/engines/basalt.sh`
+([ENGINES.md](ENGINES.md#basalt-the-rtx-5090-default)). **Its v5 result
 (2026-11-24):** arm I_T2, the default's Q_T2 setup on the same rig, tree
 and container, 49/71 scored, SCORE 76.5, #4 on the board by SCORE (one
 place above the default, level on problem-solving, wider on languages),
@@ -85,10 +107,72 @@ passed **53/71 (SCORE 78.2, row INK-T2-STOCK, the top RTX 5090 row)**, +4
 and +2 against the two Derisked draws and level with the default (−2 over
 65 clean units, p 0.69), single seed, with about half the empty capped
 turns (105). A seed repeat of the Derisked arm (INK-T2-S1, 51/71) flipped 2
-units, so every gap here is within noise. **Qwen3.8 stays the default**
-until an improved arm (stock pack + Basalt PR #632 as a local patch) and a
-seed repeat confirm. A third arm, I_UP8k, is running ([TODO.md](TODO.md)
-"Inkling 2 Mini on the 5090").
+units, so every gap here is within noise. The wrap-up kept Qwen3.8 as the
+default pending an improved arm (stock + Basalt PR #632) and a seed repeat
+(DECISIONS-2026-11-24 §6); **Max overrode that rule the same day and made
+the stock Inkling the default** (§10 there: level with Qwen3.8, about 3×
+faster, no unit lost). A third arm, I_UP8k, is running, and the improved
+#632 arm follows ([TODO.md](TODO.md) "Inkling 2 Mini on the 5090").
+
+## Switching the RTX 5090 to its default, and back
+
+The switch is the conf keys `engine.sh use` writes plus one
+`AGENT_PROFILE` line; nothing else changes (the gate, the router, WebUI and
+agents follow `INFERENCE_URL` and `INFERENCE_MODEL`). Every `use` first
+copies `openbeast.conf` to `.engines/conf-backups/` (0600).
+
+**Prerequisites, once:** the NVIDIA Container Toolkit (`docker run --gpus`
+works), `scripts/engine.sh install basalt` (or `install basalt --from DIR`
+offline), `scripts/fetch-weight.sh Inkling-2-Mini-NVFP4-MX8.basalt` and
+`scripts/verify-weights.sh --file Inkling-2-Mini-NVFP4-MX8.basalt` (sha256,
+~1 min per 20 GB); nothing else may hold the GPU (an eval arm, a bench).
+
+**Switch to Inkling 2 Mini (Basalt):**
+
+```bash
+cd ~/Documents/openbeast                       # the rig's main checkout, on main (git pull --ff-only)
+sed -i 's/^AGENT_PROFILE=.*/AGENT_PROFILE=inkling-best/' openbeast.conf
+                                               # was qwen38-best: the same switch table, the name
+                                               # records which measured row the rig runs
+scripts/engine.sh use basalt --dry-run         # read the conf diff and the docker command
+scripts/engine.sh use basalt                   # = `use default` on a 5090: stops the stack, writes
+                                               #   INFERENCE_BACKEND=basalt INFERENCE_URL=http://127.0.0.1:8080
+                                               #   INFERENCE_MANAGED=true ENGINE_PROFILE=inkling2-mini-stock
+                                               #   INFERENCE_MODEL="inkling-2-mini" INFERENCE_SLOTS=1,
+                                               #   then starts it (the tool server reads AGENT_PROFILE then)
+```
+
+The launch refuses, and the stack stays down with the reason in the log,
+when the sandbox probe resolves a name or reaches out, the network has NAT,
+the pack is not at its pinned size, the GPU is not sm_120, or the build is
+not the pin. **Check before trusting it:** `scripts/engine.sh status` (basalt
+v0.5.7, the pin, ready, model `inkling-2-mini`); the launch log's `sandbox
+probe: no DNS, no TCP out`; `docker inspect openbeast-engine-basalt-<8hex>`
+(`ReadonlyRootfs true`, `CapDrop [ALL]`, `Dns [127.0.0.1]`, `PidsLimit 256`,
+`Memory 34359738368`, port `127.0.0.1:8080` only); conformance at c=1
+`scripts/backends/conformance.sh --url http://127.0.0.1:8080 --model inkling-2-mini`
+(PASS, `reasoning_content` separated); through beast-gate, `GET /v1/models`
+lists `inkling-2-mini` and a chat answers; the dashboard's slot card shows
+one slot; `docker logs` of the container shows `api-key=on` when
+`LLAMA_API_KEY` is set.
+
+**Roll back to Qwen3.8 (llama.cpp), offline and immediate:**
+
+```bash
+cd ~/Documents/openbeast
+sed -i 's/^AGENT_PROFILE=.*/AGENT_PROFILE=qwen38-best/' openbeast.conf
+scripts/engine.sh use llama --serve-script serve-qwen38-27b-uncensored-mtp-q5.sh
+                                               # stops the Basalt container, removes INFERENCE_URL /
+                                               # INFERENCE_MANAGED / INFERENCE_MODEL / INFERENCE_SLOTS /
+                                               # ENGINE_PROFILE, sets INFERENCE_BACKEND=llama and
+                                               # SERVE_SCRIPT, starts the stack on llama-server
+```
+
+or restore the backup `use` took (`.engines/conf-backups/`, newest before
+the switch) and restart. The Basalt build, its image and the pack stay on
+disk, so switching back again is the first block. A Basalt problem (not a
+model one) can also roll the engine alone back to an earlier build:
+`scripts/engine.sh rollback basalt`.
 
 **Qwen reasoning budget (2026-09-09):** every Qwen-family serve script (3.6
 dense + MoE + NVFP4 + all 3.8 variants — not Gemma, and the Qwen-derived
