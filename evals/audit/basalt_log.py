@@ -56,7 +56,7 @@ def _ts(s: str) -> float:
     if "." in s:
         head, frac = s.split(".", 1)
         s = head + "." + frac[:6]
-    return datetime.fromisoformat(s).replace(tzinfo=timezone.utc).timestamp()
+    return datetime.fromisoformat(s).replace(tzinfo=timezone.utc).timestamp()  # noqa: UP017 (runs on 3.9 too)
 
 
 def parse(lines, since: float | None = None, until: float | None = None) -> dict:
@@ -87,7 +87,7 @@ def _pct(xs: list, p: float):
     if not xs:
         return None
     xs = sorted(xs)
-    return xs[min(len(xs) - 1, int(round(p * (len(xs) - 1))))]
+    return xs[min(len(xs) - 1, round(p * (len(xs) - 1)))]
 
 
 def _dist(xs: list) -> dict:
