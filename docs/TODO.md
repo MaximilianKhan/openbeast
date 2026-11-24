@@ -238,16 +238,41 @@ DeepSeek's UP on the same harness
 - [ ] **Scaling review, 1 to 8 ranks** — still open, deliberately parked (Max,
   2026-11-15); scope in the 🟩 DGX SPARK section below.
 
-**Open — the 5090 rig (operator steps, Max):**
+**The 5090 rig (operator steps, Max; both done 2026-11-23):**
 
-- [ ] **Apply `AGENT_PROFILE=qwen38-best` on the 5090 rig** (pull, set in
-  openbeast.conf, restart openbeast). Pending; Max applies it himself, only
-  after the benchmark running on the rig has finished (the restart restarts
-  the stack). Why: arm Q_T2, 52/71 scored, SCORE 75.6, board row
-  `Q38U-T2` (2026-11-23, single seed) against L0's 39/71; the 5090's
-  default agent setup by Max's decision ([MODELS.md](MODELS.md)). The rig's
-  `openbeast.conf` sets only `BEAST_ASSIST=1` today, the profile's own
-  value, so nothing overrides it. Steps, in the rig's live checkout:
+- [x] **`AGENT_PROFILE=qwen38-best` applied on the 5090 rig (2026-11-23,
+  19:14-19:15 PST)**, right after the Strata bench restored the stack. Why:
+  arm Q_T2, 52/71 scored, SCORE 75.6, board row `Q38U-T2` (single seed)
+  against L0's 39/71; the 5090's default agent setup by Max's decision
+  ([MODELS.md](MODELS.md), #299). What was done, in the rig's live checkout
+  **`~/Documents/openbeast`** (not `~/openbeast`, as the steps below first
+  said; the rig's checkout was at `45ed231b` when read back):
+  - Backup `openbeast.conf.bak-20261123-preq38` (19:14), then the line
+    appended with its comment (conf mtime 19:15):
+    ```text
+    # 2026-11-23: the RTX 5090 default agent setup = v5 arm Q_T2 (board row Q38U-T2, 52/71). Rollback: AGENT_PROFILE=none
+    AGENT_PROFILE=qwen38-best
+    ```
+  - The conf lint was clean, and the read-only resolve
+    (`OB_CONF_READONLY=1`, `scripts/lib/conf.sh`) gave all nine switches
+    with no warning.
+  - Restart with `./stop.sh` then `./start.sh -d`: the rig does not run the
+    `openbeast` user unit (`systemctl --user list-units 'openbeast*'` shows
+    only the watchdog and logrotate units). `.run/stack.log`: "OpenBeast
+    supervisor start: 2026-11-23 19:15:12 (serve-qwen38-27b-uncensored-mtp-q5.sh)".
+  - Verified through the gate (session record, 2026-11-24T03:15Z): `/v1/models`
+    200; a chat answered "391" with the reasoning in `reasoning_content`; the
+    gate process's environment carries the T2 switches (the 8,192 per-turn
+    cap, thinking on, the act nudge); the dashboard 200.
+  - Rollback: `AGENT_PROFILE=none` (or delete the line), then `./stop.sh &&
+    ./start.sh -d`; or restore the backup.
+  - Note: since 19:49 the stack is stopped again (`.run/stopped`) for the
+    Inkling engine investigation, which restores it when it ends; the
+    watchdog unit shows "failed" meanwhile because it finds the services down,
+    which is expected.
+
+  The steps as they were planned (kept for the record; the path is wrong,
+  use `~/Documents/openbeast` on the rig):
   ```bash
   cd ~/openbeast && git status --short && git pull --ff-only   # main with the preset
   cp openbeast.conf openbeast.conf.bak-$(date +%Y%m%d)
@@ -259,8 +284,38 @@ DeepSeek's UP on the same harness
   Expected from the check: `BEAST_ASSIST=1`, `OPENBEAST_INFERENCE_THINKING=on`,
   `OPENBEAST_AGENT_MAX_TOKENS=8192`, `OPENBEAST_LANG_PACK_VARIANT=v3` and
   `OPENBEAST_AGENT_{ACT_NUDGE,VERIFY_DONE,ENV_BLOCK,WALL_WARN}=1`,
-  `OPENBEAST_DIAG_EDIT_HINT=1`. Rollback: delete the line (or
-  `AGENT_PROFILE=none`) and restart.
+  `OPENBEAST_DIAG_EDIT_HINT=1`.
+- [x] **NVIDIA Container Toolkit on the 5090 rig** (Max, 2026-11-23 19:56,
+  `nvidia-container-toolkit` 1.20.1-1; Docker restarted 19:57:17). `--gpus`
+  works in containers now; before it, GPU containers needed the devices passed
+  by hand. Commands, what the restart does, and the offline reinstall from the
+  pacman cache: [INSTALL.md](INSTALL.md#gpu-in-docker-the-nvidia-container-toolkit).
+
+**Open — Inkling 2 Mini on the 5090 (2026-11-23):**
+
+- [ ] **The Inkling 2 Mini v5 run, arm `I_T2`** (T2's switches at one stream,
+  as Q_T2 was for Qwen3.8, so the row is comparable with `Q38U-T2`'s 52/71).
+  Pending the engine choice: the investigation in
+  `~/openbeast-runs/inkling-perf-2026-11-23/` (Strata's SQ packs, vLLM NVFP4 +
+  MTP, a "Basalt" candidate) recommends the fastest server the harness can
+  drive with **thinking and tool calls on**; its results go into the
+  "Pending" section of [the Strata report](reports/STRATA_INKLING_5090-2026-11-23.md#11-pending-native-sq-packs-and-other-engines)
+  or a follow-up report. The arm does not exist in
+  `evals/campaigns/v5-thinking-first.json` yet. About 12-18 h on the rig's
+  eval-host container; Qwen3.8 with `qwen38-best` returns as the default
+  afterwards unless Inkling beats it.
+- [ ] **Strata forces Inkling's thinking off** (`HAS_THINKING = False`,
+  every reasoning effort normalized to `"none"`, in
+  `terminal/strata_control/inkling_family.py` and
+  `terminal/serve/inkling_dialect.py` at `6a6db7ff`). So Strata cannot serve
+  `I_T2`; on Strata only a thinking-off arm is possible, which would not be
+  comparable with T2 rows. Re-check before choosing Strata for any eval.
+- [ ] **The Strata DSpark CUDA bug, upstream** (optional, Max's call). It is
+  **already reported** (#6762, CUDA; dupes #6784, #6852, #6876; SYCL twin
+  #6717), and a comment on #6762 proposes the same one-line fix as our
+  `results/strata-dspark-cuda-names.patch`. Nothing new to file; at most a
+  confirmation comment on #6762 with our RTX 5090 (sm_120) result. Details:
+  [the report §7](reports/STRATA_INKLING_5090-2026-11-23.md#7-the-bug-dspark-on-cuda-cannot-find-its-tensors).
 
 **Open — process and the website:**
 

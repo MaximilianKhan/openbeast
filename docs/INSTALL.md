@@ -159,6 +159,71 @@ sudo usermod -aG docker "$USER"   # log out/in or run `newgrp docker`
 on the user's box for Go and Node. Using mise for Zig avoids needing sudo
 and lets you switch versions easily.
 
+### GPU in Docker: the NVIDIA Container Toolkit
+
+The default stack does not need it: llama-server runs on the host, and Open
+WebUI and SearXNG use no GPU. Anything that runs a model **in a container**
+does: `scripts/engine.sh use vllm` (its `docker run … --gpus all`,
+`scripts/engines/vllm.sh`) and engine benches such as
+[the Strata evaluation](reports/STRATA_INKLING_5090-2026-11-23.md). Without
+the toolkit `docker run --gpus …` fails, because Docker has only `runc`.
+
+**On the reference rig (RTX 5090, Arch, driver 615.78.08): installed
+2026-11-23** by Max. The exact commands:
+
+```bash
+sudo pacman -S --needed nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+docker run --rm --gpus all ubuntu:24.04 nvidia-smi    # the check: prints the 5090's table from inside a container
+```
+
+What the rig recorded (read back the same evening):
+
+- `/var/log/pacman.log`: `[2026-11-23T19:56:47-0800] Running 'pacman -S --needed
+  nvidia-container-toolkit'`, then `installed libnvidia-container (1.20.1-1)`
+  and `installed nvidia-container-toolkit (1.20.1-1)` at 19:56:48.
+- `nvidia-ctk runtime configure` added the runtime to `/etc/docker/daemon.json`
+  (its other keys, `bip`, `dns` and the log options, are unchanged):
+  `"runtimes": {"nvidia": {"args": [], "path": "nvidia-container-runtime"}}`.
+  The default runtime stays `runc`; `--gpus` selects the GPU per container.
+  `/var/run/cdi/nvidia.yaml` exists as well (19:56).
+- Docker restarted at 19:57:17 (`systemctl show docker -p ActiveEnterTimestamp`).
+  `docker info | grep -i runtimes` now reads `io.containerd.runc.v2 nvidia runc`.
+
+**Restarting Docker restarts the rig's containers.** Every running container
+stops: Open WebUI, SearXNG, the maps stack, and any bench or eval container.
+Those with `restart: unless-stopped` (Open WebUI and SearXNG in
+`docker-compose.yml`, the maps stack) come back by themselves; containers
+started with `--rm` or no restart policy do not. The model server is not in
+Docker, so serving and the gate carry on. On 2026-11-23 the restart cut a
+GPU bench container mid-run (`~/openbeast-runs/inkling-perf-2026-11-23/`),
+which then resumed by hand. Restart Docker only when no bench or eval
+container is running (`docker ps`), or accept re-running what it cuts.
+
+**Offline reinstall.** pacman keeps the packages it installed in its cache.
+On the rig (checked 2026-11-23):
+
+```text
+/var/cache/pacman/pkg/libnvidia-container-1.20.1-1-x86_64.pkg.tar.zst       (+ .sig)
+/var/cache/pacman/pkg/nvidia-container-toolkit-1.20.1-1-x86_64.pkg.tar.zst  (+ .sig)
+```
+
+With no network, install both from there (the toolkit depends on exactly
+`libnvidia-container=1.20.1`; the rest, `glibc libcap libelf libseccomp
+libtirpc`, are base packages already present):
+
+```bash
+sudo pacman -U /var/cache/pacman/pkg/libnvidia-container-1.20.1-1-x86_64.pkg.tar.zst \
+               /var/cache/pacman/pkg/nvidia-container-toolkit-1.20.1-1-x86_64.pkg.tar.zst
+sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
+```
+
+`paccache -r` or `pacman -Sc` would delete these files, so copy both (with
+their `.sig`) to the ark drive before cleaning the cache. Rollback:
+`sudo pacman -R nvidia-container-toolkit libnvidia-container`, remove the
+`runtimes` block from `/etc/docker/daemon.json`, restart Docker.
+
 ## 1. Build llama.cpp
 
 Clone and build llama.cpp with CUDA support from the repo root:
