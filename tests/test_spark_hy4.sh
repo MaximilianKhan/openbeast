@@ -38,7 +38,10 @@ case "$op" in
         set -- $c; echo "$2" > "$D/img-$(key "$1")"; echo "Loaded image: $1" ;;
   run) n=""; a=("$@"); for ((i = 0; i < ${#a[@]}; i++)); do [[ "${a[i]}" == --name ]] && n=${a[i+1]}; done
        echo "$W run $* KEYENV=${VLLM_API_KEY:+set}" >> "$LOG"; echo "$W run" >> "$T/order"
-       [[ -f "$D/fail-run" ]] && exit 1; echo running > "$D/ctr-$n" ;;
+       [[ -f "$D/fail-run" ]] && exit 1; echo running > "$D/ctr-$n"
+       # hooks for the start races: a stop.sh (its mark) or a SIGTERM landing right after rank 1's run
+       if [[ "$W" == dw && -f "$T/mark-on-wrun" ]]; then date +%s > "$T/home/.cache/hy4-vllm/.stopping"; fi
+       if [[ "$W" == dw && -f "$T/term-on-wrun" ]]; then kill -TERM "$(cat "$T/start.pid")"; fi ;;
   rm) echo "$W rm $*" >> "$LOG"; rm -f "$D/ctr-${!#}" ;;
   stop) echo "$W stop $*" >> "$LOG"; [[ -f "$D/ctr-${!#}" ]] && echo stopped > "$D/ctr-${!#}" ;;
   kill) echo "$W kill $*" >> "$LOG"; [[ -f "$D/ctr-${!#}" ]] && echo stopped > "$D/ctr-${!#}" ;;
@@ -395,6 +398,50 @@ if ! HY4_POLL_S=0 FOREGROUND=1 bash "$RT/start.sh" > "$T/out" 2>&1 && grep -q 'r
   pass "foreground: a crash after an earlier stop (stale mark) still exits non-zero: the unit shows failed"
 else fail "crash after stale mark: $(out)"; fi
 rm -f "$T/dh/dies"
+
+# --- 5b. the start races (review 2026-11-23) ----------------------------------------------
+bash "$RT/stop.sh" > /dev/null 2>&1
+# a stop.sh run while start.sh is still in its checks (here: waiting for memory) is not undone:
+# start.sh starts nothing and exits 0
+cp "$T/meminfo-low" "$T/meminfo-wait"; : > "$LOG"
+HY4_MEMINFO="$T/meminfo-wait" HY4_MIN_AVAIL_WAIT_S=60 FOREGROUND=1 HY4_POLL_S=0.1 bash "$RT/start.sh" > "$T/out" 2>&1 & FGPID=$!
+for i in $(seq 50); do grep -q 'waiting for' "$T/out" && break; sleep 0.1; done
+bash "$RT/stop.sh" > /dev/null 2>&1; cp "$T/meminfo" "$T/meminfo-wait"
+for i in $(seq 150); do kill -0 "$FGPID" 2>/dev/null || break; sleep 0.1; done
+if kill -0 "$FGPID" 2>/dev/null; then kill -9 "$FGPID"; frc=hung; else frc=0; wait "$FGPID" || frc=$?; fi
+if [[ "$frc" == 0 ]] && ! grep -q ' run ' "$LOG" && grep -q 'stop.sh ran while starting (before rank 1)' "$T/out"; then
+  pass "start: a stop.sh during the checks is honoured: nothing started, exit 0"
+else fail "stop during preflight (rc $frc): $(out) / $(cat "$LOG")"; fi
+# a stop.sh that lands between rank 1's run and rank 0's: rank 1 is stopped again, rank 0 never starts
+touch "$T/mark-on-wrun"; : > "$LOG"
+if startrc && grep -q 'stop.sh ran while starting (after rank 1)' "$T/out" && ! grep -q '^dh run' "$LOG" \
+   && [[ ! -f "$T/dw/ctr-hy4-vllm" && ! -f "$T/dh/ctr-hy4-vllm" ]]; then
+  pass "start: a stop.sh between the two runs: rank 1 removed, rank 0 not started, exit 0"
+else fail "stop between runs: $(out) / $(cat "$LOG")"; fi
+rm -f "$T/mark-on-wrun"
+# a SIGTERM between the two runs: the trap is already in, so rank 1 is not orphaned on the worker
+touch "$T/term-on-wrun"; : > "$LOG"
+FOREGROUND=0 bash "$RT/start.sh" > "$T/out" 2>&1 & FGPID=$!; echo "$FGPID" > "$T/start.pid"; fg_rc
+rm -f "$T/term-on-wrun"
+if [[ "$frc" == 0 ]] && ! grep -q '^dh run' "$LOG" && grep -q '^dw stop ' "$LOG" && [[ ! -f "$T/dw/ctr-hy4-vllm" ]]; then
+  pass "start: SIGTERM between the two runs: rank 1 stopped (no orphan), rank 0 not started, exit 0"
+else fail "sigterm between runs (rc $frc): $(out) / $(cat "$LOG")"; fi
+# a rank that crashed just before a deliberate stop: stop.sh records it dead, start.sh exits 1
+: > "$LOG"; HY4_POLL_S=1 FOREGROUND=1 bash "$RT/start.sh" > "$T/out" 2>&1 & FGPID=$!
+fg_wait_up; sleep 0.2
+echo stopped > "$T/dw/ctr-hy4-vllm"          # rank 1 dies; its next poll is up to 3 s away
+bash "$RT/stop.sh" > /dev/null 2>&1; fg_rc
+if [[ "$frc" == 1 ]] && grep -q 'rank1 (exit code 1) had already ended before stop.sh' "$T/out"; then
+  pass "foreground: a rank already dead when stop.sh ran (recorded in the mark) is a crash: exit 1"
+else fail "crash before stop (rc $frc): $(out) / $(cat "$HOME/.cache/hy4-vllm/.stopping" 2>&1)"; fi
+# a stop mark far older than any stop (stop.sh failed long ago, the pair kept running): a later crash is a crash
+: > "$LOG"; fg_bg; fg_wait_up; sleep 0.2
+printf '%s\nrank0=true 0\nrank1=true 0\n' "$(( $(date +%s) - 1000 ))" > "$HOME/.cache/hy4-vllm/.stopping"
+echo stopped > "$T/dh/ctr-hy4-vllm"; fg_rc
+if [[ "$frc" == 1 ]] && grep -q 'the stop mark is 1[0-9][0-9][0-9]s old' "$T/out"; then
+  pass "foreground: a stale stop mark (older than HY4_STOP_MARK_MAX_AGE_S) does not make a crash look clean"
+else fail "old mark (rc $frc): $(out)"; fi
+bash "$RT/stop.sh" > /dev/null 2>&1
 
 # --- 6. stop.sh: both ranks, idempotent --------------------------------------------------
 startrc; : > "$LOG"

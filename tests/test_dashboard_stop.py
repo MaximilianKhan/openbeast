@@ -131,3 +131,59 @@ def test_two_sigterms_stop_the_real_process_promptly(monkeypatch, tmp_path):
     # the saves completed: no half-written temp file, and the history still parses
     assert not [f for f in os.listdir(run) if ".tmp." in f], os.listdir(run)
     json.load(open(run / "dashboard-history.json"))
+
+
+def test_startup_sweeps_temp_files_of_dead_writers(monkeypatch, tmp_path):
+    """A writer killed mid-save leaves <state>.json.tmp.<pid>.<thread>; the next start removes those of
+    dead pids and leaves a live pid's (its write may be in flight) and every other file alone."""
+    d = load(monkeypatch)
+    run = tmp_path / ".run"
+    run.mkdir()
+    dead, live = 999_999_991, os.getpid()
+    names = [f"dashboard-power.json.tmp.{dead}.1", f"dashboard-history.json.tmp.{dead}.22",
+             f"dashboard-log.json.tmp.{dead}.3", f"dashboard-power.json.tmp.{live}.4",
+             "dashboard-power.json", "other.json.tmp.1.2", f"dashboard-power.json.tmp.{dead}.x"]
+    for n in names:
+        (run / n).write_text("{}")
+    assert d.sweep_stale_tmp(str(run), alive=lambda pid: pid == live) == 3
+    assert sorted(os.listdir(run)) == sorted(names[3:])
+    assert d.sweep_stale_tmp(str(tmp_path / "missing")) == 0       # no .run: nothing, no error
+
+
+def test_the_handler_waits_for_a_save_in_flight(monkeypatch):
+    """The 30 s saver may hold _save_lock when SIGTERM lands: the handler waits (bounded) for it to
+    finish before exiting, so os._exit never cuts that write short."""
+    d = load(monkeypatch)
+    for f in ("save_power", "save_log", "save_history"):
+        monkeypatch.setattr(d, f, lambda *a, **kw: 0)
+    exits = []
+    term = d._term_handler([], exit_=exits.append)
+    released = []
+    d._save_lock.acquire()                                   # the saver, mid-write
+
+    def finish_write():
+        time.sleep(0.3)
+        released.append(time.monotonic())
+        d._save_lock.release()
+
+    threading.Thread(target=finish_write, daemon=True).start()
+    term(signal.SIGTERM, None)
+    t_exit = time.monotonic()
+    assert exits == [0] and released and t_exit >= released[0]
+    assert d._save_lock.acquire(timeout=1)                   # given back after a returning exit_
+    d._save_lock.release()
+
+
+def test_a_save_lock_never_released_does_not_hold_the_exit(monkeypatch):
+    d = load(monkeypatch)
+    for f in ("save_power", "save_log", "save_history"):
+        monkeypatch.setattr(d, f, lambda *a, **kw: 0)
+    monkeypatch.setattr(d, "TERM_LOCK_WAIT_S", 0.2)
+    exits = []
+    d._save_lock.acquire()
+    try:
+        t0 = time.monotonic()
+        d._term_handler([], exit_=exits.append)(signal.SIGTERM, None)
+        assert exits == [0] and time.monotonic() - t0 < 1.5
+    finally:
+        d._save_lock.release()

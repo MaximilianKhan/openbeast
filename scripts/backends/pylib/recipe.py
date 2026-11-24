@@ -2246,6 +2246,10 @@ def cmd_adopt(args) -> int:
     return 0
 
 
+# beast-spark's exit code for "the model serves, the command center is down" (spark-beast.sh, "Exit codes")
+BEAST_SPARK_CC_DOWN = 3
+
+
 def cmd_rollback(args) -> int:
     f = state_dir() / ".previous"
     prev = ""
@@ -2258,6 +2262,12 @@ def cmd_rollback(args) -> int:
         print("nothing served before the last switch to a recipe: rollback is beast-spark down")
         prev = "down"
     code, _ = Runner(args.run).sh("local", f"beast-spark {prev}")
+    if code == BEAST_SPARK_CC_DOWN:
+        # beast-spark's exit 3: the previous model serves again, but the command center (and beast-gate
+        # with it) did not come up. A partial rollback: never reported as success, never as a failed one.
+        print(f"WARNING: rollback is PARTIAL: beast-spark {prev} brought the model back, but the command center "
+              "(openbeast.service, beast-gate) is down: journalctl --user -u openbeast -n 50; then "
+              "systemctl --user start openbeast", file=sys.stderr)
     return code
 
 

@@ -645,10 +645,15 @@ _island_line() {
   return 0
 }
 
-# The stack unit's stop timeout (start.sh -d sets it on openbeast-stack). The
-# stack's own stop is bounded well below it: the supervisor's trap waits at most
-# 3 s for beast-island, beast-chat and the uvicorn services give open
-# connections 5 s, the dashboard's SIGTERM save 8 s.
+# The stack unit's stop timeout (start.sh -d sets it on openbeast-stack): what
+# is left of the stack 30 s after its SIGTERM is SIGKILLed. Inside it: the
+# supervisor's trap waits at most 3 s for beast-island, beast-chat and the
+# uvicorn services give open connections 5 s, the dashboard's SIGTERM handler
+# exits by 8 s. The OUTER budget is openbeast.service's: its ExecStop (stop.sh)
+# waits up to 20 s for the supervisor, then up to this 30 s for the stack, then
+# brings the containers down, all within the unit's TimeoutStopSec. The
+# template (scripts/openbeast.service) sets 120 s; a unit installed before
+# that has systemd's default 90 s.
 OB_STACK_STOP_TIMEOUT_S=30
 
 # _ob_stack_settle: wait until no openbeast-stack unit is still stopping. A

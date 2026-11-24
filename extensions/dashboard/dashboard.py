@@ -1946,6 +1946,41 @@ def _write_power(path, body):
     return len(body)
 
 
+_TMP_RE = re.compile(r"^dashboard-[a-z]+\.json\.tmp\.(\d+)\.\d+$")
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:          # EPERM: alive, someone else's
+        return True
+    return True
+
+
+def sweep_stale_tmp(run_dir=None, alive=_pid_alive):
+    """Remove the state files' temp files (<name>.json.tmp.<pid>.<thread>)
+    whose writer is gone. A process killed mid-save (SIGKILL at a stop
+    timeout, or the old SIGTERM handler's exit inside another save) left one
+    behind each time: six on spark-1 by 2026-11-23. A temp file of a live
+    pid is left alone (its write may be in flight). Returns how many went."""
+    run_dir = run_dir or os.path.join(REPO_DIR, ".run")
+    n = 0
+    try:
+        names = os.listdir(run_dir)
+    except OSError:
+        return 0
+    for name in names:
+        m = _TMP_RE.match(name)
+        if not m or alive(int(m.group(1))):
+            continue
+        with contextlib.suppress(OSError):
+            os.unlink(os.path.join(run_dir, name))
+            n += 1
+    return n
+
+
 def load_power(samplers, path=None, now=None):
     """Restore what save_power wrote, for the nodes configured now. A file
     that is missing, too big, corrupt or of another layout restores nothing
@@ -3981,6 +4016,8 @@ def start_samplers():
     restored = hist = 0
     svc = {}
     with contextlib.suppress(Exception):
+        sweep_stale_tmp()
+    with contextlib.suppress(Exception):
         restored = load_power(nodes)
     with contextlib.suppress(Exception):
         hist = load_history()
@@ -4006,6 +4043,8 @@ def start_samplers():
 # anyway (the saves themselves take well under a second; 3.4 MB of history
 # measured on spark-1).
 TERM_SAVE_DEADLINE_S = 8.0
+# How long the handler waits, after its saves, for a save in flight on another thread
+TERM_LOCK_WAIT_S = 2.0
 
 
 def _term_handler(nodes, exit_=os._exit):
@@ -4047,8 +4086,15 @@ def _term_handler(nodes, exit_=os._exit):
             save_log(lock_timeout=1.0)
         with contextlib.suppress(Exception):
             save_history(lock_timeout=1.0)
+        # The 30 s saver thread may be mid-write (its own save, under _save_lock): wait briefly for
+        # it to finish, so os._exit never cuts a write short and leaves a .tmp file behind.
+        held = False
+        with contextlib.suppress(Exception):
+            held = _save_lock.acquire(timeout=TERM_LOCK_WAIT_S)
         deadline.cancel()
-        exit_(0)
+        exit_(0)                # held: no other save can start before the exit (os._exit never returns)
+        if held:                # a test's exit_ returns: give the lock back
+            _save_lock.release()
     return _term
 
 
