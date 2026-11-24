@@ -22,7 +22,7 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "evals"))
 
-import v5_board  # noqa: E402
+import v5_board
 
 # A three-unit manifest: one two-language base (python + go) and one singleton.
 MANIFEST = {
@@ -249,7 +249,7 @@ def test_committed_board_numbers():
     assert {k: runs[k]["passed"] for k in runs} == {
         "GLM-L0": 26, "GLM-A": 31, "GLM-B": 36, "GLM-C": 51, "GLM-E": 50, "DS-T": 61, "DS-T2": 65, "DS-Ts1": 61, "DS-T3": 65,
         "DS-U": 59, "DS-UP": 62, "DS-UPA": 59, "DS-U8k": 63, "DS-UP8k": 65, "DS-UPA8k": 62, "HY4-T2": 60, "HY4-C": 55, "Q38U-L0": 39, "Q38U-T2": 52,
-        "GLM-UP": 56, "INK-T2": 49, "INK-T2-S1": 51, "INK-T2-STOCK": 53, "OPUS-REF": 71}
+        "GLM-UP": 56, "INK-T2": 49, "INK-T2-S1": 51, "INK-T2-STOCK": 53, "INK-UP8K": 49, "OPUS-REF": 71}
     assert runs["GLM-C"]["passed_raw"] == 54  # 122 b/d/e excluded: contaminated (G25 scan)
     assert runs["GLM-E"]["passed_raw"] == 50  # scan clean; 122_c is a noted validator false FAIL
     assert runs["DS-T"]["passed_raw"] == 61  # scan clean (2026-11-18); first run under review 1118
@@ -279,8 +279,13 @@ def test_committed_board_numbers():
     # INK-T2-STOCK: Basalt's stock pack, its own (model, weights) row; scan clean, the same dlsym stop
     assert (runs["INK-T2-STOCK"]["passed_raw"], runs["INK-T2-STOCK"]["excluded"]) == (53, {})
     assert round(runs["INK-T2-STOCK"]["score"], 1) == 78.2
-    for k in ("INK-T2-S1", "INK-T2-STOCK"):
+    for k in ("INK-T2-S1", "INK-T2-STOCK", "INK-UP8K"):
         assert list(runs[k]["validator_notes"]) == ["122_gemm_blocked_d"]
+    # INK-UP8K: UP_8k on the Derisked pack (harness10); 163_c excluded (a find / listed sealed
+    # file names; a fail, so raw = scored); below INK-T2 on SCORE, so INK-T2 stays the pack's row
+    assert (runs["INK-UP8K"]["passed_raw"], sorted(runs["INK-UP8K"]["excluded"])) == (49, ["163_bigint_divmod_c"])
+    assert round(runs["INK-UP8K"]["score"], 1) == 75.1
+    assert "INK-UP8K" not in {r["id"] for r in b["best"]} and "INK-T2" in {r["id"] for r in b["best"]}
     assert runs["OPUS-REF"]["passed_strict_wall"] == 68
     # the 5090's 4 units lost to llama-server's HTTP 500 on a truncated tool call
     assert runs["Q38U-L0"]["lost"] == {u: "server_error" for u in (
@@ -308,7 +313,7 @@ def test_committed_board_numbers():
     assert {k: runs[k]["weights_id"] for k in runs} == {
         **{k: ds for k in runs if k.startswith("DS-")}, **{k: glm for k in runs if k.startswith("GLM-")},
         "HY4-T2": hy4, "HY4-C": hy4, "Q38U-L0": q38, "Q38U-T2": q38, "INK-T2": ink, "INK-T2-S1": ink,
-        "INK-T2-STOCK": inks,
+        "INK-T2-STOCK": inks, "INK-UP8K": ink,
         "OPUS-REF": "anthropic-api-claude-opus-5-5"}
     assert [r["weights_id"] for r in b["best"]] == [ds, hy4, glm, inks, ink, q38, "anthropic-api-claude-opus-5-5"]
     w = b["weights"][ds]
@@ -346,7 +351,7 @@ def test_committed_board_numbers():
         "DS-UPA8k": (27402927, 2520048, 0), "HY4-T2": (47921687, 1605430, 0), "HY4-C": (35144307, 1967131, 0),
         "Q38U-L0": (15413787, 3452557, 0), "Q38U-T2": (57838480, 4697822, 0), "GLM-UP": (17278440, 2144728, 0),
         "INK-T2": (70883493, 5367401, 0), "INK-T2-S1": (64747685, 4959068, 0),
-        "INK-T2-STOCK": (64862866, 4900235, 0), "OPUS-REF": (0, 0, 71)}
+        "INK-T2-STOCK": (64862866, 4900235, 0), "INK-UP8K": (73541527, 5300048, 0), "OPUS-REF": (0, 0, 71)}
     assert runs["DS-T2"]["tokens"]["per_pass"] == 473490 and runs["DS-T2"]["tokens"]["total"] == 30776845
     assert runs["HY4-T2"]["tokens"]["per_pass"] == 825452 and runs["HY4-T2"]["tokens"]["total"] == 49527117
     assert runs["HY4-C"]["tokens"]["per_pass"] == 674753 and runs["HY4-C"]["tokens"]["total"] == 37111438
@@ -354,6 +359,7 @@ def test_committed_board_numbers():
     assert runs["INK-T2"]["tokens"]["per_pass"] == 1556141 and runs["INK-T2"]["tokens"]["total"] == 76250894
     assert runs["INK-T2-S1"]["tokens"]["per_pass"] == 1366799 and runs["INK-T2-S1"]["tokens"]["total"] == 69706753
     assert runs["INK-T2-STOCK"]["tokens"]["per_pass"] == 1316285 and runs["INK-T2-STOCK"]["tokens"]["total"] == 69763101
+    assert runs["INK-UP8K"]["tokens"]["per_pass"] == 1609012 and runs["INK-UP8K"]["tokens"]["total"] == 78841575
 
 
 def test_two_quantizations_of_one_model_are_two_rows(tmp_path):

@@ -10,7 +10,10 @@
 > `INK-T2-S1`, a seed replicate that never ranks) and `I_T2_stock`
 > (Basalt's stock pack in place of the Derisked one: 53/71, row
 > `INK-T2-STOCK`, SCORE 78.2, now #4 and the top RTX 5090 row). The third,
-> `I_UP8k`, ended 14:28 PST at 49/71 (§10.9, read in §12.6). **The
+> `I_UP8k` (DeepSeek's UP_8k setup on the Derisked pack, harness10), ended
+> 14:28 PST at 49/71: row `INK-UP8K`, SCORE 75.1, listed, not ranked; level
+> with I_T2, and its forced-act turns did not run with thinking off on
+> Basalt (§10.9, the wrap-up; read for I_T3 in §12.6). **The
 > improved arm `I_T3`** (stock pack + wall-bound turns + a 16,384 cap with
 > an 8,192 answer room + Basalt's #588 patch) is staged, not launched: §12. Engine choice and its review:
 > [STRATA_INKLING_5090-2026-11-23.md](STRATA_INKLING_5090-2026-11-23.md)
@@ -44,8 +47,9 @@ The ablations' tables (§4 now carries their rows and pairs; §10):
 
 ```bash
 python3 evals/v5_report.py --model "Inkling 2 Mini Derisked (Basalt NVFP4-MX8)" \
-    --context INK-T2-STOCK,Q38U-T2,DS-T2,HY4-T2,OPUS-REF --pair Q38U-T2:I_T2 --pair I_T2:I_T2_s1 \
+    --context INK-T2-STOCK,Q38U-T2,DS-T2,DS-UP8k,GLM-UP,HY4-T2,OPUS-REF --pair Q38U-T2:I_T2 --pair I_T2:I_T2_s1 \
     --pair I_T2:INK-T2-STOCK --pair I_T2_s1:INK-T2-STOCK --pair Q38U-T2:INK-T2-STOCK \
+    --pair I_T2:I_UP8k --pair I_T2_s1:I_UP8k --pair INK-T2-STOCK:I_UP8k --pair Q38U-T2:I_UP8k --pair DS-T2:DS-UP8k \
     --write docs/reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md
 I=$B/eval-inkling-2-mini-derisked-basalt-nvfp4-mx8-v5-thinking-first-i-t2-20261124-045843.json
 S=$B/eval-inkling-2-mini-derisked-basalt-nvfp4-mx8-v5-thinking-first-i-t2-s1-20261124-095656.json
@@ -56,14 +60,26 @@ python3 evals/ablation.py --force $I $K      # stock against Derisked; and $S $K
 python3 evals/ablation.py --force "$M"/eval-qwen3-8-27b-uncensored-mtp-q5-k-m-v5-thinking-first-q-t2-20261123-115749.json $K
 python3 evals/ablation.py $B/eval-deepseek-v4-1-flash-v5-thinking-first-t-20261118-015132.json \
     $B/eval-deepseek-v4-1-flash-v5-thinking-first-t-s1-20261119-074954.json   # DeepSeek's seed pair
+U=$B/eval-inkling-2-mini-derisked-basalt-nvfp4-mx8-v5-thinking-first-i-up8k-20261124-182529.json
+python3 evals/ablation.py --force $I $U      # UP_8k against T2 on the same pack (§10.9); and $S $U, $K $U,
+python3 evals/ablation.py --force "$M"/eval-qwen3-8-27b-uncensored-mtp-q5-k-m-v5-thinking-first-q-t2-20261123-115749.json $U
+python3 evals/ablation.py $B/eval-deepseek-v4-1-flash-v5-thinking-first-t2-20261119-013846.json \
+    $B/eval-deepseek-v4-1-flash-v5-thinking-first-up-8k-20261121-064409.json  # DeepSeek's T2 -> UP_8k
 ```
+
+The CLI prints the per-language rows; the "all units" rows of §10.9.2 are
+its `contrast(pairs, "all", CHURN["all"])` after `pair()` on the two files
+loaded with `ablation._load` (exclusions applied), as for §5.
 
 The Basalt speed and acceptance (§10.6) need the rig's saved server logs
 (`~/openbeast-runs/basalt-server-logs/`, not committed):
 `python3 evals/audit/basalt_log.py <log> --since <START> --until <END>`
 with the arm's START and END lines of its `campaign.log` (UTC); the
 commands are in the sealed review
-`evals/audit/reviews/ink-t2-s1-stock-integrity-2026-11-24.md`.
+`evals/audit/reviews/ink-t2-s1-stock-integrity-2026-11-24.md` (I_UP8k's:
+`ink-up8k-integrity-2026-11-24.md`). Its `without_budget_line` block counts
+the requests sent with thinking off (§10.9.3); `capped_turns.py` reports the
+forced-act turns from the transcripts' `force_act_result` events.
 
 `--force`: the pair is two models (and two engines), which the tool flags as
 "not a clean pair". The era, arm, host, tree and stream count are the same.
@@ -105,7 +121,9 @@ integrity scan with `--json` (command in the sealed review,
   passes and SCORE 78.2 against 75.6 are inside seed noise.
 - **Decision unchanged: Qwen3.8 stays the RTX 5090 default** until the
   improved arm (stock pack + Basalt PR #632 as a local patch) and ideally a
-  seed repeat of it confirm (§10.8; DECISIONS-2026-11-24 §6).
+  seed repeat of it confirm (§10.8; DECISIONS-2026-11-24 §6). *(Superseded
+  the same day: Max made the stock Inkling the RTX 5090 default,
+  DECISIONS-2026-11-24 §10.)*
 - **Integrity: both clean** (0 contaminated; attempts only, all refused;
   no shell route off the host). Both stopped `122_gemm_blocked_d` (Rust) at
   the Linux `dlsym` check; replayed under the proposed rule, both PASS (3 of
@@ -114,7 +132,20 @@ integrity scan with `--json` (command in the sealed review,
   transcripts exactly (requests, cap endings, empty turns, token sums).
   Decode over all replies 484 tok/s (Derisked, seed 1) and 444 (stock);
   drafts accepted 90.2% and 88.7% (token-weighted) (§10.6).
-- **`I_UP8k` is still running** (started 2026-11-24 18:25 UTC; §10.9).
+- **`I_UP8k` (DeepSeek's UP_8k setup, Derisked pack, harness10): 49/71,
+  SCORE 75.1, row `INK-UP8K`, listed, not ranked (INK-T2 is the pack's best
+  row).** Paired against I_T2 on the same pack: 3 gained, 3 lost (p 1.0),
+  every flipped unit one the seed or pack ablations also flipped; against
+  I_T2_s1 −2 (p 0.63). **UP_8k's setup adds nothing measurable over T2 on
+  Inkling**, as on DeepSeek (65 and 65). And its core mechanism did not run
+  as designed: Basalt turns `enable_thinking=false` into `reasoning_effort
+  "none"` and gives that request no thinking budget, so **67 of the 68
+  forced-act turns still thought, 56 ran to the cap and 50 ended empty**;
+  18 made a tool call, against 24 of 24 on DeepSeek and 22 of 22 on GLM.
+  One unit excluded (a `find /` listed sealed file names; a fail, so 49
+  stays 49); dlsym replayed PASS 3/3. **Inkling's setup stays T2, and the
+  improved arm `I_T3` takes none of UP_8k's switches** and never sends
+  thinking off (§10.9, §12; DECISIONS-2026-11-24 §13).
 
 **The first arm, I_T2:**
 
@@ -348,10 +379,13 @@ dropped from the pair in §5 either way.
 |---|---|---|---|---|---:|---:|---:|---:|---:|
 | I_T2 | INK-T2 | Basalt NVFP4-MX8 pack · Blackfrost Derisked · abliterated | yes | 036638ddd68698ce | 8192 | 49/71 | 76.5 | 72.3 | 89.1 |
 | I_T2_s1 | INK-T2-S1 | Basalt NVFP4-MX8 pack · Blackfrost Derisked · abliterated | yes | 036638ddd68698ce | 8192 | 51/71 | 78.3 | 72.3 | 96.4 |
+| I_UP8k | INK-UP8K | Basalt NVFP4-MX8 pack · Blackfrost Derisked · abliterated | yes | 9bcd5aa6030836d1 | 8192 | 49/71 | 75.1 | 69.2 | 92.7 |
 | Claude Opus 5.5: OPUS-REF | OPUS-REF | Anthropic API · hosted, weights not public | yes | — | — | 71/71 | 100.0 | 100.0 | 100.0 |
 | DeepSeek-V4.1-Flash (Mia EXL3): T2 | DS-T2 | EXL3 2.9 bpw · Mia EAQ v1.1 -v2 · stock | yes | 036638ddd68698ce | 8192 | 65/71 | 94.9 | 96.9 | 88.9 |
+| DeepSeek-V4.1-Flash (Mia EXL3): UP_8k | DS-UP8k | EXL3 2.9 bpw · Mia EAQ v1.1 -v2 · stock | yes | 9bcd5aa6030836d1 | 8192 | 65/71 | 91.4 | 90.8 | 93.3 |
 | Hy4-flash (NVFP4): H_T2 | HY4-T2 | NVFP4 · atakans build · stock | yes | 036638ddd68698ce | 8192 | 60/71 | 83.4 | 81.5 | 89.0 |
-| Qwen3.8 27B Uncensored MTP (the shipped default): Q_T2 | Q38U-T2 | GGUF Q5_K_M · JonathanColetti Uncensored (MTP head kept) · abliterated | yes | 036638ddd68698ce | 8192 | 52/71 (54 raw) | 75.6 | 72.3 | 85.6 |
+| Qwen3.8 27B Uncensored MTP: Q_T2 | Q38U-T2 | GGUF Q5_K_M · JonathanColetti Uncensored (MTP head kept) · abliterated | yes | 036638ddd68698ce | 8192 | 52/71 (54 raw) | 75.6 | 72.3 | 85.6 |
+| GLM-5.3-Flash: UP | GLM-UP | EXL3 4 bpw · Mia TensorFold-Ablit · abliterated | yes | 9bcd5aa6030836d1 | 16384 | 56/71 | 81.9 | 78.5 | 92.3 |
 | Inkling 2 Mini (Basalt NVFP4-MX8): I_T2_stock | INK-T2-STOCK | Basalt NVFP4-MX8 pack · Basalt's official pack · stock | yes | 036638ddd68698ce | 8192 | 53/71 | 78.2 | 75.4 | 86.7 |
 
 **Per language** (passed / units of that language; an in-progress arm's passes are over the units done so far)
@@ -360,10 +394,13 @@ dropped from the pair in §5 either way.
 |---|---:|---:|---:|---:|---:|---:|---:|
 | I_T2 | 23/32 | 6/8 | 5/8 | 6/8 | 5/8 | 3/6 | 1/1 |
 | I_T2_s1 | 23/32 | 6/8 | 6/8 | 6/8 | 5/8 | 4/6 | 1/1 |
+| I_UP8k | 22/32 | 6/8 | 6/8 | 5/8 | 5/8 | 4/6 | 1/1 |
 | Claude Opus 5.5: OPUS-REF | 32/32 | 8/8 | 8/8 | 8/8 | 8/8 | 6/6 | 1/1 |
 | DeepSeek-V4.1-Flash (Mia EXL3): T2 | 30/32 | 7/8 | 7/8 | 7/8 | 8/8 | 5/6 | 1/1 |
+| DeepSeek-V4.1-Flash (Mia EXL3): UP_8k | 29/32 | 7/8 | 8/8 | 7/8 | 8/8 | 5/6 | 1/1 |
 | Hy4-flash (NVFP4): H_T2 | 26/32 | 6/8 | 7/8 | 8/8 | 8/8 | 4/6 | 1/1 |
-| Qwen3.8 27B Uncensored MTP (the shipped default): Q_T2 | 23/32 | 7/8 | 6/8 | 6/8 | 6/8 | 3/6 | 1/1 |
+| Qwen3.8 27B Uncensored MTP: Q_T2 | 23/32 | 7/8 | 6/8 | 6/8 | 6/8 | 3/6 | 1/1 |
+| GLM-5.3-Flash: UP | 24/32 | 7/8 | 7/8 | 7/8 | 6/8 | 4/6 | 1/1 |
 | Inkling 2 Mini (Basalt NVFP4-MX8): I_T2_stock | 24/32 | 6/8 | 7/8 | 6/8 | 5/8 | 4/6 | 1/1 |
 
 **Time and the wall** (wall hit = the harness killed the agent at the unit's wall, `agent_exit_code == -1`; turns are counted only where the row carries them, from harness9 on)
@@ -372,6 +409,7 @@ dropped from the pair in §5 either way.
 |---|---:|---:|---:|---:|---:|---:|---|
 | I_T2 | 71 | 4.5 | 3.8 | 0 | 0 | 0 | — |
 | I_T2_s1 | 71 | 4.1 | 3.5 | 0 | 0 | 0 | — |
+| I_UP8k | 71 | 4.0 | 3.4 | 0 | 0 | 0 | — |
 
 **Units gained and lost** (arm against base, over the units both have a verdict for)
 
@@ -382,19 +420,30 @@ dropped from the pair in §5 either way.
 | I_T2 → INK-T2-STOCK | 71 | +4 | 122_gemm_blocked_e, 158_karatsuba_bytes_c, 163_bigint_divmod_a, 163_bigint_divmod_c, 196_polyphase_resampler | 178_codebase_qa |
 | I_T2_s1 → INK-T2-STOCK | 71 | +2 | 163_bigint_divmod_a, 163_bigint_divmod_c, 196_polyphase_resampler | 178_codebase_qa |
 | Q38U-T2 → INK-T2-STOCK | 68 | +0 | 122_gemm_blocked_b, 122_gemm_blocked_e, 124_rkf45, 126_hmac_scratch | 163_bigint_divmod_b, 163_bigint_divmod_e, 176_intermittent_500s_a, 178_codebase_qa |
+| I_T2 → I_UP8k | 71 | +0 | 122_gemm_blocked_e, 158_karatsuba_bytes_c, 196_polyphase_resampler | 158_karatsuba_bytes_d, 175_crdt_orset_rga, 178_codebase_qa |
+| I_T2_s1 → I_UP8k | 71 | -2 | 196_polyphase_resampler | 158_karatsuba_bytes_d, 175_crdt_orset_rga, 178_codebase_qa |
+| INK-T2-STOCK → I_UP8k | 71 | -4 | — | 158_karatsuba_bytes_d, 163_bigint_divmod_a, 163_bigint_divmod_c, 175_crdt_orset_rga |
+| Q38U-T2 → I_UP8k | 68 | -3 | 122_gemm_blocked_b, 122_gemm_blocked_e, 124_rkf45, 126_hmac_scratch | 158_karatsuba_bytes_d, 163_bigint_divmod_a, 163_bigint_divmod_b, 163_bigint_divmod_c, 163_bigint_divmod_e, 176_intermittent_500s_a, 178_codebase_qa |
+| DS-T2 → DS-UP8k | 71 | +0 | 168_linearizability_kv_a, 168_linearizability_kv_c | 173_taskgroup_cancel, 183_heston_little_trap |
 
 **Units whose verdict differs across the arms** (P pass, F fail, · not run yet, L lost to infrastructure); every other unit has the same verdict in every arm
 
-| Unit | I_T2 | I_T2_s1 |
-|---|:---:|:---:|
-| 122_gemm_blocked_e | F | P |
-| 158_karatsuba_bytes_c | F | P |
+| Unit | I_T2 | I_T2_s1 | I_UP8k |
+|---|:---:|:---:|:---:|
+| 122_gemm_blocked_e | F | P | P |
+| 158_karatsuba_bytes_c | F | P | P |
+| 158_karatsuba_bytes_d | P | P | F |
+| 175_crdt_orset_rga | P | P | F |
+| 178_codebase_qa | P | P | F |
+| 196_polyphase_resampler | F | F | P |
 <!-- v5-report:end -->
 
 The generated "units gained and lost" row counts Q38U-T2's two excluded
 passes (`124_rkf45`, `126_hmac_scratch`) as Q38U-T2 fails, as the board
 does, so it shows 68 units and −4. §5 drops every unit either row did not
-measure cleanly.
+measure cleanly. Likewise the I_UP8k rows count its excluded `163_bigint_divmod_c` as
+a fail (so INK-T2-STOCK → I_UP8k shows −4, the stock arm having passed it);
+§10.9.2 drops it.
 
 ## 5. Against Q38U-T2, paired
 
@@ -599,7 +648,7 @@ intended). Each one stream, Basalt alias `inkling-2-mini`:
 
 Each gets the same integrity scan, `capped_turns.py`, and the `dlsym`
 replay for a stopped Rust GEMM. Their serves run with `--dns 127.0.0.1`.
-**Results: §10** (I_T2_s1 and I_T2_stock done; I_UP8k running).
+**Results: §10** (all three done; I_UP8k in §10.9).
 
 ## 9. Caveats
 
@@ -616,7 +665,11 @@ replay for a stopped Rust GEMM. Their serves run with `--dns 127.0.0.1`.
   coding is what `I_T2_stock` measures.
 - **Harness host calibrated by inference** (§2.2).
 - **The empty-turn and lenient-call counts are transcript counts**, without
-  the server log's cross-check (§6.3).
+  the server log's cross-check (§6.3). *(For the three ablations the kept
+  server logs confirm them exactly, §10.6, §10.9.5.)*
+- **I_UP8k crosses harness versions** (harness9 → harness10) and bundles five
+  switches; its forced-act turn did not run with thinking off on Basalt
+  (§10.9.3), so the forced act itself is untested on Inkling.
 
 ## 10. The ablations: seed noise and the stock pack (2026-11-24)
 
@@ -965,15 +1018,294 @@ arm is the stock one: the uncensored-preferred policy is a tie-breaker
 between equals, and here the measured direction (passes, empty turns,
 divergence) favours the stock pack; Derisked stays measured, not dropped.
 
-### 10.9 I_UP8k
+### 10.9 I_UP8k: DeepSeek's UP_8k setup on Inkling (2026-11-24)
 
-`I_UP8k` (DeepSeek's UP_8k setup at one stream, harness10 tree `d41c2c47`,
-era `9bcd5aa6`, the Derisked pack) ran 2026-11-24 18:25:29 to 22:28:05 UTC
-and passed **49/71**, the same count as `I_T2`. Read for the improved
-arm's design in §12.6 (its forced-act turn made a call in 18 of 68 turns
-on Inkling). Still to do for its row: the sealed integrity review (the
-scan flags one transcript, §12.6), `basalt_log.py` on
-`basalt-20261124-102527-c9c29fce36b3.log`, the `dlsym` replay, the board.
+*This replaces the §10.9 stub of #315 ("still to do: the sealed review,
+`basalt_log.py`, the `dlsym` replay, the board"); §12.6 reads the same arm
+for the design of `I_T3`, and §10.9.8 reconciles its figures with these.*
+
+`I_UP8k` ran 2026-11-24 18:25:28 to 22:28:05 UTC (4 h 3 min), the queue's
+last arm, on the Derisked pack and the same Basalt serve as I_T2 (container
+`c9c29fce36b3`). It is DeepSeek's UP_8k setup at one stream: the
+**harness10** tree `~/ob-ink2` at `d41c2c47` (era `9bcd5aa6`, clean), where
+the three T2 arms ran the harness9 worktree `f38a29c7` (era `036638dd`).
+Against I_T2 it changes, all at once:
+
+| Switch (env of `state.json`) | I_T2 / I_T2_s1 | I_UP8k |
+|---|---|---|
+| Harness tree, era | harness9, `036638dd` | harness10, `9bcd5aa6` |
+| Act nudge (`ACT_NUDGE`, a text note after idle turns) | on | off |
+| Forced-act turn (`FORCE_ACT`, after 2 capped thinking turns the next request goes with `enable_thinking=false` and must act) | off | on, after 2 |
+| Done-when-verified line (`DONE_VERIFIED`) | off | on |
+| Planning lines (`ALGO_LINES`: bound first, test a doubtful split against brute force, redesign on a large miss) | off | on |
+| Web tools offered (`HIDE_WEB`) | yes (refused under eval) | no |
+| Per-turn cap, thinking room, T's assists, `--jobs 1 --slots 1`, pack, serve flags, container | same | same |
+
+So the pair crosses harness versions and bundles five switches, as DS-T2 →
+DS-UP8k did on DeepSeek. Clock-seeded like I_T2.
+
+**The row: 49/71, SCORE 75.1 (SOLVE 69.2, LANG 92.7), board row
+`INK-UP8K`.** Per language 22/32, 6/8, 6/8, 5/8, 5/8, 4/6, 1/1 (§4). 0 units
+lost, 0 API errors, 0 wall hits, 24 units ended at their turn limit (3
+passed; I_T2 21). One unit excluded as contaminated (§10.9.4), a fail, so
+the scored count equals the raw one. INK-UP8K is listed and **not ranked**:
+the board keeps one row per model and weights, and INK-T2 (76.5) is the
+Derisked pack's best. Had it ranked, 75.1 would sit just below Q38U-T2
+(75.6). Tokens: 73,541,527 prompt and 5,300,048 completion, 1,609,012 per
+pass (INK-T2: 1,556,141).
+
+#### 10.9.1 The serve, checked
+
+The queue's checks (`ink-ablations-queue.out`, 10:25 PST): `docker inspect
+basalt-serve` named `/models-derisked/Inkling-2-Mini-Derisked-NVFP4-MX8.basalt`
+with `--parallel 1 --max-context 262144 --kv fp8` at the start and again at
+the arm's end; DNS `127.0.0.1`, the in-container probe failing to resolve
+`example.com` and `huggingface.co`, as intended; image
+`ob-strata-env:2026-11-23`. Every row reports `inkling-2-mini`, no seed. And
+a **thinking-off probe** (`enable_thinking: false`, "What is 17*23?"):
+`reasoning_chars=117 content='391'`, where the queue expected 0. That probe
+is the first sign of §10.9.3.
+
+#### 10.9.2 Paired: UP_8k's setup adds nothing measurable on Inkling
+
+`evals/ablation.py --force` (the slugs and eras differ), all-units row from
+its `contrast()`, `163_bigint_divmod_c` dropped as contaminated (§10.9.4):
+
+| Pair | n | base | I_UP8k | gained | lost | net | p | MDE |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| I_T2 → I_UP8k (same pack) | 70 | 49 | 49 | 3 | 3 | 0 | 1.0 | 9.5 |
+| I_T2_s1 → I_UP8k (same pack) | 70 | 51 | 49 | 1 | 3 | −2 | 0.63 | 9.5 |
+| I_T2_stock → I_UP8k (stock pack against Derisked, too) | 70 | 52 | 49 | 0 | 3 | −3 | 0.25 | 9.5 |
+| Q38U-T2 → I_UP8k (65 clean minus this unit) | 64 | 51 | 47 | 2 | 6 | −4 | 0.29 | 10 |
+| *DeepSeek, for comparison:* DS-T2 → DS-UP8k | 71 | 65 | 65 | 2 | 2 | 0 | 1.0 | 9.5 |
+
+The units, against the two Derisked T2 draws:
+
+| Unit | Category | Language | I_T2 | I_T2_s1 | I_T2_stock | I_UP8k |
+|---|---|---|:---:|:---:|:---:|:---:|
+| `122_gemm_blocked_e` | Performance & HW Opt | Zig | F | P | P | P |
+| `158_karatsuba_bytes_c` | Pure & Abstract Math | C | F | P | P | P |
+| `196_polyphase_resampler` | Signal Processing & DSP | Python | F | F | P | P |
+| `158_karatsuba_bytes_d` | Pure & Abstract Math | C++ | P | P | P | F |
+| `175_crdt_orset_rga` | Distributed / SysDesign | Python | P | P | P | F |
+| `178_codebase_qa` | SWE / DevOps | Python | P | P | F | F |
+
+**Reading.** On the same pack the count is identical (49 and 49) and the
+churn is 3 each way, every flipped unit inside the set the seed and pack
+ablations already flipped: two of the three gains are the units seed 1 alone
+gained (§10.2: noise), the third (`196`) the stock pack also gained, and one
+of the three losses (`178`) the stock arm also lost. Against seed 1 it is
+−2 (1 in, 3 out). No contrast is near significance and every one is under
+the MDE, even at the measured 2.8% churn (6.5). **UP_8k's setup adds
+nothing measurable over T2 on Inkling (49 against 49)**, the same verdict
+as on DeepSeek (65 against 65, 2 in and 2 out).
+
+- **SCORE** 75.1 against 76.5 (I_T2) and 78.3 (I_T2_s1): SOLVE 69.2 against
+  72.3, LANG 92.7 against 89.1 and 96.4. All inside the ~3-point single-seed
+  band of §10.2.
+- **Cost** on the units both passed: against I_T2, fewer completion tokens on
+  24 of 46, more on 22 (median −46, p 0.88); turns fewer on 16, more on 22
+  (p 0.42). No difference. Unit-hours 4.0 (I_T2 4.5, I_T2_s1 4.1); median
+  unit 45 s (22 s for passes).
+- **Against Q38U-T2** −4 over 64 clean units (2 in, 6 out, p 0.29), the
+  Derisked pack's usual gap (I_T2 −6, I_T2_s1 −4; §10.4).
+
+#### 10.9.3 The forced-act turns did not run with thinking off
+
+UP_8k's core mechanism is the forced-act turn (`agents/runner.py` at
+`d41c2c47`, lines 647-712): when two replies in a row end at the cap with
+no content and no call, the next request goes with
+`chat_template_kwargs.enable_thinking=false` and a note asking for "Decisions
+so far / Rejected options" and a tool call in that one reply. On DeepSeek it
+worked mechanically: 24 of 24 forced turns in U ended in a tool call
+([campaign report](V5_DEEPSEEK_CAMPAIGN-2026-11-20.md) §6.3), and 22 of 22 on
+GLM's UP ([GLM UP report](V5_GLM_UP-2026-11-23.md) §6.3). **On Inkling under
+Basalt it did not.** Counted twice, independently:
+
+| | From the transcripts (`capped_turns.py`, `force_act_result`) | From the server log (`basalt_log.py`, requests with no thinking-budget line) |
+|---|---:|---:|
+| Forced-act turns | **68** in 13 units (one more was due after turn 60 and never sent) | **68** |
+| Still produced reasoning | **67** (median 22,626 characters) | — |
+| Ran to the 8,192 cap | **56** | **56** `end=length` (12 `stop`) |
+| Ended empty (no call, no content) | **50** | **50** "no answer" warnings |
+| Made a tool call (did their job) | **18** (26%) | — |
+| Generated tokens, decode time | — | 486,287 (9.2% of the arm's), 929 s |
+
+The control: the same server-log split over I_T2_s1's and I_T2_stock's
+windows finds 0 requests without a budget line (T2 never sends thinking
+off).
+
+**Why** (Basalt at the pin `400b411c`, read from its source):
+
+1. **Thinking off is a hint on Inkling, not a stop.** The Inkling dialect
+   turns `enable_thinking: false` into `reasoning_effort: "none"`
+   (`serve/models/inkling2.py:527-529`), a level the chat template writes
+   into a system message. The template adds no generation prompt ("the model
+   opens its own blocks", lines 5-6), so nothing prevents a thinking block,
+   and the reply parser still reads one. On a short prompt the block is
+   short (the probe's 117 characters, as the Strata report §11.1 noted); 30
+   to 60 turns into a hard unit, it was a full turn of thinking.
+2. **And thinking off removes the answer room.** `service.py` marks such a
+   request `thinking = False` (line 1148), so it gets no thinking budget
+   (1370), and `answer_budget` runs only for a thinking request (1511): no
+   6,144-token budget, no wrap-up, no close. A forced turn was therefore
+   *less* protected than an ordinary thinking turn: 82% of forced turns ran
+   to the cap (56 of 68) and 74% ended empty (50), against 13% (246 of
+   1,901) and 9.3% (176) of the arm's thinking turns.
+3. **And it misses the prompt cache, twice.** The effort level sits in a
+   system message near the top, so the rendered prefix changes when thinking
+   goes off and again when it comes back: each forced request and the request
+   after it hit 0% of the cache (8,292,616 uncached prompt tokens, 632 s of
+   prefill), against 96.5% for every other request (as in the T2 arms). The
+   arm's overall cached share fell to 85.6% and its prefill time to 926 s
+   (T2 arms 281 and 304 s).
+
+**Did that undermine UP_8k's mechanism? Yes, the forced-act part of it.**
+
+- The forced turn did its job (a tool call) 18 times in 68. The other 50 were
+  themselves empty capped turns, so a forced turn usually produced exactly
+  the stall it exists to end, and the streak counter, reset by the forced
+  turn, then needed two more capped turns before the next one: 13 units got
+  2 to 14 forced turns each (`183_heston_little_trap` 14, 12 of them empty;
+  `196_polyphase_resampler` 13, 12 empty; `168_linearizability_kv_a` 11).
+- Of the arm's 226 empty capped turns, 50 were forced turns; the other 176
+  (in 1,901 thinking turns) are in the range of the T2 draws on the same pack
+  (203 and 167). So the forced turn added empty turns rather than removing
+  any.
+- UP_8k also turns the act nudge off, so on Inkling the arm effectively ran
+  T2's switches **without the nudge**, plus done-when-verified, the planning
+  lines and hidden web tools, plus a mostly inert forced turn that cost 68 of
+  the arm's 1,969 turns (from units that all failed but one) and about 26
+  minutes of its 4 h 3 min (929 s decode, 632 s extra prefill).
+- What the arm does test fairly: the switches that do not depend on thinking
+  off (planning lines, done-when-verified, hidden web) and the bundle as it
+  runs on this engine. That bundle measured level with T2. **The forced-act
+  turn itself was not tested as designed on Inkling**, and this result says
+  nothing about it either way; on DeepSeek, where it worked, it was also no
+  better than the nudge (U_8k 63 against T2 65).
+
+The only pass among the 13 forced-turn units, `196_polyphase_resampler`, ran
+to turn 60 with 40 empty capped turns (12 of them forced) and passed on its
+last code; I_T2 and I_T2_s1 failed it, and the stock pack passed it under
+T2. Nothing there is attributable to the forced turn.
+
+#### 10.9.4 Integrity and the dlsym stop
+
+Sealed notes: `evals/audit/reviews/ink-up8k-integrity-2026-11-24.md`.
+
+- **Scan** (`--tz UTC`, `--until 2026-11-24T22:28:05`): 71 transcripts, 71
+  units, **1 contaminated**. In `163_bigint_divmod_c` (a fail) the agent ran
+  a `find /` for C files whose output listed the unit's sealed reference
+  directory (file names only, under the eval tree the container mounts);
+  both of its attempts to read a file there were refused by the eval guard,
+  and it never used the names. By the scan's rule a listing of the answer
+  tree is a read, so the unit is **excluded** (`exclusions.json`). It was a
+  fail: 49 raw, 49 scored, and it is dropped from every pair above. The cause
+  is a documented residual gap (evals/README.md: on a Linux host the agent's
+  own shell has no read-deny), first seen on the rig here. The T2 arms,
+  with web tools offered, sent `web_search` on these units (refused); this
+  arm offered none.
+- **No web calls** (not offered) and **no shell route off the host** (the
+  hand check over all 1,720 tool calls: 0 hits).
+- **`122_gemm_blocked_d` (Rust)** stopped at the `dlsym` binary check, as in
+  every Inkling arm. The final `gemm.rs` (two heredocs and three Python
+  edits) was rebuilt by re-running each writing command in full and matching
+  every recorded output, then graded in a new directory on the rig
+  (`~/ob-cal/.claude/gemm-replay-ink-up8k/`) by this arm's own validator (the
+  task is field for field the harness9 tree's): control FAIL `imports dlsym`,
+  proposed rule **PASS, 6 hidden cases, 3 of 3**. A `validator_notes` entry,
+  not an adjustment (it would be 50/71).
+
+#### 10.9.5 Basalt live speed and empty turns (the saved server log)
+
+`basalt_log.py` on `basalt-20261124-102527-c9c29fce36b3.log` over the arm's
+window matches the transcripts and the runner exactly: 1,969 requests, 302
+`end=length`, 226 "no answer" warnings, 5,300,048 completion and 73,541,527
+prompt tokens.
+
+| | I_T2_s1 (Derisked, T2) | I_T2_stock (T2) | I_UP8k (Derisked, UP_8k) |
+|---|---:|---:|---:|
+| Requests | 1,911 | 2,032 | 1,969 |
+| Ended at the cap | 240 | 190 | 302 |
+| **Empty at the cap** | **167** (8.7%) | **105** (5.2%) | **226** (11.5%; 176 thinking + 50 forced) |
+| Units with an empty turn | 17 | 12 | 19 |
+| In failed units | 144, in 15 of 20 fails | 102, in 10 of 18 | 185, in 17 of 22 |
+| Decode, all replies (Σ tokens / Σ time) | 484 tok/s | 444 | 490 |
+| Decode per reply at the 8,192 cap: median (p10, p90; n) | 554 (454, 615; 240) | 512 (413, 598; 190) | 532 (448, 599; 302) |
+| Drafts accepted, token-weighted | 90.2% | 88.7% | 91.1% |
+| Tokens per verify window, token-weighted | 5.08 | 4.64 | 5.43 |
+| Prompt tokens served from cache | 96.6% | 96.5% | 85.6% (96.5% without the forced turns and the turn after each) |
+| Prefill time (Σ) | 281 s | 304 s | 926 s |
+
+End to end on replies of exactly 8,192 tokens (transcripts, prefill
+included): median 489 tok/s (p10 340, p90 571; n 227). Per-unit empty and
+forced counts: `capped_turns.py` (its table, the sealed review); the units
+are the same hard families as §10.3's table.
+
+#### 10.9.6 UP's setup on three models
+
+| Model | Pair (paired over clean units) | Result | Harness | Verdict |
+|---|---|---|---|---|
+| DeepSeek-V4.1-Flash (Mia EXL3), TensorFold | DS-T2 → DS-UP8k | 65 → 65; 2 in, 2 out (p 1.0) | harness9 → 10 | level; T2 stays (SCORE 94.9 against 91.4) |
+| GLM-5.3-Flash (EXL3), TensorFold | GLM-C → GLM-UP (16K; GLM has no T2 arm) | 51 → 56 on the board; +2 paired over 68 (4 in, 2 out, p 0.69) | 8eaa5e5f → harness10 | did not beat, within noise |
+| Inkling 2 Mini Derisked, Basalt | INK-T2 → INK-UP8K | 49 → 49; 3 in, 3 out (p 1.0) | harness9 → 10 | level; and the forced turn did not run as designed (§10.9.3) |
+
+Qwen3.8 has no UP-type row (its rows are L0, harness10 bare, and Q_T2). On
+none of the three models does UP's bundle beat the model's best T2-family
+setup, and on DeepSeek and Inkling it matches T2 exactly on passes with a
+lower SCORE. The planning lines remain the only part with a one-variable
+gain (DeepSeek U → UP, +3 at 16K).
+
+#### 10.9.7 What follows
+
+1. **Inkling's setup stays T2** (`AGENT_PROFILE=inkling-best`, T2's switch
+   table). Nothing in I_UP8k argues for UP's switches on this model and
+   engine.
+2. **The improved arm `I_T3` (§12.7) takes none of UP_8k's switches and is
+   unaffected by the forced-act defect.** It is `I_T2_stock` with wall-bound
+   turns, a 16,384 cap with `--answer-room 8192`, and the #632 patch; like
+   every T2-family arm it never sends `enable_thinking=false` (the control
+   above: 0 such requests in the T2 logs), so every one of its turns has a
+   thinking budget and an answer room. #632's `answer_lead` acts at that
+   budget's close, so it targets the 176-type empty turns (the #588 class:
+   105 in I_T2_stock), not a forced turn: running UP_8k with #632 would
+   leave the forced turns unbudgeted, as here. The figures to read `I_T3`
+   against: I_T2_stock's 53/71 and 105 empty capped turns (log and
+   transcripts agree; `basalt_log.py` now also reports
+   `without_budget_line`, which should be 0 for `I_T3`).
+3. **Do not run forced-act (U-type) arms on Basalt with Inkling** until the
+   forced turn can really stop thinking. Two routes, each its own change:
+   send an explicit small budget on the forced turn (`reasoning_budget_tokens`,
+   which Basalt honours, service.py:226-247) instead of thinking off, a
+   runner change and so an era move; or an engine-side hard stop for effort
+   `none` on Inkling (open the answer block at once), an upstream question.
+   This is the same lesson as Hy4, which ignores `enable_thinking` (the
+   DeepSeek campaign report §7): a thinking-off arm needs an engine that honours
+   thinking off. Recorded in [HARNESS_NOTES.md](../HARNESS_NOTES.md).
+4. **The Linux read gap** got its first live instance: a `find /` printed
+   sealed file names (§10.9.4). It cost no pass here; the existing next-era
+   item (a real read-deny for the Linux agent shell) now has rig evidence.
+
+#### 10.9.8 The figures against §12.6
+
+§12.6 (from #315) read this arm before the wrap-up, with short scripts; the
+committed tools give these, and the differences are of definition, except
+the wrap count:
+
+| Figure | §12.6 | This section | Why they differ |
+|---|---|---|---|
+| Empty capped turns, server side | 226 transcripts; "176 'no answer'" from the server | **226** "no answer" warnings in the window (`basalt_log.py`, and `grep -c` on the window) | 176 is the warnings on requests that had a thinking budget (ordinary turns); the other **50** follow the 68 forced requests, which have no budget line. Server and transcripts agree at 226 |
+| Budget wraps | 443 | **461** wrap lines in the window (458 at 6,144 tokens, 3 at 6,145), on 461 requests (252 then `stop`, 209 `length`) | not reproduced: a count by matching transcript replies to log lines (§12.1's alignment) can miss lines; the window count is the log's own |
+| Forced turns' reasoning, median | 22,650 characters | 22,626 | 22,650 is over the 67 forced turns with reasoning (the `reasoning` events), 22,626 over all 68 `force_act_result` events, including the one with 0 |
+| Draft acceptance | 94% | 91.1% token-weighted; 90% per-reply median | 94% is the per-reply median over replies of 1,000+ tokens (reproduced) |
+| Decode | median 512 tok/s | 513 per-reply median over replies of 256+ tokens; 509 over 1,000+; 490 aggregate | definitions |
+| Against Q38U-T2 | 65 units, 47 vs 52, 2 in 7 out, −5 (p 0.18) | 64 units, 47 vs 51, 2 in 6 out, −4 (p 0.29) | §12.6 predates the exclusion of `163_bigint_divmod_c` (a Q38U-T2 pass, an I_UP8k fail); with the exclusion the pair drops it |
+| Against I_T2_stock | 71 units, +0 −4 (p 0.13) | 70 units, 0 in 3 out (p 0.25) | the same unit |
+| Failures at the turn limit | 21 of 22 | 24 units at the limit, 3 of them passes | the same 21 failures |
+
+So §12.6's reading stands: UP_8k did not help, the forced act failed on this
+engine, and nothing from it goes into `I_T3`.
+
 
 ## 11. Sources
 
@@ -1012,6 +1344,20 @@ scan flags one transcript, §12.6), `basalt_log.py` on
   logs `~/openbeast-runs/basalt-server-logs/`, the stock pack and its
   download log `~/openbeast-runs/inkling-perf-2026-11-23/{weights/basalt-Inkling-2-Mini-c2afac3a,logs/dl-all.log}`,
   the `dlsym` replay `~/ob-cal/.claude/gemm-replay-ink-ab/`.
+- **I_UP8k (§10.9):** result file
+  [`…-i-up8k-20261124-182529.json`](../../evals/boards/v5/eval-inkling-2-mini-derisked-basalt-nvfp4-mx8-v5-thinking-first-i-up8k-20261124-182529.json)
+  (row `INK-UP8K`), verbatim (sha256 `87fcefeb…`, as on the rig); the
+  exclusion and the validator note in `exclusions.json`; the sealed review
+  `evals/audit/reviews/ink-up8k-integrity-2026-11-24.md`. On the rig: the
+  harness10 tree `~/ob-ink2` (`d41c2c47`) with its transcripts
+  `~/ob-ink2/agents/logs/` (71, `agent-20261124-182530-*` to
+  `agent-20261124-222755-*`) and results; `arm-I_UP8k.log`, `campaign.log`
+  and `state.json` in the Derisked campaign directory; the queue log (the
+  serve checks and the THINK-OFF probe); the server log
+  `~/openbeast-runs/basalt-server-logs/basalt-20261124-102527-c9c29fce36b3.log`;
+  the `dlsym` replay `~/ob-cal/.claude/gemm-replay-ink-up8k/`. Basalt's
+  source at `400b411c` (`serve/service.py`, `serve/models/inkling2.py`) for
+  §10.9.3, read from `github.com/jesdga95/basalt` at the pin.
 
 ## 12. The improved arm I_T3 (2026-11-24)
 
@@ -1242,13 +1588,13 @@ Basalt; 18:25:29-22:28:05Z) passed **49/71**, the same count as `I_T2`:
 |---|---|
 | Passed | 49/71 (Py 22, Go 6, C 6, C++ 5, Rust 5, Zig 4, Sh 1) |
 | Against I_T2 / I_T2_s1 / I_T2_stock (71 units) | +3 −3 (p 1.0) / +1 −3 (p 0.63) / +0 −4 (p 0.13) |
-| Against Q38U-T2 (65 units) | 47 vs 52: 2 in, 7 out, −5 (p 0.18) |
+| Against Q38U-T2 (65 units) | 47 vs 52: 2 in, 7 out, −5 (p 0.18) *[after the exclusion of `163_bigint_divmod_c`: 64 units, 47 vs 51, −4, p 0.29; §10.9.2]* |
 | Failures at the turn limit | 21 of 22 (the other: `122_gemm_blocked_d`, `dlsym`); median 23% of the wall; 0 wall hits |
-| Empty capped turns | 226 in 19 units (server: 443 wraps, **176 "no answer"**) |
+| Empty capped turns | 226 in 19 units (server: 443 wraps, **176 "no answer"**) *[wrap-up, §10.9.8: the server's window has 226 "no answer" warnings, equal to the transcripts; 176 is the subset on thinking turns, the other 50 follow the forced turns; 461 wrap lines]* |
 | Capped turns with a call / truncated heredocs | 75 / 60 |
 | **Forced-act turns** | **68, of which 18 made a tool call; 56 ended at the cap still thinking** (median 22,650 reasoning characters) |
 | Decode | median 512 tok/s, acceptance 94% (server log) |
-| Integrity | 71 transcripts, the scanner flags 1: `163_bigint_divmod_c` (FAIL) ran `find / -name "*.c" -path "*big*"`, which listed the reference file names under the mounted tree (`~/ob-ink2/evals/refs/163_bigint_divmod/`), then tried `cat` and `sed` on one; **both refused** by the eval guard, the content never read, the unit failed. Needs the sealed review before any board use; the listing exposure is a property of the eval-host container (the tree is mounted), noted for the next era |
+| Integrity | 71 transcripts, the scanner flags 1: `163_bigint_divmod_c` (FAIL) ran `find / -name "*.c" -path "*big*"`, which listed the reference file names under the mounted tree (`~/ob-ink2/evals/refs/163_bigint_divmod/`), then tried `cat` and `sed` on one; **both refused** by the eval guard, the content never read, the unit failed. Needs the sealed review before any board use; the listing exposure is a property of the eval-host container (the tree is mounted), noted for the next era. *[Reviewed: excluded as contaminated by the scan's rule, the unit a fail, 49 stays 49; §10.9.4, DECISIONS-2026-11-24 §14]* |
 
 **Reading.** UP_8k's switches did not help Inkling, and its central
 mechanism does not work on this model and server. The forced-act turn

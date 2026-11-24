@@ -20,6 +20,8 @@
 10. [Stock Inkling 2 Mini on Basalt is the RTX 5090 default](#10-stock-inkling-2-mini-on-basalt-is-the-rtx-5090-default)
 11. [Basalt PR #632 as our local patch for Inkling](#11-basalt-pr-632-as-our-local-patch-for-inkling)
 12. [The improved Inkling arm I_T3: turns, cap, patch](#12-the-improved-inkling-arm-i_t3-turns-cap-patch)
+13. [I_UP8k: UP_8k's setup is not adopted for Inkling; no forced-act arm on Basalt](#13-i_up8k-up_8ks-setup-is-not-adopted-for-inkling-no-forced-act-arm-on-basalt)
+14. [A listing of the answer tree is a contamination, even when nothing was read](#14-a-listing-of-the-answer-tree-is-a-contamination-even-when-nothing-was-read)
 
 ---
 
@@ -498,3 +500,95 @@ turns.
 single `I_T3` row is descriptive unless it moves ~7 units (the MDE at that
 churn). Against `I_T2_stock` (53) and Q38U-T2 (52), §6's switch rule
 applies as written.
+## 13. I_UP8k: UP_8k's setup is not adopted for Inkling; no forced-act arm on Basalt
+
+**Decision.** (a) UP_8k's switches are not adopted for Inkling 2 Mini;
+its setup stays T2's (`AGENT_PROFILE=inkling-best`). (b) This confirms
+§12's choice to leave them out of `I_T3`; `I_T3` sends no thinking-off
+request, so the forced-act defect cannot reach it. (c) No forced-act
+(U-type) arm runs on Basalt with Inkling until the forced turn can really
+stop thinking.
+
+**Who / when.** The wrap-up of `I_UP8k`, 2026-11-24 evening (it ended
+14:28:05 PST, 49/71). Within the standing campaign plan (DECISIONS-2026-11-23
+§12 set what I_UP8k was to answer); (a) to (c) change nothing on the rig. §12.6 of the report
+(#315) read the arm first for `I_T3`; this entry records the wrap-up's
+evidence.
+
+**Evidence** ([report §10.9](V5_INKLING2_MINI_RTX5090-2026-11-24.md#109-i_up8k-deepseeks-up_8k-setup-on-inkling-2026-11-24)):
+
+- **Level with T2 on the same pack.** INK-UP8K 49/71 (SCORE 75.1) against
+  INK-T2 49/71 (76.5): over the 70 units both measured cleanly, 3 gained and
+  3 lost (McNemar p 1.0, MDE 9.5); against the seed-1 draw (51) −2 (1 in, 3
+  out, p 0.63). Every flipped unit is one the seed or pack ablations also
+  flipped. Cost on the units both passed: no difference (p 0.88 on tokens).
+  DeepSeek's DS-T2 → DS-UP8k is the same picture (65 and 65, 2 each way),
+  and GLM's C → UP did not beat either (+2 paired, p 0.69).
+- **The forced-act turn did not work on this engine.** Basalt turns
+  `enable_thinking=false` into `reasoning_effort "none"` for Inkling (a hint
+  in a system message; `serve/models/inkling2.py:527-529`) and gives such a
+  request no thinking budget and no answer room (`serve/service.py:1148`,
+  1370, 1511). 67 of 68 forced turns still thought, 56 ran to the 8,192
+  cap, 50 ended empty, 18 acted (DeepSeek 24 of 24, GLM 22 of 22). Counted
+  from the transcripts and, independently, from the server log (68 requests
+  without a thinking-budget line; 0 in the T2 arms).
+- **`I_T3` does not touch that path.** A T2-family arm never sends thinking
+  off (0 such requests in I_T2_s1's and I_T2_stock's logs). #632's answer
+  lead acts at the thinking-budget close, which a thinking-off request does
+  not have.
+
+**Reasoning.** (a) A bundle that measured level with T2 on passes and
+lower on SCORE, on a third model, gives no reason to change a setup that is
+measured and shipped. (b) Adding UP's switches to `I_T3` would confound
+its three changes (§12) with a mechanism that does not run on this engine.
+(c) A forced turn that thinks
+unbudgeted is worse protected than an ordinary turn (82% at the cap against
+13%); running it again would measure the engine's thinking-off semantics,
+not the harness idea. The fix is a runner change (send a small explicit
+`reasoning_budget_tokens` on the forced turn, which Basalt honours) or an
+engine change (a hard stop at effort `none`), each its own arm; recorded as
+an IDEA in [HARNESS_NOTES.md](../HARNESS_NOTES.md).
+
+**Alternatives considered.** *Rerun UP_8k on the stock pack*: rejected, the
+forced turn would fail the same way, and the T2 comparison it would add is
+already level on the Derisked pack. *Read I_UP8k as evidence against the
+forced act in general*: rejected, the turn did not run as designed here, so
+the arm says nothing about it; DeepSeek's U_8k (63 against T2's 65, where it
+did run) is the only measurement of it. *Rank INK-UP8K*: not available, the
+board ranks one row per model and weights (INK-T2, 76.5, is the Derisked
+pack's best).
+
+---
+
+## 14. A listing of the answer tree is a contamination, even when nothing was read
+
+**Decision.** `163_bigint_divmod_c` in INK-UP8K is excluded as contaminated
+(`exclusions.json`): the agent's `find /` printed the file names of the
+unit's sealed reference directory; both reads of a file were refused.
+
+**Who / when.** The I_UP8k wrap-up, 2026-11-24, applying the integrity
+scan's standing rule (`evals/audit/integrity_scan.py`: a hit other than
+`source` and `web` that is not a refusal makes the unit contaminated, "report
+it as such and do not count its verdict").
+
+**Evidence** (sealed review `evals/audit/reviews/ink-up8k-integrity-2026-11-24.md`):
+the listing named five files, two of whose names describe failure modes;
+the transcript never refers to them again, and the unit failed at its turn
+limit. Score effect: none (49 raw, 49 scored). The same check over every
+other rig arm's transcripts (I_T2, I_T2_s1, I_T2_stock, Q_T2, the
+calibration, Q38U-L0; 503 transcripts) found no other result that printed a
+sealed path; Q_T2's rerun ran `find /` twice (Rust sources) without one. Pair effect: the unit is
+dropped from every paired test (`ablation.py` reads the same file).
+
+**Reasoning.** The rule does not weigh what a leak was worth, so no
+judgement about "only file names" enters a score; and a name like
+`wrong_noaddback` is a hint. Excluding a fail costs nothing and keeps the
+rule exact. The cause is the documented Linux residual gap (the agent's own
+shell has no read-deny there; evals/README.md), now seen live on the rig for
+the first time; its next-era fix is in HARNESS_NOTES.
+
+**Alternatives considered.** *Keep the unit (nothing was read)*: rejected,
+it would make the rule a judgement call. *Re-run the unit*: rejected, a
+rerun only replaces infrastructure rows (`v5_board.py` merge rule), never a
+real verdict.
+

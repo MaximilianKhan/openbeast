@@ -341,6 +341,21 @@ has not been run against the distro package set (conformance and the
 thinking probes passed on it, §11.2); its Inkling dialect and thinking-budget
 tests have (28 OK in the measured image, with the #632 patch; Strata report §16.6).
 
+**Thinking off is a hint on Inkling, and it drops the answer room.** At the
+pin, `enable_thinking: false` becomes `reasoning_effort: "none"`
+(`serve/models/inkling2.py:527-529`), which the template writes into a
+system message; the model opens its own blocks, so it can still think. Such
+a request also gets no thinking budget and no answer room
+(`serve/service.py:1148`, 1370, 1511), so its thinking runs free to the
+output cap. Short prompts hide it (a 117-character block on "What is
+17*23?"); in the I_UP8k arm (2026-11-24), 67 of 68 thinking-off requests
+deep in agent work still thought, 56 ran to the 8,192 cap, and each one and
+the request after it missed the prompt cache (the effort level changes the
+rendered system message). The default setup (`inkling-best`, T2) never
+sends thinking off. A client that needs a short reply should send a small
+`reasoning_budget_tokens` instead (honoured, `service.py:226-247`)
+([report §10.9.3](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md#1093-the-forced-act-turns-did-not-run-with-thinking-off)).
+
 **History.** I_T2 (2026-11-24) did not justify switching (49/71 against
 Qwen3.8's 52/71); the ablations brought the stock pack to 53/71, level with
 Qwen3.8 paired (−2 over 65 clean units), and kept the server logs (DSpark

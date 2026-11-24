@@ -38,6 +38,20 @@ So, per unit:
                   response): prefill and request overhead included, so a lower
                   bound on decode speed
 
+And, on a harness10 arm with the forced-act turn (OPENBEAST_AGENT_FORCE_ACT=1:
+after N capped thinking turns in a row the next request goes with
+enable_thinking=false and must act), from its `force_act_result` events
+(tool_calls, content_chars, reasoning_chars, finish_reason of that reply):
+
+  forced          forced-act turns
+  forced_thought  of them, replies that still carried reasoning (the server
+                  did not stop the model thinking: on Basalt, Inkling writes a
+                  thinking block at reasoning_effort "none", with no budget)
+  forced_length   of them, replies that ran to the cap
+  forced_call     of them, replies with a tool call (the turn did its job)
+  forced_empty    of them, replies with no call and no content (each is also
+                  one of the `empty` turns above)
+
 Only the units the scan marked `scored` are counted (a transcript inside the
 window's start slack that belongs to another file is skipped). Reads only.
 """
@@ -56,6 +70,8 @@ CAP = 8192
 def count(path: str) -> dict:
     """The counts for one transcript (see the module docstring)."""
     turns = length = empty = capped_text = length_call = 0
+    forced = {"forced": 0, "forced_thought": 0, "forced_length": 0, "forced_call": 0, "forced_empty": 0}
+    forced_chars: list[int] = []
     rates: list[float] = []
     started: dict[int, datetime] = {}
     cur, finish, calls = None, None, 0
@@ -83,6 +99,14 @@ def count(path: str) -> dict:
                 length += finish == "length"
             elif t == "tool_call":
                 calls += 1
+            elif t == "force_act_result":
+                rc, calls_n = e.get("reasoning_chars") or 0, e.get("tool_calls") or 0
+                forced["forced"] += 1
+                forced["forced_thought"] += rc > 0
+                forced["forced_length"] += e.get("finish_reason") == "length"
+                forced["forced_call"] += calls_n > 0
+                forced["forced_empty"] += not calls_n and not e.get("content_chars")
+                forced_chars.append(rc)
             elif t == "output_cap":
                 if "reasoning_chars" in e:
                     empty += 1
@@ -95,7 +119,7 @@ def count(path: str) -> dict:
                         rates.append(CAP / dt)
     close()
     return {"turns": turns, "length": length, "empty": empty, "capped_text": capped_text,
-            "length_call": length_call, "rate_8192": rates}
+            "length_call": length_call, "rate_8192": rates, **forced, "forced_chars": forced_chars}
 
 
 def from_scan(scan: list, label: str | None, logs_dir: str | None) -> dict:
@@ -134,6 +158,11 @@ def summary(units: dict) -> dict:
         "length_call": sum(v["length_call"] for v in units.values()),
         "rate_8192": {"n": len(rates), "p10": pct(0.1),
                       "median": round(statistics.median(rates)) if rates else None, "p90": pct(0.9)},
+        **{k: sum(v.get(k, 0) for v in units.values())
+           for k in ("forced", "forced_thought", "forced_length", "forced_call", "forced_empty")},
+        "forced_units": sorted(u for u, v in units.items() if v.get("forced")),
+        "forced_reasoning_chars_median": (round(statistics.median(chars)) if (chars := [
+            c for v in units.values() for c in v.get("forced_chars", [])]) else None),
     }
 
 
@@ -156,14 +185,24 @@ def main(argv=None) -> int:
     if r["n"]:
         print(f"replies at exactly {CAP:,} tokens: {r['n']}, end-to-end tok/s p10 {r['p10']}, "
               f"median {r['median']}, p90 {r['p90']} (prefill included)")
+    if s["forced"]:
+        print(f"forced-act turns: {s['forced']} in {len(s['forced_units'])} units; {s['forced_thought']} still "
+              f"thought (median {s['forced_reasoning_chars_median']:,} reasoning chars), {s['forced_length']} ran "
+              f"to the cap, {s['forced_empty']} empty, {s['forced_call']} made a tool call")
     print("unit | verdict | turns | at the cap | empty | text only | with a call")
     for u, v in units.items():
         if v["length"]:
             print(f"{u} | {'PASS' if v['passed'] else 'FAIL'} | {v['turns']} | {v['length']} | "
                   f"{v['empty']} | {v['capped_text']} | {v['length_call']}")
+    if s["forced"]:
+        print("unit | verdict | forced | still thought | at the cap | empty | with a call")
+        for u, v in units.items():
+            if v["forced"]:
+                print(f"{u} | {'PASS' if v['passed'] else 'FAIL'} | {v['forced']} | {v['forced_thought']} | "
+                      f"{v['forced_length']} | {v['forced_empty']} | {v['forced_call']}")
     if a.json:
         with open(a.json, "w", encoding="utf-8") as f:
-            json.dump({"summary": s, "units": {u: {k: x for k, x in v.items() if k != "rate_8192"}
+            json.dump({"summary": s, "units": {u: {k: x for k, x in v.items() if k not in ("rate_8192", "forced_chars")}
                                                for u, v in units.items()}}, f, indent=1)
     return 0
 

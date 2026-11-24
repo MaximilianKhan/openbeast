@@ -18,7 +18,27 @@ ran to the cap while still thinking:
     [server] warning: max tokens reached while thinking, no answer ...
 
 which is the server's own count of the empty capped turns (upstream #588)
-that evals/audit/capped_turns.py counts from the transcripts.
+that evals/audit/capped_turns.py counts from the transcripts. Basalt prints
+it right after that reply's `done` line (serve/service.py:1803-1808 at
+400b411c), so it is attributed to the request before it.
+
+A thinking request under `--answer-room auto` (cap >= 1,024) is first given
+a budget, logged before its `done` line:
+
+    [server] thinking budget 6144 tokens, output cap 8192 (answer-room auto)
+
+A request sent with `enable_thinking: false` is not: Basalt sets
+`thinking = False` (service.py:1148) and calls answer_budget only for a
+thinking request (service.py:1511), so it has no budget, no wrap-up and no
+answer-room close. On Inkling the flag only becomes `reasoning_effort:
+"none"` in the template (serve/models/inkling2.py:527-529), and the model
+may still write a thinking block, which then runs free to the cap. So
+`without_budget_line` splits out the requests with no budget line: on an
+arm whose turns all think (T2), 0; on an arm with harness10's forced-act
+turn (I_UP8k, 2026-11-24), exactly its forced turns. It also reports the
+prompt-cache share of each such request and of the request after it (the
+effort level is written in a system message, so the rendered prefix
+changes both ways).
 
 Only lines whose docker timestamp (UTC) falls inside --since/--until are
 counted, so the serve script's probe requests before the arm started are
@@ -48,6 +68,7 @@ DONE = re.compile(
     r"(?: (?P<pprate>[\d.]+)t/s)?\s+tg=(?P<tg>\d+) (?P<tgrate>[\d.]+)t/s"
     r"(?: acc=(?P<acc>\d+)% dl=(?P<dl>[\d.]+))?\s+ttft=(?P<ttft>[\d.]+)s\s+end=(?P<end>\w+)")
 NOANSWER = re.compile(r"^(?P<ts>\S+) \[server\] warning: max tokens reached while thinking, no answer")
+BUDGET = re.compile(r"^(?P<ts>\S+) \[server\] thinking budget \d+ tokens, output cap")
 
 
 def _ts(s: str) -> float:
@@ -60,18 +81,28 @@ def _ts(s: str) -> float:
 
 
 def parse(lines, since: float | None = None, until: float | None = None) -> dict:
-    reqs, noanswer = [], 0
+    """The requests (one per `done` line) inside the window, each with `budget` (a
+    thinking-budget line came after the previous `done`) and `no_answer` (the
+    warning that follows its `done`), and the window's warning count."""
+    reqs, noanswer, budget = [], 0, False
     for line in lines:
         m = DONE.match(line)
         n = None if m else NOANSWER.match(line)
-        hit = m or n
+        b = None if (m or n) else BUDGET.match(line)
+        hit = m or n or b
         if not hit:
             continue
         t = _ts(hit.group("ts"))
         if (since is not None and t < since) or (until is not None and t > until):
+            budget = False
+            continue
+        if b:
+            budget = True
             continue
         if n:
             noanswer += 1
+            if reqs:
+                reqs[-1]["no_answer"] = True
             continue
         reqs.append({
             "pp": int(m["pp"]), "cached": int(m["cached"]), "pp_s": float(m["pps"]),
@@ -79,7 +110,8 @@ def parse(lines, since: float | None = None, until: float | None = None) -> dict
             "tg": int(m["tg"]), "tg_rate": float(m["tgrate"]),
             "acc": int(m["acc"]) if m["acc"] else None,
             "dl": float(m["dl"]) if m["dl"] else None,
-            "end": m["end"]})
+            "end": m["end"], "budget": budget, "no_answer": False})
+        budget = False
     return {"requests": reqs, "no_answer": noanswer}
 
 
@@ -128,7 +160,32 @@ def summary(parsed: dict, cap: int = 8192, min_tg: int = 256) -> dict:
         "prompt_tokens": sum(r["pp"] for r in reqs),
         "cached_share": round(sum(r["cached"] for r in reqs) / max(1, sum(r["pp"] for r in reqs)), 3),
         "prefill_tps_uncached_ge_1000": _dist([r["pp_rate"] for r in prefill]),
+        "without_budget_line": _no_budget(reqs),
     }
+
+
+def _share(rs: list):
+    pp = sum(r["pp"] for r in rs)
+    return round(sum(r["cached"] for r in rs) / pp, 3) if pp else None
+
+
+def _no_budget(reqs: list) -> dict:
+    """The requests with no thinking-budget line (thinking off; see the module
+    docstring): how they ended, the no-answer warnings among them, their tokens
+    and decode time, and the prompt-cache share of them and of the request after each."""
+    idx = [i for i, r in enumerate(reqs) if not r["budget"]]
+    rs = [reqs[i] for i in idx]
+    after = [reqs[i + 1] for i in idx if i + 1 < len(reqs) and reqs[i + 1]["budget"]]
+    ends: dict = {}
+    for r in rs:
+        ends[r["end"]] = ends.get(r["end"], 0) + 1
+    timed = [r for r in rs if r["tg"] > 0 and r["tg_rate"] > 0]
+    return {"requests": len(rs), "ends": ends, "no_answer": sum(r["no_answer"] for r in rs),
+            "generated_tokens": sum(r["tg"] for r in rs),
+            "decode_seconds": round(sum(r["tg"] / r["tg_rate"] for r in timed), 1),
+            "cached_share": _share(rs), "next_request_cached_share": _share(after),
+            "uncached_tokens": sum(r["pp"] - r["cached"] for r in rs),
+            "next_request_uncached_tokens": sum(r["pp"] - r["cached"] for r in after)}
 
 
 def main(argv=None) -> int:
