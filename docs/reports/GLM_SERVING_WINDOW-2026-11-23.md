@@ -328,3 +328,12 @@ recorded; this is what changed since.
   and about 41.8 / 64.7 tok/s. Rollback: `beast-spark glm`.
 - In [What remains](#what-remains), the dense-bits key and bug 1 are done.
   Prefill, 1104 at Mia's own reserve, and the GLM UP control arm stand.
+- **2026-11-23 ~18:53-18:59 PST, the hardware re-check ran** (both Sparks at
+  `ea45b9fb`, after the GLM UP arm, with #294 deployed). Drafter and pack
+  hashes OK on both Sparks; `TF_GLM_DENSE_BITS=4` on both rank units. Start
+  line: "model 84.33 GiB; 4 streams at once, 3.66 GiB each at a 524288-token
+  window (fp8 caches), of 15.9 GiB left after a 11.5 GiB reserve" (16.1
+  expected: free memory at launch; the render matches). Conformance PASS;
+  **44.65 / 67.95 tok/s** at 1 / 4 streams (step 5: 41.8 / 64.7), TTFT about
+  0.25 s. Rolled back with `beast-spark glm`, then `beastds`: DeepSeek serves
+  again, with `AGENT_PROFILE=deepseek-best` ([TODO](../TODO.md)).
