@@ -8,7 +8,7 @@
 #   scripts/backends/spark-cluster.sh sync-weights --profile NAME   head -> workers over the fabric (model + drafter), verified vs the HEAD's lock; SYNC_STREAMS=N parallel rsyncs (4)
 #   scripts/backends/spark-cluster.sh sync-image IMAGE           docker save | load to every worker that lacks it
 #   scripts/backends/spark-cluster.sh save-image IMAGE FILE      write IMAGE to FILE (carry it to an offline cluster)
-#   scripts/backends/spark-cluster.sh start --profile NAME [--engine tensorfold|vllm]
+#   scripts/backends/spark-cluster.sh start --profile NAME [--engine tensorfold|vllm]   refuses unless every worker's profile file hash-matches the head's
 #   scripts/backends/spark-cluster.sh stop  [--engine tensorfold|vllm]   every rank, rank 0 first; no profile needed (default: both engines)
 #   scripts/backends/spark-cluster.sh status
 #   ... --cluster FILE (default scripts/backends/cluster.env)  --dry-run (print, run nothing)
@@ -362,6 +362,29 @@ sync-image|save-image)
 start)
   need_profile
   LAUNCH="scripts/backends/$ENGINE/spark-node.sh --profile $(q "$PF_PROFILE_NAME")"
+  # Every worker launches the profile by NAME from its OWN checkout, and reads
+  # its own copy of every per-rank setting (TENSORFOLD_RANK_ENV such as
+  # TF_GLM_DENSE_BITS, the reserve, the window): a worker on another commit
+  # would serve other numerics than rank 0 and the ranks would disagree
+  # silently. So each worker's profile file must hash-match the head's before
+  # anything starts (sync-weights checks the same, before a copy).
+  if (( N > 1 )); then
+    PSHA="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$PF_PROFILE_PATH")"
+    # shellcheck disable=SC2016  # $p, $1 expand on the worker
+    PCHK="cd $REPO_Q && p=scripts/backends/models/$(q "$PF_PROFILE_NAME").env"'; if [ -f "$p" ]; then { sha256sum "$p" 2>/dev/null || shasum -a 256 "$p"; } | cut -d" " -f1; else echo missing; fi'
+    skew=()
+    for ((r = 1; r < N; r++)); do
+      if [[ $DRY -eq 1 ]]; then on_node "$r" "$PCHK   # must print $PSHA"; continue; fi
+      have="$(on_node "$r" "$PCHK" 2>/dev/null | tail -n 1)" || have=""
+      [[ "$have" == "$PSHA" ]] && continue
+      echo "Error: rank $r (${NODES[$r]}): scripts/backends/models/$PF_PROFILE_NAME.env is ${have:-unreadable} there, the head's is $PSHA" >&2
+      skew+=("$r")
+    done
+    if [[ ${#skew[@]} -gt 0 ]]; then
+      echo "Error: rank(s) ${skew[*]} would launch another '$PF_PROFILE_NAME' than rank 0 (each rank reads its own checkout's profile). Nothing was started. Put every node on the head's commit (spark-cluster.sh check compares them), or copy the head's profile there, then start again" >&2
+      exit 1
+    fi
+  fi
   # Workers first (TensorFold's container engine needs them waiting; vLLM
   # and native GLM ranks wait for each other either way), then rank 0. A
   # rank that fails stops the ranks already started: they would otherwise sit

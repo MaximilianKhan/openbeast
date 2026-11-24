@@ -142,7 +142,8 @@ KEYS: dict[str, tuple[str, str]] = {
     "PARALLEL": ("int", "concurrent streams"),
     "KV_DTYPE": ("word", "KV cache dtype: bf16 | fp8 | fp4-compressed | auto"),
     "KV_POOL_GIB": ("float", "KV pool per rank, GiB"),
-    "MEMORY_RESERVE_GIB": ("float", "engine reserve / workspace per rank, GiB (never below the family's measured value)"),
+    "MEMORY_RESERVE_GIB": ("float", ("engine reserve / workspace per rank, GiB (never below the family's MEASURED "
+                                     "value in data/recipe-engines.json: plan prints a caveat when it is)")),
     "MIN_AVAIL_GIB": ("float", "refuse to start unless every Spark has this much MemAvailable"),
     "DENSE_BITS": ("int", ("bits of the dense (non-expert) linears, where the engine's family reads it (native "
                            "TensorFold GLM: TF_GLM_DENSE_BITS 4 | 6 | 8 | 16); empty = the engine's default")),
@@ -398,6 +399,11 @@ def validate_data(d: dict, p: Path | str = "engine matrix") -> None:
             bad(f"{eid}: status {e.get('status')!r} is not one of {', '.join(ENGINE_STATUSES)}")
         if e.get("stage_gap") and e["stage_gap"] not in gaps:
             bad(f"{eid}: stage_gap {e['stage_gap']!r} is not a gap id")
+        ds = e.get("d2_served")
+        if ds is not None and not (isinstance(ds, dict) and all(
+                isinstance(k, str) and k.isdigit() and 1 <= int(k) <= 8 and isinstance(v, str) and v
+                for k, v in ds.items())):
+            bad(f"{eid}: d2_served must map a cluster size \"1\"..\"8\" to where the serve is recorded")
         for mt, f in (e.get("families") or {}).items():
             if f.get("serves", True) not in SERVES_VALUES:
                 bad(f"{eid}/{mt}: serves={f.get('serves')!r} is not one of true, generator-only, reference, source-build")
@@ -598,6 +604,12 @@ def family_for(e: dict, r: Recipe) -> tuple[dict | None, str]:
         if mism:
             return None, f"reads {mt} EXL3 only as " + "; ".join(mism) + (f" [{fam['exl3_note']}]" if fam.get("exl3_note") else "")
     return fam, ""
+
+
+def d2_served(eng: dict | None) -> dict:
+    """{"<sparks>": "<when, what, where recorded>"}: the cluster sizes D2 has served at on this engine."""
+    v = (eng or {}).get("d2_served") or {}
+    return v if isinstance(v, dict) else {}
 
 
 def _gap(data: dict, gid: str, extra: dict | None = None) -> dict:
@@ -1252,11 +1264,19 @@ def plan(r: Recipe, data: dict, sparks: int | None = None, counts: list[int] | N
     # always-present steps and caveats
     if p["verdict"] in ("SERVABLE-NOW", "SERVABLE-WITH-WORK", "NEEDS-MORE-HARDWARE"):
         ids = {g["id"] for g in gaps}
-        if launcher.startswith("d2-") and "d2-first-serve" not in ids:
-            if (p.get("n") or sparks) == 1:
+        # d2_served: the cluster sizes D2 has served at on THIS engine (since 2026-11-23: TP2 on
+        # native 1.2.10). Any other size, or another engine, still needs its first serve.
+        dn = p.get("n") or sparks
+        if launcher.startswith("d2-") and "d2-first-serve" not in ids and str(dn) not in d2_served(eng):
+            if dn == 1:
                 gaps.append(_gap(data, "d2-first-serve", {
                     "title": "D2 (spark-cluster.sh + spark-node.sh) has never served on one Spark: the first native serve qualifies it",
                     "effort": "one model-down window of 0.5-1 day on that Spark (on the pair, the pair's model is down too)"}))
+            elif dn > 2:
+                gaps.append(_gap(data, "d2-first-serve", {
+                    "title": f"D2 (spark-cluster.sh + spark-node.sh) has never served on {dn} Sparks: the first native "
+                             "serve qualifies it (and the topology step)",
+                    "effort": f"one window of 0.5-1 day with all {dn} Sparks down"}))
             else:
                 gaps.append(_gap(data, "d2-first-serve"))
         for gid in ("glue", "tuning"):
@@ -1300,9 +1320,22 @@ def plan(r: Recipe, data: dict, sparks: int | None = None, counts: list[int] | N
                 projections.append({"bpw": b, "checkpoint_gib": round(g, 1), "how": how,
                                     "per_rank": {n: round(per_rank_gib(g, n, share) if n > 1 else g, 1) for n in counts}})
     unverified = (eng or {}).get("unverified_on_pair", "")
-    if (p.get("n") or sparks) == 1 and unverified:
-        unverified = unverified.replace("D2 has never served on the pair", "D2 has never served on one Spark")
+    dn = p.get("n") or sparks
+    if launcher.startswith("d2-") and str(dn) not in d2_served(eng):
+        where = "on one Spark" if dn == 1 else "on the pair" if dn == 2 else f"on {dn} Sparks"
+        others = [x["id"] for x in data["engines"] if str(dn) in d2_served(x)]
+        unverified = "; ".join(x for x in (unverified, f"D2 has never served {where} on this engine"
+                                           + (f" (it has on {', '.join(others)})" if others else "")) if x)
     caveats = []
+    # MEMORY_RESERVE_GIB below the family's MEASURED reserve: the engine sizes its KV pages from the
+    # reserve, so less than what was measured under load is a bet the first start line has to win.
+    fam_launch = p.get("launch") or {}
+    want_res, have_res = fam_launch.get("memory_reserve_gib"), r.num("MEMORY_RESERVE_GIB")
+    if want_res is not None and have_res is not None and have_res < float(want_res) \
+            and str(fam_launch.get("source", "")).startswith("MEASURED"):
+        caveats.append(f"MEMORY_RESERVE_GIB={r.get('MEMORY_RESERVE_GIB')} is below the {want_res} GiB the matrix "
+                       f"measured for {p['engine']}/{r.get('MODEL_TYPE')} (data/recipe-engines.json): re-measure "
+                       "MemAvailable under load on every rank before serving it (step: tuning)")
     cn = p.get("n")
     if native and cn and fit.get(cn, {}).get("budget") == "tight":
         caveats.append(f"tight budget ({fit[cn]['headroom_gib']} GiB of headroom) that nothing enforces: native "

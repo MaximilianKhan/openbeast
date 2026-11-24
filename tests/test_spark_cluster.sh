@@ -189,7 +189,7 @@ _cluster "local"; unset SC_FABRIC_local; : > "$T/repo/scripts/backends/spark.env
 # stop; every node runs its own spark-node.sh with its own rank.
 _cluster "local n1"
 _run start --cluster "$T/cluster.env" --profile glm53-flash-ablit-exl3-tensorfold --dry-run
-if [[ $RC -eq 0 ]] && [[ "$(grep -o '^\[rank [0-9]' <<< "$OUT" | tr -d '[' | paste -sd, -)" == "rank 1,rank 0" ]] \
+if [[ $RC -eq 0 ]] && [[ "$(grep spark-node.sh <<< "$OUT" | grep -o '^\[rank [0-9]' | tr -d '[' | paste -sd, -)" == "rank 1,rank 0" ]] \
    && _has "$OUT" "scripts/backends/tensorfold/spark-node.sh --profile glm53-flash-ablit-exl3-tensorfold --rank 1"; then
   pass "start: the worker starts before the head, each with its own --rank"
 else
@@ -229,6 +229,8 @@ export SC_LAUNCH_LOG="$T/launch.log"
 printf 'CLUSTER_NODES="local n1 n2 n3"\nCLUSTER_NAME=test\nCLUSTER_REPO=%s\n' "$T/srepo" > "$T/cluster4.env"
 _REV=0123456789abcdef0123456789abcdef01234567
 printf 'BACKEND=tensorfold\nSOURCE=acme/Some-Model-MLX\nREVISION=%s\nSERVED_MODEL_NAME=m\nTENSOR_PARALLEL_SIZE=4\n' "$_REV" > "$T/tf4.env"
+# The workers' own checkout holds the same profile (start compares them by hash).
+mkdir -p "$T/srepo/scripts/backends/models" && cp "$T/tf4.env" "$T/srepo/scripts/backends/models/tf4.env"
 
 # stop with rank 0 already gone: every other rank is still stopped, and the
 # run names the rank that failed (exit 1).
@@ -263,6 +265,27 @@ fi
 _run start --cluster "$T/cluster4.env" --profile "$T/tf4.env"
 [[ $RC -eq 0 ]] && [[ "$(cut -d' ' -f1 "$SC_LAUNCH_LOG" | paste -sd, -)" == "n3,n2,n1,local" ]] && ! grep -q -- --stop "$SC_LAUNCH_LOG" \
   && pass "start: a clean start launches ranks 3,2,1 then 0 and stops nothing" || fail "clean start (rc=$RC): $OUT / $(cat "$SC_LAUNCH_LOG")"
+# start: a worker whose profile differs from the head's (another commit, or a
+# hand edit on the head) is refused before ANY rank starts: since #293 each
+# rank reads TF_GLM_DENSE_BITS etc. from its own profile.
+printf 'TENSORFOLD_RANK_ENV={"TF_GLM_DENSE_BITS":"4"}\n' >> "$T/srepo/scripts/backends/models/tf4.env"
+: > "$SC_LAUNCH_LOG"
+_run start --cluster "$T/cluster4.env" --profile "$T/tf4.env"
+if [[ $RC -ne 0 ]] && [[ ! -s "$SC_LAUNCH_LOG" ]] && _has "$OUT" "rank(s) 1 2 3 would launch another 'tf4' than rank 0" \
+   && _has "$OUT" "Nothing was started"; then
+  pass "start: a worker whose profile differs from the head's is refused before any rank starts"
+else
+  fail "start profile skew (rc=$RC): $OUT / $(cat "$SC_LAUNCH_LOG")"
+fi
+rm -f "$T/srepo/scripts/backends/models/tf4.env"; : > "$SC_LAUNCH_LOG"
+_run start --cluster "$T/cluster4.env" --profile "$T/tf4.env"
+[[ $RC -ne 0 ]] && [[ ! -s "$SC_LAUNCH_LOG" ]] && _has "$OUT" "models/tf4.env is missing there" \
+  && pass "start: a worker without the profile is refused before any rank starts" || fail "start profile missing (rc=$RC): $OUT"
+cp "$T/tf4.env" "$T/srepo/scripts/backends/models/tf4.env"
+_cluster "local n1"
+_run start --cluster "$T/cluster.env" --profile glm53-flash-ablit-exl3-tensorfold --dry-run
+_has "$OUT" "[rank 1 n1] cd $T/repo && p=scripts/backends/models/glm53-flash-ablit-exl3-tensorfold.env" && _has "$OUT" "# must print " \
+  && pass "start --dry-run shows the per-worker profile hash check" || fail "start dry-run profile check: $OUT"
 
 # sync-image: a worker that already has the same image id is left alone; one
 # that lacks it gets docker save | ssh docker load.

@@ -838,8 +838,50 @@ def test_one_spark_plan_has_one_spark_wording(data):
     g = next(x for x in pl["gaps"] if x["id"] == "d2-first-serve")
     assert "one Spark" in g["title"] and "pair-down" not in g["effort"]
     assert "on the pair" not in pl["engine"]["unverified"]
-    pair = recipe.plan(recipe.load_recipe("glm53-flash-exl3-native-tp2"), data)
-    assert "pair-down" in next(x for x in pair["gaps"] if x["id"] == "d2-first-serve")["effort"]
+    # D2 served on the pair on native 1.2.10 (2026-11-23): the GLM recipe has no first-serve step
+    # left there, but a pair recipe on another engine (Hy4 on 1.3.3) still does.
+    glm = recipe.plan(recipe.load_recipe("glm53-flash-exl3-native-tp2"), data)
+    assert "d2-first-serve" not in {x["id"] for x in glm["gaps"]}
+    assert "never served" not in glm["engine"]["unverified"]
+    pair = recipe.plan(recipe.load_recipe("hy4-flash-exl3-tensorfold-tp2"), data)
+    g2 = next(x for x in pair["gaps"] if x["id"] == "d2-first-serve")
+    assert "pair-down" in g2["effort"] and "on this engine" in g2["title"]
+    assert "D2 has never served on the pair on this engine (it has on tf-native-1.2.10)" in pair["engine"]["unverified"]
+
+
+def test_d2_served_closes_the_first_serve_gap_only_at_that_size(data):
+    eng = recipe.engine_by_id(data, "tf-native-1.2.10")
+    assert set(recipe.d2_served(eng)) == {"2"} and "GLM_SERVING_WINDOW-2026-11-23" in eng["d2_served"]["2"]
+    # the same engine at three Sparks: still a first serve (and the topology step). plan picks the
+    # smallest size that fits, so the family is narrowed to 3+ ranks here to force TP3.
+    three = json.loads(json.dumps(data))
+    recipe.engine_by_id(three, "tf-native-1.2.10")["families"]["glm5_next"]["ranks"] = [3, 4]
+    r = recipe.load_recipe("glm53-flash-exl3-native-tp2")
+    r.values["SPARKS"] = "3"
+    pl = recipe.plan(r, three)
+    assert pl["engine"]["n"] == 3
+    g = next(x for x in pl["gaps"] if x["id"] == "d2-first-serve")
+    assert "3 Sparks" in g["title"] and "topology" in {x["id"] for x in pl["gaps"]}
+    assert "D2 has never served on 3 Sparks on this engine" in pl["engine"]["unverified"]
+    bad = json.loads(json.dumps(data))
+    recipe.engine_by_id(bad, "tf-native-1.2.10")["d2_served"] = {"two": "x"}
+    with pytest.raises(recipe.RecipeError, match="d2_served"):
+        recipe.validate_data(bad)
+
+
+def test_reserve_below_the_measured_family_value_is_a_caveat(data):
+    fam = recipe.engine_by_id(data, "tf-native-1.2.10")["families"]["glm5_next"]["launch"]
+    assert fam["memory_reserve_gib"] == 11.5 and fam["context"] == 524288 and fam["source"].startswith("MEASURED")
+    assert "84.33 GiB" in fam["source"] and "1104" in fam["source"] and "6.5" in fam["source"]
+    r = recipe.load_recipe("glm53-flash-exl3-native-tp2")
+    assert not [c for c in recipe.plan(r, data)["engine"]["caveats"] if "MEMORY_RESERVE_GIB" in c]
+    r.values["MEMORY_RESERVE_GIB"] = "9"
+    cav = [c for c in recipe.plan(r, data)["engine"]["caveats"] if "MEMORY_RESERVE_GIB" in c]
+    assert cav and "below the 11.5 GiB" in cav[0] and "tf-native-1.2.10/glm5_next" in cav[0]
+    # an ESTIMATED family value is a budget, not a floor: no caveat (MiniMax on 1.2.10 is 9.5, ESTIMATED)
+    m = recipe.load_recipe("minimax-m31-flash-exl3-3.06-tp2")
+    m.values["MEMORY_RESERVE_GIB"] = "6"
+    assert not [c for c in recipe.plan(m, data)["engine"]["caveats"] if "MEMORY_RESERVE_GIB" in c]
 
 
 def test_adopt_run_refuses_a_plan_that_is_not_servable_now(stubs, tmp_path):
@@ -1261,7 +1303,10 @@ def test_profile_rank_env_validates(tmp_path):
                      ('TENSORFOLD_RANK_ENV={"LD_PRELOAD":"/x.so"}\n', "not an allowed rank variable"),
                      ('TENSORFOLD_RANK_ENV={"TF_GLM_DENSE_BITS":4}\n', "JSON object of strings"),
                      ("TENSORFOLD_RANK_ENV=TF_GLM_DENSE_BITS=4\n", "JSON object of strings"),
-                     ("TENSORFOLD_RANK_ENV={}\n", "JSON object of strings")):
+                     ("TENSORFOLD_RANK_ENV={}\n", "JSON object of strings"),
+                     # a repeated key: json.loads would keep the last ("16") while a reader sees "4"
+                     ('TENSORFOLD_RANK_ENV={"TF_GLM_DENSE_BITS":"4","TF_GLM_DENSE_BITS":"16"}\n',
+                      "duplicate key 'TF_GLM_DENSE_BITS'")):
         with pytest.raises(obprofile.ProfileError, match=msg):
             load(bad)
     vl = ("BACKEND=vllm\nSOURCE=org/m\nREVISION=" + "a" * 40 + "\nSERVED_MODEL_NAME=m\n"

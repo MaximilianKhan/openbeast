@@ -14,8 +14,8 @@ execute said full stack software piece offline."*
 
 **What it is.** `scripts/ark.sh` and `agents/ark/`. Three parts:
 
-1. A **catalog** (`agents/ark/catalog.toml`) of 112 pieces of software
-   (350 downloads). Each is pinned to an exact version, git tag **and
+1. A **catalog** (`agents/ark/catalog.toml`) of 114 pieces of software
+   (356 downloads). Each is pinned to an exact version, git tag **and
    commit**, with a sha256 (or upstream SHA-512 / SHA3) for every file and a
    digest for every image. The `lock` command derived every one of those
    values from upstream. None was typed by hand.
@@ -283,15 +283,15 @@ It fails on:
 | storage | 5 | 3 | 13 | minio, rclone, restic, seaweedfs, syncthing |
 | security | 8 | 6 | 26 | age, cosign, openbao, sops, step, step-ca, syft, trivy |
 | iac | 2 | 1 | 6 | ansible-core, opentofu |
-| ai | 6 | 3 | 10 | llama.cpp, open-webui, searxng, tensorfold, tensorfold-1.2.10, vllm |
+| ai | 7 | 4 | 13 | llama.cpp, open-webui, searxng, tensorfold, tensorfold-1.2.10, tensorfold-1.3.3, vllm |
 | docs | 4 | 2 | 44 | devdocs, devdocs-zim-core, devdocs-zim-extra, kiwix-tools |
 | os | 3 | 2 | 8 | alpine-minirootfs, base-images, ubuntu-server |
 | virtualization | 3 | 2 | 8 | colima, firecracker, lima |
-| **total** | **113** | **65** | **353** | |
+| **total** | **114** | **66** | **356** | |
 
 **Verification, as `lock` left it:**
 
-- **334 of 350 artifacts are hash- or digest-pinned from upstream.**
+- **340 of 356 artifacts are hash- or digest-pinned from upstream** (`ark.sh lint`, 2026-11-23; the per-source lines below are as of 2026-11-16 and do not add up to it).
   - 251 files from upstream checksum files;
   - 6 from upstream JSON indexes (Zig's `index.json`, Grafana's download API);
   - 43 GitHub release assets with no checksum file, from the per-asset
@@ -347,9 +347,21 @@ It fails on:
     name, the way `cpython-3.12` sits next to `cpython-3.14`. Same repo,
     vendored key, signature scheme and archive layout as `tensorfold`;
     `update = "manual"`, so nothing moves it. The test also checks that
-    every `TENSORFOLD_REQUIRES` in a shipped recipe has an ark entry.
+    every native release a shipped recipe names has an ark entry: each
+    rendered profile's `TENSORFOLD_REQUIRES` and each
+    `recipes/*/recipe.env` `ENGINE=tf-native-X` (a recipe not rendered yet
+    counts too).
     `fetch --only tensorfold-1.2.10` puts it under
     `files/tensorfold-1.2.10/1.2.10/<platform>/`;
+  - TensorFold 1.3.3, the release `recipes/hy4-flash-exl3-tensorfold-tp2`
+    names (`ENGINE=tf-native-1.3.3`; not installed on the Sparks), is a
+    third entry, `tensorfold-1.3.3` (added 2026-11-23, the same way: tag
+    v1.3.3 peels to `1e4a32cb`; each archive re-hashed locally = its signed
+    `.sha256` = GitHub's asset digest; the ed25519 signature checked with
+    OpenSSL 3 against the vendored key; in-archive `SHA256SUMS`; `lock
+    --refresh` derived the same pins, `fetch` + `verify --deep` passed).
+    Offline: `fetch --only tensorfold-1.3.3`, then `install-native.sh
+    --version 1.3.3 --from <drive>/files/tensorfold-1.3.3/1.3.3/linux-aarch64`;
   - Zig is 0.16.0, whose x86_64 sha256 equals CI's `ZIG_SHA256`;
   - Open WebUI and SearXNG are at `docker-compose.yml`'s digests.
 - **The Kubernetes control-plane image tags** (etcd `3.7.0-0`, coredns
@@ -534,7 +546,7 @@ artifacts                        5.42 GiB
 git (source)               ≤14.50 GiB +3?
 
 $ ./scripts/ark.sh lint
-lint …/agents/ark/catalog.toml: 112 entries, 350 artifacts (334 hash/digest-pinned), 0 problem(s)
+lint …/agents/ark/catalog.toml: 114 entries, 356 artifacts (340 hash/digest-pinned), 0 problem(s)
 ```
 
 `--only a,b`, `--category c` and `--profile core|full|both` combine;

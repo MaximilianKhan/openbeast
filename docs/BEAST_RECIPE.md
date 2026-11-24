@@ -185,7 +185,8 @@ worse than another, the plan says so ("a better path exists").
 
 **Steps are not work.** These gaps are always listed but never change a
 verdict: `glue` (profile, launch values, template, conformance), `d2-first-serve`
-(D2 has never served on the pair), `tuning`, `drafter`, `perf-patches`,
+(D2 has not served at this size on this engine: it has served only at TP2 on
+native 1.2.10, since 2026-11-23), `tuning`, `drafter`, `perf-patches`,
 `parsers`, `licence-review`, and any family extra gap of 0 days (such as
 `hy4-engram-local`). Everything else is work (`engine-stage`, `image-build`,
 `vllm-image`, `launcher`, `reference-only`, `quantize`, `exl3-layout`,
@@ -229,9 +230,10 @@ vLLM:   also W + KV + reserve <= --gpu-memory-utilization x MemTotal
 
 The verdict for a size is the worse of the rule and the budget. KV and reserve
 come from the recipe, else the family's measured launch values in the data
-file (DeepSeek 1.8 GiB / 12.2 GiB; GLM 10 / 17.5, the reserve measured on Mia's
-image and budgeted on native too until a native start line says otherwise
-(GLM 1104 claims 9.5); Hy4 vLLM 6 / 5), else an estimate from
+file (DeepSeek 1.8 GiB / 12.2 GiB; GLM 10 / 17.5 on Mia's image; GLM on
+native 1.2.10 10 / 11.5 at a 524,288 window, MEASURED on the pair 2026-11-23
+from the start line and MemAvailable under load; Mia's 1104 `config.sh`
+defaults to 6.5; Hy4 vLLM 6 / 5), else an estimate from
 `KV_BYTES_PER_TOKEN x CONTEXT x PARALLEL`. **What reaches native TensorFold
 (D2)**: the rendered profile carries `TENSORFOLD_KV_CACHE=fp8` when
 `KV_DTYPE=fp8` (spark-node.sh passes `--kv-cache fp8`; bf16 is the default and
@@ -244,8 +246,12 @@ has no pool flag and sizes its KV pages to the room it finds, so the KV term is
 a budget only, and a tight budget gets a caveat (the start line and
 MemAvailable decide). Native's fp8 cache is an opt-in upstream does not
 qualify (GLM's latent cache only; "BF16 remains the default and the only
-qualified cache"): the GLM recipe keeps fp8 as VERIFY, MiniMax and Qwen run
-bf16. A checkpoint part
+qualified cache"): the GLM recipe served fp8 on 1.2.10 on 2026-11-23, MiniMax
+and Qwen run bf16. **A reserve below the family's MEASURED value** (the
+`launch.memory_reserve_gib` whose `source` starts `MEASURED`) gets a plan
+caveat: native sizes its KV pages from the reserve, so less than what held
+under load needs its own start line and MemAvailable check. An ESTIMATED
+value is a budget, not a floor, and gets none. A checkpoint part
 that streams from disk does not count: Hy4 EXL3's resident size is the 85.38
 GiB TensorFold 1.3.2 loads on one GB10 with the opt-in CUDA slab mode (#4003),
 not its 203 GiB of files (Engram).
@@ -261,7 +267,8 @@ through recipe keys, never raw env:
 | `DENSE_BITS` | `tf-native-1.2.10` / `glm5_next` | `TF_GLM_DENSE_BITS` on every rank | 4, 6, 8, 16 | the engine's default (bf16 dense) |
 
 - **Data, not code, says who reads what.** The engine family's `env` entry
-  in `data/recipe-engines.json` (`families.glm5_next.env.DENSE_BITS =
+  in `scripts/backends/data/recipe-engines.json` (the engine
+  `tf-native-1.2.10`, key `engines[id=tf-native-1.2.10].families.glm5_next.env.DENSE_BITS =
   {"var": "TF_GLM_DENSE_BITS", "values": [4, 6, 8, 16], "source": ...}`)
   names the variable and its values, with provenance. A recipe that sets
   `DENSE_BITS` on an engine or family without that entry (MiniMax, Qwen,
@@ -497,9 +504,9 @@ the schema.
 `scripts/backends/data/recipe-engines.json`, data only. Every engine names its
 source and the date it was read.
 
-| Engine | Kind | Status (2026-11-22) | Launcher | Families (format: ranks) |
+| Engine | Kind | Status (2026-11-23) | Launcher | Families (format: ranks) |
 |---|---|---|---|---|
-| `tf-native-1.2.10` | native TensorFold | installed on both Sparks | d2-tensorfold | glm5_next (EXL3 TR3 4-bit only, NVFP4, mixed: 2-8), minimax_m3_vl (EXL3: 2), qwen3_5 (EXL3: 1; MLX: 1-2), qwen4_exp (MLX/ModelOpt: 1-2), qwen3_5_moe, nemotron_h (1), plus the 13 other families `capabilities --json` recorded (inherited from `spark-families.json` native-1.2.10). Refuses deepseek_v41, hy_v4_flash |
+| `tf-native-1.2.10` | native TensorFold | installed on both Sparks; D2 served on it at TP2 (2026-11-23) | d2-tensorfold | glm5_next (EXL3 TR3 4-bit only, NVFP4, mixed: 2-8), minimax_m3_vl (EXL3: 2), qwen3_5 (EXL3: 1; MLX: 1-2), qwen4_exp (MLX/ModelOpt: 1-2), qwen3_5_moe, nemotron_h (1), plus the 13 other families `capabilities --json` recorded (inherited from `spark-families.json` native-1.2.10). Refuses deepseek_v41, hy_v4_flash |
 | `tf-native-1.3.3` | native TensorFold | available upstream (signed release, 2026-11-21; not on the Sparks) | d2-tensorfold | glm5_next (EXL3 mcg at any whole 1-8 bits: 2-8), minimax_m3_vl (2), qwen3_5 (EXL3 mul1 + mcg: 1), **hy_v4_flash (EXL3: 1, generator only, built from source; 2 with work)**, deepseek_v41 (source build only); 1.2.10's other families carried as CLAIMED |
 | `tf-native-1.3.4` | native TensorFold | available upstream (the latest signed release, 2026-11-22; not on the Sparks) | d2-tensorfold | as 1.3.3 plus dense MTP for Qwen3.5 targets on CUDA (#3582, CLAIMED); no Hy4 server path |
 | `tf-fork-dsv41` | TensorFold Zig fork + Mia's 54 patches | image on both Sparks | mia-unit:deepseek-v41-inference | deepseek_v41 (EXL3 mul1: 2; 4 with the tp4 branch) |
@@ -527,6 +534,12 @@ share, the OS and memguard numbers), `hardware.topologies` (1 to 8 Sparks),
    under `with_work` with gap ids. `inherit_families` carries families forward
    (from another engine, CLAIMED, or from `spark-families.json:<engine>`); an
    engine's own entries win. A launch caveat goes in a family's `launch_note`.
+   `d2_served` maps a cluster size to where D2's first serve on that engine is
+   recorded (`{"2": "2026-11-23: GLM-5.3-Flash EXL3 TP2 … GLM_SERVING_WINDOW-2026-11-23.md"}`
+   on `tf-native-1.2.10`): at a listed size the `d2-first-serve` step and the
+   "never served" caveat drop out; at any other size (one Spark, three or
+   more) and on any other engine they stay. Add the size after a serve passes
+   `check --run --bench` and conformance on that engine.
 3. `uv run ... pytest tests/test_beast_recipe.py`: `load_data` validates the
    file (gap ids, `serves`, ranks as lists of 1..8, `ranks_by_format` keys,
    extra gaps' days) and fails loudly; the consistency test checks it and that
@@ -584,7 +597,7 @@ beast-recipe plan hy4-flash-exl3-tensorfold-tp2   (Hy4-flash EXL3 4bpw on native
 VERDICT   SERVABLE-WITH-WORK at TP2
           it fits on this many Sparks, but an engine must be staged, built or extended first (the gap list says what, and how long)
           upstream: a two-Spark native hy_v4_flash family is in the works upstream (TensorFold#3797 open; #3801 in slices): when it lands, this becomes an engine-stage away
-          caveat: never installed or run on our Sparks; D2 has never served on the pair
+          caveat: never installed or run on our Sparks; D2 has never served on the pair on this engine (it has on tf-native-1.2.10)
           caveat: one tensorfold per Spark: the profile pins TENSORFOLD_REQUIRES=1.3.3, and spark-node.sh refuses another binary. A recipe on another release needs scripts/engine.sh install/rollback tensorfold on every Spark (and TENSORFOLD_VERSION=1.3.3 in spark.env) before its switch
           launch: the CUDA slab upload mode is opt-in (#4003) and must be switched on, or the load fails at layer 30: the env name is VERIFY (the upstream source or RUNTIME.md at the tag)
 
@@ -638,7 +651,7 @@ Gaps  (blocking work: 32.5-94.0 engineering days, ESTIMATED)
         effort: 1-3 weeks inside the family work, or copy drafts as a stopgap; who: upstream / us
   WORK  [hy4-parsers] hy_v4 tool-call and reasoning parsing in TensorFold's server (vLLM has hy_v4 parsers; conformance is the gate)
         effort: 1-5 days; who: us
-  step  [d2-first-serve] D2 (spark-cluster.sh + spark-node.sh) has never served on the pair: the first native serve qualifies it
+  step  [d2-first-serve] D2 (spark-cluster.sh + spark-node.sh) has not served on the pair on this engine (it has on native TensorFold 1.2.10, 2026-11-23): the first native serve qualifies it
         effort: one pair-down window of 0.5-1 day; who: us, on hardware
   step  [glue] recipe glue for an architecture the engine already has: profile, launch values, fabric, template, conformance
         effort: 0.5-1 day per model; the first one 1-2 days; who: us, today
@@ -745,7 +758,6 @@ with the same `model.safetensors` blob as the CC BY-NC-ND pin `bf582e4e`.
 ```text
 VERDICT   SERVABLE-NOW at TP2
           an engine we already have serves it on this many Sparks and it fits: what is left is steps (fetch, profile, start, check), no engineering
-          caveat: D2 has never served on the pair (SPARK_HYDRA D2 'VERIFY ON HARDWARE')
           caveat: one tensorfold per Spark: the profile pins TENSORFOLD_REQUIRES=1.2.10, and spark-node.sh refuses another binary. A recipe on another release needs scripts/engine.sh install/rollback tensorfold on every Spark (and TENSORFOLD_VERSION=1.2.10 in spark.env) before its switch
 
 Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; what of KV and reserve reaches the engine: the KV line below)
@@ -775,8 +787,6 @@ Engines  (who reads it, at which sizes; best first)
 Rank env     TF_GLM_DENSE_BITS=4   (set on every rank: TENSORFOLD_RANK_ENV)
 
 Gaps  (blocking work: 0-0 engineering days, ESTIMATED)
-  step  [d2-first-serve] D2 (spark-cluster.sh + spark-node.sh) has never served on the pair: the first native serve qualifies it
-        effort: one pair-down window of 0.5-1 day; who: us, on hardware
   step  [glue] recipe glue for an architecture the engine already has: profile, launch values, fabric, template, conformance
         effort: 0.5-1 day per model; the first one 1-2 days; who: us, today
   step  [tuning] memory and launch tuning: KV dtype and pool, MEMORY_RESERVE_GIB, context, streams, MIN_AVAIL, from the engine's start line and MemAvailable under load on every rank
@@ -904,7 +914,7 @@ cabling the 4-ring. The LibertAI 3.5-bpw pack already exists for four
 VERDICT   SERVABLE-WITH-WORK at TP1
           it fits on this many Sparks, but an engine must be staged, built or extended first (the gap list says what, and how long)
           note: a better path exists: tf-native-1.2.10 is SERVABLE-NOW at TP1
-          caveat: never installed or run on our Sparks; D2 has never served on one Spark
+          caveat: never installed or run on our Sparks; D2 has never served on one Spark on this engine
           caveat: one tensorfold per Spark: the profile pins TENSORFOLD_REQUIRES=1.3.4, and spark-node.sh refuses another binary. A recipe on another release needs scripts/engine.sh install/rollback tensorfold on every Spark (and TENSORFOLD_VERSION=1.3.4 in spark.env) before its switch
 
 Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; what of KV and reserve reaches the engine: the KV line below)
@@ -952,7 +962,6 @@ is staged, or the recipe is re-pinned to 1.2.10.
 ```text
 VERDICT   SERVABLE-NOW at TP2
           an engine we already have serves it on this many Sparks and it fits: what is left is steps (fetch, profile, start, check), no engineering
-          caveat: D2 has never served on the pair (SPARK_HYDRA D2 'VERIFY ON HARDWARE')
           caveat: one tensorfold per Spark: the profile pins TENSORFOLD_REQUIRES=1.2.10, and spark-node.sh refuses another binary. A recipe on another release needs scripts/engine.sh install/rollback tensorfold on every Spark (and TENSORFOLD_VERSION=1.2.10 in spark.env) before its switch
 
 Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; what of KV and reserve reaches the engine: the KV line below)
@@ -1058,7 +1067,10 @@ pair (each in a pair-down window, after the live evals):
    [Per-family engine variables](#the-fit-maths)). **Pending:** re-run
    `adopt --run`, `beast-spark glm53-flash-exl3-native-tp2` and `check --run
    --bench` on the committed render, and confirm the start line says "model
-   82.36 GiB" and a 524288-token window.
+   84.33 GiB; 4 streams at once, 3.66 GiB each at a 524288-token window, of
+   16.1 GiB left after a 11.5 GiB reserve" (the env experiment at the same
+   4-bit / 524288 / 11.5, [report](reports/GLM_SERVING_WINDOW-2026-11-23.md);
+   82.36 GiB was 4-bit at 245760 / 17.5) and about 41.8 / 64.7 tok/s.
 2. `beast-recipe engine hy4-flash-exl3-tensorfold-tp2 --run --stage`: stage
    1.3.3, snapshot `capabilities --json`, update the matrix; build
    `tf-hy4-cuda-generate` from source at v1.3.3.

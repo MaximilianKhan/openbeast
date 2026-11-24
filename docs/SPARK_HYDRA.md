@@ -868,7 +868,7 @@ How to reach each box:
 | API | spark-1 | `http://127.0.0.1:8000/v1`, model `GLM-5.3-Flash-EXL3`. **Loopback only: v0.6.0 has no API key** |
 | Command center | spark-1, `systemctl --user` unit `openbeast` | `~/openbeast`, a git checkout: WebUI :3000, tools :3001, SearXNG :8888, beast-gate :8090, beast-chat, beast-artifact, the dashboard (beast-slot), the island watcher. `openbeast.conf`: [E2](#e2-openbeastconf) |
 | Weights | both | `~/openbeast-models/glm53-flash-ablit-exl3` (175.7 GB, 83 shards), hard-linked into `~/.cache/huggingface/hub/models--Mia-AiLab--GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit/snapshots/57edefd2…`. Verified against the Hub revision (sha256, 0 mismatches) and locked in `scripts/backends/models/glm53-flash-ablit-exl3-tensorfold.lock` ([C](#c-weights)) |
-| Drafter | both | `incoai/GLM-5.3-Flash-DFlash2 @ 6cc6c481` (**Apache-2.0**; re-pinned 2026-11-23 from `bf582e4e`, CC BY-NC-ND, which holds the byte-identical `model.safetensors` and `config.json`: only the README differs). It lives in the HF cache only, in `hf download` layout (snapshot symlinks into `blobs/`). **No OpenBeast lock covers it**; [C4](#c4-the-drafter-dflash2) shows how to check it |
+| Drafter | both | `incoai/GLM-5.3-Flash-DFlash2 @ 6cc6c481` (**Apache-2.0**; re-pinned 2026-11-23 from `bf582e4e`, CC BY-NC-ND, which holds the byte-identical `model.safetensors` and `config.json`: only the README differs). Three copies of the same bytes: the HF cache (`hf download` layout, snapshot symlinks into `blobs/`), which Mia's v1.8 recipe reads and no OpenBeast lock covers; the flat `~/openbeast-models/glm53-dflash2-6cc6c481` (1104, not locked); and `~/openbeast-models/recipe-glm53-flash-exl3-native-tp2.drafter`, which D2 reads and which **is locked** (the `drafter` entry of `scripts/backends/models/recipe-glm53-flash-exl3-native-tp2.lock`, #289; its four files hash-matched the lock on spark-1, read-only 2026-11-23). [C4](#c4-the-drafter-dflash2) checks and carries all three |
 | Native TensorFold 1.2.10 | both | `~/.local/bin/tensorfold` → `~/.local/opt/tensorfold-1.2.10-linux-aarch64` (signed release; read 2026-11-22; `install-native.sh`'s default is 1.3.4 since 2026-11-23, so pass `--version 1.2.10` to reinstall this one; the ark carries it as entry `tensorfold-1.2.10`, [H5](#h5-native-tensorfold-and-the-engine-plane)). A challenger engine, **not serving** ([D2](#d2-native-tensorfold-through-spark-nodesh--spark-clustersh)) |
 | spark-guard | both | `openbeast-spark-guard.service` (system unit, `active (exited)`): an nftables table that keeps the engines' rendezvous ports on the fabric ([B3](#b3-firewall-spark-guard)) |
 
@@ -967,10 +967,11 @@ has the commands.
 | `libnccl2 2.28.9-1+cuda13.0` and `tailscale 1.104.7` .debs | ~200 MB | `apt-get download` on an online Spark | sha256 pins in `spark-root-setup.sh` (`--check-debs`) | [H3](#h3-debs-libnccl2-and-tailscale) |
 | The OpenBeast repo at one commit | ~100 MB | `git clone` / `git bundle` | the commit id | [H2](#h2-the-repo) |
 | GLM-5.3-Flash Ablit EXL3 weights | 175.7 GB | the Hub at `57edefd2…` | `model-fetch.sh --verify` against the committed lock | [C](#c-weights) |
-| DFlash2 drafter | 2.3 GB | the Hub at `6cc6c481…` (Apache-2.0) | the blob-hash loop | [C4](#c4-the-drafter-dflash2) |
+| DFlash2 drafter, HF cache (Mia's v1.8) | 2.3 GB | the Hub at `6cc6c481…` (Apache-2.0) | the blob-hash loop | [C4](#c4-the-drafter-dflash2) |
+| DFlash2 drafter, D2's locked copy `MODELS_DIR/recipe-glm53-flash-exl3-native-tp2.drafter` | 2.3 GB (hard links to the cache's bytes) | the HF cache or the USB copy, hard-linked or copied flat (no download) | `model-fetch.sh --profile recipe-glm53-flash-exl3-native-tp2 --verify` against the committed lock (its `drafter` entry, 4 files) | [C4](#c4-the-drafter-dflash2), "D2's locked copy" |
 | Recipe image `tensorfold-glm53:v0.6.0` | tens of GB | `prepare.sh`, or `docker pull` from ghcr | image ID `sha256:ead01740…` after `docker load` | [H4](#h4-container-images) |
 | The recipe checkout `~/openbeast-recipes/glm53` | small | git (MiaAI-Lab) | commit `33b50fd` | [D1](#d1-the-glm-recipe-the-alternative-deployment) |
-| Native TensorFold 1.2.10 installed; 1.3.4 the installer's default; the ark holds both (optional) | ~55 MB an archive | GitHub release | ed25519 signature + SHA256SUMS (`install-native.sh --stage` / `--from`, always with `--version`); the ark catalog pins both releases' three archive sha256s (entries `tensorfold` 1.3.4 and `tensorfold-1.2.10`) | [H5](#h5-native-tensorfold-and-the-engine-plane) |
+| Native TensorFold 1.2.10 installed; 1.3.4 the installer's default; 1.3.3 named by the Hy4 EXL3 recipe; the ark holds all three (optional) | ~55 MB an archive | GitHub release | ed25519 signature + SHA256SUMS (`install-native.sh --stage` / `--from`, always with `--version`); the ark catalog pins each release's three archive sha256s (entries `tensorfold` 1.3.4, `tensorfold-1.2.10` and `tensorfold-1.3.3`) | [H5](#h5-native-tensorfold-and-the-engine-plane) |
 | Python wheels for the command center | ~200 MB | `pydeps.sh wheelhouse` or `bundle.sh build` **on a Spark** | `agents/requirements.lock` hashes | [H6](#h6-the-command-center-wheels-and-compose-images) |
 | Compose images (open-webui, searxng, extensions) | a few GB | `docker save` on an online Spark | digest pins; `bundle.sh install` rewrites them to the content ID | [H6](#h6-the-command-center-wheels-and-compose-images) |
 | pytest (to run the test suites) | small | `.github/ci-requirements/test.txt` | `--require-hashes` | [H7](#h7-test-and-language-toolchains) |
@@ -1605,8 +1606,12 @@ in `tests/test_spark_cluster.sh`.
 ### C4. The drafter, DFlash2
 
 `incoai/GLM-5.3-Flash-DFlash2 @ 6cc6c481eee930a5139619ed919f78726371adbc`
-(**Apache-2.0**, the 2026-11-10 "Release under Apache 2.0" commit) lives only in the HF cache, in `hf download` layout, and no OpenBeast lock
-covers it. Copy the whole repo dir; its relative symlinks into `blobs/` survive
+(**Apache-2.0**, the 2026-11-10 "Release under Apache 2.0" commit). Mia's v1.8
+recipe reads it from the HF cache, in `hf download` layout, which no OpenBeast
+lock covers. Two flat copies sit beside it, hard links to the same bytes:
+`~/openbeast-models/glm53-dflash2-6cc6c481` (read by 1104; not locked) and
+`~/openbeast-models/recipe-glm53-flash-exl3-native-tp2.drafter` (read by D2;
+**locked**, see "D2's locked copy" below). For the cache: copy the whole repo dir; its relative symlinks into `blobs/` survive
 `rsync -a`. Then check every blob against its own name. LFS blobs are named by
 their sha256, small files by their git blob SHA-1:
 
@@ -1654,6 +1659,39 @@ a `.revision` file), on both Sparks.
 
 That proves the blobs are the bytes their names claim. That the snapshot is the
 pinned revision rests on the names above (read off spark-1, 2026-11-15).
+
+**D2's locked copy, offline.** The D2 recipe's profile
+(`recipe-glm53-flash-exl3-native-tp2`) names the drafter, so `spark-node.sh`
+starts only when `MODELS_DIR/recipe-glm53-flash-exl3-native-tp2.drafter`
+matches the `drafter` entry of the committed lock (`README.md`, `config.json`,
+`assets/dflash2-figure.png`, `model.safetensors`; sha256 and size each). A
+plain `model-fetch.sh --profile …` would download it from the Hub, which
+`OFFLINE=1` refuses. So build it from bytes already on the box (the HF cache
+above, or a USB copy of the four files) and let `--verify` judge them; it
+never downloads:
+
+```bash
+R=6cc6c481eee930a5139619ed919f78726371adbc
+S=~/.cache/huggingface/hub/models--incoai--GLM-5.3-Flash-DFlash2/snapshots/$R   # or the USB copy's dir
+M=~/openbeast-models                                    # this node's MODELS_DIR (spark.env)
+D=$M/recipe-glm53-flash-exl3-native-tp2.drafter
+mkdir -p "$D/assets"
+# Hard links when $S is on the same filesystem (no extra space); -L follows the
+# cache's snapshot symlinks to the blobs. From USB, drop -l (a plain copy).
+cp -lL "$S/README.md" "$S/config.json" "$S/model.safetensors" "$D/"
+cp -lL "$S/assets/dflash2-figure.png" "$D/assets/"
+cd ~/openbeast && scripts/backends/model-fetch.sh --profile recipe-glm53-flash-exl3-native-tp2 --verify
+# [drafter] OK …/recipe-glm53-flash-exl3-native-tp2.drafter — every file matches the lock
+```
+
+`--verify` also checks the model (the Ablit pack, by its `SOURCE`). It exits 3
+when a piece is absent and 1 on a mismatch; a file in the folder that the lock
+does not list is a mismatch too (hidden files such as `.gitattributes` are
+skipped). On a worker, `spark-cluster.sh sync-weights --profile
+recipe-glm53-flash-exl3-native-tp2` carries the head's verified copy over the
+fabric instead and re-verifies it there ([C3](#c3-carry-the-weights-to-every-worker)).
+On our pair both Sparks already hold it (built 2026-11-23 from the cache;
+on spark-1 its four files hash-matched the lock, read-only, the same day).
 
 ---
 
@@ -1780,8 +1818,12 @@ pair for the first time on 2026-11-23** (`beast-recipe adopt
 glm53-flash-exl3-native-tp2 --run`, then `beast-spark glm53-flash-exl3-native-tp2`):
 conformance PASS, 9/9 functional checks through the gate, 30.7 / 57.7 tok/s
 at 1 / 4 streams as rendered (bf16 dense linears; 42-45 / 66-70 with
-`TF_GLM_DENSE_BITS=4`, which the profile grammar cannot pass yet), against
-the recipe's 48.4 / 78.4. It stays the challenger
+`TF_GLM_DENSE_BITS=4`, set by hand that day), against
+the recipe's 48.4 / 78.4. Since #293 the recipe passes it: recipe key
+`DENSE_BITS=4`, rendered as `TENSORFOLD_RANK_ENV`, which `spark-node.sh` sets
+on every rank, with `CONTEXT=524288` and `MEMORY_RESERVE_GIB=11.5`. That
+committed render has not been re-checked on the pair yet
+([TODO](TODO.md), "hardware re-check of the committed D2 render"). It stays the challenger
 ([report](reports/GLM_SERVING_WINDOW-2026-11-23.md#step-4-the-first-native-d2-serve)).
 
 **Install the engine** on every Spark. `install-native.sh` verifies three
@@ -1790,7 +1832,7 @@ signature checks against the vendored `release-key.pem`, and every unpacked file
 matches `SHA256SUMS`.
 
 ```bash
-scripts/backends/tensorfold/install-native.sh                     # latest, download + verify + install
+scripts/backends/tensorfold/install-native.sh                     # the pinned default (1.3.4): download + verify + install
 scripts/backends/tensorfold/install-native.sh --version 1.2.10    # a specific version (the Sparks' release; the default is 1.3.4)
 tensorfold capabilities --json | head                             # NCCL must be found:true (root setup installs it)
 ```
@@ -1840,7 +1882,15 @@ scripts/backends/spark-cluster.sh stop [--engine tensorfold|vllm]   # every rank
 
 How start and stop behave:
 
-- `start` launches ranks N-1..1 and then 0, each with its own
+- `start` first checks that every worker's
+  `scripts/backends/models/<profile>.env` hash-matches the head's (sha256),
+  and refuses before anything starts if one differs or is missing. Each rank
+  reads the profile from its own checkout, including per-rank settings such
+  as `TENSORFOLD_RANK_ENV` (`TF_GLM_DENSE_BITS`, since #293), so a worker on
+  another commit would otherwise serve other numerics than rank 0. The fix is
+  to put the nodes on one commit (`check` compares them), or copy the head's
+  profile over.
+- Then it launches ranks N-1..1 and then 0, each with its own
   `spark-node.sh --rank R`. If a later rank fails, it stops the ranks it
   started.
 - `stop` stops rank 0 first, and walks every rank even if one is already down.
@@ -1879,9 +1929,9 @@ engine ([ENGINES.md](ENGINES.md) has the full matrix):
 scripts/engine.sh list                         # what this host can run; installed / pinned / active
 scripts/engine.sh status                       # active engine: version, pin, endpoint readiness, model served
 scripts/engine.sh update tensorfold            # latest release: download, verify, pin
-scripts/engine.sh install tensorfold --version 1.2.9
+scripts/engine.sh install tensorfold --version 1.2.10
 scripts/engine.sh rollback tensorfold          # previous pin, offline when still on disk
-scripts/engine.sh stage tensorfold --version 1.2.9 --platform linux-aarch64 ./carry   # connected box
+scripts/engine.sh stage tensorfold --version 1.2.10 --platform linux-aarch64 ./carry   # connected box
 scripts/engine.sh install tensorfold --from ./carry                                   # closed box
 scripts/engine.sh history
 scripts/engine.sh use <engine|default> --profile NAME --dry-run   # print the conf change + launch command
@@ -3243,9 +3293,11 @@ scripts/backends/tensorfold/install-native.sh --version 1.2.10 --from tf-1.2.10 
 #   install-native.sh --version 1.2.10 --platform linux-aarch64 \
 #     --from /media/usb/ark/files/tensorfold-1.2.10/1.2.10/linux-aarch64       # on the Spark
 #   (1.3.4: --version 1.3.4 --from /media/usb/ark/files/tensorfold/1.3.4/linux-aarch64)
+#   (1.3.3, entry tensorfold-1.3.3, the Hy4 EXL3 recipe's: --version 1.3.3
+#     --from /media/usb/ark/files/tensorfold-1.3.3/1.3.3/linux-aarch64)
 # install-native.sh re-checks the sha256 and the ed25519 signature, then SHA256SUMS inside.
 # or through the engine plane, which also pins and records history:
-scripts/engine.sh stage tensorfold --version 1.2.9 --platform linux-aarch64 /media/usb/tf
+scripts/engine.sh stage tensorfold --version 1.2.10 --platform linux-aarch64 /media/usb/tf
 scripts/engine.sh install tensorfold --from /media/usb/tf
 ```
 
@@ -3394,7 +3446,9 @@ the sequence is VERIFY ON HARDWARE.
 2. `spark-root-setup.sh spark-N --debs debs --guard` on each Spark (H3).
    Optionally `spark-fabric-mtu.sh --stage` (B4, fully local). Reboot once.
 3. Weights: copy, `model-fetch --verify`, HF-cache hard links, rsync to workers,
-   verify there (C1-C3). DFlash2 plus the blob loop (C4).
+   verify there (C1-C3). DFlash2 plus the blob loop (C4); for D2, its locked
+   flat copy from the same bytes and `model-fetch.sh --profile
+   recipe-glm53-flash-exl3-native-tp2 --verify` (C4, "D2's locked copy").
 4. Recipe checkout, `local.sh` (D1), image via `docker load` with the ID
    checked (H4). Unit installed with `PREPARE=0`.
 5. Native TensorFold, optional (H5).
@@ -3515,7 +3569,9 @@ published, from the 2026-11-15 review:
   The container TensorFold engine needs GitHub and PyPI at every start.
 - **The served snapshot is not what the lock names.** The recipe serves the
   HF-cache snapshot; the lock covers `~/openbeast-models/...`. They are the
-  same bytes only while hard-linked (C2). DFlash2 is outside every lock (C4).
+  same bytes only while hard-linked (C2). The HF-cache DFlash2 that Mia's
+  recipe reads is outside every lock; D2's flat copy
+  (`recipe-glm53-flash-exl3-native-tp2.drafter`) is locked (C4).
 - **Plaintext device keys on spark-1** (E7): delete them once the devices hold
   their keys. The same goes for `webui-max-password` once it is changed (E5).
 - **The recipe container runs with `--network host`**, as root, from

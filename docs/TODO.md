@@ -738,8 +738,17 @@ escalation unresolved, all within churn); GLM's D and F only on Max's word.
   - [ ] **hardware re-check of the committed D2 render** (pending, in a pair-down window):
     `beast-recipe adopt glm53-flash-exl3-native-tp2 --run`, `beast-spark
     glm53-flash-exl3-native-tp2`, `beast-recipe check glm53-flash-exl3-native-tp2 --run --bench`.
-    Confirm the rank units carry `TF_GLM_DENSE_BITS=4` and the start line says "model 82.36 GiB"
-    at a 524288-token window; expect about 42 / 65 tok/s. Rollback: `beast-spark glm`.
+    Before it, on each Spark: `git -C ~/openbeast pull --ff-only` to a commit with this item, then
+    `scripts/backends/model-fetch.sh --profile recipe-glm53-flash-exl3-native-tp2 --verify` (read-only;
+    it checks the Ablit pack and the locked drafter copy `MODELS_DIR/recipe-glm53-flash-exl3-native-tp2.drafter`;
+    spark-1's drafter files already hash-matched the lock, read-only 2026-11-23; spark-2's are unchecked).
+    `spark-cluster.sh start` now refuses if spark-2's profile differs from spark-1's. Confirm the
+    rank units carry `TF_GLM_DENSE_BITS=4` and the start line says "model 84.33 GiB; 4 streams at
+    once, 3.66 GiB each at a 524288-token window, of 16.1 GiB left after a 11.5 GiB reserve" (the
+    env experiment at the same 4-bit / 524288 / 11.5; 82.36 GiB was 4-bit at 245760 / 17.5); expect
+    about 41.8 / 64.7 tok/s. Then add nothing to `d2_served` (TP2 on 1.2.10 is already there); if
+    the start line differs, update `engines[tf-native-1.2.10].families.glm5_next.launch` in
+    `scripts/backends/data/recipe-engines.json`. Rollback: `beast-spark glm`.
   - [ ] native-engine prefill: 1104 and native 1.2.10 both reach about 1.4K tok/s against
     v1.8's 2.0K on this pair. Find out why (the prompt chunk, `ABSORB_MMA`, the engine), on
     1.3.4 once it is staged.
@@ -762,8 +771,10 @@ escalation unresolved, all within churn); GLM's D and F only on Max's word.
   bundle, zig); the `svc:spark-hydra` Tailscale Service name (remote access
   through beast-gate is live since #155); the primary switch beast ↔
   spark-hydra on the hydra side (clients switch since #204); `PARALLEL=8`
-  (for DeepSeek: the tuning session at the top); native TensorFold 1.2.7 A/B;
-  the MTU A/B.
+  (for DeepSeek: the tuning session at the top); the MTU A/B. (The native
+  TensorFold A/B ran on 2026-11-23 with 1.2.10, not 1.2.7: D2 served GLM at
+  30.7 / 57.7 tok/s as rendered, 41.8 / 64.7 tuned, against v1.8's 48.4 / 78.4;
+  [report](reports/GLM_SERVING_WINDOW-2026-11-23.md).)
 - [x] **RoCE MTU 9000 — LIVE on both Sparks since 2026-11-17 14:20.**
   Staged with `spark-fabric-mtu.sh --stage` on each, both rebooted, then
   `--verify` passed on both: netdev MTU 9000 and RoCE `active_mtu 4096` on

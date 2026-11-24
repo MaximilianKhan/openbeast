@@ -289,6 +289,17 @@ def check_extra_args(args: list[str], engine: str, rev: str, ack: str) -> tuple[
     return errs, warns
 
 
+
+def _unique_pairs(pairs: list[tuple[str, object]]) -> dict:
+    """json object_pairs_hook: refuse a repeated key. json.loads keeps the last one silently,
+    so {"TF_GLM_DENSE_BITS":"4","TF_GLM_DENSE_BITS":"16"} would pass review as 4 and serve 16."""
+    out: dict = {}
+    for k, v in pairs:
+        if k in out:
+            raise ValueError(f"duplicate key {k!r}")
+        out[k] = v
+    return out
+
 def validate(p: Profile, backend: str | None = None) -> Profile:
     errs: list[str] = []
 
@@ -394,7 +405,7 @@ def validate(p: Profile, backend: str | None = None) -> Profile:
     renv = p.get("TENSORFOLD_RANK_ENV")
     if renv:
         try:
-            obj = json.loads(renv)
+            obj = json.loads(renv, object_pairs_hook=_unique_pairs)
             if not isinstance(obj, dict) or not obj or not all(isinstance(v, str) for v in obj.values()):
                 raise ValueError("not a non-empty object of strings")
         except ValueError as e:

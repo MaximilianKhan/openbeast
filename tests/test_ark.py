@@ -257,17 +257,31 @@ def test_repo_pins_and_the_catalog_agree():
         "linux-x86_64": ("bc77f6d4112dd67a3298bd2560b9f0e7c9a54d3c5b0036a9c52c0d27f6c7e9fd", 52293655),
         "linux-aarch64": ("c335c44f81d55847a5f81d74a94ac3d09f81bd6688247cff972cf1f63fc18105", 51781328),
         "darwin-arm64": ("76eb33cce9e297f156cfe5cbb0cec664b0266f4ecc3d103176adadc6aee21e58", 7651150)}
-    for e in (tf, old):
+    # A third, held entry: 1.3.3, the release the Hy4 EXL3 recipe names (ENGINE=tf-native-1.3.3).
+    # Pinned 2026-11-23 the same way: tag commit, local re-hash = signed .sha256 = GitHub digest.
+    h3 = cat.entries["tensorfold-1.3.3"]
+    assert h3.version == "1.3.3" and h3.commit == "1e4a32cb5e80f2908e4642f9e7ffe71ae63792cc"
+    assert h3.update == "manual" and h3.git == tf.git and "core" in h3.profiles
+    assert {a.platform: (a.sha256, a.size) for a in h3.artifacts} == {
+        "linux-x86_64": ("928c34949c4b23089fa240765e424e6cc95451568ec295f9729f906964fc17f2", 56763012),
+        "linux-aarch64": ("95e4388aba4af1f41a4f50265fd19f7636fa34007f8392a8723d8b2e1612491c", 56213123),
+        "darwin-arm64": ("90dfb2a3699c189a29da100a580986d5edd4e018d0f23273475e557b06d55dca", 8197148)}
+    for e in (tf, old, h3):
         for a in e.artifacts:
             assert (a.verified, a.signature_kind, a.signature_key, a.signature_prefix) == (
                 "upstream-sums", "ed25519-sums", "agents/ark/keys/tensorfold-release-key.pem",
                 "tensorfold-native-checksum-v1\n"), a.id
             assert a.filename == f"tensorfold-{e.version}-{a.platform.replace('darwin', 'macos')}.tar.gz", a.id
-    # Every native TensorFold release a shipped recipe pins has an ark copy.
+    # Every native TensorFold release a shipped recipe pins has an ark copy: the rendered
+    # profiles (TENSORFOLD_REQUIRES) and the recipes themselves (ENGINE=tf-native-X), which
+    # include recipes not rendered yet (hy4-flash-exl3-tensorfold-tp2 names 1.3.3).
     have = {e.version for e in cat.entries.values() if e.git == tf.git}
-    pinned = {m.group(1) for f in (REPO / "scripts/backends/models").glob("recipe-*.env")
-              for m in re.finditer(r"^TENSORFOLD_REQUIRES=(\S+)$", f.read_text(), re.M)}
-    assert pinned and pinned <= have, sorted(pinned - have)
+    rendered = {m.group(1) for f in (REPO / "scripts/backends/models").glob("recipe-*.env")
+                for m in re.finditer(r"^TENSORFOLD_REQUIRES=(\S+)$", f.read_text(), re.M)}
+    named = {m.group(1) for f in (REPO / "recipes").glob("*/recipe.env")
+             for m in re.finditer(r"^ENGINE=tf-native-(\S+?)(?:\s|$)", f.read_text(), re.M)}
+    assert rendered and named and "1.3.3" in named, (rendered, named)
+    assert rendered | named <= have, sorted((rendered | named) - have)
     assert (REPO / "agents/ark/keys/tensorfold-release-key.pem").read_bytes() == \
         (REPO / "scripts/backends/tensorfold/release-key.pem").read_bytes()
     ci = (REPO / ".github/workflows/ci.yml").read_text()
