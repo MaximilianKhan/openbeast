@@ -18,6 +18,8 @@
 8. [The stock pack is its own board row; the next Inkling arm runs on it](#8-the-stock-pack-is-its-own-board-row-the-next-inkling-arm-runs-on-it)
 9. [Read the kept Basalt log with a committed tool, and replay both dlsym stops](#9-read-the-kept-basalt-log-with-a-committed-tool-and-replay-both-dlsym-stops)
 10. [Stock Inkling 2 Mini on Basalt is the RTX 5090 default](#10-stock-inkling-2-mini-on-basalt-is-the-rtx-5090-default)
+11. [Basalt PR #632 as our local patch for Inkling](#11-basalt-pr-632-as-our-local-patch-for-inkling)
+12. [The improved Inkling arm I_T3: turns, cap, patch](#12-the-improved-inkling-arm-i_t3-turns-cap-patch)
 
 ---
 
@@ -385,3 +387,114 @@ it measured below the stock pack in both draws (−4, −2) with about twice
 the empty capped turns (§8). *Switch the reference rig now*: no, it is
 running I_UP8k on Basalt; Max applies the switch when the GPU frees up.
 
+---
+
+## 11. Basalt PR #632 as our local patch for Inkling
+
+**Decision.** Whenever we serve Inkling 2 Mini on Basalt, serve it from the
+v0.5.7 tree with upstream PR #632 applied as our own patch
+(`scripts/engines/patches/basalt-pr632-55f9be17.patch`, pinned to the PR
+head `55f9be172f247e50b623295662e2a5babbfbeeaa`, body sha256
+`af15ee07ecddababe54b57ae68b78b0d526602156332333ae50ba3f36748c0cd`),
+until upstream merges #632 and we re-pin past it. The patched tree is made
+offline by `scripts/engines/basalt-apply-pr632.sh` as a copy
+(`build/basalt-tree-pr632`); the unpatched tree stays for controls
+(`inkling-v5.sh start <pack> --patch none`). On `main` the same file is what
+the adapter's hook applies (`scripts/engines/basalt.sh`, §10), so a build of
+the 5090 default is the pin plus this patch from now on.
+
+**When / who.** Max, 2026-11-24 (~09:15 PST, through the coordinator).
+Timing rule with it: nothing the running ablation queue uses was changed
+until `QUEUE DONE`, so `I_UP8k` ran on the same unpatched Basalt as
+`I_T2`, `I_T2_s1` and `I_T2_stock`; the patched path became
+`inkling-v5.sh`'s default only after that.
+
+**Reason.** Upstream #588 is the largest single waste in the Inkling rows:
+203 (`I_T2`) and 167 (`I_T2_s1`) empty capped turns, 10.5% and 8.7% of all
+turns; in `I_T2_s1` the server log's "no answer" count equals the
+transcripts' (167), and 167 of its 491 budget wraps ended that way. The
+fix is two behavioural lines in the Python server, reviewed line by line
+([Strata report §16](STRATA_INKLING_5090-2026-11-23.md#16-openbeasts-local-patch-for-upstream-588-pr-632)),
+it applies to the pin exactly (the patched files equal the PR head's
+blobs), it needs no engine rebuild (the server is mounted from the build
+tree, not baked into the image), and Basalt's own `serve/tests` give the
+same results with and without it apart from its one added test, which
+passes. §15.8 item 2 asked for exactly this before Basalt can be a default; §10's
+adapter was built with the hook waiting for this file.
+
+**Alternatives considered.** *Re-pin to Basalt `main`*: rejected; #632 is
+not merged there either, and `main` has moved 39 commits past v0.5.7 with
+new Inkling kernels (INT8 KV attention, expert spill), an unreviewed engine
+change far larger than the fix. *Build the PR head*: rejected; its base is
+older than v0.5.7 (173 files differ). *`--answer-room 0`*: rejected; with
+no reserve there is no wrap at all, so every long think runs to the cap,
+the llama.cpp behaviour (Q_T2: 15% of turns empty at the cap), while the
+wrap already turns 52% of long thinks into a tool call. *Wait for
+upstream*: rejected by Max; the fix is small and the cost is measured.
+
+**Risk accepted, then checked.** After a wrap the model now has to write
+answer text before a call (Strata report §16.4). Checked live after the
+queue (§16.6): on requests rebuilt from turns that went empty, the
+unpatched server gave 5 empty replies of 16 on the one that reproduces
+#588 and the patched 0 of 16 (p 0.043); every patched agent reply made a
+tool call (48 of 48, unpatched 43); conformance PASS at c=1 and c=4. At
+`--answer-room auto` the patched replies often ran out of room while
+writing the call, which is why `I_T3` pairs the patch with
+`--answer-room 8192` (§12).
+
+---
+
+## 12. The improved Inkling arm I_T3: turns, cap, patch
+
+**Decision.** Stage arm `I_T3` (campaign `v5-thinking-first`): `I_T2_stock`
+(T2's switches at one stream on Basalt's stock pack, the 5090 default's
+row, §8, §10) with three changes: `--turns-per-wall-s 5` (180 turns for a
+900 s unit; the wall unchanged at ×2), a 16,384-token per-turn cap, and
+the serve's `--answer-room 8192` (thinking ≤ 8,192, answer ≥ 8,192), on
+the PR #632-patched Basalt (§11). Harness9 tree, one stream. Launcher
+`~/openbeast-runs/ink-I_T3-run.sh`, ready, **not launched**: Max launches.
+Follow-ups defined and not queued: `I_T3_t15` (turns back to 15 s),
+`I_T3_8k` (cap back to 8,192, answer room `auto`), and a seed repeat (§6's
+rule asks for one).
+
+**When / who.** Max asked for it 2026-11-24 ("look at all our ablations and
+create an improved test run which will hopefully bring completion parity
+or above to Qwen 3.8"; §6: "stock + the Basalt PR #632 local patch");
+designed after the ablation queue ended (14:28 PST).
+
+**Reason.** The four Inkling rows (`I_T2` 49, `I_T2_s1` 51, `I_T2_stock`
+53, `I_UP8k` 49) share one failure shape: every failure but the `dlsym`
+stop ran out of turns, at a median 23-30% of its wall, with no wall hit in
+284 units, and passes that land on the last turn flip between draws. The
+turn limit, not the model's time, is binding, against the design of
+wall-scaled turns. Two server mechanisms waste the turns it has: empty
+capped turns (#588: 105-226 per arm) and calls cut by the cap that the
+server still returns and the runner executes (73-88 per arm, 51-82
+truncated heredocs; a unit lost to a file it could never write whole).
+Each change targets one of these, with its counts, in
+[the Inkling report §12](V5_INKLING2_MINI_RTX5090-2026-11-24.md#12-the-improved-arm-i_t3-2026-11-24).
+
+**The pack.** Stock, by §6 and §8 (Max's brief; the better measured draw,
+half the empty capped turns). It also makes `I_T3` against `I_T2_stock`
+a comparison of the three changes alone (same pack, harness, era). The
+launcher's `PACK=derisked` runs it on the Derisked pack instead.
+
+**Left out, and why.** UP_8k's switches: `I_UP8k` tied `I_T2` (49); its
+forced-act turn made a call in 18 of 68 turns, because `enable_thinking:
+false` is `reasoning_effort: none` on Inkling, not a hard switch (56 forced
+turns thought to the cap). Effort `max`: unmeasured, and longer thinking
+means more wraps.
+
+**Alternatives considered.** *Only the turns* (the least change): rejected
+as the whole arm because the cut-call damage and #588 also cost turns and
+time and are measured; the follow-ups separate them afterwards. *A 16,384
+cap at `--answer-room auto`* (thinking ≤ 12,288): rejected; the evidence is
+about room for the answer, not more thinking, and more thinking means more
+wraps. *Turns at 7.5 s* (120): a middle step; 5 s puts every failed unit of
+the four rows (8-9 s a turn) on its wall, the design intent of wall-scaled
+turns.
+
+**Detectability.** `I_T2` → `I_T2_s1` flipped 2 units (churn ~3%), so a
+single `I_T3` row is descriptive unless it moves ~7 units (the MDE at that
+churn). Against `I_T2_stock` (53) and Q38U-T2 (52), §6's switch rule
+applies as written.

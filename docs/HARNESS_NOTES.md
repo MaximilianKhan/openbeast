@@ -500,6 +500,23 @@ an assisted harness has been read.
 | **Same harness, two models.** DS-UP 62 → GLM-UP 56: 0 in, 6 out (163_a, _e, _f, 168_a, 175, 190) | `v5_report.py --pair DS-UP:UP` | a model-and-weights difference, single seed; not a harness finding |
 | **Integrity scan: a relative `cd` read as leaving /tmp.** `cd /tmp/eval_x && (cd tests && ...)` made the fixture's own `tests/` count as the checkout's (one pass flagged in the first scan) | the sealed review in `evals/audit/reviews/` | **FIXED** (`evals/audit/integrity_scan.py`, not part of the era): only an absolute or home-relative target leaves /tmp; the old and fixed scanners differ on this one transcript of 1,196 |
 
+## Inkling 2 Mini (Basalt, RTX 5090): four arms and the improved arm (2026-11-24)
+
+Source: `I_T2` 49/71, `I_T2_s1` 51, `I_T2_stock` 53, `I_UP8k` 49 (one
+stream, Basalt v0.5.7);
+[the Inkling report §11](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md#11-the-ablations-and-the-improved-arm-i_t3-2026-11-24).
+The fifth model read under these harnesses, and the first whose turns are
+fast (~8-9 s each, ~500 tok/s).
+
+| Finding | Evidence | Status |
+|---|---|---|
+| **For a fast model the turn limit binds, not the wall.** Every failure but a validator stop ended on the turn limit at a median 23-30% of its wall; 0 wall hits in 284 units; 3-4 passes per arm land on the last turn. `--turns-per-wall-s 15` assumed ~15 s turns | the four rows | **ARM** `I_T3` (`--turns-per-wall-s 5`); the turn budget per model is a knob, like the cap |
+| **The seed noise is small on Inkling.** `I_T2` → `I_T2_s1`: 2 flips (both one way), churn ~3% against the 15% default; MDE ~7 units | `ablation.py` | measured; use it for Inkling contrasts |
+| **The forced-act turn does not work on Inkling on Basalt.** `enable_thinking: false` becomes `reasoning_effort: none`, which still thinks; 56 of 68 forced turns thought to the cap, 18 made a call (DeepSeek: 24 of 24) | `I_UP8k` `force_act_result` events | **REJECTED for Inkling**; a forced act needs a real off switch (or a forced `tool_choice`) per model |
+| **A call cut by the cap still runs.** Basalt closes a cut call's streamed arguments into valid JSON and returns it; the runner executes it: 51-82 truncated heredocs per arm, every one after a capped reply | transcripts; `serve/models/inkling2.py` `finish` | `I_T3` gives the answer 8,192 tokens; runner fix proposed for the next era (TODO) |
+| **Basalt #588 costs 5-11% of turns** (empty at the cap after a budget wrap) | transcripts = server log (167 in `I_T2_s1`) | **local patch** (PR #632, DECISIONS-2026-11-24 §6) |
+| **The Derisked edit may cost a few units of coding.** Stock 53 against 49 / 51 (p 0.22 / 0.63); stock passed `163_a`, `163_c`, `196`, failed by both Derisked seeds | `I_T2_stock` | **PROMISING, not significant**; decided for stock anyway (DECISIONS-2026-11-24 §8, §10: the 5090 default and `I_T3` run on it) |
+
 ## Next-era proposals from the 2026-11-22 runs (infra, not model behaviour)
 
 Four harness-side faults seen while the Hy4 and rig evals ran. None changes

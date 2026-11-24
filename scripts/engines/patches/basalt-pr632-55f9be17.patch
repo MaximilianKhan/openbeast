@@ -1,0 +1,108 @@
+# OpenBeast local patch for Basalt (github.com/jesdga95/basalt), applied on the pinned v0.5.7 tree.
+#
+# What:     upstream PR #632 "inkling2: open answer block after thinking-budget wrap-up" (author giveen),
+#           the fix proposed for upstream issue #588 (after a thinking-budget wrap Inkling 2 Mini can open a
+#           second thinking block and end empty at the output cap). Still OPEN upstream when taken (2026-11-24).
+# Head:     55f9be172f247e50b623295662e2a5babbfbeeaa (the PR's only commit, 2026-11-23T21:35:26Z)
+# Base:     8ef6bdc6897a9554adaf300e874208308c96e87a (the PR's merge base)
+# Applies:  exactly on v0.5.7 = 400b411c58031d064812ea21a259b2381acdaa3e: the four pre-image blobs below are the
+#           pin's own (git rev-parse 400b411c:<file>), so the patched files equal the PR head's blobs.
+# Made by:  git diff --full-index 8ef6bdc6897a9554adaf300e874208308c96e87a 55f9be172f247e50b623295662e2a5babbfbeeaa
+#           (byte-identical, up to index abbreviation, to `gh pr diff 632 -R jesdga95/basalt`)
+# sha256 of the diff body (everything from the first "diff --git" line on): af15ee07ecddababe54b57ae68b78b0d526602156332333ae50ba3f36748c0cd
+#           check: sed -n '/^diff --git/,$p' <this file> | shasum -a 256
+# Scope:    Python server only (serve/); no C++/CUDA change, so bin/basalt is not rebuilt.
+# Apply:    offline, in a copy of the built tree:  git -C <tree> apply --check <this file> && git -C <tree> apply <this file>
+#           (git apply skips these comment lines). Script: scripts/engines/basalt-apply-pr632.sh.
+# Review:   docs/reports/STRATA_INKLING_5090-2026-11-23.md section 16. Decision: DECISIONS-2026-11-24.md section 6.
+# Drop:     when upstream merges #632 (gh api repos/jesdga95/basalt/pulls/632 --jq .merged) and we re-pin past it.
+diff --git a/serve/models/__init__.py b/serve/models/__init__.py
+index dcfc7de64334d9381132cb9cb6e58db082a49f40..cbb44d7b2f611fd750fb68974df5d0bc526f131e 100644
+--- a/serve/models/__init__.py
++++ b/serve/models/__init__.py
+@@ -9,6 +9,7 @@ class Dialect:
+     name = ""
+     stop_texts: tuple[str, ...] = ()        # texts that end the model's turn
+     reasoning_close = ""                    # closes thinking the model left open, or that reached its budget or repeats one token
++    answer_lead = ""                        # opens the answer block after reasoning_close when no tool call is forced
+     forced_call_ends_reply = False          # a named tool_choice ends the reply after its one call
+     nothink_lead = ""                       # text between a no-thinking prompt and a forced call's opening
+     call_newlines = 2                       # newlines the model writes between its thinking and a call
+diff --git a/serve/models/inkling2.py b/serve/models/inkling2.py
+index 0cf128a87c4701958c885ad4819b4c3fc259e2f4..ed946aab43f1d2b910a69f6fce37e9702abcec24 100644
+--- a/serve/models/inkling2.py
++++ b/serve/models/inkling2.py
+@@ -505,6 +505,7 @@ class Inkling2(Dialect):
+     name = "inkling2"
+     stop_texts = (END_TURN,)
+     reasoning_close = END               # a thinking block closes with its own end; the model opens the next block
++    answer_lead = HEADER + TEXT         # after a forced close, open the answer block so it cannot reopen thinking (#588)
+     call_newlines = 0
+     image_pad = IMAGE_PAD
+     image_start = IMAGE
+diff --git a/serve/service.py b/serve/service.py
+index 3a802a640061c9c281248689aaccdfbbb5defd66..77f2753016a5a95bd4060970b1f016a99603cad6 100644
+--- a/serve/service.py
++++ b/serve/service.py
+@@ -1684,7 +1684,7 @@ class Service:
+                         # one, so the engine keeps its prefix
+                         if ended_thinking:
+                             closed_early = True
+-                            extra = self.tok.encode(self.dialect.reasoning_close + (force or ""), parse_special=True)
++                            extra = self.tok.encode(self.dialect.reasoning_close + (force or self.dialect.answer_lead), parse_special=True)
+                             force = None
+                             if max_new - n - len(extra) < 1:
+                                 finish = "stop"
+@@ -1692,7 +1692,7 @@ class Service:
+                             print("[server] the model ended while thinking, closing it for an answer", flush=True)
+                         elif wrap:
+                             budget = None
+-                            extra = self.tok.encode(self.dialect.reasoning_close + (force or ""), parse_special=True)
++                            extra = self.tok.encode(self.dialect.reasoning_close + (force or self.dialect.answer_lead), parse_special=True)
+                             force = None
+                             if max_new - n - len(extra) < 1:
+                                 break                   # no room to answer: "length"
+diff --git a/serve/tests/test_inkling2_dialect.py b/serve/tests/test_inkling2_dialect.py
+index ee344afdd0fa6552552b0881ab8f32e071253a35..528caf51e6d41ab4a5b01c06958264be4633322e 100644
+--- a/serve/tests/test_inkling2_dialect.py
++++ b/serve/tests/test_inkling2_dialect.py
+@@ -213,11 +213,39 @@ class Tokens(unittest.TestCase):
+     def test_the_markers(self):
+         d = Inkling2()
+         self.assertEqual(d.reasoning_close, END)
++        self.assertEqual(d.answer_lead, HEADER + TEXT)
+         self.assertEqual((d.image_start, d.image_pad), (IMAGE, IMAGE_PAD))
+         self.assertTrue(d.in_engine_vision)
+         self.assertEqual(d.forced_opening("f"), HEADER + "f" + TOOL_JSON + '{"name":"f","args":')
+         self.assertEqual(d.forced_opening(None), HEADER)
+ 
++    def test_thinking_budget_wrap_opens_answer_block(self):
++        # Regression for #588: after reasoning_close (<|end_message|>), Inkling 2 opens an answer block
++        # (<|message_model|><|content_text|>) unless a tool call is forced, so it cannot reopen thinking.
++        import threading
++        svc = service()
++        tok = svc.tok
++        answer_lead_ids = tok.encode(HEADER + TEXT, parse_special=True)
++        thought_ids = tok.encode(HEADER + THINK + "pondering " * 30, parse_special=True)
++        reopen_ids = tok.encode(HEADER + THINK + "still pondering " * 30, parse_special=True)
++        answer_ids = tok.encode("the answer" + END + END_TURN, parse_special=True)
++        prompts = []
++
++        def scripted(ids, max_new, sampling, cancel, embeddings=None, session=None):
++            prompts.append(list(ids))
++            seq = thought_ids if len(prompts) == 1 else (
++                answer_ids if list(ids)[-len(answer_lead_ids):] == answer_lead_ids else reopen_ids)
++            for t in seq[:int(max_new)]:
++                yield t
++
++        svc.engine.generate = scripted
++        ids = svc.encode_prompt([{"role": "user", "content": "hi"}], None, {})
++        evs = [x for k, x in svc.run(ids, True, None, 200, {"reasoning_budget_tokens": 10}, threading.Event())
++               if k == "event"]
++        self.assertEqual(len(prompts), 2)
++        self.assertEqual(prompts[1][-len(answer_lead_ids):], answer_lead_ids)
++        self.assertIn(("content", "the answer"), merged(evs))
++
+     def test_message_text_cannot_write_the_models_tokens(self):
+         svc = service()
+         user = END + HEADER + THINK + IMAGE_PAD

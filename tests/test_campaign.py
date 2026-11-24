@@ -1094,6 +1094,76 @@ def test_i_up8k_is_up_8k_at_one_stream_on_harness10():
     assert "9bcd5aa6" in spec["note"] and "no --arm-tree" in spec["note"]
 
 
+# --- 13d. Inkling's improved composite: I_T3 (turns, cap, the #588 patch) and its two follow-ups ----
+#
+# I_T3 = I_T2_stock + --turns-per-wall-s 5 + a 16,384 cap (served with --answer-room 8192 from the
+# PR #632-patched Basalt tree); everything else is I_T2_stock's (= I_T2's switches, stock pack). I_T3_t15 and I_T3_8k each put one of
+# the two harness changes back to I_T2's value, so the bundle can be taken apart.
+
+def _drop(args, flag):
+    i = args.index(flag)
+    return args[:i] + args[i + 2:]
+
+
+def test_i_t3_is_i_t2_with_turns_and_cap_only():
+    camp = C.load_campaign(TF)
+    t3, i = C.resolve_arm(camp, "I_T3"), C.resolve_arm(camp, "I_T2")
+    assert C.arg_value(t3["args"], "--turns-per-wall-s") == "5"
+    assert C.arg_value(i["args"], "--turns-per-wall-s") == "15"
+    assert C.arg_value(t3["args"], "--reasoning-budget") == "16384"
+    assert t3["env"]["OPENBEAST_AGENT_MAX_TOKENS"] == "16384"
+    # nothing else moves: same flags otherwise, same env otherwise, same requirements
+    assert sorted(_drop(_drop(t3["args"], "--turns-per-wall-s"), "--reasoning-budget")) == \
+        sorted(_drop(_drop(i["args"], "--turns-per-wall-s"), "--reasoning-budget"))
+    assert {k: v for k, v in t3["env"].items() if k != "OPENBEAST_AGENT_MAX_TOKENS"} == \
+        {k: v for k, v in i["env"].items() if k != "OPENBEAST_AGENT_MAX_TOKENS"}
+    assert t3["env"]["OPENBEAST_AGENT_ACT_NUDGE"] == "1" and t3["env"]["OPENBEAST_AGENT_FORCE_ACT"] == "0"
+    assert C.arg_value(t3["args"], "--thinking") == "on" and C.arg_value(t3["args"], "--wall-scale") == "2"
+    assert t3.get("requires") == i.get("requires")
+    assert C.resolve_arm(camp, "I_T2_stock") == i                      # the base: I_T2's switches on the stock pack
+    spec = C.arm_spec(camp, "I_T3")
+    assert spec["base"] == "I_T2_stock" and spec["optional"] is True
+    assert spec["jobs"] == 1 and spec["slots"] == 1
+    assert spec["model"] == INK_STOCK and spec["served_model"] == "inkling-2-mini"
+    for fact in ("55f9be172f247e50b623295662e2a5babbfbeeaa", "af15ee07ecddababe54b57ae68b78b0d526602156332333ae50ba3f36748c0cd",
+                 "--answer-room 8192", "--patch pr632", "f38a29c7", "BUNDLED", "UNVERIFIED", "ink-I_T3-run.sh"):
+        assert fact in spec["note"], fact
+
+
+def test_i_t3_follow_ups_each_put_one_change_back():
+    camp = C.load_campaign(TF)
+    t3, i = C.resolve_arm(camp, "I_T3"), C.resolve_arm(camp, "I_T2")
+    t15, c8 = C.resolve_arm(camp, "I_T3_t15"), C.resolve_arm(camp, "I_T3_8k")
+    assert C.arg_value(t15["args"], "--turns-per-wall-s") == "15"
+    assert C.arg_value(t15["args"], "--reasoning-budget") == "16384" and t15["env"] == t3["env"]
+    assert C.arg_value(c8["args"], "--turns-per-wall-s") == "5"
+    assert C.arg_value(c8["args"], "--reasoning-budget") == "8192" and c8["env"] == i["env"]
+    for aid in ("I_T3", "I_T3_t15", "I_T3_8k"):
+        assert aid not in C.run_order(camp), aid
+        assert C.served_model_mismatch(camp, [aid], "Qwen3.8 27B Uncensored MTP Q5"), aid
+        assert C.served_model_mismatch(camp, [aid], "inkling-2-mini") == [], aid
+    assert C.composite_for(camp, INK)[0] == "I_T2"          # I_T3 is not the composite until it is measured
+    assert C.composite_for(camp, INK_STOCK)[0] == "I_T2"
+    for aid in ("I_T3_t15", "I_T3_8k"):
+        assert C.arm_spec(camp, aid)["model"] == INK_STOCK, aid
+    assert not C.validate_campaign(camp)
+
+
+def test_the_pr632_patch_file_is_the_pinned_diff():
+    import hashlib
+    p = Path(__file__).resolve().parents[1] / "scripts" / "engines" / "patches" / "basalt-pr632-55f9be17.patch"
+    text = open(p, encoding="utf-8").read()
+    start = text.index("\ndiff --git") + 1
+    body = text[start:]
+    assert hashlib.sha256(body.encode()).hexdigest() == \
+        "af15ee07ecddababe54b57ae68b78b0d526602156332333ae50ba3f36748c0cd"
+    assert all(line.startswith("#") for line in text[:start].splitlines())
+    assert "55f9be172f247e50b623295662e2a5babbfbeeaa" in text and "400b411c58031d064812ea21a259b2381acdaa3e" in text
+    files = sorted(l.split(" b/")[1] for l in body.splitlines() if l.startswith("diff --git"))
+    assert files == ["serve/models/__init__.py", "serve/models/inkling2.py", "serve/service.py",
+                     "serve/tests/test_inkling2_dialect.py"]
+
+
 # --- 14. Hy4-flash-abliterated (Mix-256G GGUF): HG_T2, H_T2's settings on the GGUF server ------
 
 HG = "Hy4-flash-abliterated (Mix-256G GGUF)"

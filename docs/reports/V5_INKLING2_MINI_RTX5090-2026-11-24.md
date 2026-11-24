@@ -10,7 +10,9 @@
 > `INK-T2-S1`, a seed replicate that never ranks) and `I_T2_stock`
 > (Basalt's stock pack in place of the Derisked one: 53/71, row
 > `INK-T2-STOCK`, SCORE 78.2, now #4 and the top RTX 5090 row). The third,
-> `I_UP8k`, is **still running** on the rig (§10.9). Engine choice and its review:
+> `I_UP8k`, ended 14:28 PST at 49/71 (§10.9, read in §12.6). **The
+> improved arm `I_T3`** (stock pack + wall-bound turns + a 16,384 cap with
+> an 8,192 answer room + Basalt's #588 patch) is staged, not launched: §12. Engine choice and its review:
 > [STRATA_INKLING_5090-2026-11-23.md](STRATA_INKLING_5090-2026-11-23.md)
 > §11 and §15; decisions: [DECISIONS-2026-11-24.md](DECISIONS-2026-11-24.md).
 
@@ -531,7 +533,9 @@ parser, as on llama.cpp, would return neither as a call. In this row:
   `<function_calls>`, so no XML call leaked through as text either.
 - **Effect on the comparison:** these paths can only add tool calls that a
   stricter server would have dropped, so they can only help Inkling's row
-  against Q38U-T2's. They are what a Basalt user gets, so the row keeps
+  against Q38U-T2's. **Corrected in §12.3:** a call cut inside its
+  arguments is also returned, closed into valid JSON, and the runner runs
+  it (truncated heredocs, truncated files), so this path also hurts. They are what a Basalt user gets, so the row keeps
   them, named here.
 
 ### 6.3 The server log was not kept
@@ -961,15 +965,15 @@ arm is the stock one: the uncensored-preferred policy is a tie-breaker
 between equals, and here the measured direction (passes, empty turns,
 divergence) favours the stock pack; Derisked stays measured, not dropped.
 
-### 10.9 I_UP8k (running)
+### 10.9 I_UP8k
 
 `I_UP8k` (DeepSeek's UP_8k setup at one stream, harness10 tree `d41c2c47`,
-era `9bcd5aa6`, the Derisked pack) started 2026-11-24 18:25:28 UTC and was
-at unit 32 of 71 at 19:01 UTC; the campaign estimates about 4.2 h. Its
-serve passed the same checks (Derisked pack, DNS probe failing as
-intended) plus a thinking-off probe. **Placeholder:** its row, scan,
-`capped_turns.py`, `basalt_log.py` (`basalt-20261124-102527-c9c29fce36b3.log`)
-and any dlsym replay land here when it ends.
+era `9bcd5aa6`, the Derisked pack) ran 2026-11-24 18:25:29 to 22:28:05 UTC
+and passed **49/71**, the same count as `I_T2`. Read for the improved
+arm's design in §12.6 (its forced-act turn made a call in 18 of 68 turns
+on Inkling). Still to do for its row: the sealed integrity review (the
+scan flags one transcript, §12.6), `basalt_log.py` on
+`basalt-20261124-102527-c9c29fce36b3.log`, the `dlsym` replay, the board.
 
 ## 11. Sources
 
@@ -1008,3 +1012,299 @@ and any dlsym replay land here when it ends.
   logs `~/openbeast-runs/basalt-server-logs/`, the stock pack and its
   download log `~/openbeast-runs/inkling-perf-2026-11-23/{weights/basalt-Inkling-2-Mini-c2afac3a,logs/dl-all.log}`,
   the `dlsym` replay `~/ob-cal/.claude/gemm-replay-ink-ab/`.
+
+## 12. The improved arm I_T3 (2026-11-24)
+
+> **Added 2026-11-24 (evening).** Max: "if Inkling 2 Mini is truly this
+> performant and fast, we can look at all our ablations and create an
+> improved test run which will hopefully bring completion parity or above
+> to Qwen 3.8". This section reads all four Inkling arms (`I_T2`,
+> `I_T2_s1`, `I_T2_stock`, `I_UP8k`) for what failed and why, and designs
+> arm `I_T3` on the stock pack (§10, DECISIONS-2026-11-24 §8). Decision
+> records: [DECISIONS-2026-11-24.md](DECISIONS-2026-11-24.md) §11 (the #588
+> patch) and §12 (`I_T3`). §10 has the seed-noise and stock readings; this
+> section adds the per-unit failure mechanisms and `I_UP8k`.
+
+### 12.1 Sources and how to regenerate
+
+- Result files (rig): `I_T2` as in §11;
+  `~/ob-ink2/.claude/worktrees/h9/evals/results/eval-inkling-2-mini-derisked-basalt-nvfp4-mx8-v5-thinking-first-i-t2-s1-20261124-095656.json`
+  (51/71); `…/eval-inkling-2-mini-basalt-nvfp4-mx8-stock-v5-thinking-first-i-t2-stock-20261124-140740.json`
+  (53/71); `~/ob-ink2/evals/results/eval-inkling-2-mini-derisked-basalt-nvfp4-mx8-v5-thinking-first-i-up8k-20261124-182529.json`
+  (§12.6). Transcripts: `~/ob-ink2/.claude/worktrees/h9/agents/logs/`
+  (`I_T2_s1` 09:56:56-14:07:28Z, `I_T2_stock` 14:07:40-18:25:17Z),
+  `~/ob-ink2/agents/logs/` (`I_UP8k`).
+- Server logs, kept this time (`~/openbeast-runs/basalt-logsaver.sh`, one
+  file per container): `~/openbeast-runs/basalt-server-logs/basalt-20261124-022403-131da79751c8.log`
+  (`I_T2_s1`), `…-060744-54e3597ff960.log` (`I_T2_stock`),
+  `…-102527-c9c29fce36b3.log` (`I_UP8k`).
+- Per arm, as for `I_T2` (§3.4): `integrity_scan.py --tz UTC --logs-dir
+  <copy> --until <arm>=<END from the campaign log> --json scan.json
+  "<arm>=<results>@<git archive f38a29c7>"`, then `capped_turns.py
+  scan.json`. Scans: `I_T2_s1` and `I_T2_stock` 71 transcripts, 71 units,
+  **0 contaminated**; refused `web_search` / `fetch` attempts only (Knuth's
+  Algorithm D in `163_*`, Heston in `183`, CPython `re` in `192`), no
+  shell route off the host found by the scanner.
+- Paired tests: `evals/ablation.py --force A B` (per language) and its
+  `mcnemar_p` / `mde` over all units; the Q38U-T2 pair uses the merged
+  Q_T2 file of §1's recipe and drops the same 6 units as §5.
+- The per-turn readings below (wall fraction, turn limit, cut calls,
+  truncated heredocs, the server-log alignment) were made with short
+  scripts over those copies: wall = the unit's `max_wall_s` × 2 (harness9
+  tasks); turn limit = `iterations >= max_iter`; a cut call = a
+  `tool_call` after a `response_model` with `finish_reason` `length`; a
+  truncated heredoc = a bash result containing `delimited by
+  end-of-file`; the alignment matches each transcript `response_model`
+  to the server's `s1 done` line at or just before it (UTC, all 1,911
+  of `I_T2_s1` matched).
+
+### 12.2 The rows
+
+| Arm | Pack | Passed | Empty capped (#588) | Cut calls | Truncated heredocs | Ended at the turn limit (passed) | Wall hits | Σ unit time |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| I_T2 | Derisked | 49/71 | 203 in 21 units | 88 | 51 | 21 (3) | 0 | 4.47 h |
+| I_T2_s1 (`--seed 1`) | Derisked | 51/71 | 167 in 17 units | 73 | 56 | 21 (3) | 0 | 4.13 h |
+| I_T2_stock | stock | **53/71** | 105 in 12 units | 83 | 82 | 21 (4) | 0 | 4.26 h |
+| Q38U-T2 (for scale) | | 52/71 scored (54 raw) | 305 in 41 units | 5 | not counted | 14 (5) | 9 | 10.84 h |
+
+Server logs (the `I_T2` log was lost, §6.3): `I_T2_s1` 1,883 replies, 463
+budget wraps (258 then `stop`, 205 `length`), **167 "no answer"**, equal
+to the transcripts' empty capped turns; decode median 499 tok/s (p10
+387, p90 615) on replies of 1,000+ tokens, draft acceptance median 91%.
+`I_T2_stock` 1,974 replies, 415 wraps, **105 "no answer"**, decode median
+460 tok/s, acceptance 89%.
+
+### 12.3 Failure taxonomy, per unit
+
+Every unit that failed in at least one Inkling arm. Cells: verdict class
+from the validator line · turns used / turn limit · share of the unit's
+wall used · empty capped turns / cut calls. Classes: `cpu-budget` (the
+validator's CPU budget), `wrong-answer`, `crash/exception`, `build-fail`,
+`missing/incomplete` (missing file or function), `dlsym-stop` (§3.6).
+"Levers": which change of §12.5 bears on the unit, from these numbers.
+
+| Unit | Q38U-T2 | I_T2 | I_T2_s1 | I_T2_stock | Levers |
+|---|---|---|---|---|---|
+| 122_gemm_blocked_d | fail (excl.) | dlsym-stop · 9/60 · 2% · 0/0 | dlsym-stop · 12/60 · 2% · 0/0 | dlsym-stop · 24/60 · 4% · 0/0 | none (validator, next era) |
+| 122_gemm_blocked_e | fail | crash/exception · 7/60 · 2% · 0/0 | PASS · 60/60 | PASS · 53/60 | turns |
+| 158_karatsuba_bytes_c | PASS | wrong-answer · 60/60 · 23% · 12/19 | PASS · 27/60 | PASS · 21/60 | turns, cap, #588 |
+| 163_bigint_divmod_a | PASS | cpu-budget · 58/60 · 44% · 17/0 | wrong-answer · 60/60 · 22% · 10/0 | PASS · 60/60 | turns, #588, design |
+| 163_bigint_divmod_b | PASS | wrong-answer · 60/60 · 16% · 4/1 | cpu-budget · 60/60 · 17% · 0/1 | wrong-answer · 60/60 · 36% · 0/13 | turns, cap, design |
+| 163_bigint_divmod_c | PASS | wrong-answer · 60/60 · 44% · 0/2 | cpu-budget · 60/60 · 31% · 19/2 | PASS · 57/60 | turns, #588, design |
+| 163_bigint_divmod_d | fail | cpu-budget · 60/60 · 39% · 15/12 | missing/incomplete · 60/60 · 43% · 38/0 | wrong-answer · 60/60 · 24% · 2/4 | turns, cap, #588, design |
+| 163_bigint_divmod_e | PASS | wrong-answer · 60/60 · 11% · 2/2 | wrong-answer · 60/60 · 24% · 2/3 | build-fail · 60/60 · 15% · 0/2 | turns, cap |
+| 163_bigint_divmod_f | fail | missing/incomplete · 60/60 · 30% · 24/0 | build-fail · 60/60 · 22% · 0/8 | missing/incomplete · 60/60 · 25% · 7/6 | turns, cap, #588 |
+| 168_linearizability_kv_a | fail | cpu-budget · 59/60 · 37% · 21/2 | cpu-budget · 60/60 · 49% · 11/2 | cpu-budget · 60/60 · 79% · 9/0 | turns, #588, design |
+| 168_linearizability_kv_b | fail | cpu-budget · 60/60 · 25% · 1/5 | crash/exception · 60/60 · 51% · 11/4 | missing/incomplete · 60/60 · 15% · 0/0 | turns, cap, #588, design |
+| 168_linearizability_kv_c | fail | cpu-budget · 60/60 · 65% · 35/2 | cpu-budget · 49/60 · 31% · 12/1 | cpu-budget · 60/60 · 51% · 19/1 | turns, #588, design |
+| 168_linearizability_kv_d | fail | cpu-budget · 60/60 · 59% · 17/2 | cpu-budget · 60/60 · 28% · 1/1 | build-fail · 60/60 · 58% · 25/8 | turns, cap, #588, design |
+| 168_linearizability_kv_e | fail | cpu-budget · 60/60 · 73% · 14/4 | build-fail · 60/60 · 58% · 14/5 | cpu-budget · 60/60 · 50% · 3/3 | turns, cap, #588, design |
+| 168_linearizability_kv_f | fail (lost) | cpu-budget · 60/60 · 32% · 2/4 | crash/exception · 60/60 · 21% · 0/1 | build-fail · 60/60 · 21% · 0/2 | turns, cap, design |
+| 173_taskgroup_cancel | fail | crash/exception · 60/60 · 28% · 4/0 | crash/exception · 60/60 · 19% · 1/0 | wrong-answer · 60/60 · 35% · 0/21 | turns, cap |
+| 176_intermittent_500s_a | PASS | wrong-answer · 100/100 · 10% · 0/1 | wrong-answer · 100/100 · 8% · 0/0 | wrong-answer · 100/100 · 12% · 0/0 | turns |
+| 178_codebase_qa | PASS | PASS · 60/60 | PASS · 60/60 | missing/incomplete · 60/60 · 15% · 0/0 | turns |
+| 183_heston_little_trap | fail | crash/exception · 60/60 · 20% · 2/1 | crash/exception · 60/60 · 36% · 3/3 | crash/exception · 60/60 · 35% · 15/6 | turns, cap, #588 |
+| 190_autograd_mlp | fail (lost) | wrong-answer · 60/60 · 16% · 2/5 | missing/incomplete · 60/60 · 27% · 1/2 | wrong-answer · 60/60 · 30% · 2/7 | turns, cap |
+| 192_pike_regex | fail | missing/incomplete · 60/60 · 47% · 24/20 | missing/incomplete · 60/60 · 34% · 13/15 | missing/incomplete · 60/60 · 13% · 3/0 | turns, cap, #588 |
+| 195_riscv_insn_budget | fail | crash/exception · 60/60 · 17% · 3/0 | wrong-answer · 60/60 · 32% · 6/6 | wrong-answer · 60/60 · 33% · 17/0 | turns, cap, #588 |
+| 196_polyphase_resampler | PASS | wrong-answer · 60/60 · 15% · 0/0 | cpu-budget · 60/60 · 66% · 2/0 | PASS · 60/60 | turns, design |
+
+Reading the table:
+
+- **Every failure but one ran to the turn limit.** In all three arms the
+  only failed unit that did not use (nearly) all its turns is
+  `122_gemm_blocked_d`, the validator's `dlsym` stop (§3.6). 18 of
+  `I_T2`'s 22 failures, 18 of `I_T2_s1`'s 20 and 17 of `I_T2_stock`'s 18
+  ended exactly at the limit (the rest at 58-59 or after a crash in
+  turn 7-12). They used a median 26% / 30% / 28% of their wall (max 73% /
+  66% / 79%); median 8.7 / 8.9 / 8.2 s a turn. **No Inkling unit has hit
+  its wall in 213 units.**
+- **Passes land on the last turn.** 3 / 3 / 4 passes per arm ended at the
+  turn limit (`167_q15_biquad_f` in all three, `175` and `178` in `I_T2`,
+  `122_gemm_blocked_e` and `178` in `I_T2_s1`, `163_bigint_divmod_a`,
+  `188_gmm_em` and `196` in `I_T2_stock`), and `178_codebase_qa`, a pass
+  at the limit in both Derisked arms, failed at the limit on stock. The
+  limit is where the coin lands.
+- **Qwen3.8 spent its wall where it won.** On the six units Q38U-T2
+  passes and every Derisked run failed (`163_a/b/c/e`, `176_a`, `196`),
+  Q38U-T2 used 1,156-1,800 s (two at the wall); Inkling used 196-1,197 s
+  of the same 1,800-3,000 s walls.
+- **168 looks like a design failure, as on DeepSeek.** 14 of 18
+  `168_linearizability_kv` attempts failed on the CPU budget or a crash,
+  the other 4 on a build failure or a missing file. The CPU-budget timeout
+  is the signature DeepSeek's 168 investigation traced to a global search
+  where a per-key split is the tractable design (HARNESS_NOTES); Inkling's
+  code was not read for this. Q38U-T2 passed none either.
+  More turns or a bigger cap will not obviously fix it; the planning lines
+  (UP) target it.
+- **Cut calls are not harmless here.** Basalt returns a call that the cap
+  cut, with its streamed arguments closed into valid JSON (`serve/models/inkling2.py`
+  `finish`, 240-266; the non-streamed reply is collected from the same
+  stream, `serve/api/openai.py` `openai_collect`; `service.py:1376` runs
+  the parser with `stream_tools=True`). The runner executes it. So a long
+  write cut by the cap runs as a truncated heredoc or writes a truncated
+  file: 51 / 56 / 82 bash results say `here-document … delimited by
+  end-of-file`, every one after a capped reply, and 82 of `I_T2`'s 88 cut
+  calls had arguments over 4,000 characters. `192_pike_regex` in `I_T2`
+  rewrote a ~630-line `rx.py` 15 times and every write was cut (the
+  answer room after a wrap is 2,048 tokens); it ended "rx.py defines no
+  search()". This corrects §6.2's "can only help Inkling's row": the
+  lenient close helps when the cut is in the end marker and hurts when the
+  cut is in the arguments.
+
+### 12.4 Noise
+
+`I_T2` → `I_T2_s1` (same pack, harness, serve; a seeded draw against a
+clock-seeded one): **2 units flipped, both into `I_T2_s1`**
+(`122_gemm_blocked_e`, `158_karatsuba_bytes_c`), 0 the other way: churn
+about 3% (2/71), far below `ablation.py`'s default 15%. With that churn
+its MDE over 71 units is **7** (`mde(71, 0.028)`); at the default churn,
+10. An exact McNemar needs 6-0 for p < 0.05. So a single new row is
+descriptive unless it gains about 7; parity with Q38U-T2 (+1 to +3 over
+the Derisked rows) is inside the noise however it lands. The two
+Derisked rows' 49 and 51 are one baseline band; the stock row's 53 is
+`I_T3`'s base.
+
+| Pair (all 71 units) | b (in) | c (out) | net | p |
+|---|---:|---:|---:|---:|
+| I_T2 → I_T2_s1 | 2 | 0 | +2 | 0.50 |
+| I_T2 → I_T2_stock | 5 | 1 | +4 | 0.22 |
+| I_T2_s1 → I_T2_stock | 3 | 1 | +2 | 0.63 |
+
+| Against Q38U-T2 (the 65 units both measured, §5) | Q | Inkling | b | c | net | p |
+|---|---:|---:|---:|---:|---:|---:|
+| I_T2 | 52 | 46 | 1 | 7 | −6 | 0.07 |
+| I_T2_s1 | 52 | 48 | 2 | 6 | −4 | 0.29 |
+| I_T2_stock | 52 | 50 | 2 | 4 | −2 | 0.69 |
+
+### 12.5 The levers, with evidence and an estimate
+
+Estimates are the units a lever might move on this suite, from the
+mechanism counts above; none is a measurement until an arm runs.
+
+1. **Turns (wall-bound turns).** T2's `--turns-per-wall-s 15` gives a
+   900 s unit 60 turns. For Inkling the turn limit, not the wall, ended
+   every failure (§12.3). `run_eval.py`'s own design is that "the unit's
+   wall budget … is the binding limit and the turn cap only stops a loop";
+   at 15 s a turn it is not, for a model whose turns take 8-9 s.
+   `--turns-per-wall-s 5` gives 180 turns at the same 1,800 s wall
+   (Q38U-T2's wall). Precedent: GLM arm A → B (wall-scaled turns) +5,
+   when GLM's failures "ended on the turn cap at 10-30% of their wall"
+   (HARNESS_NOTES, Headroom). Targets: the 3-4 passes per arm decided on
+   the last turn, and the units Qwen3.8 won by spending its wall
+   (`163_a/b/c/e`, `176_a`, `196`). **Estimate +1 to +4.** Cost: failed
+   units run to the wall; the arm grows from ~4.5 h to ~8-10 h, still
+   under Q_T2's ~13.5 h. Passing units are as fast as before.
+2. **Cap and answer room (16,384 cap, `--answer-room 8192`).** Thinking up
+   to 8,192 (`I_T2`: 6,144, Q_T2: up to 8,192) and at least 8,192 tokens
+   for the answer (`I_T2`: 2,048 after a wrap). Targets: the 73-88 cut
+   calls and 51-82 truncated writes per arm (`192` above, `158_c` 19 cut
+   calls, `163_d` 12, `173` 21 on stock), and fewer wraps. DeepSeek lost
+   units at 16K (U → U_8k +4, HARNESS_NOTES) because a 16K turn took ~9
+   minutes at ~30 tok/s and the wall bound; Inkling at ~460-500 tok/s
+   writes 16K in ~33 s and never reached its wall. **Estimate 0 to +2**,
+   mostly 192-like units; risk: a long empty turn (if #588 survived) now
+   costs ~33 s instead of ~16.
+3. **The #588 patch** (PR #632, DECISIONS §11; Strata report §16): 105-203
+   empty capped turns per arm (5-10% of turns), concentrated in failures
+   (`163_d` in `I_T2_s1`: 38 of 60 turns; `168_c` in `I_T2`: 35). With
+   more turns this matters less for the turn budget, more for time.
+   **Estimate 0 to +2.** Risk: after a wrap the model writes text first
+   (§16.4 there).
+4. **The stock pack.** `I_T2_stock` 53/71: +4 / +2 over the two Derisked
+   rows (p 0.22 / 0.63), passing three units both Derisked draws failed
+   (`163_a`, `163_c`, `196`, all Q38U-T2 wins), with 37-49% fewer empty
+   capped turns (§10.3). Not significant; decided anyway (DECISIONS §8:
+   the improved arm runs on stock, and stock is the 5090 default, §10).
+   So `I_T3`'s base is `I_T2_stock`, and the pack is not one of its changes.
+5. **Thinking effort `max`.** Not measured. The runner sends only
+   `enable_thinking: true`; Basalt then applies the template's default
+   `high` (0.9), and a server `--reasoning-effort max` would apply 0.99 to
+   every thinking request (`serve/service.py` `thinking_kwargs`,
+   1043-1049; `serve/frontend.py` 495-517, which drops `enable_thinking:
+   true`). Longer thinking means more wraps and more #588 exposure on an
+   arm whose failures are turn-bound, not think-bound. **Not included**;
+   a follow-up after `I_T3` if its failures turn out think-bound.
+6. **UP_8k's switches** (forced-act turn, planning lines,
+   done-when-verified, no web tools; harness10): `I_UP8k`, §12.6.
+7. **Lenient parsing.** Not a lever we can switch (a server property),
+   but its sign is now known: it executes cut calls (§12.3). The cap and
+   answer room (2) is how the arm limits the damage; a runner rule "do not
+   execute a call from a reply that ended `length`" would end it, but that
+   is a harness change (an era move), proposed for the next era (TODO).
+
+### 12.6 I_UP8k: DeepSeek's UP_8k setup on Inkling
+
+`I_UP8k` (harness10, era `9bcd5aa6`, Derisked pack, the same unpatched
+Basalt; 18:25:29-22:28:05Z) passed **49/71**, the same count as `I_T2`:
+
+| | I_UP8k |
+|---|---|
+| Passed | 49/71 (Py 22, Go 6, C 6, C++ 5, Rust 5, Zig 4, Sh 1) |
+| Against I_T2 / I_T2_s1 / I_T2_stock (71 units) | +3 −3 (p 1.0) / +1 −3 (p 0.63) / +0 −4 (p 0.13) |
+| Against Q38U-T2 (65 units) | 47 vs 52: 2 in, 7 out, −5 (p 0.18) |
+| Failures at the turn limit | 21 of 22 (the other: `122_gemm_blocked_d`, `dlsym`); median 23% of the wall; 0 wall hits |
+| Empty capped turns | 226 in 19 units (server: 443 wraps, **176 "no answer"**) |
+| Capped turns with a call / truncated heredocs | 75 / 60 |
+| **Forced-act turns** | **68, of which 18 made a tool call; 56 ended at the cap still thinking** (median 22,650 reasoning characters) |
+| Decode | median 512 tok/s, acceptance 94% (server log) |
+| Integrity | 71 transcripts, the scanner flags 1: `163_bigint_divmod_c` (FAIL) ran `find / -name "*.c" -path "*big*"`, which listed the reference file names under the mounted tree (`~/ob-ink2/evals/refs/163_bigint_divmod/`), then tried `cat` and `sed` on one; **both refused** by the eval guard, the content never read, the unit failed. Needs the sealed review before any board use; the listing exposure is a property of the eval-host container (the tree is mounted), noted for the next era |
+
+**Reading.** UP_8k's switches did not help Inkling, and its central
+mechanism does not work on this model and server. The forced-act turn
+sends `enable_thinking: false`; Basalt maps that to `reasoning_effort:
+none`, which is not a hard switch on Inkling ("at none the model still
+writes a short thinking block", Basalt `docs/models/inkling2.md`; the
+queue's own probe: 117 reasoning characters on a one-line question). On a
+stalled agent turn it wrote 22K characters of thinking to the cap in 56
+of 68 forced turns, and with thinking "off" the server applies no budget,
+so there is no wrap to cut it. On DeepSeek every forced turn acted (24 of
+24, HARNESS_NOTES). The planning lines did not move `168` (0/6, as every
+Inkling arm). So nothing from UP_8k goes into `I_T3`.
+
+### 12.7 The improved arm: I_T3
+
+**Design.** `I_T3` = `I_T2_stock` (`I_T2`'s switches on the stock pack) with three changes, each aimed at a mechanism
+§12.3 measured, and nothing else:
+
+| | I_T2_stock (and I_T2) | **I_T3** | Why (evidence) |
+|---|---|---|---|
+| Turns | `--turns-per-wall-s 15` (60 turns at 900 s) | **`--turns-per-wall-s 5`** (180) | every failure ends on the turn limit at ~23-30% of the wall; passes land on the last turn (§12.3) |
+| Per-turn cap | 8,192 (`OPENBEAST_AGENT_MAX_TOKENS`, declared `--reasoning-budget 8192`) | **16,384** | the cut-call damage: 73-88 cut calls and 51-82 truncated writes per arm (§12.3) |
+| Answer room (serve) | `auto`: thinking ≤ 6,144, answer ≥ 2,048 | **`--answer-room 8192`**: thinking ≤ 8,192, answer ≥ 8,192 | the same, plus Q_T2's thinking ceiling (8,192) |
+| Engine | Basalt v0.5.7 | **v0.5.7 + PR #632** (DECISIONS §11) | 105-226 empty capped turns per arm (§12.2, §12.6) |
+| Wall | ×2 (1,800 s at 900 s) | same | Q_T2's; the fair budget between the two models |
+| Pack | stock (I_T2: Derisked) | stock | DECISIONS §8 and §10; `I_T3` against `I_T2_stock` then differs in the three changes only |
+| Everything else | T2's switches, harness9 `f38a29c7`, one stream, eval-host container | same | |
+
+**Not included, and why.** UP_8k's switches (§12.6: no gain, the forced
+act fails on Inkling). Effort `max` (unmeasured, more wraps; §12.5 item
+5). The launcher's `PACK=derisked` runs the same arm on the Derisked pack
+(its own model name) if Max wants that row too.
+
+**Bundled.** Three changes in one arm, because Max asked for one improved
+run and each change has its own mechanism evidence. Read as one setup:
+`I_T3` against `I_T2_stock` (53; the same pack, harness, era and engine
+pin) and against Q38U-T2 (52 scored; paired on the 65 units), under
+DECISIONS §6's switch rule. The follow-ups that take it apart,
+both defined in the campaign and not queued: `I_T3_t15` (I_T3 at 15 s a
+turn: isolates the turns) and `I_T3_8k` (I_T3 at the 8,192 cap with
+`--answer-room auto`: isolates the cap and answer room). The #588 patch is
+policy from now on (Max), so it is not ablated.
+
+**What to expect.** From §12.5: turns +1 to +4, cap 0 to +2, patch 0 to +2,
+overlapping (the same units). From the stock base of 53, a point estimate
+of 54-56: the scored count already matches Q38U-T2's, so what `I_T3` can
+add is a lead on the paired units (stock is −2 there, §10.4); any single
+draw inside about ±7 of 53 is within noise (§12.4). Time: ~8-10 h
+(UNVERIFIED; the turn-limited failures, ~4 h of each arm, can now run to
+the 1,800 s wall), against Q_T2's ~13.5 h; passing units keep their
+seconds.
+
+**Launch.** `~/openbeast-runs/ink-I_T3-run.sh` on the rig (TODO). It
+refuses to start unless the queue is done, no eval runs, the trees, era,
+image and the patched tree's hashes check out; then it owns the GPU
+(restore on exit), serves the patched tree with `--answer-room 8192`,
+gates on the serve's arguments, mount, DNS fix, a chat and a #588 probe
+with 0 empty replies, runs the arm, and logs the server's wrap and
+"no answer" counts.
