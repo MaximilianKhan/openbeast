@@ -214,6 +214,30 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
 - [ ] **Scaling review, 1 to 8 ranks** — still open, deliberately parked (Max,
   2026-11-15); scope in the 🟩 DGX SPARK section below.
 
+**Open — the 5090 rig (operator steps, Max):**
+
+- [ ] **Apply `AGENT_PROFILE=qwen38-best` on the 5090 rig** (pull, set in
+  openbeast.conf, restart openbeast). Pending; Max applies it himself, only
+  after the benchmark running on the rig has finished (the restart restarts
+  the stack). Why: arm Q_T2, 52/71 scored, SCORE 75.6, board row
+  `Q38U-T2` (2026-11-23, single seed) against L0's 39/71; the 5090's
+  default agent setup by Max's decision ([MODELS.md](MODELS.md)). The rig's
+  `openbeast.conf` sets only `BEAST_ASSIST=1` today, the profile's own
+  value, so nothing overrides it. Steps, in the rig's live checkout:
+  ```bash
+  cd ~/openbeast && git status --short && git pull --ff-only   # main with the preset
+  cp openbeast.conf openbeast.conf.bak-$(date +%Y%m%d)
+  grep -E '^(INFERENCE_THINKING|AGENT_MAX_TOKENS|AGENT_ACT_NUDGE|BEAST_ASSIST|DIAG_EDIT_HINT|AGENT_VERIFY_DONE|AGENT_ENV_BLOCK|AGENT_WALL_WARN|LANG_PACK_VARIANT|AGENT_PROFILE)=' openbeast.conf   # expect only BEAST_ASSIST=1
+  echo 'AGENT_PROFILE=qwen38-best' >> openbeast.conf
+  OB_CONF_READONLY=1 bash -c 'REPO_DIR=~/openbeast; source ~/openbeast/scripts/lib/conf.sh; env' | grep -E 'AGENT_|DIAG_EDIT|PACK_VARIANT|BEAST_ASSIST|INFERENCE_THINKING'   # read-only check: 9 values, no warning
+  systemctl --user restart openbeast   # or ./stop.sh && ./start.sh -d where the stack is not a user unit
+  ```
+  Expected from the check: `BEAST_ASSIST=1`, `OPENBEAST_INFERENCE_THINKING=on`,
+  `OPENBEAST_AGENT_MAX_TOKENS=8192`, `OPENBEAST_LANG_PACK_VARIANT=v3` and
+  `OPENBEAST_AGENT_{ACT_NUDGE,VERIFY_DONE,ENV_BLOCK,WALL_WARN}=1`,
+  `OPENBEAST_DIAG_EDIT_HINT=1`. Rollback: delete the line (or
+  `AGENT_PROFILE=none`) and restart.
+
 **Open — process and the website:**
 
 - [ ] **A free local CI runner.** GitHub Actions is turned off (cost) since

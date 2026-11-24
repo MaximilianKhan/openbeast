@@ -30,6 +30,35 @@ network deny). The bare L0 profile (2026-11-22, harness10) scored 39/71
 calibrated against the Mac on 2026-11-23 by inference. Report:
 [V5_QWEN38_RTX5090-2026-11-22.md](reports/V5_QWEN38_RTX5090-2026-11-22.md).
 
+**The RTX 5090's default agent setup is `AGENT_PROFILE=qwen38-best`
+(2026-11-23, Max).** One line in `openbeast.conf`. It sets exactly arm
+Q_T2's switches for this host's own agents (the tool server's
+`start_agent`, beast-chat, `agent.sh`): `INFERENCE_THINKING=on`,
+`AGENT_MAX_TOKENS=8192`, `AGENT_ACT_NUDGE=1`, `BEAST_ASSIST=1`,
+`DIAG_EDIT_HINT=1`, `AGENT_VERIFY_DONE=1`, `AGENT_ENV_BLOCK=1`,
+`AGENT_WALL_WARN=1`, `LANG_PACK_VARIANT=v3`. Why: Q_T2 is the model's
+best measured row, 52/71 scored (SCORE 75.6, board row `Q38U-T2`) against
+39/71 (SCORE 63.3) for the bare L0 baseline, +12 gained / 1 lost on the 61
+units with a verdict in both (p 0.003). Caveats: single seed; the pair
+crosses a harness era (L0 harness10, Q_T2 harness9) and changes every
+switch at once, so the gain is not attributed to one switch (the doubled
+wall and wall-scaled turns, which have no daily equivalent, are the first
+suspect); the rig's eval-host container is calibrated against the Mac by
+inference. These are the same switches as the Spark pair's
+`deepseek-best` (Q_T2 is T2 at one stream), so both names share one table
+in `scripts/lib/conf.sh`. What changes on the rig: agents get thinking on
+(also the host-wide default for Open WebUI chats and beast-gate requests
+that name none), an 8,192-token per-turn cap in place of
+`REASONING_BUDGET` + 12288 (32,768), the act nudge, push diagnostics with
+the edit hint, the first-turn environment block, and the v3 zig pack on zig
+tasks where zig 0.16 is installed. Verify-done and the wall warnings only
+fire inside an eval. The serve script and its flags (`--reasoning-budget
+20480`, MTP, 262K) do not change, and neither does opencode. Precedence,
+per key: env `OPENBEAST_<KEY>` > that key's own line in `openbeast.conf` >
+the profile > the built-in default; the rig's `BEAST_ASSIST=1` line sets
+the same value and does not conflict. Apply steps:
+[TODO.md](TODO.md) "apply `AGENT_PROFILE=qwen38-best` on the 5090 rig".
+
 **Qwen reasoning budget (2026-09-09):** every Qwen-family serve script (3.6
 dense + MoE + NVFP4 + all 3.8 variants — not Gemma, and the Qwen-derived
 community tunes qwopus/heretic/Fable-Fusion keep their own settings) bakes
@@ -301,6 +330,9 @@ on benchmarks our suite does not run. Treat as unverified until our own sweep
 lands.
 
 ## Qwen3.8-27B-Uncensored (JonathanColetti) — added + profiled 2026-08-19 ⭐ THE DEFAULT
+
+Default agent setup since 2026-11-23: `AGENT_PROFILE=qwen38-best` (v5 arm
+Q_T2, 52/71, board row `Q38U-T2`, single seed; see the top of this file).
 
 [JonathanColetti/Qwen3.8-27B-Uncensored-GGUF](https://huggingface.co/JonathanColetti/Qwen3.8-27B-Uncensored-GGUF)
 — Qwen3.8-27B with the refusal direction abliterated out of `self_attn.o_proj`

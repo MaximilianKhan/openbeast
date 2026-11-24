@@ -313,7 +313,7 @@ default. `v2` is `agents/packs/zig-0.16-v2.md` (2026-11-16,
 `docs/LANG_AWARENESS_PLAN.md` §5.1), eval-only (the `v5-harness` arm E).
 `v3` is `agents/packs/zig-0.16-v3.md` (v2 plus the 2026-11-17 thinking-arm
 claims), the variant the `v5-thinking-first` arms carry; production serves it
-only by opt-in (`LANG_PACK_VARIANT=v3`, which `AGENT_PROFILE=deepseek-best`
+only by opt-in (`LANG_PACK_VARIANT=v3`, which `AGENT_PROFILE=deepseek-best` or `qwen38-best`
 sets) and only the bytes those arms measured. The file's
 bytes are in `pack1-<sha8>`, and `harness.pack_variant` records the choice.
 An arm measuring v3 + the host pack: `BEAST_PACKS=1 OPENBEAST_PACK_VARIANT=v3`.

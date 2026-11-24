@@ -458,36 +458,58 @@ if [[ -n "$_BASH_WRAPPER" ]]; then
 fi
 # ── AGENT_PROFILE: a named set of daily-agent switches ─────────────────────
 #   AGENT_PROFILE  (env OPENBEAST_AGENT_PROFILE)  default empty (none)
-#       deepseek-best = v5-thinking-first arm T2, the best measured setup for
-#       DeepSeek-V4.1-Flash (Mia EXL3) on the Spark pair: 65/71, board row
-#       DS-T2, 2026-11-19 (docs/SPARK_HYDRA.md "DeepSeek best configuration").
-#       It supplies a DEFAULT for each key below; the key set explicitly
-#       (env, then openbeast.conf) always wins over the profile:
+#       Each name is an alias for one internal switch table (_ob_profile_set);
+#       today both names map to the same table, "t2", the switches of
+#       v5-thinking-first arm T2:
 #         INFERENCE_THINKING=on   AGENT_MAX_TOKENS=8192   AGENT_ACT_NUDGE=1
 #         BEAST_ASSIST=1          DIAG_EDIT_HINT=1        AGENT_VERIFY_DONE=1
 #         AGENT_ENV_BLOCK=1       AGENT_WALL_WARN=1       LANG_PACK_VARIANT=v3
+#       deepseek-best = T2 on DeepSeek-V4.1-Flash (Mia EXL3), the Spark pair:
+#         65/71, SCORE 94.9, board row DS-T2, 2026-11-19, single seed
+#         (docs/SPARK_HYDRA.md "DeepSeek best configuration").
+#       qwen38-best   = T2 on Qwen3.8 27B Uncensored MTP Q5_K_M (llama.cpp),
+#         the RTX 5090 default, one stream (campaign arm Q_T2): 52/71 scored,
+#         SCORE 75.6, board row Q38U-T2, 2026-11-23, single seed, against
+#         39/71 (SCORE 63.3) for its bare L0 baseline (row Q38U-L0; that pair
+#         also crosses harness10 -> harness9). The rig's default since
+#         2026-11-23 (docs/MODELS.md; report
+#         docs/reports/V5_QWEN38_RTX5090-2026-11-22.md §6).
+#       A profile supplies a DEFAULT for each key; the key set explicitly
+#       (env OPENBEAST_<KEY>, then its own openbeast.conf line) always wins.
 #       none / empty = no profile. Anything else is reported (ob_conf_lint)
 #       and ignored. Which of these act on a DAILY agent, and which only do
 #       anything inside an eval: openbeast.conf.example, AGENT_PROFILE.
+#       A new model whose best row is T2 gets an alias here; a model whose
+#       best setup differs gets its own table in _ob_profile_value.
 # Read before the keys it feeds (BEAST_ASSIST just below, INFERENCE_THINKING
 # further down). Never exported: only the keys it resolves are.
+_OB_AGENT_PROFILES="deepseek-best qwen38-best"   # the names; keep in step with _ob_profile_set
+# _ob_profile_set NAME — the internal switch table NAME aliases, or fail.
+_ob_profile_set() {
+  case "$1" in
+    deepseek-best|qwen38-best) printf 't2\n' ;;
+    *) return 1 ;;
+  esac
+}
 AGENT_PROFILE="${OPENBEAST_AGENT_PROFILE:-$(_ob_conf_value AGENT_PROFILE || true)}"
 AGENT_PROFILE="${AGENT_PROFILE%%[[:space:]#]*}"; AGENT_PROFILE="${AGENT_PROFILE//[\"\']/}"
 AGENT_PROFILE="$(printf '%s' "$AGENT_PROFILE" | tr 'A-Z' 'a-z')"
-case "$AGENT_PROFILE" in
-  ""|none) AGENT_PROFILE="" ;;
-  deepseek-best) ;;
-  *) _OB_CONF_PROBLEMS+=("AGENT_PROFILE='$AGENT_PROFILE' is not deepseek-best or none — ignoring it (no profile)")
-     AGENT_PROFILE="" ;;
-esac
+if [[ "$AGENT_PROFILE" == none ]]; then
+  AGENT_PROFILE=""
+elif [[ -n "$AGENT_PROFILE" ]] && ! _ob_profile_set "$AGENT_PROFILE" >/dev/null; then
+  _OB_CONF_PROBLEMS+=("AGENT_PROFILE='$AGENT_PROFILE' is not one of: $_OB_AGENT_PROFILES, none — ignoring it (no profile)")
+  AGENT_PROFILE=""
+fi
 # _ob_profile_value KEY — the profile's value for an openbeast.conf KEY, or fail.
 _ob_profile_value() {
-  case "$AGENT_PROFILE:$1" in
-    deepseek-best:INFERENCE_THINKING) printf 'on\n' ;;
-    deepseek-best:AGENT_MAX_TOKENS)   printf '8192\n' ;;
-    deepseek-best:LANG_PACK_VARIANT)  printf 'v3\n' ;;
-    deepseek-best:BEAST_ASSIST|deepseek-best:DIAG_EDIT_HINT|deepseek-best:AGENT_VERIFY_DONE \
-      |deepseek-best:AGENT_ACT_NUDGE|deepseek-best:AGENT_ENV_BLOCK|deepseek-best:AGENT_WALL_WARN)
+  local _ob_set
+  _ob_set="$(_ob_profile_set "$AGENT_PROFILE")" || return 1
+  case "$_ob_set:$1" in
+    t2:INFERENCE_THINKING) printf 'on\n' ;;
+    t2:AGENT_MAX_TOKENS)   printf '8192\n' ;;
+    t2:LANG_PACK_VARIANT)  printf 'v3\n' ;;
+    t2:BEAST_ASSIST|t2:DIAG_EDIT_HINT|t2:AGENT_VERIFY_DONE \
+      |t2:AGENT_ACT_NUDGE|t2:AGENT_ENV_BLOCK|t2:AGENT_WALL_WARN)
       printf '1\n' ;;
     *) return 1 ;;
   esac

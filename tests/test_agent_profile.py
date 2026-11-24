@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""AGENT_PROFILE=deepseek-best: the v5 arm-T2 setup as OpenBeast's daily default
-for DeepSeek-V4.1-Flash (Mia EXL3) (65/71, board row DS-T2, 2026-11-19).
+"""AGENT_PROFILE=deepseek-best / qwen38-best: the v5 arm-T2 setup as OpenBeast's
+daily default for DeepSeek-V4.1-Flash (Mia EXL3) (65/71, board row DS-T2,
+2026-11-19) and for the RTX 5090 default, Qwen3.8 27B Uncensored MTP (52/71
+scored, board row Q38U-T2, arm Q_T2, 2026-11-23). Both names alias one switch
+table ("t2") in scripts/lib/conf.sh.
 
 What is pinned here (the conf.sh exports themselves: tests/test_agent_profile_conf.sh):
-  * the profile IS arm T2: every switch it sets equals what campaign arm T2
-    resolves to, so the daily default and the measured row cannot drift apart;
+  * each profile IS its measured arm: every switch it sets equals what the
+    campaign arm resolves to (deepseek-best = T2, qwen38-best = Q_T2), so the
+    daily default and the measured row cannot drift apart;
+  * the two names resolve to identical values on every key;
   * the v3 zig pack production may serve is the exact bytes T2 measured, only
     on opt-in, never under eval, and a bad variant serves nothing;
   * conf.sh and pack_context accept the same variants;
@@ -56,7 +61,7 @@ ARM_ENV = {"AGENT_MAX_TOKENS": "OPENBEAST_AGENT_MAX_TOKENS",
 
 def _profile_value(key: str, profile: str = "deepseek-best") -> str | None:
     """What conf.sh's _ob_profile_value prints for KEY (None = nothing)."""
-    script = (f"eval \"$(sed -n '/^_ob_profile_value() {{/,/^}}/p' '{CONF_SH}')\"; "
+    script = (f"eval \"$(sed -n '/^_ob_profile_set() {{/,/^}}/p;/^_ob_profile_value() {{/,/^}}/p' '{CONF_SH}')\"; "
               f"AGENT_PROFILE='{profile}'; _ob_profile_value '{key}' || echo '<none>'")
     out = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
                          timeout=30).stdout.strip()
@@ -79,12 +84,17 @@ def hermetic(tmp_path, monkeypatch):
 
 # --- the profile is arm T2 -------------------------------------------------------------
 
-def test_the_profile_is_campaign_arm_t2():
+#: profile name -> (campaign arm it reproduces, board row that arm earned).
+PROFILES = {"deepseek-best": ("T2", "DS-T2"), "qwen38-best": ("Q_T2", "Q38U-T2")}
+
+
+@pytest.mark.parametrize("profile", sorted(PROFILES))
+def test_the_profile_is_its_campaign_arm(profile):
     camp = C.load_campaign("v5-thinking-first")
-    t2 = C.resolve_arm(camp, "T2")
+    t2 = C.resolve_arm(camp, PROFILES[profile][0])
     for key, env in ARM_ENV.items():
-        assert _profile_value(key) == t2["env"][env], key
-    assert _profile_value("INFERENCE_THINKING") == t2["thinking"] == "on"
+        assert _profile_value(key, profile) == t2["env"][env], key
+    assert _profile_value("INFERENCE_THINKING", profile) == t2["thinking"] == "on"
     # Everything the arm switches on is either in the profile or named as
     # eval-only (the packs flag) — no T2 switch silently missing.
     on = {k for k, v in t2["env"].items() if v not in ("", "0")}
@@ -92,6 +102,34 @@ def test_the_profile_is_campaign_arm_t2():
                                        "BEAST_PACKS", "OPENBEAST_PACKS",   # production: LANG_PACK_CONTEXT
                                        "OPENBEAST_EVAL_ENV_ERA"}           # eval bookkeeping
     assert on <= covered, on - covered
+
+
+def test_q_t2_is_t2_at_one_stream():
+    """qwen38-best may share T2's table only because Q_T2 differs from T2 in
+    concurrency alone (the rig's llama-server serves one stream)."""
+    camp = C.load_campaign("v5-thinking-first")
+    t2, q = C.resolve_arm(camp, "T2"), C.resolve_arm(camp, "Q_T2")
+    assert q["env"] == t2["env"] and q["thinking"] == t2["thinking"]
+    assert {k for k in set(t2) | set(q) if t2.get(k) != q.get(k)} == {"jobs", "slots"}
+    assert (q["jobs"], q["slots"]) == (1, 1)
+
+
+def test_the_two_names_share_one_table():
+    for key in PROFILE_KEYS:
+        assert _profile_value(key, "qwen38-best") == _profile_value(key, "deepseek-best") \
+            is not None, key
+
+
+def test_every_profile_cites_a_board_row():
+    import json
+    board = json.load(open(os.path.join(EVALS, "boards", "v5", "board.json")))
+    ids = {r["id"] for r in board["runs"]}
+    text = open(CONF_SH).read()
+    for profile, (arm, row) in PROFILES.items():
+        assert row in ids, row
+        assert row in text                                          # cited in conf.sh's comment
+    m = re.search(r'^_OB_AGENT_PROFILES="([^"]*)"', text, re.M)
+    assert m and sorted(m.group(1).split()) == sorted(PROFILES)
 
 
 def test_only_known_profiles_have_values():
@@ -107,6 +145,8 @@ def test_example_documents_every_key():
     block = text.split("#AGENT_PROFILE=deepseek-best")[0].rsplit("A named set of daily-agent", 1)[1]
     assert "65/71" in block and "DS-T2" in block and "2026-11-19" in block
     assert "EVAL-ONLY" in block and "32768" in block                 # honest about limits
+    assert "qwen38-best" in block and "Q38U-T2" in block and "2026-11-23" in block
+    assert "52/71" in block and "single seed" in block
 
 
 # --- the v3 pack in production ------------------------------------------------------------

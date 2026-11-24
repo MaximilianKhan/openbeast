@@ -251,7 +251,8 @@
 # vLLM host set this instead. 16384 was arm C's per-turn cap for GLM (a turn
 # capped mid-thought keeps its reasoning tail and is told to act); for
 # DeepSeek-V4.1-Flash (Mia EXL3) AGENT_PROFILE=deepseek-best (below) gives
-# 8192, and an AGENT_MAX_TOKENS line here would override that. Env override:
+# 8192, and so does qwen38-best on the RTX 5090; an AGENT_MAX_TOKENS line
+# here would override either. Env override:
 # $OPENBEAST_AGENT_MAX_TOKENS.
 #AGENT_MAX_TOKENS=16384
 
@@ -263,15 +264,35 @@
 #                   2026-11-19, eval era 036638ddd68698ce), against 61/71 for
 #                   arm T (same switches, a 16384 cap and no act nudge).
 #                   docs/SPARK_HYDRA.md, "DeepSeek best configuration (v5 T2)".
+#   qwen38-best     the same switches (one shared table in scripts/lib/conf.sh)
+#                   for the RTX 5090 default, Qwen3.8 27B Uncensored MTP Q5_K_M
+#                   on llama.cpp: campaign arm Q_T2, T2 at one stream, scored
+#                   52/71, SCORE 75.6, #4 on the v5 board (board row Q38U-T2,
+#                   2026-11-23, single seed), against 39/71 (SCORE 63.3) for
+#                   its bare L0 baseline (row Q38U-L0, harness10 where Q_T2
+#                   is harness9; the rig's eval-host container, calibrated
+#                   against the Mac by inference). The 5090's default agent
+#                   setup since 2026-11-23 (Max); docs/MODELS.md and
+#                   docs/reports/V5_QWEN38_RTX5090-2026-11-22.md §6.
 #   none / unset    no profile: every key keeps its own default.
 #
-# What deepseek-best sets, and what each does for a DAILY agent (the tool
+# Precedence, per key: env OPENBEAST_<KEY> > that key's own line in this file
+# > AGENT_PROFILE > the built-in default. So e.g. INFERENCE_THINKING=off here
+# with AGENT_PROFILE=qwen38-best keeps thinking off and every other switch on;
+# a line that sets the same value as the profile (BEAST_ASSIST=1) changes
+# nothing. AGENT_MAX_TOKENS is the one with a twist: any line of its own here
+# stops the profile's 8192 from being exported, and the runner reads the line.
+#
+# What deepseek-best / qwen38-best set, and what each does for a DAILY agent (the tool
 # server's start_agent, beast-chat, agent.sh) as opposed to inside an eval:
 #   INFERENCE_THINKING=on    applies: thinking on (host-wide default: also
 #                            beast-gate and Open WebUI; see above)
 #   AGENT_MAX_TOKENS=8192    applies: per-turn cap, with the capped-think
 #                            recovery (a turn cut off mid-thought keeps its
-#                            reasoning tail and is told to act)
+#                            reasoning tail and is told to act). On llama.cpp
+#                            it replaces REASONING_BUDGET + 12288 (32768) for
+#                            agents; the server's --reasoning-budget is
+#                            untouched (Q_T2 ran against the rig's 20480)
 #   AGENT_ACT_NUDGE=1        applies: from the 2nd capped turn in a row with
 #                            no tool call (or the 1st that ends neither capped
 #                            nor as an answer): "your next reply must be a
@@ -291,13 +312,16 @@
 #                            have none unless the caller passes --wall-s
 # Not reproducible as a switch: T2's host pack (eval-only, probed on the eval
 # tool host) and its wall-scaled turn budget (--turns-per-wall-s: daily agents
-# have no wall; start_agent's max_iter, default 200, is the budget). opencode
+# have no wall; start_agent's max_iter, default 200, is the budget), and
+# Q_T2's wall x2 (a wall is eval-only). opencode
 # is untouched: it has no capped-think recovery, so its limit.output stays
 # 32768. The serving recipe does not change either (scripts/spark/: pack,
-# CONTEXT 524288, PARALLEL 4, THINKING=1).
+# CONTEXT 524288, PARALLEL 4, THINKING=1; on the 5090 the serve script and
+# its flags stay as they are).
 # Restart the stack after a change (./start.sh -d): the tool server and
 # beast-chat read these at start. Env override: $OPENBEAST_AGENT_PROFILE.
-#AGENT_PROFILE=deepseek-best
+#AGENT_PROFILE=deepseek-best      # the Spark pair (DeepSeek-V4.1-Flash)
+#AGENT_PROFILE=qwen38-best        # the RTX 5090 rig (Qwen3.8 27B Uncensored MTP)
 
 # The daily-agent switches one by one (1/0, true/false, on/off). Unset = off
 # (the runner's default) unless AGENT_PROFILE sets it. Each is exported as
@@ -704,9 +728,10 @@
 
 # Which zig pack LANG_PACK_CONTEXT serves: v1 (default, the Tier-3 measured
 # agents/packs/zig-0.16.md) or v3 (agents/packs/zig-0.16-v3.md, the pack
-# DeepSeek-V4.1-Flash (Mia EXL3)'s best arm T2 ran with; AGENT_PROFILE=
-# deepseek-best sets it). Only the exact measured bytes of either are served;
-# any other value serves no pack. Env override: $OPENBEAST_LANG_PACK_VARIANT.
+# DeepSeek-V4.1-Flash (Mia EXL3)'s best arm T2 ran with, and Qwen3.8's Q_T2;
+# AGENT_PROFILE=deepseek-best and qwen38-best set it). Only the exact measured
+# bytes of either are served; any other value serves no pack. Env override:
+# $OPENBEAST_LANG_PACK_VARIANT.
 #LANG_PACK_VARIANT=v1
 
 #CHAT_PORT=3003
