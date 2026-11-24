@@ -293,17 +293,50 @@ DeepSeek's UP on the same harness
 
 **Open — Inkling 2 Mini on the 5090 (2026-11-23):**
 
-- [ ] **The Inkling 2 Mini v5 run, arm `I_T2`** (T2's switches at one stream,
-  as Q_T2 was for Qwen3.8, so the row is comparable with `Q38U-T2`'s 52/71).
-  Pending the engine choice: the investigation in
-  `~/openbeast-runs/inkling-perf-2026-11-23/` (Strata's SQ packs, vLLM NVFP4 +
-  MTP, a "Basalt" candidate) recommends the fastest server the harness can
-  drive with **thinking and tool calls on**; its results go into the
-  "Pending" section of [the Strata report](reports/STRATA_INKLING_5090-2026-11-23.md#11-pending-native-sq-packs-and-other-engines)
-  or a follow-up report. The arm does not exist in
-  `evals/campaigns/v5-thinking-first.json` yet. About 12-18 h on the rig's
-  eval-host container; Qwen3.8 with `qwen38-best` returns as the default
-  afterwards unless Inkling beats it.
+- [ ] **RUNNING since 2026-11-23 20:58:42 PST: the Inkling 2 Mini v5 run,
+  arm `I_T2`** (#306: T2's switches at one stream, as Q_T2 was for Qwen3.8,
+  so the row compares with `Q38U-T2`'s 52/71). Engine and why:
+  [the Strata report §11](reports/STRATA_INKLING_5090-2026-11-23.md#11-pending-native-sq-packs-and-other-engines),
+  [DECISIONS-2026-11-23 §11](reports/DECISIONS-2026-11-23.md#11-basalt-with-the-derisked-pack-for-the-inkling-v5-run).
+  - **Serve:** Basalt v0.5.7 (`400b411c`) from the Blackfrost Derisked pack
+    (`d2b01bcc…`), container `basalt-serve`, alias `inkling-2-mini` on
+    `127.0.0.1:8099`, started by
+    `~/openbeast-runs/inkling-perf-2026-11-23/scripts/inkling-v5.sh start derisked`
+    (switch log `~/openbeast-runs/ink-I_T2-switch-20261123-2057.log`).
+    **The default Qwen stack is stopped** (llama-server, gate `:8091`, Open
+    WebUI, SearXNG) for the whole run.
+  - **Trees:** `~/ob-ink` (a detached worktree of `~/ob-eval-container` at
+    `1199608a`), harness9 tree `~/ob-ink/.claude/worktrees/h9` at `f38a29c7`,
+    container image `openbeast-eval-host:8d1e28442569`.
+  - **Launcher:** `~/openbeast-runs/ink-I_T2-run.sh` (setsid nohup; output
+    `~/openbeast-runs/ink-I_T2-run.out`). Campaign log
+    `~/openbeast-runs/beast-inkling-I_T2-20261123-2058.out`; arm log and state
+    in `~/ob-ink/evals/results/campaigns/v5-thinking-first-inkling-2-mini-derisked-basalt-nvfp4-mx8/`
+    (`arm-I_T2.log`, `campaign.log`, `state.json`). First 8 units in 3 min:
+    7 PASS, GEMM [rust] FAIL at the `dlsym` check (the known harness9
+    validator case, as Q_T2's `122_gemm_blocked_d`: check it by the
+    procedure in MODEL_CAMPAIGN.md before scoring). ETA UNVERIFIED (5-12 h;
+    the campaign's own estimate says 11.5 h).
+  - **Restore (automatic):** when the campaign exits, whatever its exit
+    code, the launcher runs `inkling-v5.sh stop`, `cd ~/Documents/openbeast
+    && ./start.sh -d`, then checks gate `:8091/v1/models` for 200 with
+    `~/.config/openbeast/rig-eval.key` (up to 15 min) plus a gate chat, and
+    logs `RESTORE OK` or `RESTORE FAILED` to `ink-I_T2-run.out`. **By hand**,
+    if the launcher died: `~/openbeast-runs/inkling-perf-2026-11-23/scripts/inkling-v5.sh stop`,
+    then `cd ~/Documents/openbeast && ./start.sh -d`, then
+    `curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $(cat ~/.config/openbeast/rig-eval.key)" http://127.0.0.1:8091/v1/models`
+    (expect 200). Stop the run early: `pkill -f ink-I_T2-run.sh` stops the
+    restore too, so stop the eval container instead (it runs `--rm` in the
+    foreground of the launcher, with a random name):
+    `docker stop $(docker ps -q --filter ancestor=openbeast-eval-host:8d1e28442569)`;
+    the launcher then logs the exit and restores.
+  - **After:** integrity scan, the `dlsym` procedure, `campaign.py report`,
+    a board row and a report (as V5_QWEN38_RTX5090). Qwen3.8 with
+    `qwen38-best` stays the default unless Max decides otherwise.
+- [ ] **Basalt has no written code review** (the Strata report §11.3). It ran
+  built from the v0.5.7 tag, offline, with no egress. Do a read-only review
+  like Strata's §2 before Basalt becomes a default or gets an adapter
+  ([ENGINES.md](ENGINES.md#chosen-for-one-run-not-a-default)).
 - [ ] **Strata forces Inkling's thinking off** (`HAS_THINKING = False`,
   every reasoning effort normalized to `"none"`, in
   `terminal/strata_control/inkling_family.py` and

@@ -25,6 +25,7 @@
 8. [The website progressions](#8-the-website-progressions)
 9. [Strata: review, build, benchmark, not adopted](#9-strata-review-build-benchmark-not-adopted)
 10. [Install the NVIDIA Container Toolkit on the rig](#10-install-the-nvidia-container-toolkit-on-the-rig)
+11. [Basalt with the Derisked pack for the Inkling v5 run](#11-basalt-with-the-derisked-pack-for-the-inkling-v5-run)
 
 ---
 
@@ -372,3 +373,58 @@ restart happened at 19:57:17 and cut the running bench container, which
 resumed and re-ran the affected measurements. Lesson: before advising a
 Docker restart, check `docker ps` at that moment, and say that the restart
 stops every container.
+
+## 11. Basalt with the Derisked pack for the Inkling v5 run
+
+**Decision.** Serve Inkling 2 Mini for its v5 run, arm `I_T2`, with Basalt
+v0.5.7 (`400b411c`, built from source) from the Blackfrost "Derisked" pack
+converted to Basalt's NVFP4-MX8 format (sha256 `d2b01bcc…`), `--parallel 1
+--max-context 262144 --kv fp8`, DSpark at the pack default, `--answer-room
+auto`. Run `I_T2` as Q_T2 was run: T2's switches at one stream, harness9
+tree `f38a29c7`, the rig's eval-host container.
+
+**When / who.** Recommended by the second Inkling investigation
+(`~/openbeast-runs/inkling-perf-2026-11-23/results/SUMMARY.txt`, ~20:52);
+Max approved the run; arm merged in #306 (`1199608a`); launched 20:58:42 PST.
+
+**Reason and evidence** ([Strata report §11](STRATA_INKLING_5090-2026-11-23.md#11-pending-native-sq-packs-and-other-engines)):
+
+- The row must be T2, so the engine must think and call tools in one turn.
+  Basalt returns `reasoning_content` and tool calls with thinking on,
+  streamed and not, and passes conformance at c=1 and c=4
+  (`results/thinking/basalt-derisked.json`, `results/conformance-basalt-*`).
+- `I_T2` is one stream, so single-stream speed decides: Basalt derisked 403 /
+  356 tok/s code / prose, against vLLM 269 / 161 and Strata SQ-20 201 / 131;
+  prefill 18-19K tok/s against vLLM's ~14K and Strata's ~6K.
+- Derisked over stock: the uncensored-preferred model policy, and it measured
+  faster (403 / 356 against 376 / 307). Its cost is a larger divergence from
+  the near-reference (KLD 0.0263, top-1 92.93%, against the stock pack's
+  0.0128 / 94.93%), which is what a behavioural edit is expected to add. The
+  row's model name says so: "Inkling 2 Mini Derisked (Basalt NVFP4-MX8)".
+
+**Alternatives considered.**
+
+- *vLLM* (official Inkling image + the SM120 patch, the same Derisked
+  weights): slower single stream; reasoning in `reasoning`, a conformance
+  WARN for our runner; a patched image. It wins only the four-stream code
+  aggregate (902 vs 702), which a one-stream arm does not use.
+- *Strata* (native SQ packs): thinking forced off (§9 and the report's §12),
+  so it cannot run T2; and slower.
+- *The stock Basalt pack*: the control. Not run; available with
+  `inkling-v5.sh start stock` if the Derisked row needs separating from the
+  edit.
+- *squid5090*: mentioned as a candidate, **not run**; no evidence either way.
+- *llama.cpp* (Q_T2's engine): 97 tok/s without a drafter (report §5), four
+  times slower.
+
+**Known effects on the row.** `--answer-room auto` caps thinking at 6,144 of
+T2's 8,192-token turn and then forces the answer; on llama.cpp a Qwen turn
+could think the full 8,192. Recorded in the arm's note. Basalt's code has not
+had a written review (the build is from the tag, offline, and the serve has
+no egress); that review is required before Basalt becomes a default.
+
+**Operations.** The default Qwen stack was stopped for the run (Open WebUI and
+SearXNG with it), approved. `~/openbeast-runs/ink-I_T2-run.sh` restores it
+when the campaign exits, whatever the exit code: `inkling-v5.sh stop`,
+`./start.sh -d`, then a gate `:8091` check with the rig-eval key, all logged
+to `~/openbeast-runs/ink-I_T2-run.out`.
