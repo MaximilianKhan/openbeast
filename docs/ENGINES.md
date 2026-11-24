@@ -284,6 +284,21 @@ functions out of `start.sh` verbatim and still passes, and
 - `scripts/lib/backend.sh` (not a shared hot spot): adapter-only engine names
   in `normalize`, `label` and `ready`.
 
+## Chosen for one run, not a default
+
+An engine used for a specific measured run, outside the matrix and the
+`engine.sh` adapters. It does not serve the daily stack; the default on each
+host is unchanged.
+
+| Engine | Status | Why | How it runs | Evidence |
+|---|---|---|---|---|
+| **Basalt** (`github.com/jesdga95/basalt`, MIT; tag v0.5.7 = `400b411c58031d064812ea21a259b2381acdaa3e`, built from source offline, `bin/basalt` sha256 `5dc8a63c…`) | **Chosen 2026-11-23 for the Inkling 2 Mini v5 run (arm `I_T2`) on the RTX 5090; not yet the default, no adapter** | The only measured Inkling engine that drives T2: thinking on with `reasoning_content` and tool calls, streamed and not; conformance PASS. Fastest single stream (403 / 356 tok/s code / prose with the Derisked pack, against vLLM 269 / 161 and Strata 201 / 131) and prefill (18-19K tok/s). vLLM wins the four-stream code aggregate (902 vs 702) | `~/openbeast-runs/inkling-perf-2026-11-23/scripts/inkling-v5.sh start [derisked\|stock]` on the rig: a hardened container (no egress, read-only, uid 1000), `basalt serve --parallel 1 --max-context 262144 --kv fp8`, DSpark at the pack default, `--answer-room auto` (thinking capped at 6,144 of an 8,192-token turn), alias `inkling-2-mini` on `127.0.0.1:8099`, Bearer key. The default Qwen stack must be stopped first (`./stop.sh`; restore `./start.sh -d`) | [reports/STRATA_INKLING_5090-2026-11-23.md §11](reports/STRATA_INKLING_5090-2026-11-23.md#11-pending-native-sq-packs-and-other-engines); [DECISIONS-2026-11-23 §11](reports/DECISIONS-2026-11-23.md#11-basalt-with-the-derisked-pack-for-the-inkling-v5-run) |
+
+Before Basalt becomes a default or gets `scripts/engines/basalt.sh`: a
+read-only code review like Strata's (none is written yet), an `I_T2` result
+that justifies switching from Qwen3.8, and the offline path (the source at
+the tag, the image, the converted pack) staged per [the offline rule](#offline-closed-network-offlinetrue).
+
 ## Evaluated, not adopted
 
 Engines measured on our hardware and deliberately left out of the matrix.
@@ -294,8 +309,8 @@ Each line says why, so the question is not reopened without new evidence.
 | **Strata** (`Niko1221/Strata`, MIT; `strata-inkling` built from source at `6a6db7ff`, binary sha256 `11df1066…`) | **Evaluated 2026-11-23 on the RTX 5090 with Inkling 2 Mini (unsloth UD-Q4_K_XL GGUF); not adopted** | (1) It forces Inkling's thinking off (`HAS_THINKING = False`; every effort normalizes to `"none"`), and our best agent setup is thinking-first (T2), so it cannot run arm `I_T2`. (2) Its DSpark drafter dies at startup on CUDA with a GGUF drafter (`dspark.layers.N` vs `layers.N`; upstream #6762, a one-line fix not merged at the pin). (3) Alpha: open 5090 hangs at high concurrency and long prefill, reasoning-channel bugs, one author. (4) Its release binaries, images and `curl \| sh` installer have no provenance; only a reviewed source build in a locked-down container is acceptable. What it does well: 1.43x llama.cpp single-stream on the same tensors (138.6 vs 96.9 tok/s), 1.5-2.0x prefill, conformance PASS. The "4,087 tok/s" claim is its own 64-request aggregate (4,089.7), not single-stream | [reports/STRATA_INKLING_5090-2026-11-23.md](reports/STRATA_INKLING_5090-2026-11-23.md); earlier, for weight streaming: [WEIGHT_STREAMING.md](WEIGHT_STREAMING.md#why-maya-and-not-strata) |
 
 Revisit Strata only if (a) a thinking mode for Inkling lands, (b) the DSpark
-fix is in a reviewed commit, and (c) its own SQ packs beat the alternative
-being measured now (the report's §11). There is no `scripts/engines/strata.sh`
+fix is in a reviewed commit, and (c) its own SQ packs beat Basalt (the report's §11: SQ-20 201 / 131 tok/s
+against Basalt's 403 / 356, and ~1,400 at 64 streams, not 4,089.7). There is no `scripts/engines/strata.sh`
 adapter, and none is planned.
 
 ## Research notes (primary sources, read 2026-11-15)

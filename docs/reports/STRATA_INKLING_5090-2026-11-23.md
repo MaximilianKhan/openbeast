@@ -9,7 +9,8 @@
 > are PST (UTC-8) unless marked `Z`.
 >
 > A second investigation (Strata's own SQ packs, vLLM NVFP4 + MTP, a
-> "Basalt" candidate) is running on the rig now; its slot is
+> "Basalt" candidate) followed the same evening; its results and the engine
+> choice (Basalt v0.5.7 with the Blackfrost Derisked pack, arm `I_T2`) are in
 > [§11](#11-pending-native-sq-packs-and-other-engines).
 
 ## 1. Summary
@@ -46,8 +47,8 @@
 - **Verdict ([§12](#12-verdict-and-open-questions)).** Strata is the fastest engine we have measured for
   Inkling 2 Mini on the 5090, but it is not adopted: it forces Inkling's
   thinking off (our T2 eval arm needs thinking on), its drafter is broken on
-  CUDA at the pin, and it is alpha. The engine for the Inkling v5 run waits on
-  the investigation in §11.
+  CUDA at the pin, and it is alpha. The engine for the Inkling v5 run is
+  Basalt v0.5.7 with the Derisked pack (§11).
 
 ## 2. The pre-run security and supply-chain review
 
@@ -588,27 +589,154 @@ Recorded so nobody repeats them.
 
 ## 11. Pending: native SQ packs and other engines
 
-> **To be filled by the next report.** Investigation started 2026-11-23
-> ~19:39 PST, running on the rig in `~/openbeast-runs/inkling-perf-2026-11-23/`
-> (owned by another agent; not read for this report).
+> **Filled 2026-11-23 ~21:05 PST** from the second investigation's files on the
+> rig, `~/openbeast-runs/inkling-perf-2026-11-23/` (paths below are relative
+> to it): `results/SUMMARY.txt` (every median), `results/thinking/*.json`,
+> `results/conformance-*/`, `scripts/`, `logs/`, `weights/*/sha256.txt`, and
+> `gh api` on 2026-11-23. The heading keeps its name so existing links work.
+> **Outcome: Basalt v0.5.7 with the Blackfrost "Derisked" pack serves
+> Inkling 2 Mini for the v5 run, arm `I_T2`, launched 20:58:42 PST.**
 
-Scope as briefed:
+### 11.1 What was compared, and how
 
-- Strata's own SQ-10 / SQ-15 / SQ-20 packs (pinned hashes above, downloaded
-  and hash-checked) with the built-in DSpark at its defaults: single-stream
-  code and prose, 4 and 64 concurrent streams (to test 4,089.7 directly),
-  prefill, correctness, conformance; and whether v0.2.20's "fixed DSpark
-  drafter" is the bug in §7.
-- vLLM with the Blackfrost "Derisked" NVFP4 build and its MTP head.
-- A "Basalt" engine candidate: built from source in the same hardened image
-  (supply-chain review required before it runs; check that review in the next
-  report).
-- The recommendation: the fastest setup the v5 harness can drive with
-  thinking and tool calls on.
+The same probes as §5 (`scripts/bench.py`: greedy, 512 tokens, 3 code + 3
+prose prompts x 5 runs, medians; prefill on the same 4,141 / 15,027 / 29,208
+token prompts; the 15,042-token needle). Thinking "off" is `reasoning_effort:
+none` (Inkling still writes a short thinking block); "high" is the template
+default. Every engine ran in the hardened sandbox of §4 (read-only rootfs and
+weights, uid 1000, `--cap-drop ALL`, no-egress bridge `strata-bench-net`,
+loopback-only port, API key), from 19:56 with `--gpus` (the toolkit, §4).
 
-Known so far, from the session record only: the Docker restart for the
-toolkit install (19:57:17) interrupted it once; it resumed and was told to
-switch to `--gpus` and re-run any measurement from about 19:56-19:59.
+| Candidate | Engine and pin | Weights (pinned, sha256-checked) |
+|---|---|---|
+| **Basalt** | `github.com/jesdga95/basalt` tag v0.5.7 = `400b411c58031d064812ea21a259b2381acdaa3e` (MIT), built from source offline (`scripts/build-basalt.sh`: `--network none`, `-DBASALT_MODELS=inkling2 -DCMAKE_CUDA_ARCHITECTURES=120`, nvcc 13.0.88), `bin/basalt` sha256 `5dc8a63ca0089bf8…` (`results/basalt-bin.sha256`) | stock: `jesdga/Inkling-2-Mini-Basalt` @ `c2afac3a`, `Inkling-2-Mini-NVFP4-MX8.basalt`, `28ec7072…`; derisked: converted below |
+| **vLLM** | official image `vllm/vllm-openai@sha256:a485440c…` (Inkling tag, 2026-11-20) + a one-anchor SM120 patch (`build/vllm-sm120/patch_sm120.py`, from `github.com/mxfp0/Inkling-2-Mini-RTX-5090`, reviewed: on compute capability 12.0 it swaps `reshape_and_cache_flash` for vLLM's own Triton version; without it the DSpark draft layers hit "no kernel image"), image `ob-vllm-inkling-sm120:a485440c` | Blackfrost Derisked release format (NVFP4/MXFP8 + `mtp.safetensors`) |
+| **Strata** | §3's pin `6a6db7ff`, unpatched, native packs (`scripts/strata-serve.sh`) | `strata-engine/Inkling-2-Mini-Strata` @ `04996a1e`: SQ-20 `0bbfd523…`, SQ-15 `2ea32eed…`, SQ-10 `ac4d452a…` (= the hashes Strata pins) |
+
+**The Derisked pack.** `Blackfrost-AI/Inkling-2-Mini-Derisked` (HF revision
+`31ec2eddecfdf93c8626d9e4dfc0a2aca6070900`, from its `.cache/huggingface`
+metadata; in `/mnt/9100s4tb/weights/`), a "behaviorally modified derivative"
+of `thinkingmachines/Inkling-2-Mini` (its README), shipped with its DWM edit
+recipe. Basalt's own converter (`tools/convert/convert.py`, the recipe of the
+official pack per Basalt's `docs/models/inkling2.md`) turned it into
+`weights/basalt-blackfrost-derisked/Inkling-2-Mini-Derisked-NVFP4-MX8.basalt`,
+offline, CPU only, in the sandbox (`scripts/convert-blackfrost.sh`,
+`logs/convert-blackfrost.log`: 10 sections, 18.260 GiB, 23.7 s), sha256
+**`d2b01bcc1fd2dc51cbcdaecb512c56d7c5db75181fee2d9b6c944e76e217a427`**
+(`weights/basalt-blackfrost-derisked/sha256.txt`).
+
+### 11.2 Results
+
+Decode, single stream (tok/s, code / prose; `results/SUMMARY.txt`):
+
+| Setup | Thinking off | Thinking high |
+|---|---:|---:|
+| **Basalt v0.5.7, derisked pack, DSpark** | **403 / 356** | |
+| Basalt v0.5.7, stock pack, DSpark | 376 / 307 | 417 / 309 |
+| Basalt on a `--parallel 4` server, one request (3 runs) | 414 / 339 | |
+| vLLM + SM120 patch, DSpark 7 | 269 / 161 | 271 / 189 |
+| Strata SQ-20, DSpark (thinking forced off) | 201 / 131 | (n/a) |
+| Strata SQ-10, DSpark (lossy pack) | 274 / 174 | (n/a) |
+| §5 for reference: Strata GGUF + DSpark (patched); llama.cpp PR #32218 DSpark | 198.5 / 132.6; 170.2 / 78.5 | |
+
+Four streams, aggregate (code / prose): **Basalt `--parallel 4` 702 / 624**,
+vLLM `max-num-seqs 4` **902 / 546**, Strata SQ-20 p4 335 / 342.
+
+Prefill (tok/s at 4K / 16K / 32K): **Basalt 18,098 / 19,338 / 17,564**; vLLM
+14,530 / 14,428 / 13,117; Strata SQ-20 6,333 / 6,313 / 5,699.
+
+The engines' own benches: `basalt-bench` (its fixtures, seeded, `-r 2`) stock
+pp16384 18,436, conv 341, struct 676, prose 294; derisked pp16384 19,449,
+conv 331, struct 714, prose 319. Strata `--bench` (synthetic ids): SQ-20
+DSpark p1 190, off 135, p4 338, **p64 ~1,400**; SQ-10 p64 ~1,470
+(`results/strata-sq-benchmode.txt`). `llama-bench` tg256 (fa on): UD-Q4_K_XL
+98.9, UD-IQ3_XXS 101.9, UD-IQ2_XXS 105.3 (`results/llama-bench-lowbit.md`):
+llama.cpp is engine-bound, fewer bits buy 3-6%.
+
+Correctness against UD-Q8_K_XL (llama.cpp's KLD base, 60 x 512-token chunks of
+`data/longtext.txt`; Q8_K_XL is itself a requant, so this is a near-reference,
+not the original weights):
+
+| Weights | KLD | Top-1 | PPL (base 5.915) |
+|---|---:|---:|---:|
+| Basalt stock pack | 0.0128 | 94.93% | 5.901 |
+| **Basalt derisked pack** | **0.0263** | **92.93%** | **5.952** |
+| llama UD-Q4_K_XL | 0.0162 | 94.56% | |
+| llama UD-IQ3_XXS | 0.0288 | 92.77% | |
+| llama UD-IQ2_XXS | 0.0751 | 88.09% | |
+
+Strata's SQ packs were not measured here (vendor card: SQ-20 lossless, SQ-15
+KLD 0.009, SQ-10 0.050: **unverified**); vLLM: needle only. The 16K needle
+passed on Basalt stock, Basalt derisked, vLLM and Strata SQ-20
+(`results/correctness/needle-*.json`).
+
+Harness fitness (`scripts/backends/conformance.sh` at c=1 and c=4;
+`scripts/probe_think_tools.py`, `enable_thinking` true / false / unset,
+streamed and not, `results/thinking/*.json`):
+
+| Engine | Conformance | Reasoning channel | Tool calls with thinking on |
+|---|---|---|---|
+| **Basalt** (stock and derisked) | PASS / PASS | `reasoning_content`, separated, every probe | yes, streamed and not |
+| vLLM | PASS / PASS | in `reasoning` (conformance WARN: not the field our runner reads) | yes |
+| Strata SQ-20 | PASS / PASS | none: 0 reasoning in all 12 probes (thinking forced off, §12) | yes |
+
+### 11.3 Claims against evidence
+
+| Claim (source) | Evidence here | Reading |
+|---|---|---|
+| Strata "4,089.7 tok/s total output across 64 concurrent requests on RTX 5090" (v0.2.19 release notes, §9) | `--bench` SQ-20 p64 ~1,400, SQ-10 p64 ~1,470 (synthetic ids, the most favourable case) | **Not reproduced**: about a third. Their prompts, pack and settings for the figure are not stated |
+| Strata "250.3 tok/s solo (198.9 on lossless SQ-20)" (same notes) | SQ-20 DSpark `--bench` 190; chat 201 code / 131 prose; SQ-10 chat 274 / 174 | SQ-20 roughly reproduced on code; 250 plausible on SQ-10 code only |
+| v0.2.20 "fixed DSpark speculative drafter" | native SQ packs with the built-in drafter run unpatched at `6a6db7ff`; the GGUF-drafter path of §7 still needs the patch | the fix is for the native packs, not the CUDA GGUF path (#6762) |
+| "754 code / 440 prose" (relayed as a Mia Labs post, §9) | Basalt derisked 403 / 356, stock 376 / 307 (thinking high: 417 / 309) | No engine reaches it. Basalt is the closest, still below §8's ~433 no-drafter bandwidth cap even with its drafter (§8's cap is for the 4.14 GB/token GGUF; the MX8 pack's bytes per token were not computed) |
+| Strata SQ-20 "lossless", SQ-15 KLD 0.009, SQ-10 0.050 (vendor card) | not measured | **unverified** |
+| Basalt's conversion is "the same recipe as the official pack" (its docs) | derisked pack speed within 7-16% of stock and KLD 0.0263 vs 0.0128 | consistent: the extra divergence is what a behavioural edit should add; not separately attributed |
+| Fewer bits make llama.cpp faster (common advice) | tg256 98.9 → 105.3 from Q4_K_XL to IQ2_XXS, KLD 0.016 → 0.075 | true but small: the engine, not bandwidth, bounds llama.cpp here |
+
+Supply chain, Basalt: MIT, created 2026-10-06, 1,950 stars, top contributors
+`jesdga95` (2,351 commits) and `Niko1221` (534, Strata's author), v0.5.7
+published 2026-11-24 02:18Z (`gh api repos/jesdga95/basalt`, `…/contributors`,
+`…/releases`); the tag resolves to `400b411c` (`gh api
+repos/jesdga95/basalt/commits/v0.5.7`); `main` has moved since (`db8c8948` at
+03:23Z). Built from that source, offline; served with no egress. **No written
+supply-chain review of Basalt's code was found in the investigation folder**
+(§11's brief required one): the mitigations are the source build at a tag and
+the sandbox, not a read of the code. Recorded as an open item (§12).
+
+### 11.4 The engine choice, and why
+
+**Basalt v0.5.7 with the derisked pack, `scripts/inkling-v5.sh start
+derisked`** = `basalt serve --parallel 1 --max-context 262144 --kv fp8`, DSpark
+at the pack default, `--answer-room auto` (the default), alias
+`inkling-2-mini` on `127.0.0.1:8099`, Bearer key in `scratch/basalt.key`.
+
+1. **It drives T2.** Thinking on returns `reasoning_content` and tool calls,
+   streamed and not; conformance PASS. Strata cannot (thinking forced off).
+   vLLM can, but puts reasoning in `reasoning`, a WARN for our runner.
+2. **Fastest single stream**, which is what `I_T2` uses (one stream, like
+   Q_T2): 403 / 356 against vLLM's 269 / 161 and Strata's 201 / 131; and the
+   fastest prefill (18-19K tok/s), which matters for long agent contexts.
+   vLLM wins only the four-stream code aggregate (902 vs 702), which this arm
+   does not use.
+3. **The derisked pack, per policy.** OpenBeast prefers uncensored weights
+   (honest, neutral answers for professionals). The derisked pack is also
+   faster than stock here (403 / 356 against 376 / 307), at a KLD of 0.0263
+   (between UD-Q4_K_XL and UD-IQ3_XXS). The stock Basalt pack is the control
+   alternative, not run.
+4. **`--parallel 1 --max-context 262144 --kv fp8`**: one stream at the full
+   context, as Q_T2's 262K one-slot serve; fp8 KV to fit 262K on 32 GB.
+
+**A known serve behaviour that shapes the row.** `--answer-room auto`
+reserves `min(max(512, cap // 4), cap // 2)` output tokens for the answer
+(Basalt `docs/configuration/sampling.md`, "Thinking"). T2 caps a turn at
+8,192 tokens, so Basalt allows **6,144 thinking tokens**, then closes the
+thinking with the template's own close and the model must answer. On
+llama.cpp (Q_T2) a turn could think up to the full 8,192. This is a property
+of the serve, recorded in the arm's note, not a harness change.
+
+**Alternatives, and why they lost.** vLLM: slower single stream, reasoning in
+the wrong field, a patched image. Strata: no thinking. llama.cpp (§5): 97
+tok/s without a drafter. The stock pack: kept as the control. A "squid5090"
+candidate was mentioned but **not run**.
 
 ## 12. Verdict and open questions
 
@@ -631,11 +759,13 @@ switch to `--gpus` and re-run any measurement from about 19:56-19:59.
 
 **Open questions:**
 
-- Which engine serves Inkling 2 Mini's v5 run? Waits on §11. The fair test of
-  Inkling against Qwen3.8's 52/71 is arm `I_T2` (T2 at one stream) on an
-  engine with thinking and tool calls on: llama.cpp today, or whatever §11
-  finds.
-- Do the SQ packs reproduce 250.3 solo and 4,089.7 at 64 on our 5090? (§11)
+- ~~Which engine serves Inkling 2 Mini's v5 run?~~ Answered in §11: Basalt
+  v0.5.7, Derisked pack; arm `I_T2` (T2 at one stream, comparable with
+  Qwen3.8's Q38U-T2) launched 2026-11-23 20:58 PST.
+- ~~Do the SQ packs reproduce 250.3 solo and 4,089.7 at 64?~~ §11.3: SQ-20
+  ~190-201 solo; ~1,400 at 64 (`--bench`), not 4,089.7.
+- **Basalt has no written code review yet** (§11.3). Before Basalt becomes a
+  default or ships in `scripts/`, do the read-only review §2 did for Strata.
 - Is the `dspark.` fix in a later upstream commit? Re-check `main` before any
   re-run: `gh api repos/Niko1221/Strata/commits/main`, then the three source
   lines in §7.
