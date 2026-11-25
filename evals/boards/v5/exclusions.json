@@ -237,6 +237,11 @@
       "unit": "122_gemm_blocked_d",
       "run": "INK-T3",
       "note": "a stop at the binary check on std's dlsym (Linux host): verdict not measured; replayed under the proposed next-era rule (docs/HARNESS_NOTES.md): verdict PASS, 6 hidden cases"
+    },
+    {
+      "unit": "122_gemm_blocked_d",
+      "run": "INK-T2-SC117",
+      "note": "a stop at the binary check on std's dlsym (Linux host): verdict not measured; replayed under the proposed next-era rule (docs/HARNESS_NOTES.md): verdict PASS, 6 hidden cases"
     }
   ]
 }

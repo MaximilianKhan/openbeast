@@ -1,5 +1,7 @@
 # SC117 Inkling 2 Mini abliterated (Strata packs): review and Phase 2 plan (2026-11-25)
 
+> **Phase 2 path B done (2026-11-25): see [V5_INKLING2_MINI_SC117-2026-11-25.md](V5_INKLING2_MINI_SC117-2026-11-25.md). The transplanted Basalt pack ran arm `I_T2_sc117` at 51/71 (row INK-T2-SC117), level with INK-T2-STOCK and with Derisked; its KLD (0.0354) is larger than Derisked's, against §3's expectation.**
+>
 > **Status: Phase 1 done: read-only review, no GPU, no container.** Max
 > (2026-11-25) downloaded `SC117/Inkling-2-Mini-abliterated-Strata` to the
 > RTX 5090 rig and asked us to test the largest size with our optimizations

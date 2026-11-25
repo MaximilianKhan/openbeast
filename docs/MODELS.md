@@ -131,7 +131,19 @@ is only a reasoning-effort hint there, with no thinking budget), so T2's
 (report §12; none of UP_8k's switches) passed 52/71 on 2026-11-25 (row
 `INK-T3`, SCORE 77.4): level with `INK-T2-STOCK`, at twice the time, with
 four context overflows; `inkling-best` and the stock default stay
-([report](reports/V5_INKLING2_MINI_I_T3-2026-11-25.md)). **Applied on the
+([report](reports/V5_INKLING2_MINI_I_T3-2026-11-25.md)). **SC117's
+abliterated edit** (`SC117/Inkling-2-Mini-abliterated-Strata` @ `ae324ac3`:
+a rank-1 refusal-direction projection on the attention output of layers
+4-23) was transplanted into the release and converted by Basalt (pack
+`Inkling-2-Mini-SC117-abliterated-NVFP4-MX8.basalt`, `6eaa50d3…`, rebuilt
+offline by `scripts/engines/inkling-sc117-pack.sh`; it differs from the
+stock pack only in those 20 matrices) and ran INK-T2-STOCK's arm exactly:
+51/71 (row `INK-T2-SC117`, SCORE 75.3), level with stock (−2, p 0.63) and
+with Derisked (+2, p 0.63) at the same speed, KLD 0.0354 against stock's
+0.0128. The default stays stock; if an abliterated Inkling is wanted on
+the 5090, SC117's pack is the recommendation over Derisked
+([report](reports/V5_INKLING2_MINI_SC117-2026-11-25.md),
+[DECISIONS-2026-11-25 §6](reports/DECISIONS-2026-11-25.md#6-sc117s-abliterated-inkling-on-basalt-level-with-stock-the-default-stays-stock)). **Applied on the
 rig 2026-11-25 (~09:45-09:50 PST)** in `~/Documents/openbeast/openbeast.conf`
 (`engine.sh use default` + `AGENT_PROFILE=inkling-best`; Basalt v0.5.7 +
 #632, profile `inkling2-mini-stock`), verified through the gate over

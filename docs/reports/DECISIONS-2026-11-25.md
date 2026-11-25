@@ -13,6 +13,7 @@
 3. [The rule is enforced by the board tooling, from a committed ledger](#3-the-rule-is-enforced-by-the-board-tooling-from-a-committed-ledger)
 4. [I_T3 does not beat INK-T2-STOCK; the 5090 default stays stock](#4-i_t3-does-not-beat-ink-t2-stock-the-5090-default-stays-stock)
 5. [The rig arms rescanned: Q38U-T2 loses two more units (52 → 51)](#5-the-rig-arms-rescanned-q38u-t2-loses-two-more-units-52--51)
+6. [SC117's abliterated Inkling on Basalt: level with stock; the default stays stock](#6-sc117s-abliterated-inkling-on-basalt-level-with-stock-the-default-stays-stock)
 
 ---
 
@@ -317,3 +318,66 @@ positive), and its failed-connection test no longer matches Node's
 `ENOTFOUND` inside Python's `ModuleNotFoundError`/`FileNotFoundError` (it
 could have turned a real fetch next to a traceback into an attempt; no
 verdict changed). Sealed detail: `evals/audit/reviews/rig-arms-rescan-2026-11-25.md`.
+
+## 6. SC117's abliterated Inkling on Basalt: level with stock; the default stays stock
+
+**Decision.** Arm `I_T2_sc117` (Max approved 2026-11-25: Path B of
+[SC117_INKLING_STRATA-2026-11-25.md](SC117_INKLING_STRATA-2026-11-25.md), PR
+#328; the arm PR #331) ran SC117's abliterated Inkling 2 Mini as a Basalt
+pack built by transplanting its 20 edited `attn.wo_ud` matrices into the
+release and converting with Basalt's own converter, under INK-T2-STOCK's
+exact setup. It scored **51/71, SCORE 75.3**, board run `INK-T2-SC117` (the
+SC117 pack's own row). Therefore:
+
+1. **The RTX 5090 default stays stock** (`INK-T2-STOCK`; Max, 2026-11-24).
+   `board.json` `defaults` is unchanged; no profile changes.
+2. **Recommendation to Max, not applied:** if an abliterated pack is wanted
+   on the 5090 (the uncensored-preferred policy), SC117's pack replaces
+   Blackfrost's Derisked as that alternative, served as the default is
+   (Basalt v0.5.7 + #632, `inkling-best`).
+3. **No follow-up arm is queued** (no seed repeat, no #632 mirror of I_T3,
+   no Strata arm).
+
+**When / who.** 2026-11-25, on the arm's wrap-up; the default is Max's
+decision of 2026-11-24 and stays his.
+
+**Reason.**
+
+- **The comparison is clean.** Basalt v0.5.7's converter on
+  `thinkingmachines/Inkling-2-Mini @ b85c3cfa` (the revision the stock
+  pack's own meta names) rebuilds the stock pack `28ec7072…` byte for byte,
+  and the SC117 pack (`6eaa50d3…`) differs from it only in the 20 Q8_0
+  `blk.{4..23}.attn_output.weight` tensors and one meta string. Same binary
+  (unpatched, as INK-T2-STOCK), flags, tree, era, container, stream count.
+- **Level with stock, inside noise.** Paired over 71 units: 1 gained
+  (`178_codebase_qa`), 3 lost (`163_bigint_divmod_c`, `175_crdt_orset_rga`,
+  `196_polyphase_resampler`), p 0.63; every flipped unit had flipped between
+  earlier Inkling arms. The stock pack stays numerically ahead, so nothing
+  argues for moving the default.
+- **Level with Derisked, and better in every other respect.** 51 against
+  49 (3 gained, 1 lost, p 0.63), 87 empty capped turns against 203, the same
+  speed (decode within 2% of stock on the same day), and a provenance we
+  verified byte by byte (a 20-tensor edit of a pinned release, rebuilt
+  offline by `scripts/engines/inkling-sc117-pack.sh`), where Derisked's base
+  revision is unverified.
+- **The edit is not small in effect.** KLD against UD-Q8_K_XL 0.0354
+  (stock 0.0128, Derisked 0.0263), top-1 92.18%: no coding cost showed at
+  v5's resolution, but the model moved more than under Blackfrost's edit.
+- **Behaviour.** On six benign professional prompts both packs answered all
+  six (stock hedged two openings); the stock pack declined the 16K needle
+  once. The edit's refusal effect is not measured here beyond that.
+
+**Alternatives and why they lost.** *Make SC117 the default:* −2 against
+stock, inside noise, and the default is Max's call; under DECISIONS-2026-11-24
+§6's rule a new configuration switches only on a measured improvement.
+*A seed repeat:* cannot turn −2 into a lead that would move the default.
+*A #632 follow-up (I_T3-style):* I_T3 showed the patch leaves the count
+level on stock, and the next Inkling step waits for the overflow fix (§4).
+*Strata (Path A):* about half Basalt's single-stream speed on this pack
+family and its v0.2.21 delta unreviewed.
+
+**Evidence.** [V5_INKLING2_MINI_SC117-2026-11-25.md](V5_INKLING2_MINI_SC117-2026-11-25.md)
+(the pack procedure and hashes §2, speed and behaviour §3, the row §4-§8);
+integrity: 0 contaminated, no overflow, dlsym replay PASS 3/3 (sealed
+review `evals/audit/reviews/ink-t2-sc117-integrity-2026-11-25.md`);
+progress log on the rig `~/openbeast-runs/sc117-basalt.log`.
