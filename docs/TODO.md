@@ -778,6 +778,16 @@ DeepSeek's UP on the same harness
   `terminal/serve/inkling_dialect.py` at `6a6db7ff`). So Strata cannot serve
   `I_T2`; on Strata only a thinking-off arm is possible, which would not be
   comparable with T2 rows. Re-check before choosing Strata for any eval.
+  **Re-checked 2026-11-25:** fixed in source since `39b8407c` (2026-11-23
+  12:52Z) and in v0.2.21 (`d46f5f26`): thinking levels reach the template and
+  `reasoning_content` is returned (serve default `low`; `HAS_THINKING` is
+  stale launcher metadata). Unmeasured by us; #7084 (uncapped second thinking
+  block) open ([SC117 report §1](reports/SC117_INKLING_STRATA-2026-11-25.md#1-thinking-on-strata-maxs-gate)).
+- [ ] **SC117 abliterated Inkling, Phase 2** (needs Max's go, GPU after the
+  Basalt switch): path B, the SC117 edit transplanted into a Basalt pack, then
+  arm `I_T2_sc117` (INK-T2-STOCK with only the weights changed); path A,
+  optional, a bounded Strata v0.2.21 speed and thinking check after a delta
+  review ([SC117 report §5](reports/SC117_INKLING_STRATA-2026-11-25.md#5-phase-2-plan-after-maxs-basalt-switch-needs-maxs-go-for-gpu-time)).
 - [x] **Project Maya for Inkling 2 Mini** evaluated 2026-11-24 01:38-01:56
   (v1.1.76 `8c618a59`, built offline, the stock unsloth Old_Support
   UD-Q4_K_XL): **not adopted**. Single stream 329 / 204 tok/s code / prose
