@@ -311,11 +311,12 @@ def test_committed_board_numbers():
     assert best == {"GLM-5.3-Flash": "GLM-UP", "DeepSeek-V4.1-Flash (Mia EXL3)": "DS-T2", "Claude Opus 5.5": "OPUS-REF",
                     "Hy4-flash (NVFP4)": "HY4-T2", "Qwen3.8 27B Uncensored MTP": "Q38U-T2",
                     "Inkling 2 Mini Derisked (Basalt NVFP4-MX8)": "INK-T2",
-                    "Inkling 2 Mini (Basalt NVFP4-MX8)": "INK-T2-STOCK"}
+                    "Inkling 2 Mini (Basalt NVFP4-MX8)": "INK-T2-STOCK",
+                    "Inkling 2 Mini SC117 abliterated (Basalt NVFP4-MX8)": "INK-T2-SC117"}
     # the ranking, by SCORE; the reference last and unranked
     assert [(r["id"], round(r["score"], 1)) for r in b["best"]] == [
-        ("DS-T2", 94.9), ("HY4-T2", 83.4), ("GLM-UP", 81.9), ("INK-T2-STOCK", 78.2), ("INK-T2", 76.5), ("Q38U-T2", 75.0),
-        ("OPUS-REF", 100.0)]
+        ("DS-T2", 94.9), ("HY4-T2", 83.4), ("GLM-UP", 81.9), ("INK-T2-STOCK", 78.2), ("INK-T2", 76.5),
+        ("INK-T2-SC117", 75.3), ("Q38U-T2", 75.0), ("OPUS-REF", 100.0)]
     # INK-T2-S1 scores above INK-T2 (78.3) and still is not the Derisked row: a replicate never ranks
     assert "INK-T2-S1" not in [r["id"] for r in b["best"]]
     assert b["not_yet_run"] == ["Qwen3.6 27B (v4 #1)"]
@@ -323,12 +324,17 @@ def test_committed_board_numbers():
     ds, glm = "dsv41f-mia-exl3-2.9bpw-eaq1.1-v2", "glm53f-mia-exl3-4bpw-tf-ablit"
     hy4, q38 = "hy4-flash-nvfp4-atakans", "qwen38-27b-uncensored-mtp-q5km"
     ink, inks = "inkling2-mini-blackfrost-derisked-basalt-nvfp4-mx8", "inkling2-mini-basalt-nvfp4-mx8-stock"
+    insc = "inkling2-mini-sc117-abliterated-basalt-nvfp4-mx8"
     assert {k: runs[k]["weights_id"] for k in runs} == {
         **{k: ds for k in runs if k.startswith("DS-")}, **{k: glm for k in runs if k.startswith("GLM-")},
         "HY4-T2": hy4, "HY4-C": hy4, "Q38U-L0": q38, "Q38U-T2": q38, "INK-T2": ink, "INK-T2-S1": ink,
-        "INK-T2-STOCK": inks, "INK-UP8K": ink, "INK-T3": inks,
+        "INK-T2-STOCK": inks, "INK-UP8K": ink, "INK-T3": inks, "INK-T2-SC117": insc,
         "OPUS-REF": "anthropic-api-claude-opus-5-5"}
-    assert [r["weights_id"] for r in b["best"]] == [ds, hy4, glm, inks, ink, q38, "anthropic-api-claude-opus-5-5"]
+    assert [r["weights_id"] for r in b["best"]] == [ds, hy4, glm, inks, ink, insc, q38, "anthropic-api-claude-opus-5-5"]
+    sc = b["weights"][insc]   # built here: no Hub repo, pinned by file sha256, derived from SC117's pack + the release
+    assert (sc["repo"], sc["revision_kind"], sc["abliterated"], sc["file_sha256"][:8], sc["derived_from"]["repo"]) == (
+        None, "file-sha256", True, "6eaa50d3", "SC117/Inkling-2-Mini-abliterated-Strata")
+    assert sc["base_model"]["revision"] == b["weights"][inks]["derived_from"]["revision"] == "b85c3cfa615fc413cc9af3379f491b963f3b586a"
     w = b["weights"][ds]
     assert (w["format"], w["bpw"], w["abliterated"], w["revision_kind"]) == ("EXL3", 2.9, False, "local")
     assert w["revision"] == "04c13f12b83d57487912d87d0f1677b076810954" and w["repo"] is None
