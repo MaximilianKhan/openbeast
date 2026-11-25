@@ -188,10 +188,21 @@ except Exception:
 
 # ob_backend_na <what> — the one-line "not applicable" notice llama-only
 # steps print instead of failing on a non-llama (or unowned) backend.
+# A managed non-llama engine (Basalt on the RTX 5090, a one-host vLLM) IS run
+# by this stack; the step is llama.cpp's, so the notice says that instead.
 ob_backend_na() {
   local why
   if [[ "${INFERENCE_BACKEND:-llama}" != "llama" ]]; then
     why="INFERENCE_BACKEND=${INFERENCE_BACKEND}"
+    if [[ "${INFERENCE_MANAGED:-false}" == "true" ]]; then
+      # An adapter-only engine names itself only once lib/engine.sh is
+      # loaded; before that ob_backend_label falls back to llama's label.
+      local label; label="$(ob_backend_label "$INFERENCE_BACKEND")"
+      [[ "$label" == "llama.cpp server" ]] && label="$INFERENCE_BACKEND"
+      printf '%s: not applicable for %s (this stack runs %s at %s, not llama-server).\n' \
+        "$1" "$why" "$label" "${INFERENCE_URL:-?}"
+      return 0
+    fi
   else
     why="INFERENCE_MANAGED=false"
   fi

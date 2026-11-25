@@ -458,9 +458,18 @@ down_row() { [[ $STACK_DOWN -eq 1 ]] || warn "$1" "$2"; }
 if [[ "$INFERENCE_BACKEND" != "llama" ]] || ! ob_inference_managed; then
   # Someone else's server (vLLM / TensorFold across the Sparks, or a
   # llama-server on another box): ask it the question ITS /health answers.
+  # Managed = start.sh launches it (scripts/engine.sh use; Basalt on the RTX
+  # 5090): the stack runs it, so the rows must not say someone else does.
+  if ob_inference_managed; then
+    _be_who="managed by this stack$(_p="$(ob_engine_conf_get ENGINE_PROFILE 2>/dev/null || true)"; [[ -n "$_p" ]] && echo ", ENGINE_PROFILE=$_p")"
+    _be_fix="scripts/engine.sh status; ./stop.sh && ./start.sh -d (start.sh launches it: scripts/engine-serve.sh)"
+  else
+    _be_who="not managed here"
+    _be_fix="start it where it runs (docs/DGX_SPARK_PLAN.md) — healthcheck --restart will not"
+  fi
   if ob_backend_ready "$INFERENCE_URL"; then
     _be_models="$(ob_backend_models "$INFERENCE_URL" 2>/dev/null | head -3 | tr '\n' ' ' || true)"
-    pass "$(ob_backend_label) at $INFERENCE_URL (not managed here) — serving: ${_be_models:-? (/v1/models unreadable — LLAMA_API_KEY?)}"
+    pass "$(ob_backend_label) at $INFERENCE_URL ($_be_who) — serving: ${_be_models:-? (/v1/models unreadable — LLAMA_API_KEY?)}"
     # The id the agent runner sends (OPENBEAST_INFERENCE_MODEL). llama
     # ignores ids; vLLM 404s an unlisted one unless validation is skipped.
     if [[ "$INFERENCE_BACKEND" != "llama" ]]; then
@@ -475,8 +484,11 @@ if [[ "$INFERENCE_BACKEND" != "llama" ]] || ! ob_inference_managed; then
       fi
     fi
   else
-    warn "$(ob_backend_label) at $INFERENCE_URL is not ready (INFERENCE_BACKEND=$INFERENCE_BACKEND, not managed here)" \
-         "start it where it runs (docs/DGX_SPARK_PLAN.md) — healthcheck --restart will not"
+    if [[ $STACK_DOWN -eq 1 ]] && ob_inference_managed; then
+      :   # the "Stack is not running" line above already said it
+    else
+      warn "$(ob_backend_label) at $INFERENCE_URL is not ready (INFERENCE_BACKEND=$INFERENCE_BACKEND, $_be_who)" "$_be_fix"
+    fi
   fi
   # vLLM leaves /health and /metrics open even with --api-key, and native
   # TensorFold leaves /health open with --api-key-file: the key guards /v1,
@@ -1127,8 +1139,25 @@ if command -v tailscale >/dev/null 2>&1; then
       warn "BEAST_ARTIFACT=true but :8446 is not published — artifact links open only on this box" \
            "./scripts/setup-tailscale.sh --publish-artifact"
     fi
-    # :8447 is the ntfy extension (the phone app's subscription).
-    if echo "$_serve" | grep -qE ':8447[^0-9]'; then
+    # :8447 is the ntfy extension (the phone app's subscription) — or, on a
+    # host without ntfy (spark-1, the rig), the status dashboard mounted there
+    # by hand (docs/BEAST_SLOT.md "The status dashboard"; setup-tailscale.sh
+    # refuses to re-point it). Judge what the mount proxies to, not the port:
+    # the rig's doctor failed "ntfy is NOT responding" on a 200 dashboard.
+    _8447_tgt="$(_serve_target 8447 "$_serve")"
+    _8447_tgt="${_8447_tgt%/}"
+    if [[ -n "$_8447_tgt" && "$_8447_tgt" == *":${DASHBOARD_PORT:-3002}" ]]; then
+      if probe "http://${HEALTH_HOST:-127.0.0.1}:${DASHBOARD_PORT:-3002}/api/slot" 'beast_slot'; then
+        pass "the status dashboard is published on :8447 (tailnet-only, read-only; docs/BEAST_SLOT.md)"
+      else
+        fail ":8447 publishes the status dashboard ($_8447_tgt) but it is NOT responding" \
+             "./scripts/ext.sh restart dashboard (or ./scripts/healthcheck.sh --restart)"
+      fi
+      if [[ " ${EXTENSIONS:-} " == *" ntfy "* ]]; then
+        warn "the ntfy extension is on but :8447 carries the status dashboard — the phone app cannot subscribe there" \
+             "mount ntfy on another port by hand (tailscale serve --bg --https=<port> http://127.0.0.1:${NTFY_PORT:-3005}) or move the dashboard (docs/BEAST_SLOT.md)"
+      fi
+    elif echo "$_serve" | grep -qE ':8447[^0-9]'; then
       if probe "http://127.0.0.1:${NTFY_PORT:-3005}/v1/health" 'healthy'; then
         pass "ntfy published on :8447 (tailnet-only)"
       else

@@ -180,6 +180,9 @@ if [[ -n "${WIRING_BASELINE_REF:-}" ]]; then
   #                    review). Only the wildcard-bind scenario changes.
   _BASELINE_ALLOW='^ENV OPENBEAST_(CHAT_NOTIFY_ON|NTFY_PORT|WEBUI_OFFLINE)=|^ENV OB_CONF_LINTED=|^ENV (OPENBEAST_)?DASHBOARD_PORT='
   _BASELINE_ALLOW+='|^ENV OPENBEAST_WEBUI_(CORS|HOSTS|AUTH)=|^ENV OB_CONF_WEBUI_AUTH_WARNED='
+  # The INFERENCE_* derive records (lib/conf.sh, 2026-11-25: a re-sourcing
+  # child reads the conf, not the old exports): unrelated to hydra.
+  _BASELINE_ALLOW+='|^ENV OPENBEAST_DERIVED_INFERENCE_(BACKEND|MANAGED|URL|SLOTS|MODEL)='
   _BASELINE_ALLOW+='|^WARNING: WEBUI_AUTH=false ignored — |^ {9}(off every visitor is the WebUI admin|the built-in admin.s password is in openbeast.conf|start\. Set ALLOW_OPEN_WEBUI=true)'
   if [[ -n "${WIRING_BASELINE_ALLOW:-}" ]]; then
     _BASELINE_ALLOW="$_BASELINE_ALLOW|$WIRING_BASELINE_ALLOW"
@@ -286,7 +289,9 @@ fi
 # docker compose", then ./start.sh -d later): HYDRA/INSTINCT flipped off, or
 # HYDRA_PORT moved, in openbeast.conf in between. The first source's own
 # OPENBEAST_HYDRA=true export used to read back as an operator override and
-# keep hydra on. A value the operator exports himself still wins.
+# keep hydra on. A value the operator exports himself still wins. D counts
+# the derive records left besides the INFERENCE_* ones (those are kept on
+# purpose: tests/test_engine_switch_env.sh).
 _resource() { # _resource <conf-1> <conf-2> [shell run between the two sources]
   env -i HOME="$_N/home" PATH=/usr/bin:/bin bash -c 'set -euo pipefail; REPO_DIR="$1"
     printf "SEARXNG_SECRET=stub\n%s\n" "$2" > "$1/openbeast.conf"
@@ -297,7 +302,7 @@ _resource() { # _resource <conf-1> <conf-2> [shell run between the two sources]
     echo "H=$HYDRA I=$INSTINCT URL=${HYDRA_URL:-} CB=${OPENBEAST_CONSUMER_BASE-unset}" \
          "OH=${OPENBEAST_HYDRA-unset} OI=${OPENBEAST_INSTINCT-unset} OIP=${OPENBEAST_INSTINCT_PORT-unset}" \
          "IM=${OPENBEAST_INFERENCE_MODEL-unset} UP=${OPENBEAST_HYDRA_UPSTREAM_MODEL-unset}" \
-         "D=$(compgen -e | grep -c "^OPENBEAST_DERIVED_" || true)"' _ "$_N" "$1" "$2" "${3:-}"
+         "D=$(compgen -e | grep "^OPENBEAST_DERIVED_" | grep -vc "^OPENBEAST_DERIVED_INFERENCE_" || true)"' _ "$_N" "$1" "$2" "${3:-}"
 }
 _V=$'INFERENCE_BACKEND=vllm\nINFERENCE_URL=http://10.0.0.5:8000\nINFERENCE_MODEL=m1'
 _r="$(_resource $'HYDRA=true\nINSTINCT=true\n'"$_V" $'HYDRA=false\nINSTINCT=false\n'"$_V")"

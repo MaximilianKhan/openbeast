@@ -180,6 +180,25 @@ class TestSlotContract(unittest.TestCase):
         self.assertEqual(self._status({})["capacity"]["serving_profile"],
                          "unknown")
 
+    def test_single_slot_engine_neutral_off_llama(self):
+        # Basalt (Inkling 2 Mini on the RTX 5090) answers the llama-server
+        # API and is probed as llama, but it has no llama.cpp MTP: its one
+        # slot is "single-slot", not "mtp-single-slot" (rig, 2026-11-25).
+        saved = dashboard._ENGINE
+        try:
+            dashboard._ENGINE = "basalt"
+            out = self._status({
+                "/health": (200, "ok"), "/props": (200, _PROPS),
+                "/slots": (200, _SLOTS_CURRENT),
+            }, kv=True)
+            self.assertEqual(out["capacity"]["serving_profile"], "single-slot")
+            # ...and it names itself: Basalt 404s an id it does not serve, so
+            # clients must not get the llama catalog (client_rigs.catalog).
+            self.assertEqual(out["backend"], "basalt")
+            self.assertEqual(out["slots"], {"total": 1, "busy": 1})
+        finally:
+            dashboard._ENGINE = saved
+
     def test_legacy_state_field_counts_busy(self):
         out = self._status({
             "/health": (200, "ok"), "/props": (200, _PROPS),

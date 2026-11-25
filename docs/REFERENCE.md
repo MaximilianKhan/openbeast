@@ -1094,7 +1094,10 @@ with the read policy and running-session count, a **warning** when
 **failure** — not a warning — when `:8445` is published but nothing answers,
 because the mount makes it look reachable. The same pair for beast-artifact
 (`:8446` published over a dead server fails; `BEAST_ARTIFACT=true` with
-`:8446` unpublished warns) and for the ntfy extension (`:8447`). It warns
+`:8446` unpublished warns) and for the ntfy extension (`:8447`); a `:8447`
+that proxies to the dashboard's port (`DASHBOARD_PORT`, the status page
+mounted there by hand on spark-1 and the rig, [BEAST_SLOT.md](BEAST_SLOT.md#the-status-dashboard-8447))
+is checked as the dashboard (`/api/slot`), not as ntfy. It warns
 when neither `ARTIFACT_OPERATORS` nor `CHAT_OPERATORS` is set (private pages
 then open for nobody from a phone) and when beast-chat binds off loopback. A
 *notifications* section reports whether `CHAT_NOTIFY_URL` is set and valid,

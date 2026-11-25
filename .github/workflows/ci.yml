@@ -317,6 +317,10 @@ jobs:
       # with a per-run ed25519 key (OpenSSL 3 on ubuntu-latest).
       - name: Engine plane tests (swap / pin / update / rollback)
         run: bash tests/test_engines.sh
+      # The switch restarts on the NEW conf, not on the old conf's exports
+      # (rig 2026-11-25: engine.sh use default relaunched the old llama).
+      - name: Engine switch environment tests
+        run: bash tests/test_engine_switch_env.sh
 
       # Weight streaming (docs/WEIGHT_STREAMING.md): the per-profile memory
       # scope, the MoE-cache and big-mode serve profiles, every serve-script

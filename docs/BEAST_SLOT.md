@@ -382,6 +382,16 @@ keeps answering `ok: true` while every request hangs.
 `mtp-single-slot` stays a llama-only value (vLLM's MTP batches). Unknown
 `serving_profile` values should be treated as "unknown", like `auth`.
 
+**Engines behind the llama API** (Basalt, the RTX 5090 default since
+2026-11-24; Maya) answer the llama-shaped document (`/health`, `/props`,
+`/slots` are probed as llama-server's) plus `backend` with the engine's
+name (`"basalt"`), and their one slot is `single-slot`, not
+`mtp-single-slot` (that label is llama.cpp's MTP serve scripts'; until
+2026-11-25 the rig's Basalt reported it and no `backend`). The `backend`
+matters to clients: Basalt 404s a model id it does not serve
+(`model_not_found`), unlike llama-server, so `openbeast-client` gives
+opencode exactly the served ids for any `backend` other than llama.
+
 ## Client side (any Mac/Linux device)
 
 ```bash

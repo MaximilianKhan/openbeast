@@ -74,6 +74,10 @@ H = os.environ.get("OPENBEAST_PROBE_HOST", "").strip() or _LOOP
 # when an operator set it (a vLLM / TensorFold cluster on the Sparks, or a
 # llama-server on another box).
 _BACKEND = os.environ.get("OPENBEAST_INFERENCE_BACKEND", "").strip().lower() or "llama"
+# The engine as configured, before the fold below: Basalt and Maya answer
+# the llama-server API (/health, /props, /slots) and are probed as llama,
+# but a label that names llama.cpp's MTP must not be pinned on them.
+_ENGINE = _BACKEND
 if _BACKEND not in ("llama", "vllm", "tensorfold"):
     _BACKEND = "llama"
 _INFER = (os.environ.get("OPENBEAST_INFERENCE_URL", "").strip().rstrip("/")
@@ -731,7 +735,11 @@ def _slot_status_llama():
     if slots["total"] is None:
         profile = "unknown"
     elif slots["total"] == 1:
-        profile = "mtp-single-slot"
+        # "mtp-single-slot" is llama.cpp's (the rig's MTP serve scripts) and
+        # stays its value for contract-2 clients; another engine behind the
+        # llama API (Basalt on the RTX 5090) is the engine-neutral
+        # "single-slot" the vLLM / TensorFold path already uses.
+        profile = "mtp-single-slot" if _ENGINE == "llama" else "single-slot"
     else:
         profile = "batched-multi-slot"
     return {
@@ -749,6 +757,11 @@ def _slot_status_llama():
         "services": services_status(health),
         "auth": _auth_mode(),
         **_admission_field(),
+        # An engine behind the llama API names itself: Basalt 404s a model id
+        # it does not serve (unlike llama-server), and clients read `backend`
+        # to give opencode exactly the served ids (scripts/lib/client_rigs.py
+        # catalog, client.sh's id check). Absent still means llama.
+        **({"backend": _ENGINE} if _ENGINE != "llama" else {}),
     }
 
 

@@ -260,6 +260,9 @@ if w and "Host: rebind.invalid" in args: out(os.environ.get("REBIND_CODE", "400"
 if w: out("200")
 if url.endswith(":8080/health"): out({"status": "ok"})
 if url.endswith("/slots"): out([])
+if url.endswith(":3002/api/slot"):
+    if os.environ.get("DASH_UP", "1") != "1": sys.exit(7)
+    out({"beast_slot": 2, "healthy": True})
 if ":3001/health" in url: out({"status": "ok", "auth": "open", "identity": "headers"})
 if url.endswith("/api/version"): out({"version": "stub"})
 if url.endswith("/api/config"): out({"features": {"auth": True}})
@@ -639,6 +642,23 @@ if has "$_O" "ntfy published on :8447 (tailnet-only)"; then
   pass "…a live ntfy behind :8447 passes (control)"
 else
   fail ":8447 live: $(row '8447')"
+fi
+# spark-1 and the rig mount the status DASHBOARD on :8447 by hand
+# (BEAST_SLOT.md); doctor failed "ntfy is NOT responding" on the rig's live
+# dashboard (2026-11-25). The mount's target decides which service it is.
+RUN_ENV=(TS_SERVE='https://beast.example.ts.net:8447 (tailnet only)\n|-- / proxy http://127.0.0.1:3002\n' NTFY_UP=0 DASH_UP=1)
+doctor BEAST_CHAT=true
+if has "$_O" "the status dashboard is published on :8447" && ! has "$_O" "ntfy is NOT responding"; then
+  pass ":8447 proxying to the dashboard is checked as the dashboard, not as ntfy"
+else
+  fail ":8447 dashboard: $(row '8447')"
+fi
+RUN_ENV=(TS_SERVE='https://beast.example.ts.net:8447 (tailnet only)\n|-- / proxy http://127.0.0.1:3002\n' DASH_UP=0)
+doctor BEAST_CHAT=true
+if has "$_O" ":8447 publishes the status dashboard (http://127.0.0.1:3002) but it is NOT responding"; then
+  pass "…a dead dashboard behind :8447 FAILs (control)"
+else
+  fail ":8447 dashboard dead: $(row '8447')"
 fi
 RUN_ENV=()
 # OFFLINE + a compose-kind extension: its image rides no bundle, and a missing
