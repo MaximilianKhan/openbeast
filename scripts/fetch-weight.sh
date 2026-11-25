@@ -90,6 +90,12 @@ cmd_fetch() {
   IFS=$'\t' read -r sha bytes _name repo remote <<< "$row"
   [[ "$remote" == "-" || -z "$remote" ]] && remote="$name"
   dest="$WEIGHTS_DIR/$name"
+  # A "derived" row is a file built here from other pinned files (the fifth column names the script that rebuilds
+  # it offline); it is on no Hub repo, so there is nothing to download. Present: verify it as any other.
+  if [[ "$repo" == "derived" ]]; then
+    [[ -f "$dest" ]] && exec "$SCRIPT_DIR/verify-weights.sh" --file "$name"
+    die "$name is built locally, not downloaded: run $remote (see its header), then put it at $dest"
+  fi
 
   say "weight:  $name"
   say "repo:    $repo  (remote name: $remote)"
