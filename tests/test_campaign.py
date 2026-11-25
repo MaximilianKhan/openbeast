@@ -1213,3 +1213,15 @@ def test_validate_refuses_two_keys_with_one_slug():
     camp = _cbm_camp({"Hy4-flash": "H_T2", "hy4 flash": "T2"})
     errs = [e for e in C.validate_campaign(camp) if "same model key" in e]
     assert errs and "hy4-flash" in errs[0]
+
+
+def test_a_context_overflow_is_never_lost():
+    """Max's rule (2026-11-25): an overflow is the model's fail, API errors or not,
+    and the campaign never reruns it."""
+    import scoring
+    assert C.MODEL_LOSS_REASONS == scoring.MODEL_LOSS_REASONS
+    assert not C.MODEL_LOSS_REASONS & C.INFRA_REASONS
+    row = {"passed": False, "reason": "context_overflow", "api_errors": 12, "api_errors_tail": 12,
+           "tokens_completion": 900, "elapsed_seconds": 300, "agent_exit_code": 0}
+    assert C.infra_reason(row) is None
+    assert C.infra_reason({**row, "reason": "server_error"}) == "server_error"

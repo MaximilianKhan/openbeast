@@ -1,0 +1,167 @@
+{
+  "description": "Context-overflow verdicts, applied by evals/v5_board.py and evals/ablation.py (Max's rule, 2026-11-25, docs/reports/DECISIONS-2026-11-25.md: a v5 unit that ends on CONTEXT OVERFLOW is a MODEL LOSS, a counted fail, never an infrastructure loss). One entry per infrastructure row of a committed result file (evals/boards/v5/*.json and diagnostics/): file (basename), unit, label (the row's infra label), verdict (overflow | not_overflow | undetermined), cause, evidence (where it was read; never a unit's solution). verdict overflow relabels the row reason context_overflow: a fail that stays in the denominator, that no repair run supersedes and that ablation.py pairs. Every server_error row needs an entry: `python3 evals/v5_board.py --check` fails otherwise. Propose entries with evals/audit/overflow_audit.py (the transcripts), add the server-log evidence, then python3 evals/v5_board.py --write.",
+  "audit": [
+    {
+      "file": "eval-qwen3-8-27b-uncensored-mtp-q5-k-m-L0-20261122-083815.json",
+      "unit": "122_gemm_blocked_c",
+      "label": "server_error",
+      "verdict": "not_overflow",
+      "cause": "truncated tool call: llama-server HTTP 500 'Failed to parse tool call arguments as JSON' after a reply cut at the per-request output cap, resent identically until the turn limit",
+      "evidence": "transcript rig:~/ob-eval-container/agents/logs/agent-20261122-085942-403b6b18.jsonl: 23 API errors (row: 23), all of them the tool-call JSON parse 500, all after the last reply (evals/audit/overflow_audit.py), no context_overflow_unrecoverable, 0 compactions; rig (ssh beast) ~/Documents/openbeast/.run/stack.log.1, the llama-server session started 2026-11-21 18:33 PST (n_ctx_slot 262144): every one of the unit's errors lines up (+1.2 s) with an HTTP 500 'Failed to parse tool call arguments as JSON' right after a generation that stopped at exactly the request's output cap (16384 tokens), the slot then at most 21,669 of 262,144 tokens; the session logs no context-size error at all",
+      "checked": "2026-11-25"
+    },
+    {
+      "file": "eval-qwen3-8-27b-uncensored-mtp-q5-k-m-L0-20261122-083815.json",
+      "unit": "122_gemm_blocked_d",
+      "label": "server_error",
+      "verdict": "not_overflow",
+      "cause": "truncated tool call: llama-server HTTP 500 'Failed to parse tool call arguments as JSON' after a reply cut at the per-request output cap, resent identically until the turn limit",
+      "evidence": "transcript rig:~/ob-eval-container/agents/logs/agent-20261122-090502-43331027.jsonl: 22 API errors (row: 22), all of them the tool-call JSON parse 500, all after the last reply (evals/audit/overflow_audit.py), no context_overflow_unrecoverable, 0 compactions; rig (ssh beast) ~/Documents/openbeast/.run/stack.log.1, the llama-server session started 2026-11-21 18:33 PST (n_ctx_slot 262144): every one of the unit's errors lines up (+1.2 s) with an HTTP 500 'Failed to parse tool call arguments as JSON' right after a generation that stopped at exactly the request's output cap (16384 tokens), the slot then at most 23,184 of 262,144 tokens; the session logs no context-size error at all",
+      "checked": "2026-11-25"
+    },
+    {
+      "file": "eval-qwen3-8-27b-uncensored-mtp-q5-k-m-L0-20261122-083815.json",
+      "unit": "124_rkf45",
+      "label": "server_error",
+      "verdict": "not_overflow",
+      "cause": "truncated tool call: llama-server HTTP 500 'Failed to parse tool call arguments as JSON' after a reply cut at the per-request output cap, resent identically until the turn limit",
+      "evidence": "transcript rig:~/ob-eval-container/agents/logs/agent-20261122-092202-338ada37.jsonl: 8 API errors (row: 8), all of them the tool-call JSON parse 500, all after the last reply (evals/audit/overflow_audit.py), no context_overflow_unrecoverable, 0 compactions; rig (ssh beast) ~/Documents/openbeast/.run/stack.log.1, the llama-server session started 2026-11-21 18:33 PST (n_ctx_slot 262144): every one of the unit's errors lines up (+1.2 s) with an HTTP 500 'Failed to parse tool call arguments as JSON' right after a generation that stopped at exactly the request's output cap (16384 tokens), the slot then at most 36,435 of 262,144 tokens; the session logs no context-size error at all",
+      "checked": "2026-11-25"
+    },
+    {
+      "file": "eval-qwen3-8-27b-uncensored-mtp-q5-k-m-L0-20261122-083815.json",
+      "unit": "173_taskgroup_cancel",
+      "label": "server_error",
+      "verdict": "not_overflow",
+      "cause": "truncated tool call: llama-server HTTP 500 'Failed to parse tool call arguments as JSON' after a reply cut at the per-request output cap, resent identically until the turn limit",
+      "evidence": "transcript rig:~/ob-eval-container/agents/logs/agent-20261122-140848-cbbf3dda.jsonl: 21 API errors (row: 21), all of them the tool-call JSON parse 500, all after the last reply (evals/audit/overflow_audit.py), no context_overflow_unrecoverable, 0 compactions; rig (ssh beast) ~/Documents/openbeast/.run/stack.log.1, the llama-server session started 2026-11-21 18:33 PST (n_ctx_slot 262144): every one of the unit's errors lines up (+1.2 s) with an HTTP 500 'Failed to parse tool call arguments as JSON' right after a generation that stopped at exactly the request's output cap (16384 tokens), the slot then at most 25,726 of 262,144 tokens; the session logs no context-size error at all",
+      "checked": "2026-11-25"
+    },
+    {
+      "file": "eval-qwen3-8-27b-uncensored-mtp-q5-k-m-v5-thinking-first-q-t2-20261123-115749.json",
+      "unit": "122_gemm_blocked_d",
+      "label": "server_error",
+      "verdict": "not_overflow",
+      "cause": "truncated tool call: llama-server HTTP 500 'Failed to parse tool call arguments as JSON' after a reply cut at the per-request output cap, resent identically until the turn limit",
+      "evidence": "transcript rig:~/ob-q38/.claude/worktrees/h9/agents/logs/agent-20261123-123529-97b5f277.jsonl: 27 API errors (row: 27), all of them the tool-call JSON parse 500, all after the last reply (evals/audit/overflow_audit.py), no context_overflow_unrecoverable, 0 compactions; rig (ssh beast) ~/Documents/openbeast/.run/stack.log.1, the llama-server session started 2026-11-21 18:33 PST (n_ctx_slot 262144): every one of the unit's errors lines up (+1.2 s) with an HTTP 500 'Failed to parse tool call arguments as JSON' right after a generation that stopped at exactly the request's output cap (8192 tokens), the slot then at most 89,082 of 262,144 tokens; the session logs no context-size error at all",
+      "checked": "2026-11-25"
+    },
+    {
+      "file": "eval-qwen3-8-27b-uncensored-mtp-q5-k-m-v5-thinking-first-q-t2-20261123-115749.json",
+      "unit": "168_linearizability_kv_f",
+      "label": "server_error",
+      "verdict": "not_overflow",
+      "cause": "truncated tool call: llama-server HTTP 500 'Failed to parse tool call arguments as JSON' after a reply cut at the per-request output cap, resent identically until the turn limit",
+      "evidence": "transcript rig:~/ob-q38/.claude/worktrees/h9/agents/logs/agent-20261123-194427-5127829e.jsonl: 58 API errors (row: 58), all of them the tool-call JSON parse 500, all after the last reply (evals/audit/overflow_audit.py), no context_overflow_unrecoverable, 0 compactions; rig (ssh beast) ~/Documents/openbeast/.run/stack.log.1, the llama-server session started 2026-11-21 18:33 PST (n_ctx_slot 262144): every one of the unit's errors lines up (+1.2 s) with an HTTP 500 'Failed to parse tool call arguments as JSON' right after a generation that stopped at exactly the request's output cap (8192 tokens), the slot then at most 16,042 of 262,144 tokens; the session logs no context-size error at all",
+      "checked": "2026-11-25"
+    },
+    {
+      "file": "eval-qwen3-8-27b-uncensored-mtp-q5-k-m-v5-thinking-first-q-t2-20261123-115749.json",
+      "unit": "173_taskgroup_cancel",
+      "label": "server_error",
+      "verdict": "not_overflow",
+      "cause": "truncated tool call: llama-server HTTP 500 'Failed to parse tool call arguments as JSON' after a reply cut at the per-request output cap, resent identically until the turn limit",
+      "evidence": "transcript rig:~/ob-q38/.claude/worktrees/h9/agents/logs/agent-20261123-195027-546b2dac.jsonl: 51 API errors (row: 51), all of them the tool-call JSON parse 500, all after the last reply (evals/audit/overflow_audit.py), no context_overflow_unrecoverable, 0 compactions; rig (ssh beast) ~/Documents/openbeast/.run/stack.log.1, the llama-server session started 2026-11-21 18:33 PST (n_ctx_slot 262144): every one of the unit's errors lines up (+1.2 s) with an HTTP 500 'Failed to parse tool call arguments as JSON' right after a generation that stopped at exactly the request's output cap (8192 tokens), the slot then at most 26,240 of 262,144 tokens; the session logs no context-size error at all",
+      "checked": "2026-11-25"
+    },
+    {
+      "file": "eval-qwen3-8-27b-uncensored-mtp-q5-k-m-v5-thinking-first-q-t2-20261123-115749.json",
+      "unit": "175_crdt_orset_rga",
+      "label": "server_error",
+      "verdict": "not_overflow",
+      "cause": "truncated tool call: llama-server HTTP 500 'Failed to parse tool call arguments as JSON' after a reply cut at the per-request output cap, resent identically until the turn limit",
+      "evidence": "transcript rig:~/ob-q38/.claude/worktrees/h9/agents/logs/agent-20261123-200332-ac2e036a.jsonl: 21 API errors (row: 21), all of them the tool-call JSON parse 500, all after the last reply (evals/audit/overflow_audit.py), no context_overflow_unrecoverable, 0 compactions; rig (ssh beast) ~/Documents/openbeast/.run/stack.log.1, the llama-server session started 2026-11-21 18:33 PST (n_ctx_slot 262144): every one of the unit's errors lines up (+1.2 s) with an HTTP 500 'Failed to parse tool call arguments as JSON' right after a generation that stopped at exactly the request's output cap (8192 tokens), the slot then at most 49,591 of 262,144 tokens; the session logs no context-size error at all",
+      "checked": "2026-11-25"
+    },
+    {
+      "file": "eval-qwen3-8-27b-uncensored-mtp-q5-k-m-v5-thinking-first-q-t2-20261123-115749.json",
+      "unit": "190_autograd_mlp",
+      "label": "server_error",
+      "verdict": "not_overflow",
+      "cause": "truncated tool call: llama-server HTTP 500 'Failed to parse tool call arguments as JSON' after a reply cut at the per-request output cap, resent identically until the turn limit",
+      "evidence": "transcript rig:~/ob-q38/.claude/worktrees/h9/agents/logs/agent-20261123-212301-1495e59f.jsonl: 45 API errors (row: 45), all of them the tool-call JSON parse 500, all after the last reply (evals/audit/overflow_audit.py), no context_overflow_unrecoverable, 0 compactions; rig (ssh beast) ~/Documents/openbeast/.run/stack.log.1, the llama-server session started 2026-11-21 18:33 PST (n_ctx_slot 262144): every one of the unit's errors lines up (+1.2 s) with an HTTP 500 'Failed to parse tool call arguments as JSON' right after a generation that stopped at exactly the request's output cap (8192 tokens), the slot then at most 42,317 of 262,144 tokens; the session logs no context-size error at all",
+      "checked": "2026-11-25"
+    },
+    {
+      "file": "eval-qwen3-8-27b-uncensored-mtp-q5-k-m-v5-thinking-first-q-t2-20261123-115749.json",
+      "unit": "195_riscv_insn_budget",
+      "label": "server_error",
+      "verdict": "not_overflow",
+      "cause": "truncated tool call: llama-server HTTP 500 'Failed to parse tool call arguments as JSON' after a reply cut at the per-request output cap, resent identically until the turn limit",
+      "evidence": "transcript rig:~/ob-q38/.claude/worktrees/h9/agents/logs/agent-20261123-221052-94db98dd.jsonl: 31 API errors (row: 31), all of them the tool-call JSON parse 500, all after the last reply (evals/audit/overflow_audit.py), no context_overflow_unrecoverable, 0 compactions; rig (ssh beast) ~/Documents/openbeast/.run/stack.log.1, the llama-server session started 2026-11-21 18:33 PST (n_ctx_slot 262144): every one of the unit's errors lines up (+1.2 s) with an HTTP 500 'Failed to parse tool call arguments as JSON' right after a generation that stopped at exactly the request's output cap (8192 tokens), the slot then at most 87,876 of 262,144 tokens; the session logs no context-size error at all",
+      "checked": "2026-11-25"
+    },
+    {
+      "file": "eval-qwen3-8-27b-uncensored-mtp-q5-k-m-v5-thinking-first-q-t2-20261123-115749.json",
+      "unit": "196_polyphase_resampler",
+      "label": "server_error",
+      "verdict": "not_overflow",
+      "cause": "truncated tool call: llama-server HTTP 500 'Failed to parse tool call arguments as JSON' after a reply cut at the per-request output cap, resent identically until the turn limit",
+      "evidence": "transcript rig:~/ob-q38/.claude/worktrees/h9/agents/logs/agent-20261123-223849-273137f1.jsonl: 38 API errors (row: 38), all of them the tool-call JSON parse 500, all after the last reply (evals/audit/overflow_audit.py), no context_overflow_unrecoverable, 0 compactions; rig (ssh beast) ~/Documents/openbeast/.run/stack.log.1, the llama-server session started 2026-11-21 18:33 PST (n_ctx_slot 262144): every one of the unit's errors lines up (+1.2 s) with an HTTP 500 'Failed to parse tool call arguments as JSON' right after a generation that stopped at exactly the request's output cap (8192 tokens), the slot then at most 57,321 of 262,144 tokens; the session logs no context-size error at all",
+      "checked": "2026-11-25"
+    },
+    {
+      "file": "eval-qwen3-8-27b-uncensored-mtp-q5-k-m-v5-thinking-first-q-t2-20261123-231112.json",
+      "unit": "168_linearizability_kv_f",
+      "label": "server_error",
+      "verdict": "not_overflow",
+      "cause": "truncated tool call: llama-server HTTP 500 'Failed to parse tool call arguments as JSON' after a reply cut at the per-request output cap, resent identically until the turn limit",
+      "evidence": "transcript rig:~/ob-q38/.claude/worktrees/h9/agents/logs/agent-20261123-232049-9b62f83f.jsonl: 52 API errors (row: 52), all of them the tool-call JSON parse 500, all after the last reply (evals/audit/overflow_audit.py), no context_overflow_unrecoverable, 0 compactions; rig (ssh beast) ~/Documents/openbeast/.run/stack.log.1, the llama-server session started 2026-11-21 18:33 PST (n_ctx_slot 262144): every one of the unit's errors lines up (+1.2 s) with an HTTP 500 'Failed to parse tool call arguments as JSON' right after a generation that stopped at exactly the request's output cap (8192 tokens), the slot then at most 26,787 of 262,144 tokens; the session logs no context-size error at all",
+      "checked": "2026-11-25"
+    },
+    {
+      "file": "eval-qwen3-8-27b-uncensored-mtp-q5-k-m-v5-thinking-first-q-t2-20261123-231112.json",
+      "unit": "175_crdt_orset_rga",
+      "label": "server_error",
+      "verdict": "not_overflow",
+      "cause": "truncated tool call: llama-server HTTP 500 'Failed to parse tool call arguments as JSON' after a reply cut at the per-request output cap, resent identically until the turn limit",
+      "evidence": "transcript rig:~/ob-q38/.claude/worktrees/h9/agents/logs/agent-20261123-235937-995b1ac8.jsonl: 34 API errors (row: 34), all of them the tool-call JSON parse 500, all after the last reply (evals/audit/overflow_audit.py), no context_overflow_unrecoverable, 0 compactions; rig (ssh beast) ~/Documents/openbeast/.run/stack.log.1, the llama-server session started 2026-11-21 18:33 PST (n_ctx_slot 262144): every one of the unit's errors lines up (+1.2 s) with an HTTP 500 'Failed to parse tool call arguments as JSON' right after a generation that stopped at exactly the request's output cap (8192 tokens), the slot then at most 43,179 of 262,144 tokens; the session logs no context-size error at all",
+      "checked": "2026-11-25"
+    },
+    {
+      "file": "eval-qwen3-8-27b-uncensored-mtp-q5-k-m-v5-thinking-first-q-t2-20261123-231112.json",
+      "unit": "190_autograd_mlp",
+      "label": "server_error",
+      "verdict": "not_overflow",
+      "cause": "truncated tool call: llama-server HTTP 500 'Failed to parse tool call arguments as JSON' after a reply cut at the per-request output cap, resent identically until the turn limit",
+      "evidence": "transcript rig:~/ob-q38/.claude/worktrees/h9/agents/logs/agent-20261124-001652-80b1b8be.jsonl: 1 API errors (row: 1), all of them the tool-call JSON parse 500, all after the last reply (evals/audit/overflow_audit.py), no context_overflow_unrecoverable, 0 compactions; rig (ssh beast) ~/Documents/openbeast/.run/stack.log.1, the llama-server session started 2026-11-21 18:33 PST (n_ctx_slot 262144): every one of the unit's errors lines up (+1.2 s) with an HTTP 500 'Failed to parse tool call arguments as JSON' right after a generation that stopped at exactly the request's output cap (8192 tokens), the slot then at most 72,049 of 262,144 tokens; the session logs no context-size error at all",
+      "checked": "2026-11-25"
+    },
+    {
+      "file": "eval-qwen3-8-27b-uncensored-mtp-q5-k-m-L2-20261122-163812.json",
+      "unit": "122_gemm_blocked_b",
+      "label": "server_error",
+      "verdict": "not_overflow",
+      "cause": "truncated tool call: llama-server HTTP 500 'Failed to parse tool call arguments as JSON' after a reply cut at the per-request output cap, resent identically until the turn limit",
+      "evidence": "transcript rig:~/ob-eval-container/agents/logs/agent-20261122-164136-a3dd4f09.jsonl: 21 API errors (row: 21), all of them the tool-call JSON parse 500, all after the last reply (evals/audit/overflow_audit.py), no context_overflow_unrecoverable, 0 compactions; rig (ssh beast) ~/Documents/openbeast/.run/stack.log.1, the llama-server session started 2026-11-21 18:33 PST (n_ctx_slot 262144): every one of the unit's errors lines up (+1.2 s) with an HTTP 500 'Failed to parse tool call arguments as JSON' right after a generation that stopped at exactly the request's output cap (16384 tokens), the slot then at most 26,336 of 262,144 tokens; the session logs no context-size error at all",
+      "checked": "2026-11-25"
+    },
+    {
+      "file": "eval-qwen3-8-27b-uncensored-mtp-q5-k-m-L2-20261122-163812.json",
+      "unit": "163_bigint_divmod_d",
+      "label": "server_error",
+      "verdict": "not_overflow",
+      "cause": "truncated tool call: llama-server HTTP 500 'Failed to parse tool call arguments as JSON' after a reply cut at the per-request output cap, resent identically until the turn limit",
+      "evidence": "transcript rig:~/ob-eval-container/agents/logs/agent-20261122-184547-217b965e.jsonl: 2 API errors (row: 2), all of them the tool-call JSON parse 500, all after the last reply (evals/audit/overflow_audit.py), no context_overflow_unrecoverable, 0 compactions; rig (ssh beast) ~/Documents/openbeast/.run/stack.log.1, the llama-server session started 2026-11-21 18:33 PST (n_ctx_slot 262144): every one of the unit's errors lines up (+1.2 s) with an HTTP 500 'Failed to parse tool call arguments as JSON' right after a generation that stopped at exactly the request's output cap (16384 tokens), the slot then at most 41,981 of 262,144 tokens; the session logs no context-size error at all",
+      "checked": "2026-11-25"
+    },
+    {
+      "file": "eval-glm-5-3-flash-L0-20261116-060847.json",
+      "unit": "146_aho_corasick",
+      "label": "validator_timeout",
+      "verdict": "not_overflow",
+      "cause": "the validator timed out (60 s) after the agent ran to its turn limit; superseded on the board by the repair file's verdict (GLM-L0's second file)",
+      "evidence": "row: api_errors 0, compactions 0, iterations 30, validation_output 'Validation timed out (60s)'; transcript Mac agents/logs/agent-20261116-075447-89897884.jsonl (the openbeast.nosync checkout): 30 iterations, a max_iterations stop, 0 error events, 0 compactions, no context_overflow_unrecoverable",
+      "checked": "2026-11-25"
+    },
+    {
+      "file": "eval-glm-5-3-flash-L0-20261116-060847.json",
+      "unit": "158_karatsuba_bytes_c",
+      "label": "validator_timeout",
+      "verdict": "not_overflow",
+      "cause": "the validator timed out (60 s) after the agent ran to its turn limit; superseded on the board by the repair file's verdict (GLM-L0's second file)",
+      "evidence": "row: api_errors 0, compactions 0, iterations 30, validation_output 'Validation timed out (60s)'; transcript Mac agents/logs/agent-20261116-061757-c3a43cf8.jsonl (the openbeast.nosync checkout): 30 iterations, a max_iterations stop, 0 error events, 0 compactions, no context_overflow_unrecoverable",
+      "checked": "2026-11-25"
+    }
+  ]
+}

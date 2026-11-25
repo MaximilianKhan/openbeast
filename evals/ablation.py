@@ -22,7 +22,11 @@ server), API errors, a fork/thread EAGAIN validator death, a unit the
 arm did not measure (not_in_arm, budget_skip), or a unit the board withholds
 from that run's score (evals/boards/v5/exclusions.json, matched by the run's
 board.json id or the file's name): reason `contaminated` (an integrity-scan
-exclusion) or `excluded` (any other withheld unit).
+exclusion) or `excluded` (any other withheld unit). A unit that ended on a
+context overflow is NOT dropped: it is the model's fail (Max's rule,
+2026-11-25). Rows labelled context_overflow are valid fails whatever their API
+error count, and the server_error rows evals/boards/v5/overflow.json confirms
+as overflows are relabelled so before pairing (the board does the same).
 
 Stratified L2 (the profile's first budget cut). Every L0 failure is rerun
 and a seeded fraction f of L0 passes; the rest are `not_in_arm`. Rescues b
@@ -129,6 +133,8 @@ def invalid_reason(row: dict | None) -> str | None:
         return "missing"
     if row.get("reason") in INVALID_REASONS:
         return row["reason"]
+    if row.get("reason") in scoring.MODEL_LOSS_REASONS:
+        return None     # a context overflow is a model fail, API errors or not (2026-11-25)
     rc = row.get("agent_exit_code")
     if rc is not None and rc < -1:
         return f"signal death (exit {rc})"
@@ -419,17 +425,30 @@ def _board_inputs() -> tuple[dict, dict]:
 
 
 def apply_exclusions(results: dict, path: str, exclusions: dict | None = None,
-                     board: dict | None = None) -> dict:
+                     board: dict | None = None, overflow: list | None = None) -> dict:
     """Mark the units the board withholds from this file's run (exclusions.json
     "exclusions", the same entries evals/v5_board.py applies) so pair() drops
     them: reason `contaminated` for an integrity exclusion, else `excluded`.
     An entry names its run by board.json id ("run") or by a file name
     ("file"); naming neither applies everywhere. A file no board row lists
-    matches only "file" entries and entries naming neither."""
+    matches only "file" entries and entries naming neither.
+
+    First, the rows overflow.json confirms ended on a context overflow are
+    relabelled context_overflow, exactly as the board does
+    (v5_board.reclassify_overflows): a model fail that stays in the pair
+    (Max's rule, 2026-11-25), not an invalid server_error row."""
     if exclusions is None or board is None:
         b, e = _board_inputs()
         board = b if board is None else board
         exclusions = e if exclusions is None else exclusions
+    if overflow is None:
+        import v5_board  # noqa: PLC0415  (lazy, as _board_inputs)
+        overflow = v5_board.load_overflow()
+    if overflow:
+        import v5_board  # noqa: PLC0415
+        rows = {t.get("id"): t for t in results.get("tasks") or []}
+        fixed = v5_board.reclassify_overflows(rows, path, overflow)
+        results["tasks"] = [fixed.get(t.get("id"), t) for t in results.get("tasks") or []]
     base = os.path.basename(path)
     run_ids = {r.get("id") for r in board.get("runs") or [] if base in (r.get("files") or [])}
     hits = {}

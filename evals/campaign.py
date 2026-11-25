@@ -75,6 +75,10 @@ INFRA_REASONS = frozenset({
     "interpreter_error",     # run_eval's own name for it once eval-host provisioning (#189) is in
     "served_model_changed",  # review 1118: the server stopped serving the measured model
 })
+# A model outcome even with API errors on the row (scoring.MODEL_LOSS_REASONS,
+# kept equal by tests/test_campaign.py): the session outgrew the context window
+# (Max's rule, 2026-11-25). Never lost, never rerun: a counted fail.
+MODEL_LOSS_REASONS = frozenset({"context_overflow"})
 # A row the arm did not measure at all (arm scheduler): not lost, not scored.
 UNMEASURED_REASONS = frozenset({"not_in_arm"})
 # The eval interpreter dying before the agent's first token. 2026-11-16: the
@@ -444,6 +448,8 @@ def infra_reason(row: dict) -> str | None:
     if row.get("passed"):
         return None
     reason = row.get("reason")
+    if reason in MODEL_LOSS_REASONS:
+        return None
     if reason in INFRA_REASONS:
         return reason
     toks = row.get("tokens_completion") or 0

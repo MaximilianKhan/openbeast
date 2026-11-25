@@ -17,6 +17,22 @@ interpreter failed to start). A repair run therefore fills
 in lost units and never re-rolls a real verdict. Units still lost after the
 merge count as not passed (out of the manifest's 71).
 
+CONTEXT OVERFLOW IS A MODEL LOSS (Max's rule, 2026-11-25). A unit that ends
+because the model's session outgrew the context window is a counted fail, never
+an infrastructure loss: the session is the model's, and scoring it as lost would
+shrink nothing here (lost units count as fails) but would let a repair run
+re-roll it and would drop it from ablation.py's pairs. run_eval rows written
+before the rule call such a unit server_error (the runner's overflow pattern
+missed the engine's wording, e.g. Basalt's "exceeds the context window"), so
+evals/boards/v5/overflow.json records a verdict, with its evidence, for every
+server_error row of every committed result file: "overflow" rows are relabelled
+reason context_overflow (scoring.MODEL_LOSS_REASONS) before the merge, so they
+count as fails and no repair supersedes them; ablation.py applies the same
+ledger. --check fails while a server_error row has no verdict, an entry is
+stale, or a row's own text shows an overflow its verdict does not
+(overflow_problems). evals/audit/overflow_audit.py reads the transcripts and
+proposes the entries.
+
 SCORE is the v5 capability (evals/README.md "Scoring (v5)"):
 0.75 x SOLVE + 0.25 x LANG, LANG over multi-language bases only, computed by
 scoring.compute_solve_breadth on rows enriched from the suite manifest.
@@ -99,6 +115,32 @@ BOARD_FILE = os.path.join(BOARD_DIR, "board.json")
 # run) and validator notes shown without adjusting anything. Data, not code:
 # an integrity scan's verdicts are applied by editing this file + --write.
 EXCLUSIONS_FILE = os.path.join(BOARD_DIR, "exclusions.json")
+# Context overflow verdicts for the server_error rows of every committed result
+# file (module docstring, CONTEXT OVERFLOW IS A MODEL LOSS).
+OVERFLOW_FILE = os.path.join(BOARD_DIR, "overflow.json")
+DIAGNOSTICS_DIR = os.path.join(BOARD_DIR, "diagnostics")
+OVERFLOW_REASON = "context_overflow"
+OVERFLOW_VERDICTS = ("overflow", "not_overflow", "undetermined")
+# Infra labels that can hide a session that ended on an overflow: the runner
+# counts an overflow it does not recognise as an API error, and run_eval turns
+# a failed row whose run ended on API errors into server_error.
+OVERFLOW_AUDITED = frozenset({"server_error"})
+# Every serving engine's wording for a request that does not fit the window,
+# plus the runner's own stop. agents/runner.py's _CTX_OVERFLOW_RE (era-hashed)
+# lacks Basalt's; this one is the audit's and the board's.
+OVERFLOW_RE = re.compile(
+    r"exceed_context_size|exceeds the available context size|"            # llama.cpp
+    r"larger than the max context size|context size has been exceeded|"   # llama.cpp, older
+    r"context shift is disabled|"
+    r"maximum context length is \d|"                                      # vLLM, TensorFold MLX
+    r"-token (?:context window|safe cache capacity)|"                     # TensorFold CUDA
+    r"server's context window is \d|"                                     # TensorFold MLX
+    r"exceeds the context window|"                                        # Basalt
+    r"context_overflow_unrecoverable|context overflow \(nothing left to compact\)",  # the runner
+    re.IGNORECASE)
+# Row fields that may carry an error's text (none do before the next era; the
+# proposal in docs/HARNESS_NOTES.md adds them).
+OVERFLOW_TEXT_FIELDS = ("stop_reason", "last_api_error", "api_error_sample")
 # The exact weights behind each run (board.json "weights_id" -> an entry here).
 WEIGHTS_FILE = os.path.join(BOARD_DIR, "weights.json")
 MANIFEST = os.path.join(EVALS_DIR, "suites", "v5.json")
@@ -296,14 +338,121 @@ def applies(entry: dict, run: dict) -> bool:
     return True
 
 
-def merge_runs(paths: list[str]) -> tuple[dict, dict]:
+def load_overflow(path: str = OVERFLOW_FILE) -> list[dict]:
+    """overflow.json's "audit": [{file, unit, label, verdict, cause, evidence}];
+    an absent file is an empty ledger."""
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as f:
+        return json.load(f).get("audit") or []
+
+
+def overflow_verdicts(audit: list[dict] | None, file: str) -> dict:
+    """{unit: entry} of the ledger's "overflow" verdicts for one result file (by basename)."""
+    base = os.path.basename(file)
+    return {e["unit"]: e for e in audit or []
+            if e.get("file") == base and e.get("verdict") == "overflow"}
+
+
+def reclassify_overflows(rows: dict, file: str, audit: list[dict] | None) -> dict:
+    """rows with every ledger-confirmed overflow relabelled: reason context_overflow
+    (a model fail: campaign.infra_reason and ablation.invalid_reason pass it),
+    the original label kept in reason_before_overflow. A pass is left alone."""
+    hits = overflow_verdicts(audit, file)
+    out = dict(rows)
+    for uid in hits:
+        r = rows.get(uid)
+        if r is None or r.get("passed") or r.get("reason") == OVERFLOW_REASON:
+            continue
+        out[uid] = {**r, "reason": OVERFLOW_REASON, "reason_before_overflow": r.get("reason")}
+    return out
+
+
+def row_overflow_text(row: dict) -> str | None:
+    """The first overflow wording found in a row's own error fields, or None."""
+    for k in OVERFLOW_TEXT_FIELDS:
+        m = OVERFLOW_RE.search(str(row.get(k) or ""))
+        if m:
+            return f"{k}: {m.group(0)}"
+    return None
+
+
+def overflow_files(board: dict, base_dir: str = BOARD_DIR) -> dict:
+    """{basename: path} of every committed run_eval result file: each board run's
+    files and evals/boards/v5/diagnostics/eval-*.json (reference ledgers excluded)."""
+    out = {}
+    for r in board.get("runs", []):
+        if r.get("reference"):
+            continue
+        for f in r["files"]:
+            out[f] = os.path.join(base_dir, f)
+    diag = os.path.join(base_dir, "diagnostics")
+    if os.path.isdir(diag):
+        for f in sorted(os.listdir(diag)):
+            if f.startswith("eval-") and f.endswith(".json"):
+                out.setdefault(f, os.path.join(diag, f))
+    return out
+
+
+def overflow_problems(board: dict, audit: list[dict], base_dir: str = BOARD_DIR) -> list[str]:
+    """Why the overflow ledger does not cover the committed files ([] = fine):
+    a server_error row with no verdict; an entry without a known verdict or
+    evidence, naming no committed file or no infrastructure row; a row whose
+    own text shows an overflow its verdict does not."""
+    bad = []
+    files = overflow_files(board, base_dir)
+    seen: dict = {}
+    for i, e in enumerate(audit):
+        key = (e.get("file"), e.get("unit"))
+        where = f"overflow.json audit[{i}] {e.get('file')} {e.get('unit')}"
+        if key in seen:
+            bad.append(f"{where}: a second entry for the same row")
+        seen[key] = e
+        if e.get("verdict") not in OVERFLOW_VERDICTS:
+            bad.append(f"{where}: verdict {e.get('verdict')!r} is not one of {', '.join(OVERFLOW_VERDICTS)}")
+        if not (e.get("evidence") or "").strip():
+            bad.append(f"{where}: no evidence")
+        if e.get("file") not in files:
+            bad.append(f"{where}: not a committed result file (a board run's or diagnostics/)")
+    for name, path in files.items():
+        _, rows = campaign.load_rows(path)
+        for uid, r in rows.items():
+            label = infra_reason(r)
+            e = seen.get((name, uid))
+            if e is None:
+                if label in OVERFLOW_AUDITED:
+                    bad.append(f"{name} {uid}: a {label} row with no overflow.json verdict "
+                               "(a context overflow is a model loss, 2026-11-25: audit it with "
+                               "evals/audit/overflow_audit.py)")
+                continue
+            if not label:
+                bad.append(f"{name} {uid}: overflow.json has a verdict but the row is not an "
+                           "infrastructure row (stale entry)")
+            elif e.get("label") and e["label"] != label:
+                bad.append(f"{name} {uid}: overflow.json says label {e['label']!r}, the row is {label!r}")
+            text = row_overflow_text(r)
+            if text and e.get("verdict") != "overflow":
+                bad.append(f"{name} {uid}: the row shows a context overflow ({text}) but its verdict "
+                           f"is {e.get('verdict')!r}: reclassify it (a model loss)")
+    for (name, uid), e in seen.items():
+        if name in files and uid not in campaign.load_rows(files[name])[1]:
+            bad.append(f"overflow.json {name} {uid}: no such unit in the file")
+    return bad
+
+
+def merge_runs(paths: list[str], overflow: list[dict] | None = None) -> tuple[dict, dict]:
     """(header of the first file, {unit: row}) over a main run and its repair
     runs: a later row replaces an earlier one only if the earlier is an
-    infrastructure row (or the unit was missing)."""
+    infrastructure row (or the unit was missing). Each file's ledger-confirmed
+    overflows are relabelled first (reclassify_overflows): a model fail, which
+    no repair row supersedes. overflow None reads the committed ledger
+    (every caller agrees: the board, v5_report.py, ablation.py); [] applies none."""
+    overflow = load_overflow() if overflow is None else overflow
     header: dict = {}
     merged: dict = {}
     for p in paths:
         h, rows = campaign.load_rows(p)
+        rows = reclassify_overflows(rows, p, overflow)
         header = header or h
         for uid, r in rows.items():
             old = merged.get(uid)
@@ -374,9 +523,11 @@ def experiment_reasons(header: dict, rows: dict) -> list[str]:
 
 
 def score_run(run: dict, manifest: dict, base_dir: str = BOARD_DIR,
-              exclusions: dict | None = None) -> dict:
+              exclusions: dict | None = None, overflow: list[dict] | None = None) -> dict:
     """A run's numbers. An excluded unit counts as NOT passed (the
-    conservative figure); `passed_raw` keeps the unadjusted count."""
+    conservative figure); `passed_raw` keeps the unadjusted count. A unit
+    that ended on a context overflow (overflow.json) is a counted fail and is
+    listed in `overflow` with its original label."""
     exclusions = exclusions or {}
     excluded = {e["unit"]: e.get("reason", "excluded")
                 for e in exclusions.get("exclusions", []) if applies(e, run)}
@@ -386,7 +537,7 @@ def score_run(run: dict, manifest: dict, base_dir: str = BOARD_DIR,
     if run.get("reference"):
         header, rows = load_reference(paths[0])
     else:
-        header, rows = merge_runs(paths)
+        header, rows = merge_runs(paths, overflow)
     scored, lost, secs, raw = [], {}, [], 0
     by_lang = {lang: [0, 0] for lang, _ in LANGS}
     for uid, meta in manifest.items():
@@ -418,6 +569,8 @@ def score_run(run: dict, manifest: dict, base_dir: str = BOARD_DIR,
         "by_lang": {k: tuple(v) for k, v in by_lang.items()},
         "mean_s": round(sum(secs) / len(secs), 1) if secs else None,
         "lost": lost,
+        "overflow": {u: rows[u].get("reason_before_overflow") for u in manifest
+                     if (rows.get(u) or {}).get("reason") == OVERFLOW_REASON},
         "passed_raw": raw,
         "excluded": {u: why for u, why in excluded.items() if u in manifest},
         "validator_notes": {u: n for u, n in vnotes.items() if u in manifest},
@@ -455,17 +608,18 @@ def _neg_date(r: dict) -> tuple:
 
 def build(board: dict | None = None, base_dir: str = BOARD_DIR,
           manifest: dict | None = None, exclusions: dict | None = None,
-          weights: dict | None = None) -> dict:
+          weights: dict | None = None, overflow: list[dict] | None = None) -> dict:
     board = board if board is not None else load_board()
     manifest = manifest if manifest is not None else load_manifest()
     exclusions = exclusions if exclusions is not None else load_exclusions()
+    overflow = overflow if overflow is not None else load_overflow()
     weights = weights if weights is not None else load_weights()
     problems = weights_problems(board, weights) + defaults_problems(board)
     if problems:
         raise ValueError("weights.json / board.json: " + "; ".join(problems))
     runs = []
     for r in board["runs"]:
-        s = score_run(r, manifest, base_dir, exclusions)
+        s = score_run(r, manifest, base_dir, exclusions, overflow)
         s["weights_id"] = r["weights_id"]
         s["weights"] = {**weights[r["weights_id"]], "id": r["weights_id"],
                         "hub_url": hub_url(weights[r["weights_id"]])}
@@ -519,6 +673,10 @@ def _status(r: dict) -> str:
         bits.append("board protocol (L0)")
     if r["lost"]:
         bits.append(f"{len(r['lost'])} units lost to infrastructure, counted as fails")
+    if r.get("overflow"):
+        n = len(r["overflow"])
+        bits.append(f"{n} unit{'s' * (n != 1)} ended on context overflow: model fail{'s' * (n != 1)} "
+                    "(overflow.json)")
     if r.get("replicate_of"):
         bits.append(f"seed replicate of {r['replicate_of']}: never the ranked row")
     return "; ".join(bits)
@@ -821,13 +979,18 @@ def main() -> int:
         a.write = True
 
     b = build()
+    unaudited = overflow_problems(load_board(), load_overflow())
+    for p in unaudited:
+        print(f"  OVERFLOW {p}", file=sys.stderr)
     if a.check:
         stale = update_docs(b, write=False)
         for s in stale:
             print(f"  DRIFT {s}: run `python3 evals/v5_board.py --write`")
         if not stale:
             print("  OK   v5 board blocks in " + ", ".join(DOCS))
-        return 1 if stale else 0
+        if not unaudited:
+            print("  OK   every server_error row has a context-overflow verdict (overflow.json)")
+        return 1 if stale or unaudited else 0
     if a.write:
         for s in update_docs(b, write=True):
             print(f"  wrote {s}")

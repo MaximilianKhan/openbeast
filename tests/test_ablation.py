@@ -277,3 +277,23 @@ def test_cli_drops_q38u_l0s_contaminated_unit(capsys):
     assert ("163_bigint_divmod_e", "contaminated") in [tuple(x) for x in rep["dropped"]]
     rust = next(r for r in rep["contrasts"] if r["contrast"] == "rust")
     assert rust["n"] == 6
+
+
+def test_a_context_overflow_is_a_model_fail_in_pairs():
+    """Max's rule (2026-11-25): an overflow stays in the pair as the model's fail."""
+    import scoring
+    assert not scoring.MODEL_LOSS_REASONS & A.INVALID_REASONS
+    assert not scoring.MODEL_LOSS_REASONS & scoring.INFRA_REASONS
+    assert A.invalid_reason(_row("u", False, reason="context_overflow", api_errors=9)) is None
+    # the board's overflow ledger relabels a server_error row before pairing
+    led = [{"file": "eval-m-L0-1.json", "unit": "u2_f", "verdict": "overflow", "evidence": "e"},
+           {"file": "eval-m-L0-1.json", "unit": "u3_f", "verdict": "not_overflow", "evidence": "e"}]
+    a = _results([_row("u1_f", False), _row("u2_f", False, reason="server_error", api_errors=4),
+                  _row("u3_f", False, reason="server_error", api_errors=4)], "L0")
+    b = _results([_row("u1_f", True), _row("u2_f", True), _row("u3_f", True)], "L1")
+    A.apply_exclusions(a, "/x/eval-m-L0-1.json", {"exclusions": []}, {"runs": []}, overflow=led)
+    pairs, dropped, _ = A.pair(a, b)
+    assert sorted(p[0] for p in pairs) == ["u1_f", "u2_f"]
+    assert dict(dropped) == {"u3_f": "server_error"}
+    assert a["tasks"][1]["reason"] == "context_overflow"
+    assert a["tasks"][1]["reason_before_overflow"] == "server_error"

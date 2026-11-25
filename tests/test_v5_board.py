@@ -500,3 +500,99 @@ def test_docs_are_current():
     p = subprocess.run([sys.executable, os.path.join(REPO, "evals", "v5_board.py"), "--check"],
                        capture_output=True, text=True)
     assert p.returncode == 0, p.stdout + p.stderr
+
+
+# --- context overflow is a model loss (Max's rule, 2026-11-25) ----------------------------
+
+BASALT = ("engine reported request exceeds the context window: prompt (250000 tokens) + "
+          "max tokens (16384) exceeds the context (262144)")
+
+
+def _overflow_board(tmp_path):
+    d = str(tmp_path)
+    main = write(d, "main.json", results([
+        row("1_a_py", True),
+        row("1_a_go", False, reason="server_error", api_errors=5, api_errors_tail=5),
+        row("2_b", False, reason="server_error", api_errors=3, api_errors_tail=3)]))
+    repair = write(d, "repair.json", results([row("1_a_go", True), row("2_b", True)],
+                                             ts="2026-11-16T12:00:00"))
+    run = {"id": "M", "model": "Model M", "weights_id": "m-29", "config": "c", "files": [main, repair]}
+    return d, run, {"runs": [run]}
+
+
+def test_a_context_overflow_is_a_counted_fail_no_repair_supersedes(tmp_path):
+    d, run, _ = _overflow_board(tmp_path)
+    # no ledger: both server_error rows are lost, and the repair fills them
+    r = v5_board.score_run(run, MANIFEST, base_dir=d, overflow=[])
+    assert r["passed"] == 3 and r["overflow"] == {} and r["lost"] == {}
+    led = [{"file": "main.json", "unit": "1_a_go", "label": "server_error", "verdict": "overflow",
+            "evidence": "Basalt: exceeds the context window"},
+           {"file": "main.json", "unit": "2_b", "label": "server_error", "verdict": "not_overflow",
+            "evidence": "tool-call parse 500"}]
+    r = v5_board.score_run(run, MANIFEST, base_dir=d, overflow=led)
+    # 1_a_go ended on overflow: the model's fail, never re-rolled by the repair; 2_b is still repaired
+    assert r["passed"] == 2 and r["overflow"] == {"1_a_go": "server_error"} and r["lost"] == {}
+    _, rows = v5_board.merge_runs([os.path.join(d, f) for f in run["files"]], led)
+    assert rows["1_a_go"]["reason"] == "context_overflow" and not rows["1_a_go"]["passed"]
+    assert v5_board.infra_reason(rows["1_a_go"]) is None
+    assert "1 unit ended on context overflow: model fail (overflow.json)" in v5_board._status(r)
+    # unrepaired: an overflow stays in the denominator as a fail, not "lost"
+    r1 = v5_board.score_run({**run, "files": run["files"][:1]}, MANIFEST, base_dir=d, overflow=led)
+    assert r1["lost"] == {"2_b": "server_error"} and r1["overflow"] == {"1_a_go": "server_error"}
+    # ...and the experiment status no longer counts it as an infrastructure row
+    assert "infrastructure rows (1 server_error)" in r1["experiment"][0]
+
+
+def test_overflow_problems_enforce_the_rule(tmp_path):
+    d, _, bd = _overflow_board(tmp_path)
+    probs = v5_board.overflow_problems(bd, [], base_dir=d)
+    assert len(probs) == 2 and all("no overflow.json verdict" in p for p in probs)
+    ok = [{"file": "main.json", "unit": u, "label": "server_error", "verdict": "not_overflow",
+           "evidence": "e"} for u in ("1_a_go", "2_b")]
+    assert v5_board.overflow_problems(bd, ok, base_dir=d) == []
+    bad = ok + [{"file": "main.json", "unit": "1_a_py", "verdict": "maybe", "evidence": ""},
+                {"file": "gone.json", "unit": "2_b", "verdict": "not_overflow", "evidence": "e"}]
+    probs = v5_board.overflow_problems(bd, bad, base_dir=d)
+    assert any("not one of" in p for p in probs) and any("no evidence" in p for p in probs)
+    assert any("stale entry" in p for p in probs) and any("gone.json" in p for p in probs)
+    # a row whose own text shows an overflow must be reclassified
+    write(d, "main.json", results([row("1_a_py", True),
+                                   row("1_a_go", False, reason="server_error", api_errors=5,
+                                       last_api_error=BASALT),
+                                   row("2_b", False, reason="server_error", api_errors=3)]))
+    probs = v5_board.overflow_problems(bd, ok, base_dir=d)
+    assert len(probs) == 1 and "1_a_go" in probs[0] and "reclassify" in probs[0]
+    # diagnostics files are audited too
+    os.makedirs(os.path.join(d, "diagnostics"))
+    write(os.path.join(d, "diagnostics"), "eval-x.json",
+          results([row("2_b", False, reason="server_error", api_errors=1)]))
+    assert any("eval-x.json 2_b" in p for p in v5_board.overflow_problems(bd, ok, base_dir=d))
+
+
+def test_overflow_wording_of_every_engine():
+    for text in (BASALT,
+                 "the request exceeds the available context size, try increasing it",  # llama.cpp
+                 "{'type': 'exceed_context_size_error', 'n_prompt_tokens': 9, 'n_ctx': 8}",
+                 "This model's maximum context length is 131072 tokens. However, ...",   # vLLM
+                 "rendered prompt has 140,000 tokens; the server's 131,072-token context window",
+                 "context overflow (nothing left to compact)"):
+        assert v5_board.OVERFLOW_RE.search(text), text
+    assert not v5_board.OVERFLOW_RE.search(
+        "Error code: 500 - Failed to parse tool call arguments as JSON: parse error")
+
+
+def test_committed_overflow_ledger_covers_every_server_error_row():
+    """Every server_error row of every committed result file has a verdict, and
+    every 'overflow' verdict shows on its run as a counted fail."""
+    bd, led = v5_board.load_board(), v5_board.load_overflow()
+    assert v5_board.overflow_problems(bd, led) == []
+    b = v5_board.build()
+    shown = {(r["id"], u) for r in b["runs"] for u in r["overflow"]}
+    for e in led:
+        if e["verdict"] != "overflow":
+            continue
+        for r in bd["runs"]:
+            if e["file"] in r["files"]:
+                assert (r["id"], e["unit"]) in shown or e["unit"] not in v5_board.load_manifest()
+    # the 2026-11-25 audit: the 16 Qwen3.8 server_error rows were the truncated-call 500, not overflows
+    assert sum(e["verdict"] == "not_overflow" and e["label"] == "server_error" for e in led) >= 16
