@@ -37,6 +37,13 @@ while (( $# )); do
   shift
 done
 PY="${PY:-python3}"
+# Scripts and tests that call a bare `python3` must get the same interpreter (with the
+# locked deps), not whatever is first on PATH (on the Mac: a python 3.9 with no tomllib
+# and no openai, which failed 4 tests that pass under the venv).
+if [[ "$PY" == */* ]]; then
+  PYDIR="$(cd "$(dirname "$PY")" && pwd)"
+  [[ -x "$PYDIR/python3" ]] && export PATH="$PYDIR:$PATH"
+fi
 SHA="$(git -C "$REPO_DIR" rev-parse --verify "$REF^{commit}")"
 WT="$(mktemp -d "${TMPDIR:-/tmp}/ob-gate.XXXXXX")"
 cleanup() { (( KEEP )) && { echo "kept: $WT"; return; }; git -C "$REPO_DIR" worktree remove --force "$WT" >/dev/null 2>&1 || rm -rf "$WT"; git -C "$REPO_DIR" worktree prune 2>/dev/null || true; }
