@@ -356,7 +356,9 @@ def test_committed_board_numbers():
     assert (st["revision_kind"], st["repo"], st["revision"], st["file_sha256"], st["abliterated"]) == (
         "file-sha256", "jesdga/Inkling-2-Mini-Basalt", "c2afac3adb772e14d77b2ea2ac7068ad4460e932",
         "28ec70723feaa037942a02f55b9d5e898276f3e62a3b1fa083745f932a041b99", False)
-    assert st["base_model"]["revision"] == "unverified" and "400b411c58031d064812ea21a259b2381acdaa3e" in st["engine_version"]
+    # the release revision, verified 2026-11-25: named in the pack's meta and rebuilt byte for byte from it
+    assert st["base_model"]["revision"] == "b85c3cfa615fc413cc9af3379f491b963f3b586a" \
+        and "400b411c58031d064812ea21a259b2381acdaa3e" in st["engine_version"]
     assert st["hub_url"] == ("https://huggingface.co/jesdga/Inkling-2-Mini-Basalt/blob/"
                              "c2afac3adb772e14d77b2ea2ac7068ad4460e932/Inkling-2-Mini-NVFP4-MX8.basalt")
     # token usage (prompt, completion, units without usage), exact
