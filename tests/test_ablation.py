@@ -80,6 +80,14 @@ def test_infra_rows_never_enter_a_pair():
                              "u4_f": "zero-token fail (dead server)"}
 
 
+def test_every_scoring_infra_reason_is_invalid_in_pairs():
+    # The board drops a run on any INFRA_REASONS row (scoring.py); a pair must
+    # never count such a row as a model fail (review 2026-11-24).
+    import scoring
+    assert scoring.INFRA_REASONS <= A.INVALID_REASONS
+    assert A.invalid_reason(_row("u", False, reason="served_model_changed")) == "served_model_changed"
+
+
 def test_a_wall_timeout_is_a_verdict_not_an_infra_row():
     assert A.invalid_reason(_row("u", False, agent_exit_code=-1, tokens_completion=0)) is None
 
