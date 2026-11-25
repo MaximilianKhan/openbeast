@@ -261,7 +261,7 @@ def test_committed_board_numbers():
     assert sorted(runs["Q38U-L0"]["excluded"]) == ["126_hmac_scratch", "163_bigint_divmod_e", "192_pike_regex"]
     assert runs["Q38U-T2"]["passed_raw"] == 54  # main file (71) + the r1 rerun of 7 lost units, harness9
     sc = runs["INK-T2-SC117"]  # SC117's abliterated pack, INK-T2-STOCK's arm exactly (2026-11-25)
-    assert (sc["passed_raw"], round(sc["score"], 1), sc["lost"], sc["excluded"]) == (51, 75.3, {}, [])
+    assert (sc["passed_raw"], round(sc["score"], 1), sc["lost"], sc["excluded"]) == (51, 75.3, {}, {})
     assert sc["weights_id"] == "inkling2-mini-sc117-abliterated-basalt-nvfp4-mx8"
     # 124 and 126 (passes) and 122_d (r1) excluded: the shell reached the network (scan 2026-11-23);
     # 123_nbody_b (a pass) and 168_c: package installs, found by the review-1124 rescan (2026-11-25)
