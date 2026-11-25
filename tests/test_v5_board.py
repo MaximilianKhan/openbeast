@@ -248,7 +248,7 @@ def test_committed_board_numbers():
     assert b["units"] == 71 and b["bases"] == 34
     assert {k: runs[k]["passed"] for k in runs} == {
         "GLM-L0": 26, "GLM-A": 31, "GLM-B": 36, "GLM-C": 51, "GLM-E": 50, "DS-T": 61, "DS-T2": 65, "DS-Ts1": 61, "DS-T3": 65,
-        "DS-U": 59, "DS-UP": 62, "DS-UPA": 59, "DS-U8k": 63, "DS-UP8k": 65, "DS-UPA8k": 62, "HY4-T2": 60, "HY4-C": 55, "Q38U-L0": 39, "Q38U-T2": 52,
+        "DS-U": 59, "DS-UP": 62, "DS-UPA": 59, "DS-U8k": 63, "DS-UP8k": 65, "DS-UPA8k": 62, "HY4-T2": 60, "HY4-C": 55, "Q38U-L0": 39, "Q38U-T2": 51,
         "GLM-UP": 56, "INK-T2": 49, "INK-T2-S1": 51, "INK-T2-STOCK": 53, "INK-UP8K": 49, "INK-T3": 52, "OPUS-REF": 71}
     assert runs["GLM-C"]["passed_raw"] == 54  # 122 b/d/e excluded: contaminated (G25 scan)
     assert runs["GLM-E"]["passed_raw"] == 50  # scan clean; 122_c is a noted validator false FAIL
@@ -260,17 +260,19 @@ def test_committed_board_numbers():
     assert runs["Q38U-L0"]["passed_raw"] == 40  # 126 (a pass), 163_e, 192 excluded: the shell reached the network
     assert sorted(runs["Q38U-L0"]["excluded"]) == ["126_hmac_scratch", "163_bigint_divmod_e", "192_pike_regex"]
     assert runs["Q38U-T2"]["passed_raw"] == 54  # main file (71) + the r1 rerun of 7 lost units, harness9
-    # 124 and 126 (passes) and 122_d (r1) excluded: the shell reached the network (scan 2026-11-23)
-    assert sorted(runs["Q38U-T2"]["excluded"]) == ["122_gemm_blocked_d", "124_rkf45", "126_hmac_scratch"]
+    # 124 and 126 (passes) and 122_d (r1) excluded: the shell reached the network (scan 2026-11-23);
+    # 123_nbody_b (a pass) and 168_c: package installs, found by the review-1124 rescan (2026-11-25)
+    assert sorted(runs["Q38U-T2"]["excluded"]) == ["122_gemm_blocked_d", "123_nbody_b", "124_rkf45",
+                                                   "126_hmac_scratch", "168_linearizability_kv_c"]
     assert list(runs["Q38U-T2"]["validator_notes"]) == ["122_gemm_blocked_d"]  # dlsym: verdict not measured
-    assert round(runs["Q38U-T2"]["score"], 1) == 75.6
+    assert round(runs["Q38U-T2"]["score"], 1) == 75.0
     # GLM-UP: one file, 0 lost; the first scan flagged 176_a (a fixture's own tests/), fixed: 0 contaminated
     assert (runs["GLM-UP"]["passed_raw"], runs["GLM-UP"]["excluded"]) == (56, {})
     assert round(runs["GLM-UP"]["score"], 1) == 81.9
     # INK-T2: one file, 0 lost, scan clean; 122_d stopped at the Linux dlsym check (replayed: PASS, not adjusted)
     assert (runs["INK-T2"]["passed_raw"], runs["INK-T2"]["excluded"]) == (49, {})
     assert list(runs["INK-T2"]["validator_notes"]) == ["122_gemm_blocked_d"]
-    # SOLVE ties Q38U-T2 (72.31); LANG (89.09 vs 85.64) puts it above on SCORE with 3 fewer scored passes
+    # SOLVE ties Q38U-T2 (72.31); LANG (89.09 vs 83.1) puts it above on SCORE with 2 fewer scored passes
     assert (round(runs["INK-T2"]["score"], 1), round(runs["INK-T2"]["solve"], 2)) == (76.5, round(runs["Q38U-T2"]["solve"], 2))
     # INK-T2-S1: INK-T2 under seed 1, a replicate (never ranked): +2 passes, the same SOLVE, LANG 96.4
     assert (runs["INK-T2-S1"]["passed_raw"], runs["INK-T2-S1"]["excluded"], runs["INK-T2-S1"]["replicate_of"]) == (51, {}, "INK-T2")
@@ -309,7 +311,7 @@ def test_committed_board_numbers():
                     "Inkling 2 Mini (Basalt NVFP4-MX8)": "INK-T2-STOCK"}
     # the ranking, by SCORE; the reference last and unranked
     assert [(r["id"], round(r["score"], 1)) for r in b["best"]] == [
-        ("DS-T2", 94.9), ("HY4-T2", 83.4), ("GLM-UP", 81.9), ("INK-T2-STOCK", 78.2), ("INK-T2", 76.5), ("Q38U-T2", 75.6),
+        ("DS-T2", 94.9), ("HY4-T2", 83.4), ("GLM-UP", 81.9), ("INK-T2-STOCK", 78.2), ("INK-T2", 76.5), ("Q38U-T2", 75.0),
         ("OPUS-REF", 100.0)]
     # INK-T2-S1 scores above INK-T2 (78.3) and still is not the Derisked row: a replicate never ranks
     assert "INK-T2-S1" not in [r["id"] for r in b["best"]]
@@ -364,7 +366,7 @@ def test_committed_board_numbers():
     assert runs["DS-T2"]["tokens"]["per_pass"] == 473490 and runs["DS-T2"]["tokens"]["total"] == 30776845
     assert runs["HY4-T2"]["tokens"]["per_pass"] == 825452 and runs["HY4-T2"]["tokens"]["total"] == 49527117
     assert runs["HY4-C"]["tokens"]["per_pass"] == 674753 and runs["HY4-C"]["tokens"]["total"] == 37111438
-    assert runs["Q38U-T2"]["tokens"]["per_pass"] == 1202621 and runs["Q38U-T2"]["tokens"]["total"] == 62536302
+    assert runs["Q38U-T2"]["tokens"]["per_pass"] == 1226202 and runs["Q38U-T2"]["tokens"]["total"] == 62536302
     assert runs["INK-T2"]["tokens"]["per_pass"] == 1556141 and runs["INK-T2"]["tokens"]["total"] == 76250894
     assert runs["INK-T2-S1"]["tokens"]["per_pass"] == 1366799 and runs["INK-T2-S1"]["tokens"]["total"] == 69706753
     assert runs["INK-T2-STOCK"]["tokens"]["per_pass"] == 1316285 and runs["INK-T2-STOCK"]["tokens"]["total"] == 69763101

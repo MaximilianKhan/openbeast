@@ -12,6 +12,7 @@
 2. [The audit: no board unit was lost to an overflow](#2-the-audit-no-board-unit-was-lost-to-an-overflow)
 3. [The rule is enforced by the board tooling, from a committed ledger](#3-the-rule-is-enforced-by-the-board-tooling-from-a-committed-ledger)
 4. [I_T3 does not beat INK-T2-STOCK; the 5090 default stays stock](#4-i_t3-does-not-beat-ink-t2-stock-the-5090-default-stays-stock)
+5. [The rig arms rescanned: Q38U-T2 loses two more units (52 → 51)](#5-the-rig-arms-rescanned-q38u-t2-loses-two-more-units-52--51)
 
 ---
 
@@ -259,3 +260,58 @@ each results file's window at the next file's start (given a main file and
 its rerun under one `--until`, it had matched the main rows to the rerun's
 transcripts; its error-count guard caught it).
 
+---
+
+## 5. The rig arms rescanned: Q38U-T2 loses two more units (52 → 51)
+
+**Decision.** Every v5 arm that ran on the RTX 5090 rig was rescanned with
+the review-1124 integrity scanner (TODO "Rescan the rig arms"; Max's go,
+2026-11-25). Two more `Q38U-T2` units are contaminated under the scan's rule
+and are excluded (`exclusions.json`): **`Q38U-T2` 52/71 → 51/71 scored,
+SCORE 75.6 → 75.0** (54 raw; LANG 85.6 → 83.1; SOLVE 72.3 unchanged). Rank
+unchanged (#6 on the board, below INK-T2 76.5). Every other rig row and
+diagnostic is unchanged.
+
+**When / who.** 2026-11-25, the rescan (read only on the rig; transcripts
+copied to the Mac). Exclusion is the board's standing rule ("a unit with any
+other hit, except `source` and `web`, is CONTAMINATED ... do not count its
+verdict"), not a new decision.
+
+**Reason.** The 2026-11-23 scan of Q_T2 checked `curl`/`wget`/`git`
+network only. The review-1124 scanner also checks package installs. One
+unit (a pass) installed a Python package from the public index from the
+agent's shell; it succeeded, so the host was reached (off-host access,
+like the three 2026-11-23 exclusions). A second unit (a fail) ran a system
+package install whose output was discarded: the eval-host user cannot
+install system packages, so it almost certainly fetched nothing, but the
+transcript cannot show it; it is counted as a read, as Q38U-L0's
+`163_bigint_divmod_e` was (no score effect).
+
+**What moves.** `Q38U-T2`'s cleanly measured units go from 65 to 63: the
+paired comparisons against it keep their gained/lost counts and p values
+(INK-T2 1/7 p 0.07, INK-T2-STOCK 2/4 p 0.69, INK-T3 2/5 p 0.45, now over 63
+units; L0 → Q_T2 +12/−1 p 0.003 over 59). No default changes: the 5090
+default is stock Inkling since 2026-11-24 and Qwen3.8 is the fallback.
+
+**Per arm** (transcripts scanned / contaminated, after triage):
+
+| Row / run | Transcripts | Contaminated | Change |
+|---|---:|---:|---|
+| Q38U-L0 | 71 | 3 | none (the 2026-11-22 three) |
+| Q38U-T2 (main + r1) | 81 | 6 | **+2** (123_nbody_b, 168_linearizability_kv_c) |
+| INK-T2 | 71 | 0 | none |
+| INK-T2-S1 | 71 | 0 | none |
+| INK-T2-STOCK | 81 | 0 | none (confirms §4's rescan) |
+| INK-UP8K | 71 | 1 | none (the 2026-11-24 one) |
+| INK-T3 (main + r1) | 75 | 0 | none (confirms §4) |
+| diagnostics: DS T2 calibration (main, rerun, redo-fails) | 89 | 0 | none |
+| diagnostics: Q38U L1/L2 profile | 52 | 0 | none |
+
+The only other hits were `web_search`/`fetch` calls refused by the eval
+guard (attempts). **Tooling changed** (the same PR): `integrity_scan.py`
+counts a network command the shell reports as `command not found` as an
+attempt (`pip3` is not in the eval-host image: one Q_T2 pass was a false
+positive), and its failed-connection test no longer matches Node's
+`ENOTFOUND` inside Python's `ModuleNotFoundError`/`FileNotFoundError` (it
+could have turned a real fetch next to a traceback into an attempt; no
+verdict changed). Sealed detail: `evals/audit/reviews/rig-arms-rescan-2026-11-25.md`.

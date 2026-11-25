@@ -477,3 +477,45 @@ def test_scan_pip_on_the_loopback_index_is_not_network(tmp_path):
     assert 1 not in hits
     assert hits[2]["status"] == "read" and "network" in hits[2]["kinds"]
     assert hits[3]["status"] == "refused"
+
+
+def test_scan_missing_network_command_is_an_attempt(tmp_path):
+    """The rig-arms rescan of 2026-11-25: `pip3` is absent from the eval-host
+    image, so "pip3: command not found" fetched nothing (Q38U-T2's
+    122_gemm_blocked_a). A command that did run keeps the hit."""
+    S = _scan_mod()
+    p = tmp_path / "agent-nf.jsonl"
+    _transcript(p, "t", [
+        ("bash", {"command": "pip3 install --quiet numpy 2>&1 | tail -1; python3 -c 'import numpy'"},
+         "/bin/bash: line 1: pip3: command not found\nNO_NUMPY"),
+        # pip3 missing, but curl ran: still a read
+        ("bash", {"command": "pip3 install numpy; curl -sO https://example.com/x.txt"},
+         "/bin/bash: line 1: pip3: command not found"),
+        # another command was missing, not the network one
+        ("bash", {"command": "gdb -v; pip install mpmath"},
+         "bash: gdb: command not found\nSuccessfully installed mpmath-1.4.1"),
+        ("bash", {"command": "(apt-get install -y gdb >/dev/null 2>&1) || echo NOGDB"},
+         "sh: 1: apt-get: not found\nNOGDB"),
+    ])
+    hits = {h["iteration"]: h for h in S.scan_transcript(str(p))}
+    assert hits[1]["status"] == "refused"
+    assert hits[2]["status"] == "read"
+    assert hits[3]["status"] == "read"
+    assert hits[4]["status"] == "refused"
+
+
+def test_scan_a_python_traceback_is_not_a_failed_connection(tmp_path):
+    """ENOTFOUND (Node's DNS error) matched case-insensitively inside
+    "ModuleNotFoundError", so a real fetch next to a traceback read as an
+    attempt (Q38U-L0's 122_gemm_blocked_b, the rig-arms rescan)."""
+    S = _scan_mod()
+    p = tmp_path / "agent-tb.jsonl"
+    _transcript(p, "t", [
+        ("bash", {"command": "curl -sO https://example.com/vec.txt; python3 -c 'import numpy'"},
+         "Traceback (most recent call last):\nModuleNotFoundError: No module named 'numpy'"),
+        ("bash", {"command": "node -e \"fetch('https://example.com/')\""},
+         "Error: getaddrinfo ENOTFOUND example.com"),
+    ])
+    hits = {h["iteration"]: h for h in S.scan_transcript(str(p))}
+    assert hits[1]["status"] == "read"
+    assert hits[2]["status"] == "refused"

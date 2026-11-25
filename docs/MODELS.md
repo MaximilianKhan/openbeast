@@ -35,7 +35,7 @@ reference rig switches when its GPU frees up ([TODO.md](TODO.md) "Switch the
 5090 rig to Inkling 2 Mini"). How to switch and roll back:
 [below](#switching-the-rtx-5090-to-its-default-and-back); a fresh install:
 [INSTALL.md](INSTALL.md#rtx-5090-the-default-model-inkling-2-mini-on-basalt).
-Why, and the case against (a paired −2 on the 65 clean units, one seed, a
+Why, and the case against (a paired −2 on the 63 clean units, one seed, a
 young engine with upstream #588 unfixed in the pin): the decision record.
 The source of truth for "the rig's default" is `evals/boards/v5/board.json`
 `"defaults"` ([RESULTS.md](RESULTS.md#shipped-default-per-platform)).
@@ -50,8 +50,8 @@ variants trade a little accuracy for 30–50% more speed per token. The DGX
 Spark pair serves its own models (below); its default, DeepSeek-V4.1-Flash
 (Mia EXL3), leads the v5 board.
 
-**Qwen3.8's v5 result (2026-11-23; the 5090 default until 2026-11-24):** 52/71 scored (54 raw), SCORE
-75.6, under campaign arm Q_T2 (T2's switches at one stream: thinking on,
+**Qwen3.8's v5 result (2026-11-23; the 5090 default until 2026-11-24):** 51/71 scored (54 raw), SCORE
+75.0 (52/71, 75.6 until the integrity rescan of 2026-11-25 excluded two more units, one a pass), under campaign arm Q_T2 (T2's switches at one stream: thinking on,
 the T assists and packs, an 8,192-token per-turn cap, the act nudge, wall
 ×2; harness9), #4 on the [v5 board](RESULTS.md#v5-leaderboard--best-configuration-per-model)
 by SCORE, single seed. Three units were lost to llama-server's HTTP 500 on
@@ -69,8 +69,9 @@ Q_T2's switches for this host's own agents (the tool server's
 `AGENT_MAX_TOKENS=8192`, `AGENT_ACT_NUDGE=1`, `BEAST_ASSIST=1`,
 `DIAG_EDIT_HINT=1`, `AGENT_VERIFY_DONE=1`, `AGENT_ENV_BLOCK=1`,
 `AGENT_WALL_WARN=1`, `LANG_PACK_VARIANT=v3`. Why: Q_T2 is the model's
-best measured row, 52/71 scored (SCORE 75.6, board row `Q38U-T2`) against
-39/71 (SCORE 63.3) for the bare L0 baseline, +12 gained / 1 lost on the 61
+best measured row, 51/71 scored (SCORE 75.0, board row `Q38U-T2`; 52/71, 75.6 before the
+2026-11-25 integrity rescan) against
+39/71 (SCORE 63.3) for the bare L0 baseline, +12 gained / 1 lost on the 59
 units with a verdict in both (p 0.003). Caveats: single seed; the pair
 crosses a harness era (L0 harness10, Q_T2 harness9) and changes every
 switch at once, so the gain is not attributed to one switch (the doubled
@@ -101,8 +102,9 @@ the default is Basalt's stock pack, served by `scripts/engines/basalt.sh`
 (2026-11-24):** arm I_T2, the default's Q_T2 setup on the same rig, tree
 and container, 49/71 scored, SCORE 76.5, #4 on the board by SCORE (one
 place above the default, level on problem-solving, wider on languages),
-single seed. Over the 65 units both rows measured cleanly the default
-passed 52 and Inkling 46 (1 gained, 7 lost, p 0.07, within churn), so
+single seed. Over the 63 units both rows measured cleanly (65 before the
+2026-11-25 integrity rescan) the default
+passed 51 and Inkling 45 (1 gained, 7 lost, p 0.07, within churn), so
 **Qwen3.8 stays the default**. Inkling ran the arm in 4.5 h against ~13.5
 for Q_T2 (median unit 47 s against 254 s; about 520 tok/s end to end on
 full 8,192-token replies against 142). Caveats: 203 turns ended empty at
@@ -115,7 +117,7 @@ engines measured for it (Strata, llama.cpp, vLLM, Basalt):
 behavioural edit, `jesdga/Inkling-2-Mini-Basalt` @ `c2afac3a`) the same arm
 passed **53/71 (SCORE 78.2, row INK-T2-STOCK, the top RTX 5090 row)**, +4
 and +2 against the two Derisked draws and level with the default (−2 over
-65 clean units, p 0.69), single seed, with about half the empty capped
+63 clean units, p 0.69), single seed, with about half the empty capped
 turns (105). A seed repeat of the Derisked arm (INK-T2-S1, 51/71) flipped 2
 units, so every gap here is within noise. The wrap-up kept Qwen3.8 as the
 default pending an improved arm (stock + Basalt PR #632) and a seed repeat
@@ -481,7 +483,7 @@ lands.
 ## Qwen3.8-27B-Uncensored (JonathanColetti) — added + profiled 2026-08-19 ⭐ THE DEFAULT
 
 Default agent setup since 2026-11-23: `AGENT_PROFILE=qwen38-best` (v5 arm
-Q_T2, 52/71, board row `Q38U-T2`, single seed; see the top of this file).
+Q_T2, 51/71 after the 2026-11-25 integrity rescan (52/71 before), board row `Q38U-T2`, single seed; see the top of this file).
 
 [JonathanColetti/Qwen3.8-27B-Uncensored-GGUF](https://huggingface.co/JonathanColetti/Qwen3.8-27B-Uncensored-GGUF)
 — Qwen3.8-27B with the refusal direction abliterated out of `self_attn.o_proj`

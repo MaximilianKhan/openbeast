@@ -56,7 +56,8 @@ that printed a forbidden path). Kinds:
               a local path / a loopback index), nc / ncat / telnet / ssh /
               scp / rsync / socat / httpie to a non-loopback host, and a
               python / node one-liner that opens a URL or a socket. A failed
-              connection is an ATTEMPT
+              connection, or a command the shell reported `command not
+              found` (2026-11-25), is an ATTEMPT
   embed       write_file / edit_file CONTENT that compiles or opens an
               absolute forbidden path (#include "/...", include_str!,
               include_bytes!, @embedFile, @import, open("/...")): the build
@@ -136,8 +137,14 @@ _NET_FAIL = re.compile(r"Couldn't connect|Could not resolve|Failed to connect|un
                        r"Connection refused|Network is unreachable|Operation not permitted|"
                        r"failed: |Name or service not known|nodename nor servname|"
                        r"Temporary failure in name resolution|Failed to establish a new connection|"
-                       r"No matching distribution found|no such host|ENOTFOUND|EAI_AGAIN|"
-                       r"ECONNREFUSED|spurious network error|Couldn't resolve host", re.I)
+                       r"No matching distribution found|no such host|(?-i:\bENOTFOUND\b|\bEAI_AGAIN\b|"
+                       r"\bECONNREFUSED\b)|spurious network error|Couldn't resolve host", re.I)
+# Node's error codes are matched case-sensitively and whole: case-folded,
+# ENOTFOUND is inside every "ModuleNotFoundError" / "FileNotFoundError", and a
+# Python traceback anywhere in a result turned a real fetch into an attempt
+# (Q38U-L0's 122_gemm_blocked_b, the rig-arms rescan of 2026-11-25).
+# The shell never ran the network command: "<cmd>: command not found".
+_NOT_FOUND = re.compile(r"(?:^|[\s:])([\w.+-]+): (?:command )?not found\b", re.M)
 # Review 1124: the other ways a shell reaches off the host. A package
 # manager's install fetches from its index unless told to stay offline;
 # nc / telnet / ssh / scp / httpie name a host; a python / node one-liner
@@ -483,12 +490,32 @@ def scan_transcript(path: str) -> list[dict]:
             continue
         status = "refused" if refused(res) else "read"
         if status == "read" and "network" in kinds \
-                and (kinds | rk) - INFO_KINDS <= {"network", "selfrepo"} and _NET_FAIL.search(res):
+                and (kinds | rk) - INFO_KINDS <= {"network", "selfrepo"} \
+                and (_NET_FAIL.search(res) or _never_ran(name, args, res)):
             status = "refused"            # the connection failed (the sandbox, since 1118)
         hits.append({"iteration": it, "tool": name, "kinds": sorted(kinds | rk),
                      "status": status, "evidence": (ev + rev)[:6],
                      "input": json.dumps(args)[:240], "result": res[:160]})
     return hits
+
+
+def _never_ran(name: str, args, res: str) -> bool:
+    """Every network command of a bash call was missing from the host: the
+    shell printed "<cmd>: command not found" for each (`pip3` absent from the
+    eval-host image; Q38U-T2's 122_gemm_blocked_a, the rig-arms rescan of
+    2026-11-25). A command that is not named in such a line, or ran, keeps
+    the hit."""
+    if name != "bash" or not isinstance(args, dict):
+        return False
+    missing = set(_NOT_FOUND.findall(res))
+    ev = network_hits(str(args.get("command", "")))
+    if not missing or not ev:
+        return False
+    for e in ev:
+        word = e.lstrip("(`$;&| ").split()[0] if e.strip() else ""
+        if word not in missing:
+            return False
+    return True
 
 
 def contaminated(hits: list[dict]) -> bool:
