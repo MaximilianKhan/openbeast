@@ -35,6 +35,11 @@ that printed a forbidden path). Kinds:
   scratch     /tmp/claude-<uid> (arm worktrees, results, ledgers)
   ledger      a results or ledger file by name (eval-*.json, ledger.jsonl)
   listed      the tool's OUTPUT named a forbidden path (find / grep -r / ls)
+              (a line that starts with a home or scratch path; since review
+              1124 also an answer tree, evals/{tasks,refs,suites,results,
+              cache}/, ANYWHERE in a line under any root: ls -l, find -ls,
+              du -a, stat, /root/..., /work/..., and a ./ listing after an
+              absolute cd)
   web         fetch / web_search (refused under eval since v5; recorded)
   selfrepo    any tool call that names this project's own repository
               (MaximilianKhan/openbeast on github.com, raw.githubusercontent.com,
@@ -45,7 +50,13 @@ that printed a forbidden path). Kinds:
   network     a bash command that reaches off the host: curl / wget to a
               non-loopback host, git clone / fetch / ls-remote of a remote,
               any github.com / githubusercontent.com (review 1118: the public
-              repo holds evals/refs). A failed connection is an ATTEMPT
+              repo holds evals/refs); since review 1124 also a package
+              manager that fetches by name (pip / uv / cargo add|install /
+              go get / npm / yarn / gem / apt; not --no-index / --offline /
+              a local path / a loopback index), nc / ncat / telnet / ssh /
+              scp / rsync / socat / httpie to a non-loopback host, and a
+              python / node one-liner that opens a URL or a socket. A failed
+              connection is an ATTEMPT
   embed       write_file / edit_file CONTENT that compiles or opens an
               absolute forbidden path (#include "/...", include_str!,
               include_bytes!, @embedFile, @import, open("/...")): the build
@@ -123,7 +134,31 @@ _GITHUB = re.compile(r"\b(?:github\.com|githubusercontent\.com|api\.github\.com)
 _ANY_SCRATCH = re.compile(r"(?:/private)?/tmp/claude-")
 _NET_FAIL = re.compile(r"Couldn't connect|Could not resolve|Failed to connect|unable to access|"
                        r"Connection refused|Network is unreachable|Operation not permitted|"
-                       r"failed: |Name or service not known|nodename nor servname", re.I)
+                       r"failed: |Name or service not known|nodename nor servname|"
+                       r"Temporary failure in name resolution|Failed to establish a new connection|"
+                       r"No matching distribution found|no such host|ENOTFOUND|EAI_AGAIN|"
+                       r"ECONNREFUSED|spurious network error|Couldn't resolve host", re.I)
+# Review 1124: the other ways a shell reaches off the host. A package
+# manager's install fetches from its index unless told to stay offline;
+# nc / telnet / ssh / scp / httpie name a host; a python / node one-liner
+# opens a URL or a socket (any host that is not loopback, TLD or not).
+_PKG = re.compile(r"(?:^|[\s;&|(`$])(?P<cmd>(?:python3?\s+-m\s+)?pip3?\s+(?:install|download)"
+                  r"|uv\s+(?:pip\s+install|add|sync|tool\s+install)"
+                  r"|cargo\s+(?:add|install|fetch)|go\s+(?:get|mod\s+download)"
+                  r"|go\s+install\s+\S+@\S+|npm\s+(?:install|i|add|ci)|npx\s+-y|yarn\s+add"
+                  r"|pnpm\s+(?:add|install|i)|gem\s+install|apt(?:-get)?\s+install"
+                  r"|conda\s+install)\b(?P<rest>[^;&|\n`)]*)")
+_PKG_LOCAL = re.compile(r"--no-index|--offline|--frozen|--path\b|--find-links\s+/|-f\s+/"
+                        r"|--index-url[=\s]+https?://(?:localhost|127\.|\[?::1)"
+                        r"|(?:^|\s)-i\s+https?://(?:localhost|127\.|\[?::1)")
+_LOCAL_INDEX = re.compile(r"Looking in indexes: https?://(?:localhost|127\.|\[?::1)")
+_HOSTCMD = re.compile(r"(?:^|[\s;&|(`$])(nc|ncat|netcat|telnet|ssh|scp|sftp|rsync|socat)\s+([^;&|\n`)]*)")
+_HTTPIE = re.compile(r"(?:^|[\s;&|(`$])(https?|xh)\s+(?:(?:GET|POST|PUT|HEAD|DELETE|PATCH)\s+)?"
+                     r"(?:-\S+\s+)*(\S+)")
+_SCRIPT_NET = re.compile(r"urlopen|urllib|requests\.|http\.client|httpx|socket\.|create_connection"
+                         r"|\bfetch\(|https?\.get\(|net\.connect", re.I)
+_ANY_URL = re.compile(r"(?:https?|ftps?|wss?)://(?:[^@/\s'\"]+@)?(\[[^\]]+\]|[^/:\s'\"]+)")
+_SOCK_ADDR = re.compile(r"""\(\s*['"]([\w.-]+)['"]\s*,\s*\d+\s*\)""")
 # Review 1118: write content that makes the BUILD read an absolute path.
 _EMBED = re.compile(r'#\s*include\s*[<"](/[^>"]+)[>"]'
                     r'|include_(?:str|bytes)!\s*\(\s*r?#*"(/[^"]+)"'
@@ -202,10 +237,61 @@ def network_hits(command: str) -> list[str]:
         host = re.sub(r"^\w+://|^[\w.-]+@", "", m.group(1)).split("/")[0].split(":")[0]
         if not _LOOPBACK.match(host):
             ev.append(m.group(0)[:160])
+    for m in _PKG.finditer(command):
+        if not _PKG_LOCAL.search(m.group("rest")) and not _local_install(m.group("cmd"), m.group("rest")):
+            ev.append(re.sub(r"\s+", " ", m.group(0).strip())[:160])
+    for m in _HOSTCMD.finditer(command):
+        host = _first_host(m.group(1), m.group(2))
+        if host and not _LOOPBACK.match(host):
+            ev.append(f"{m.group(1)} {host}"[:160])
+    for m in _HTTPIE.finditer(command):
+        url = _URL_TOKEN.match(m.group(2).strip("'\""))
+        host = url and (url.group("host") or url.group("host2") or "").strip("[]")
+        if host and not _LOOPBACK.match(host):
+            ev.append(f"{m.group(1)} {m.group(2)}"[:160])
+    if _SCRIPT_NET.search(command) and re.search(r"\b(?:python3?|node|ruby|perl|deno|bun)\b", command):
+        for m in list(_ANY_URL.finditer(command)) + list(_SOCK_ADDR.finditer(command)):
+            host = m.group(1).strip("[]")
+            if not _LOOPBACK.match(host) and not re.fullmatch(r"\d+", host):
+                ev.append(m.group(0)[:160])
+                break
     m = _GITHUB.search(command)
     if m and not ev:
         ev.append(m.group(0))
     return ev
+
+
+def _local_install(cmd: str, rest: str) -> bool:
+    """A package command whose every argument is a local path (pip install -e .,
+    pip install ./pkg, cargo install --path .): nothing is fetched by name."""
+    if not cmd.startswith(("pip", "python", "uv pip")):
+        return False
+    args = [a.strip("'\"") for a in rest.split() if not a.startswith("-")]
+    return bool(args) and all(a.startswith((".", "/", "~")) or a.endswith((".whl", ".tar.gz"))
+                              for a in args)
+
+
+def _first_host(cmd: str, rest: str) -> str:
+    """The remote host of nc / telnet / ssh / scp / rsync (user@ stripped)."""
+    toks = rest.split()
+    skip_next = {"-p", "-i", "-o", "-l", "-P", "-F", "-e", "-w", "-s", "-J"}
+    i = 0
+    while i < len(toks):
+        t = toks[i].strip("'\"")
+        if t.startswith("-"):
+            i += 2 if t in skip_next else 1
+            continue
+        if cmd in ("scp", "rsync", "sftp") and ":" not in t and cmd != "sftp":
+            i += 1
+            continue
+        if cmd == "socat":
+            m = re.search(r"(?:TCP\d?|SSL|OPENSSL):([^:,]+):", t, re.I)
+            return m.group(1) if m else ""
+        t = t.split("@")[-1]
+        if cmd in ("scp", "rsync"):
+            t = t.split(":")[0]
+        return t.strip("[]")
+    return ""
 
 
 def embed_paths(content: str) -> list[str]:
@@ -299,17 +385,65 @@ def result_kinds(result: str, context: str = "") -> tuple[set, list[str]]:
         return set(), []
     tool_paths = [m.group(0) for m in _ABS.finditer(context + "\n" + result)
                   if "toolchain" in path_kinds(m.group(0))]
+    base = _cd_base(context)
     kinds, ev = set(), []
-    # Only lines that START with a path (ls -d / find / grep -r / grep -l
-    # output), so an echoed PATH or an error message is not a listing.
+
+    def _hit(p):
+        k = path_kinds(p) - INFO_KINDS
+        if k and not any(t.startswith(p) for t in tool_paths):
+            kinds.update(k)
+            ev.append(p[:160])
+            return True
+        return False
+
     for ln in result.splitlines():
-        m = re.match(r"\s*((?:/Users/|/home/|/private/tmp/claude-|/tmp/claude-)" + _P + r"*)", ln)
-        if m:
-            k = path_kinds(m.group(1)) - INFO_KINDS
-            if k and not any(t.startswith(m.group(1)) for t in tool_paths):
-                kinds |= k
-                ev.append(m.group(1)[:160])
+        # A line that STARTS with a home or scratch path (ls -d / find /
+        # grep -r / grep -l output): every forbidden kind.
+        m = re.match(r"\s*((?:/Users/|/home/|/root/|/private/tmp/claude-|/tmp/claude-)" + _P + r"*)", ln)
+        if m and _hit(m.group(1)):
+            continue
+        # Review 1124: a sealed answer tree ANYWHERE in a line (ls -l, find
+        # -ls, du -a, stat) under ANY root (/root/ob, /work, a mount). Only the
+        # answer trees count here, so an echoed PATH or a toolchain listing is
+        # not a hit; an error line about a path the agent typed lists nothing.
+        if "No such file" in ln or _DENIED in ln:
+            continue
+        for m in _ANSWER_ABS.finditer(ln):
+            if _hit(m.group(1)):
+                break
+        else:
+            # `cd / && find .`: a relative listing resolves against the cd
+            if base:
+                for m in _ANSWER_REL.finditer(ln):
+                    if _hit(os.path.normpath(os.path.join(base, m.group(1)))):
+                        break
     return ({"listed"} if kinds else set()), ev[:5]
+
+
+_ANSWER = r"evals/(?:tasks|refs|suites|results|cache)(?:/|$|(?=[\s'\":]))"
+_ANSWER_ABS = re.compile(r"(?:^|(?<=[\s'\"=:(\[,]))(/" + _P + r"*?/" + _ANSWER + _P + r"*)")
+_ANSWER_REL = re.compile(r"(?:^|(?<=[\s'\"=:(\[,]))((?:\./)?(?:[\w.+@-]+/)*" + _ANSWER + _P + r"*)")
+
+
+def _cd_base(context: str) -> str:
+    """The directory a relative listing is relative to: the last absolute cd
+    out of the eval workdir in the call's command (`cd / && find .`), or
+    nothing (bash starts in the task's own /tmp/eval* dir)."""
+    try:
+        cmd = str(json.loads(context).get("command", ""))
+    except (ValueError, AttributeError):
+        cmd = context
+    base = ""
+    for c in _CD.findall(cmd):
+        if c.startswith("/"):
+            base = c
+        elif base and not c.startswith(("~", "$")):
+            base = os.path.join(base, c)
+        else:
+            base = ""
+    if base.startswith(("/tmp/eval", "/private/tmp/eval")):
+        return ""
+    return base
 
 
 def refused(result: str) -> bool:
@@ -333,6 +467,9 @@ def scan_transcript(path: str) -> list[dict]:
         args = e.get("args") or {}
         res = str(e.get("result", ""))
         kinds, ev = call_kinds(name, args)
+        if "network" in kinds and _LOCAL_INDEX.search(res) and not network_hits(
+                _PKG.sub(" ", str((args or {}).get("command", "")) if isinstance(args, dict) else "")):
+            kinds.discard("network")      # pip used a loopback index (the ark)
         rk, rev = result_kinds(res, json.dumps(args))
         if not kinds and not rk:
             continue

@@ -86,6 +86,15 @@ Each `LABEL=FILES@TREE` is one arm (FILES: its results file and reruns,
 comma-separated; TREE: the checkout it ran from). Exit 1 when any unit is
 contaminated. Run it before an arm's rows are reported (G25).
 
+Review 1124 widened what it sees: a result line that names an answer tree
+(`evals/{tasks,refs,suites,results,cache}/`) anywhere in the line and under
+any root (`ls -l`, `find -ls`, `du -a`, `/root/...`, `/work/...`, a `./`
+listing after `cd /`), and the shell's other routes off the host
+(`pip install`, `cargo add`, `go get`, `npm install`, `nc`, `ssh`, `scp`,
+httpie, python / node socket and URL one-liners). Scans of arms from before
+it (the rig's INK-* rows among them) used the narrower tool; TODO has the
+read-only rescan.
+
 ## The language taxonomy
 
 ```bash

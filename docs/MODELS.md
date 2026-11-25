@@ -220,7 +220,8 @@ long-horizon jobs.
 
 **DGX Spark pair (spark-hydra):** the pair does not run these serve scripts.
 It serves **DeepSeek-V4.1-Flash (Mia EXL3)** by default (served id
-`DeepSeek-V4.1-Flash-1017`, unit `deepseek-v41-inference`, four streams,
+`DeepSeek-V4.1-Flash-1017`, unit `deepseek-v41-inference`, eight streams
+(`PARALLEL=8` since the 2026-11-23 [tuning session](reports/DEEPSEEK_TUNING-2026-11-23.md); four before),
 524,288-token context of the model's 1,048,576 window, thinking on); its pack
 folder and cache id end in `-v2`. **GLM-5.3-Flash** (`GLM-5.3-Flash-EXL3`) is
 the staged alternative; its best v5 row is arm UP (2026-11-23): 56/71, SCORE

@@ -406,3 +406,52 @@ def test_wall_scale_doubles_the_wall_but_keeps_the_turns(tmp_path):
     assert set(base.walls.values()) == {600} and set(scaled.walls.values()) == {1200}
     assert set(base.max_iters.values()) == set(scaled.max_iters.values()) == {40}
     assert out["wall_scale"] == 2.0
+
+
+# --- review 1124: outside load on a shared engine is recorded ------------------
+
+def test_slot_url_for_gate_and_env(monkeypatch):
+    for mod in ("cache", "run_eval"):
+        sys.modules.pop(mod, None)
+    run_eval = importlib.import_module("run_eval")
+    monkeypatch.delenv("OPENBEAST_EVAL_SLOT_URL", raising=False)
+    assert run_eval._slot_url_for("https://spark-1.x.ts.net:8443/v1") == \
+        "https://spark-1.x.ts.net:8444/api/slot"
+    assert run_eval._slot_url_for("http://127.0.0.1:8091/v1") is None
+    monkeypatch.setenv("OPENBEAST_EVAL_SLOT_URL", "http://127.0.0.1:3002/api/slot")
+    assert run_eval._slot_url_for("http://127.0.0.1:8091/v1") == "http://127.0.0.1:3002/api/slot"
+    monkeypatch.setenv("OPENBEAST_EVAL_SLOT_URL", "off")
+    assert run_eval._slot_url_for("https://spark-1.x.ts.net:8443/v1") is None
+
+
+def test_slot_load_sampler_flags_busy_above_jobs():
+    for mod in ("cache", "run_eval"):
+        sys.modules.pop(mod, None)
+    run_eval = importlib.import_module("run_eval")
+    seq = iter([(4, 8), (6, 8), RuntimeError("down"), (8, 8), (3, 8)])
+
+    def fetch():
+        v = next(seq)
+        if isinstance(v, Exception):
+            raise v
+        return v
+    s = run_eval.SlotLoadSampler("http://slot", jobs=4, fetch=fetch)
+    for _ in range(5):
+        s.sample()
+    out = s.summary()
+    assert (out["samples"], out["unavailable"], out["samples_over_jobs"]) == (4, 1, 2)
+    assert (out["busy_max"], out["slots_total"], out["busy_at_start"]) == (8, 8, 4)
+    assert out["first_over"] and out["last_over"]
+    # no URL: nothing sampled, nothing recorded
+    assert run_eval.SlotLoadSampler(None, jobs=4).start().summary() is None
+
+
+def test_run_records_engine_load(tmp_path, monkeypatch):
+    run_eval = _load_run_eval(tmp_path, server_slots=8)
+    monkeypatch.setenv("OPENBEAST_EVAL_SLOT_URL", "http://slot.invalid/api/slot")
+    monkeypatch.setenv("OPENBEAST_EVAL_SLOT_INTERVAL_S", "0.02")
+    monkeypatch.setattr(run_eval.SlotLoadSampler, "_fetch_busy", lambda self: (7, 8))
+    results = _run(run_eval, jobs=2, tracker=_Tracker(delay=0.05))
+    load = results["harness"]["engine_load"]
+    assert load["url"] == "http://slot.invalid/api/slot" and load["jobs"] == 2
+    assert load["busy_at_start"] == 7 and load["samples_over_jobs"] >= 1

@@ -580,7 +580,7 @@ below). `--dry-run` prints them for your settings.
 | Q_T2 | T2 | T2 at one stream, against the RTX 5090 default (optional, harness9) | T2's flags and switches with `"jobs": 1, "slots": 1`, `"model": "Qwen3.8 27B Uncensored MTP Q5_K_M"`, `"served_model": "Qwen3.8 27B Uncensored MTP Q5"`; only with `--only Q_T2` (or a `--model-name` starting with Qwen3.8 27B Uncensored MTP); needs a harness9 tree; run from the rig's eval-host container | 2.3 | ~18 h estimated; 11.2 h for the main pass + 2.3 h for the r1 rerun | T2 on the RTX 5090 default (read against Q38U-L0, which is harness10: the pair crosses an era) **Qwen3.8 27B Uncensored MTP: 52/71 scored (54 raw), SCORE 75.6, #4 (board row Q38U-T2); 3 lost, 3 excluded; L0 → Q_T2 +11 over 61 paired units** |
 | I_T2 | T2 | Q_T2's settings against Inkling 2 Mini on Basalt (optional, harness9) | T2's flags and switches with `"jobs": 1, "slots": 1`, `"model": "Inkling 2 Mini Derisked (Basalt NVFP4-MX8)"`, `"served_model": "inkling-2-mini"`; Basalt v0.5.7 (`400b411c`), the Blackfrost Derisked pack converted to `.basalt` (sha256 `d2b01bcc…`), `--parallel 1 --max-context 262144 --kv fp8 --answer-room auto` (thinking capped at 6,144 of the 8,192-token turn, then closed; the close does not force an answer on Inkling, upstream #588); only with `--only I_T2` (or a `--model-name` starting with Inkling 2 Mini); harness9 tree `f38a29c7`; run from the rig's eval-host container | 2.3 | 5-12 h estimated; **4.5 h measured** | Inkling 2 Mini against Qwen3.8's Q38U-T2 (52/71) on one harness, one host, one stream **Inkling 2 Mini Derisked: 49/71 scored, SCORE 76.5, #4 (board row INK-T2); 0 lost, 0 excluded; paired with Q38U-T2: −6 over 65 units (p 0.07); Qwen3.8 stays the default** |
 | I_T2_s1 | I_T2 | I_T2 under `--seed 1` (optional, harness9; `noise_of: I_T2`) | `--seed 1`; Derisked pack. Basalt honours a request seed on Inkling (`request_prefill.cpp`; unseeded requests take a clock seed, so I_T2 itself is a fresh draw, unlike the Spark server's fixed seed); a seeded request keeps DSpark drafts by the plain rule (`draw_drafts=false`) | 2.3 | ~1.5-2 h (UNVERIFIED); **4 h 11 min measured** | the Inkling noise margin **51/71 (board row INK-T2-S1, a seed replicate: `replicate_of: INK-T2`, never ranked); 2 of 71 units flipped against I_T2, both gains (p 0.50)** |
-| I_T2_stock | I_T2 | I_T2 on Basalt's stock pack (optional, harness9) | I_T2 exactly, `inkling-v5.sh start stock` (`c2afac3a`, `28ec7072…`); `--model-name "Inkling 2 Mini (Basalt NVFP4-MX8, stock)"`; the queue checks the pack with `docker inspect` (the alias is the same for both packs) | 2.3 | ~1.5-2 h (UNVERIFIED); **4 h 18 min measured** | the derisking edit's effect (control) **53/71 scored, SCORE 78.2, #4 (board row INK-T2-STOCK, weights `inkling2-mini-basalt-nvfp4-mx8-stock`); against I_T2 +4 (p 0.22), I_T2_s1 +2 (p 0.63); against Q38U-T2 −2 over 65 clean units (p 0.69): parity; Qwen3.8 stays the default** |
+| I_T2_stock | I_T2 | I_T2 on Basalt's stock pack (optional, harness9) | I_T2 exactly, `inkling-v5.sh start stock` (`c2afac3a`, `28ec7072…`); `--model-name "Inkling 2 Mini (Basalt NVFP4-MX8, stock)"`; the queue checks the pack with `docker inspect` (the alias is the same for both packs) | 2.3 | ~1.5-2 h (UNVERIFIED); **4 h 18 min measured** | the derisking edit's effect (control) **53/71 scored, SCORE 78.2, #4 (board row INK-T2-STOCK, weights `inkling2-mini-basalt-nvfp4-mx8-stock`); against I_T2 +4 (p 0.22), I_T2_s1 +2 (p 0.63); against Q38U-T2 −2 over 65 clean units (p 0.69): parity; Qwen3.8 stays the default** (superseded the same day: stock Inkling became the 5090 default, [DECISIONS-2026-11-24 §10](reports/DECISIONS-2026-11-24.md)) |
 | I_UP8k | UP_8k | UP_8k at one stream on Inkling, Derisked pack (optional, harness10) | UP_8k exactly with `"jobs": 1, "slots": 1`; harness10 tree (era `9bcd5aa6`), no `--arm-tree` | 2.3 | ~1.5-2 h (UNVERIFIED); campaign estimate 4.2 h; **4 h 3 min measured** | DeepSeek's other 65/71 setup against I_T2 (crosses the era, as DS-UP8k vs DS-T2) **49/71, SCORE 75.1 (board row INK-UP8K, listed, not ranked: INK-T2 is the pack's best); against I_T2 3 gained, 3 lost (p 1.0): level, T2 stays. On Basalt the forced-act turn did not stop thinking (`enable_thinking=false` → effort "none", no budget): 67 of 68 still thought, 50 ended empty, 18 acted; do not run U-type arms on Basalt with Inkling (DECISIONS-2026-11-24 §13)** |
 | T_j2 | T | 2 concurrent units (optional) | `"jobs": 2, "slots": 2` in the arm (wins over the CLI); only with `--only T_j2` or `--include T_j2` | 2.3 | ~7.7 h (~9 h for DeepSeek) | the contention model: same tokens per unit, at 2 streams (see the note below) |
 
@@ -835,6 +835,20 @@ ADOPTED or REJECTED) and [RESULTS.md](RESULTS.md).
   versions are in it too. Any change to those files is a new era. Rows from
   different eras do not pair, so an arm that needs a runner change is a full
   run of its own tree, never a re-roll of some units.
+- **A quiet engine during an arm.** Per-stream decode, and with it the
+  wall-scaled turn budget, depends on how many generations share the
+  engine. Since the 2026-11-23 tuning DeepSeek serves 8 streams
+  (`INFERENCE_SLOTS=8`), so a `--jobs 4` arm no longer holds every slot: a
+  WebUI chat, opencode or another device can decode beside it and cut its
+  per-stream rate by 22-35% ([tuning report](reports/DEEPSEEK_TUNING-2026-11-23.md)).
+  Keep other clients off the engine while an arm runs. `run_eval` records
+  what it saw: `harness.engine_load` in the results file (beast-slot's
+  `slots.busy` every 60 s; `samples_over_jobs` > 0 means another client
+  generated beside the arm; note it on the board row). It finds the slot
+  URL from a gate base URL on `:8443` (the same host's `:8444/api/slot`);
+  set `OPENBEAST_EVAL_SLOT_URL` otherwise (`off` disables). Busy at or
+  under `--jobs` does not prove isolation: the arm may have had fewer than
+  `--jobs` units in flight.
 - **Agent switches are in the key.** `OPENBEAST_AGENT_THINKING`,
   `_SEED`, `_VERIFY_DONE`, `OPENBEAST_DIAG_EDIT_HINT`,
   `OPENBEAST_AGENT_ENV_BLOCK` and `_WALL_WARN` add an `ag-...` component
@@ -1285,7 +1299,8 @@ GLM, its N0 is arm B (36/71, thinking pinned off).
       +1.8 on LANG alone. I_T2_stock (Basalt's stock pack `28ec7072…`):
       53/71 scored, SCORE 78.2, its own row INK-T2-STOCK (#4, the top RTX
       5090 row); +4 and +2 against the two Derisked draws, −2 against
-      Q38U-T2 over 65 clean units: parity, Qwen3.8 stays the default. Both
+      Q38U-T2 over 65 clean units: parity, Qwen3.8 stays the default
+      (superseded the same day: DECISIONS-2026-11-24 §10). Both
       clean (0 contaminated, no shell route off the host); both stopped
       `122_gemm_blocked_d` at the dlsym check and both replay to PASS
       (3 of 3); 167 and 105 empty capped turns, matched exactly by the
@@ -1311,9 +1326,16 @@ GLM, its N0 is arm B (36/71, thinking pinned off).
       `without_budget_line` counts the thinking-off requests from the server
       side; check they agree, and that a forced turn actually acts (on
       DeepSeek and GLM all did) before reading the arm as a test of it.
-- [ ] **Next: the improved Inkling arm `I_T3`** (DECISIONS-2026-11-24 §12;
-      it takes none of UP_8k's switches, §13); read against I_T2_stock
-      (53/71, 105 empty capped turns; `without_budget_line` should be 0).
+- [ ] **RUNNING since 2026-11-24 16:29 PST: the improved Inkling arm `I_T3`**
+      (DECISIONS-2026-11-24 §12; it takes none of UP_8k's switches, §13;
+      launcher pid 7275 on the rig, `PACK=stock`, campaign ETA ~11.5 h;
+      live paths and the stop-safely steps in TODO); read against
+      I_T2_stock (53/71, 105 empty capped turns; `without_budget_line`
+      should be 0). **The audit tools' cap must match the arm:** I_T3 runs
+      at 16,384, so `basalt_log.py … --cap 16384` (its default is 8,192, and
+      at the wrong cap its `decode_tps_replies_at_<cap>` is empty);
+      `capped_turns.py` reads the cap from each `output_cap` event (or
+      `--cap`).
 - [ ] **Next, not scheduled:** GLM at the 8,192 cap (UP_8k or T2 with
       `--model-name GLM-5.3-Flash`; GLM has never run below 16,384), and a
       GLM U arm to isolate the planning lines on GLM. Optional for Hy4: T's

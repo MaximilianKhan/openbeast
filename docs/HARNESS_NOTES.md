@@ -505,7 +505,7 @@ an assisted harness has been read.
 
 Source: `I_T2` 49/71, `I_T2_s1` 51, `I_T2_stock` 53, `I_UP8k` 49 (one
 stream, Basalt v0.5.7);
-[the Inkling report §11](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md#11-the-ablations-and-the-improved-arm-i_t3-2026-11-24).
+[the Inkling report §12](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md#12-the-improved-arm-i_t3-2026-11-24).
 The fifth model read under these harnesses, and the first whose turns are
 fast (~8-9 s each, ~500 tok/s).
 

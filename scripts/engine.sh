@@ -22,7 +22,8 @@
 # Engines: llama (llama.cpp), vllm, tensorfold, maya (opt-in, gated on a
 # measured 1.5x over llama.cpp: scripts/engine-gate.sh) — one adapter each in
 # scripts/engines/; a new adapter file is a new engine. Defaults per host
-# class: rig → llama, spark (GB10) → tensorfold; ENGINE_DEFAULT overrides.
+# class: rig → basalt on an RTX 5090 (profile inkling2-mini-stock), llama on
+# any other rig; spark (GB10) → tensorfold; ENGINE_DEFAULT overrides.
 # Every install has an offline path (stage on a connected box, --from DIR on
 # the closed one). Nothing here touches a server this stack does not manage.
 set -euo pipefail

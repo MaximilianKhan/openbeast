@@ -362,7 +362,10 @@ and [TODO.md](../TODO.md) holds the item with what to check.
   0.5.5 → 0.5.7 in two days, 98 open issues at review (Strata report §15.2).
   Upstream #588 is in the pin: 105 of the stock arm's 2,032 turns ended
   empty at the 8,192 cap (5.2%); the #632 patch that would fix it is not
-  merged upstream and not yet on `main` here. Its tool-call parsing is more
+  merged upstream and was not yet on `main` here when this was decided.
+  *(Later the same day it landed on `main` as the local patch, §11: a
+  build of the 5090 default is now the pin plus the patch, so it differs
+  from the measured pin of the stock row.)* Its tool-call parsing is more
   lenient than llama.cpp's (83 capped turns still carried a call), which
   can only raise the call success rate. A model-plus-engine change: weights,
   engine, thinking room (6,144 against 8,192) and parser all differ from
@@ -455,6 +458,9 @@ row, §8, §10) with three changes: `--turns-per-wall-s 5` (180 turns for a
 the serve's `--answer-room 8192` (thinking ≤ 8,192, answer ≥ 8,192), on
 the PR #632-patched Basalt (§11). Harness9 tree, one stream. Launcher
 `~/openbeast-runs/ink-I_T3-run.sh`, ready, **not launched**: Max launches.
+*(Status, added after merge: **RUNNING** since 2026-11-24 16:29:10 PST,
+launcher pid 7275, `PACK=stock`, gate passed 16:30:37, campaign ETA
+~11.5 h; live paths, stop-safely and restore-by-hand steps in TODO.)*
 Follow-ups defined and not queued: `I_T3_t15` (turns back to 15 s),
 `I_T3_8k` (cap back to 8,192, answer room `auto`), and a seed repeat (§6's
 rule asks for one).
@@ -581,8 +587,8 @@ sealed path; Q_T2's rerun ran `find /` twice (Rust sources) without one. Pair ef
 dropped from every paired test (`ablation.py` reads the same file).
 
 **Reasoning.** The rule does not weigh what a leak was worth, so no
-judgement about "only file names" enters a score; and a name like
-`wrong_noaddback` is a hint. Excluding a fail costs nothing and keeps the
+judgement about "only file names" enters a score; and two of the names
+describe failure modes (named only in the sealed review), which is a hint. Excluding a fail costs nothing and keeps the
 rule exact. The cause is the documented Linux residual gap (the agent's own
 shell has no read-deny there; evals/README.md), now seen live on the rig for
 the first time; its next-era fix is in HARNESS_NOTES.

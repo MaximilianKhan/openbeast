@@ -37,13 +37,14 @@
 #        openbeast.conf, enable + start GLM, restart the command center)
 #   ds   stop GLM; spark-deepseek-pack.sh use DS_PACK --id DS_ID when another
 #        pack is selected; then activate-stock.sh (start DeepSeek, canary,
-#        conformance, openbeast.conf, restart the command center, THEN enable
-#        DeepSeek and disable GLM). activate-stock.sh never stops GLM itself:
-#        never run it while GLM is active. When it fails after use-model.sh
-#        wrote openbeast.conf (at its command-center restart or the two
-#        enablement lines after it) and DeepSeek serves, beast-spark does the
-#        enablement itself and restarts the command center (cc_up): the switch
-#        stands. Any earlier failure (start, canary, conformance), with GLM
+#        conformance, use-model.sh writes openbeast.conf, the gate key synced
+#        into openbeast.conf (LLAMA_API_KEY), enable DeepSeek, disable GLM,
+#        and restart the command center LAST; spark-1's copy as of 2026-11-23
+#        19:02). activate-stock.sh never stops GLM itself: never run it while
+#        GLM is active. When it fails after use-model.sh wrote openbeast.conf
+#        (at the key sync, the two enablement lines or the command-center
+#        restart) and DeepSeek serves, beast-spark does the enablement itself
+#        and restarts the command center (cc_up): the switch stands. Any earlier failure (start, canary, conformance), with GLM
 #        serving when `ds` began: restore-glm.sh brings GLM back.
 #   hy4  stop DeepSeek / GLM (whichever runs; their enablement stays), start
 #        hy4-vllm-inference, wait for Hy4-flash-NVFP4, set INFERENCE_BACKEND=vllm
@@ -340,9 +341,11 @@ cmd_ds() {
   local rc=0
   DS_STAMP=$(mktemp "${TMPDIR:-/tmp}/beast-spark-ds.XXXXXX")
   bash "$PREP/activate-stock.sh" || rc=$?
-  # activate-stock.sh (on spark-1, outside the repo) restarts the command center BEFORE it
-  # enables DeepSeek and disables GLM, under set -e: a failed restart (2026-11-23: a 90 s stop)
-  # left DeepSeek serving but GLM still the boot selection, and `ds` rolled back to GLM. Once
+  # activate-stock.sh (on spark-1, outside the repo) runs, after use-model.sh, the key sync,
+  # enable DeepSeek, disable GLM and the command-center restart LAST (its copy of 2026-11-23
+  # 19:02; an older copy restarted BEFORE the enablement, and a failed restart (a 90 s stop)
+  # left DeepSeek serving but GLM still the boot selection, so `ds` rolled back to GLM). Under
+  # set -e any of those steps can fail after the switch already stands. Once
   # use-model.sh has written openbeast.conf in THIS run (its log, newer than the stamp, says so:
   # the canary and conformance passed) and DeepSeek serves, the rest is done here.
   if (( rc )); then
