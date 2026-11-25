@@ -290,7 +290,9 @@ transcript cannot show it; it is counted as a read, as Q38U-L0's
 **What moves.** `Q38U-T2`'s cleanly measured units go from 65 to 63: the
 paired comparisons against it keep their gained/lost counts and p values
 (INK-T2 1/7 p 0.07, INK-T2-STOCK 2/4 p 0.69, INK-T3 2/5 p 0.45, now over 63
-units; L0 → Q_T2 +12/−1 p 0.003 over 59). No default changes: the 5090
+units; L0 → Q_T2 +12/−1 p 0.003 over 59). On the board's view (withheld units count as
+fails, 68 units) INK-T2-STOCK against Q38U-T2 moves from level (4/4) to 5
+gained, 4 lost (p 1.0), because the withheld pass is now a fail there. No default changes: the 5090
 default is stock Inkling since 2026-11-24 and Qwen3.8 is the fallback.
 
 **Per arm** (transcripts scanned / contaminated, after triage):
