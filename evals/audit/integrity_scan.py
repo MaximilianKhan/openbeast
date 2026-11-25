@@ -290,8 +290,16 @@ def _first_host(cmd: str, rest: str) -> str:
         t = t.split("@")[-1]
         if cmd in ("scp", "rsync"):
             t = t.split(":")[0]
-        return t.strip("[]")
+        t = t.strip("[]")
+        # A host is a name or an address. Code that merely uses `nc` as an
+        # identifier (`nc = len(x)`, `if nc == 0`, `for nc {` inside a heredoc;
+        # INK-T2-STOCK's 168_linearizability_kv_e, rescanned 2026-11-25) puts
+        # an operator or brace where the host would be: not a host.
+        return t if _HOST_TOKEN.fullmatch(t) else ""
     return ""
+
+
+_HOST_TOKEN = re.compile(r"(?=[^:]*[A-Za-z0-9])[A-Za-z0-9_.-]+|[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*")
 
 
 def embed_paths(content: str) -> list[str]:

@@ -123,8 +123,17 @@ def audit(files: list[str], tree: str, logs_dir: str, until: float | None = None
     """One proposed ledger entry per infra row (labels) of the files."""
     units = load_units(tree)
     out = []
+    # A main file and its repair file run the same units: --until (the
+    # campaign's end) would stretch the main file's window over the repair's
+    # transcripts and match a unit to its rerun (I_T3, 2026-11-25). Each
+    # window ends where the next file's run starts.
+    wins = {f: T.results_window(f, until) for f in files}
+    starts = sorted(s for s, _ in wins.values() if s is not None)
     for f in files:
-        since, end = T.results_window(f, until)
+        since, end = wins[f]
+        later = [s for s in starts if since is not None and s > since]
+        if later:
+            end = min(end, later[0])
         _, rows = campaign.load_rows(f)
         lost = {u: r for u, r in rows.items() if v5_board.infra_reason(r) in labels}
         if not lost:

@@ -25,8 +25,12 @@ a build through the adapter is the pin plus the PR #632 patch (DECISIONS §11,
 profile key `PATCHES`), and `INK-T2-STOCK` ran the unpatched pin. No board
 row has measured pin + #632 at answer room auto; the Strata report §16.6
 probe saw that pairing end more replies at the cap mid-call, which is why
-arm I_T3 serves the patch with `--answer-room 8192`. The profile's answer
-room follows I_T3's decision ([TODO.md](TODO.md) "Basalt after the switch"). It is the shipped default of `main` from that date; the
+arm I_T3 served the patch with `--answer-room 8192`. I_T3 (2026-11-25,
+52/71, row `INK-T3`) ran it inside a composite with 180 turns and a 16,384
+cap: no empty capped turn, level with `INK-T2-STOCK`, so it did not decide
+the answer room; the profile stays at auto until the default build is
+measured as an arm ([DECISIONS-2026-11-25 §4](reports/DECISIONS-2026-11-25.md#4-i_t3-does-not-beat-ink-t2-stock-the-5090-default-stays-stock),
+[TODO.md](TODO.md) "Basalt after the switch"). It is the shipped default of `main` from that date; the
 reference rig switches when its GPU frees up ([TODO.md](TODO.md) "Switch the
 5090 rig to Inkling 2 Mini"). How to switch and roll back:
 [below](#switching-the-rtx-5090-to-its-default-and-back); a fresh install:
@@ -122,8 +126,10 @@ the Derisked pack, harness10), passed 49/71, level with I_T2 (3 units each
 way), and its forced-act turns kept thinking on Basalt (`enable_thinking=false`
 is only a reasoning-effort hint there, with no thinking budget), so T2's
 `inkling-best` stays the setup (report §10.9). The improved arm `I_T3`
-(report §12) takes none of UP_8k's switches ([TODO.md](TODO.md) "Inkling 2
-Mini on the 5090").
+(report §12; none of UP_8k's switches) passed 52/71 on 2026-11-25 (row
+`INK-T3`, SCORE 77.4): level with `INK-T2-STOCK`, at twice the time, with
+four context overflows; `inkling-best` and the stock default stay
+([report](reports/V5_INKLING2_MINI_I_T3-2026-11-25.md)).
 
 ## Switching the RTX 5090 to its default, and back
 

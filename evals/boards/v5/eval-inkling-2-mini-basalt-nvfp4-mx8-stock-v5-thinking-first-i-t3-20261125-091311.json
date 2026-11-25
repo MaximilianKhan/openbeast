@@ -1,0 +1,259 @@
+{
+  "timestamp": "2026-11-25T09:13:12.436688",
+  "model": "Inkling 2 Mini (Basalt NVFP4-MX8, stock) v5-thinking-first I_T3",
+  "model_slug": "inkling-2-mini-basalt-nvfp4-mx8-stock-v5-thinking-first-i-t3",
+  "base_url": "http://127.0.0.1:8099/v1",
+  "suite_version": "v5",
+  "gpu": {},
+  "inference_engine": {
+    "name": "llama.cpp",
+    "binary": "/home/max/ob-ink3/.claude/worktrees/h9/llama.cpp/build/bin/llama-server"
+  },
+  "server": {
+    "source": "/v1/models",
+    "reasoning_budget": "16384",
+    "reasoning_budget_source": "declared",
+    "model_id": "inkling-2-mini",
+    "engine": "basalt",
+    "served_model": "inkling-2-mini"
+  },
+  "runtime": {
+    "python": "3.12.16",
+    "platform": "Linux-7.2.8-9-omarchy-x86_64-with-glibc2.41",
+    "openai": "3.51.0",
+    "mcp": "2.3.0",
+    "openbeast_commit": "f38a29c78ed08de941c4b82119b190eba1027388",
+    "openbeast_dirty": false
+  },
+  "jobs": 1,
+  "turns_per_wall_s": 5.0,
+  "wall_scale": 2.0,
+  "suite_selection": null,
+  "suite_manifest": "v5",
+  "cache_only": false,
+  "harness": {
+    "diagnostics": true,
+    "era": "036638ddd68698ce",
+    "greedy": false,
+    "agent_switches": {
+      "thinking": "on",
+      "seed": null,
+      "verify_done": true,
+      "diag_edit_hint": true,
+      "env_block": true,
+      "wall_warn": true,
+      "turn_cap": 16384,
+      "act_nudge": true
+    },
+    "thinking_source": "requested",
+    "served_model": "inkling-2-mini",
+    "agent_component": "ag-think-on-vdone-ehint-envb-wwarn-cap16384-anudge",
+    "packs": {
+      "zig": "cfdab8fa",
+      "host": "e50c9d80"
+    },
+    "packs_component": "pack1-f276fa96",
+    "pack_variant": "v3",
+    "host_pack": {
+      "system": "Linux",
+      "tokens": 56,
+      "facts": [
+        "sysconf_header"
+      ]
+    },
+    "toolchains": {
+      "zig": "0.16.0",
+      "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
+      "go": "go version go1.23.3 linux/amd64",
+      "gcc": "14.2.0",
+      "shellcheck": "ShellCheck - shell script analysis tool"
+    },
+    "diag_scope": [
+      "c",
+      "cpp",
+      "go",
+      "rust",
+      "shell",
+      "zig"
+    ],
+    "rb_component": "16384",
+    "env_component": "env1-2b69a1af",
+    "env": {
+      "weights": {},
+      "engine": {},
+      "serve": {},
+      "toolchains": {
+        "zig": "0.16.0",
+        "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
+        "go": "go version go1.23.3 linux/amd64",
+        "gcc": "14.2.0",
+        "shellcheck": "ShellCheck - shell script analysis tool",
+        "python": "3.12.16"
+      }
+    },
+    "env_in_cache_key": true,
+    "diag_latency_ms": {
+      "n": 1,
+      "p50": 114.2,
+      "p95": 114.2,
+      "p99": 114.2,
+      "max": 114.2
+    },
+    "diag_exposure": {
+      "units_exposed": 1,
+      "units_with_failed_check": 0,
+      "units_hint_fired": 0,
+      "units_card_fired": 0,
+      "per_unit": {
+        "163_bigint_divmod_d": {
+          "writes": 1,
+          "errors": 0,
+          "failed_checks": 0,
+          "hint_fired": false,
+          "card_fired": false
+        }
+      }
+    }
+  },
+  "tasks": [
+    {
+      "id": "163_bigint_divmod_d",
+      "name": "Big-integer divide/mod (Knuth Algorithm D, base 2^32) [cpp]",
+      "difficulty": "hard",
+      "model": "Inkling 2 Mini (Basalt NVFP4-MX8, stock) v5-thinking-first I_T3",
+      "passed": false,
+      "elapsed_seconds": 811.9,
+      "agent_exit_code": 0,
+      "validation_output": "mismatch at case 4 of 1975",
+      "tokens_prompt": 16839854,
+      "tokens_completion": 380547,
+      "tokens_total": 17220401,
+      "iterations": 180,
+      "max_iter": 180,
+      "compactions": 0,
+      "api_errors": 0,
+      "reasoning_turns": 25,
+      "response_models": {
+        "inkling-2-mini": 180
+      },
+      "env_fp": "env1-2b69a1af",
+      "base_id": "163_bigint_divmod",
+      "variant_id": "d",
+      "language": "cpp",
+      "variant_count": 6,
+      "agent_thinking": "on",
+      "agent_seed": null,
+      "agent_verify_done": true,
+      "diag_edit_hint": true,
+      "agent_env_block": true,
+      "agent_wall_warn": true,
+      "agent_turn_cap": 16384,
+      "agent_act_nudge": true,
+      "role": "scored"
+    },
+    {
+      "id": "176_intermittent_500s_a",
+      "name": "Intermittent 500s in a 25-file service, diagnose from logs [python]",
+      "difficulty": "hard",
+      "model": "Inkling 2 Mini (Basalt NVFP4-MX8, stock) v5-thinking-first I_T3",
+      "passed": false,
+      "elapsed_seconds": 720.8,
+      "agent_exit_code": 0,
+      "validation_output": "FAIL: hidden test H02",
+      "tokens_prompt": 39703563,
+      "tokens_completion": 175684,
+      "tokens_total": 39879247,
+      "iterations": 300,
+      "max_iter": 300,
+      "compactions": 0,
+      "api_errors": 0,
+      "reasoning_turns": 27,
+      "response_models": {
+        "inkling-2-mini": 300
+      },
+      "env_fp": "env1-2b69a1af",
+      "base_id": "176_intermittent_500s",
+      "variant_id": "a",
+      "language": "python",
+      "variant_count": 1,
+      "agent_thinking": "on",
+      "agent_seed": null,
+      "agent_verify_done": true,
+      "diag_edit_hint": true,
+      "agent_env_block": true,
+      "agent_wall_warn": true,
+      "agent_turn_cap": 16384,
+      "agent_act_nudge": true,
+      "role": "scored"
+    },
+    {
+      "id": "183_heston_little_trap",
+      "name": "Heston European call pricer (long maturities)",
+      "difficulty": "hard",
+      "model": "Inkling 2 Mini (Basalt NVFP4-MX8, stock) v5-thinking-first I_T3",
+      "passed": false,
+      "elapsed_seconds": 562.8,
+      "agent_exit_code": 0,
+      "validation_output": "case 38: price mismatch (10 of 140 cases wrong)",
+      "tokens_prompt": 1867331,
+      "tokens_completion": 206386,
+      "tokens_total": 2073717,
+      "iterations": 58,
+      "max_iter": 180,
+      "compactions": 0,
+      "api_errors": 0,
+      "reasoning_turns": 58,
+      "response_models": {
+        "inkling-2-mini": 58
+      },
+      "env_fp": "env1-2b69a1af",
+      "language": "python",
+      "agent_thinking": "on",
+      "agent_seed": null,
+      "agent_verify_done": true,
+      "diag_edit_hint": true,
+      "agent_env_block": true,
+      "agent_wall_warn": true,
+      "agent_turn_cap": 16384,
+      "agent_act_nudge": true,
+      "role": "scored"
+    },
+    {
+      "id": "192_pike_regex",
+      "name": "Pike-VM linear-time regex engine",
+      "difficulty": "hard",
+      "model": "Inkling 2 Mini (Basalt NVFP4-MX8, stock) v5-thinking-first I_T3",
+      "passed": false,
+      "elapsed_seconds": 1800.0,
+      "agent_exit_code": -1,
+      "validation_output": "missing /tmp/eval_pike192/rx.py",
+      "tokens_prompt": 5646998,
+      "tokens_completion": 686583,
+      "tokens_total": 6333581,
+      "iterations": 108,
+      "max_iter": 180,
+      "compactions": 0,
+      "api_errors": 0,
+      "reasoning_turns": 107,
+      "stats_partial": true,
+      "env_fp": "env1-2b69a1af",
+      "language": "python",
+      "agent_thinking": "on",
+      "agent_seed": null,
+      "agent_verify_done": true,
+      "diag_edit_hint": true,
+      "agent_env_block": true,
+      "agent_wall_warn": true,
+      "agent_turn_cap": 16384,
+      "agent_act_nudge": true,
+      "role": "scored"
+    }
+  ],
+  "summary": {
+    "total": 4,
+    "passed": 0,
+    "failed": 4,
+    "cache_hits": 0,
+    "live_units": 4
+  }
+}

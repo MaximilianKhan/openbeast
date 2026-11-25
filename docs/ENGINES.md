@@ -303,8 +303,11 @@ serve args and agent setup of board row `INK-T2-STOCK`, 53/71 scored, SCORE
 78.2, single seed). **The default build is not that row's build:** it is the
 pin plus the PR #632 patch (§11), which `INK-T2-STOCK` ran without, and no
 board row has measured pin + #632 at these args yet (the profile's
-`PATCHES` key names the build, and the launch refuses any other; the
-patch's answer room is I_T3's question, [TODO.md](TODO.md)). It was
+`PATCHES` key names the build, and the launch refuses any other; I_T3,
+2026-11-25, ran the patch inside a composite with a 16,384 cap and
+`--answer-room 8192`: 0 empty capped turns in 3,204 replies, 52/71, level
+with `INK-T2-STOCK`, so the default's answer room is still open,
+[TODO.md](TODO.md)). It was
 chosen 2026-11-23 for the Inkling v5 runs as the one engine that drives T2
 on Inkling (thinking with `reasoning_content` and tool calls, streamed and
 not; conformance PASS) and the fastest single stream (403 / 356 tok/s code /
