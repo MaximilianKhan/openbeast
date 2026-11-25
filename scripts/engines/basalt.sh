@@ -7,10 +7,14 @@
 # and §15. Sourced by lib/engine.sh; functions only.
 #
 # THE RTX 5090 DEFAULT since 2026-11-24 (Max; DECISIONS-2026-11-24 §10): the
-# stock Inkling 2 Mini pack, profile inkling2-mini-stock, the serve of board
-# row INK-T2-STOCK. The runtime fallback of an unset conf stays llama.cpp
-# (conf.sh); `engine.sh use default` on an RTX 5090 picks this engine
-# (lib/engine.sh ob_engine_default) and this adapter's default profile.
+# stock Inkling 2 Mini pack, profile inkling2-mini-stock. Its serve args and
+# agent setup are board row INK-T2-STOCK's; its build is the pin PLUS the
+# PR #632 patch (DECISIONS §11), which INK-T2-STOCK ran without: no board row
+# has measured that exact combination yet (the profile's PATCHES key says
+# which build it serves, and the launch refuses any other). The runtime
+# fallback of an unset conf stays llama.cpp (conf.sh); `engine.sh use
+# default` on an RTX 5090 picks this engine (lib/engine.sh
+# ob_engine_default) and this adapter's default profile.
 #
 # What closes the Strata report §15.8 "before default" items:
 #   1. Source at a reviewed commit, built offline. Only a version in
@@ -18,21 +22,32 @@
 #      another commit only on the command line. The compile runs in the env
 #      image with --network none. Offline: `engine.sh stage basalt` writes a
 #      bare one-commit repo + the docker-saved env image + a MANIFEST with
-#      their sha256 and image id; `install --from` re-verifies all of it. The
-#      source is also in beast-ark (agents/ark/catalog.toml entry "basalt").
+#      their sha256, image id and Dockerfile sha256; `install --from` checks
+#      the commit against the pin, the Dockerfile hash against this
+#      checkout's, the tarball against its MANIFEST (integrity of the
+#      transfer, not proof of where the image came from) and refuses a
+#      tarball that carries image tags. The source is also in beast-ark
+#      (agents/ark/catalog.toml entry "basalt").
 #   2. The #588 fix (upstream PR #632) as a local patch: every file
 #      scripts/engines/patches/basalt-pr632-*.patch present in this checkout
-#      is applied after the checkout (git apply --check first), and its name
-#      and sha256 go into the build record and the history note. None present
-#      = the reviewed pin exactly (the measured INK-T2-STOCK binary's source).
+#      must be a row of _ENG_BASALT_PATCHES_REVIEWED (name, the commit it is
+#      for, the sha256 of its diff body) or the build refuses; it is applied
+#      after the checkout (git apply --check first), and its name and sha256
+#      go into the build record and the history note. None present = the
+#      reviewed pin exactly (the measured INK-T2-STOCK binary's source).
 #      ENGINE_BASALT_PATCHES=none builds the pin even when a patch is there.
 #   3. The Python side: no venv; the server runs the env image's distro
 #      python3, whose six server packages are pinned to exact versions in
 #      scripts/engines/basalt/Dockerfile (an Ubuntu snapshot fixes the rest)
 #      and re-checked in the built image here (_ENG_BASALT_PY_PINS).
-#   4. Hardened serve (eng_basalt_launch): a no-NAT bridge plus
-#      --dns 127.0.0.1, PROVEN at every launch by a probe container that must
-#      fail to resolve public names and fail to connect out (else no launch);
+#   4. Hardened serve (eng_basalt_launch): a no-NAT bridge (interface
+#      ob-basalt0, so a host firewall rule can name it) plus --dns 127.0.0.1,
+#      checked at every launch by a probe container in the same sandbox:
+#      getaddrinfo of three public names, TCP to 1.1.1.1:443 and 8.8.8.8:53,
+#      raw UDP DNS queries to the bridge gateway, 172.17.0.1 (docker0) and
+#      1.1.1.1 on port 53, and TCP to the gateway's port 22 must ALL fail,
+#      else no launch. That is what the probe tests, nothing more (other
+#      host ports are the host firewall's job: ENGINES.md);
 #      the port published on 127.0.0.1 only; read-only root, tree, weights
 #      and key; no host home (HOME=/tmp); --cap-drop ALL; no-new-privileges;
 #      a non-root uid; --pids-limit and --memory; /tmp noexec.
@@ -54,6 +69,12 @@ eng_basalt_hydra_kind() { printf 'openai\n'; }
 
 # version <TAB> commit. Add a row only after a review like the Strata report §15.
 _ENG_BASALT_REVIEWED_DEFAULT='v0.5.7	400b411c58031d064812ea21a259b2381acdaa3e'
+# The local patches a build may apply: file name <TAB> the commit it is written
+# for <TAB> sha256 of its diff body (from the first "diff --git" line on; the
+# comment header above it is not hashed). Add a row only after a review like
+# the Strata report §16. A basalt-pr632-*.patch that is not a row here, or
+# whose body hash differs, stops the build.
+_ENG_BASALT_PATCHES_REVIEWED_DEFAULT='basalt-pr632-55f9be17.patch	400b411c58031d064812ea21a259b2381acdaa3e	af15ee07ecddababe54b57ae68b78b0d526602156332333ae50ba3f36748c0cd'
 # The server's Python packages, exact, as the measured image held them
 # (Strata report §15.3, dpkg-query -W in ob-strata-env:2026-11-23).
 _ENG_BASALT_PY_PINS='python3=3.12.3-0ubuntu2.1
@@ -70,8 +91,12 @@ _ENG_BASALT_PIDS_DEFAULT=256
 _ENG_BASALT_MEMORY_DEFAULT=32g
 _ENG_BASALT_TMPFS='/tmp:rw,noexec,nosuid,nodev,size=8g'
 _ENG_BASALT_NET='openbeast-basalt-net'
+# The bridge's interface name: fixed, so a host firewall rule can deny it
+# (`ufw insert 1 deny in on ob-basalt0`, docs/ENGINES.md). At most 15 chars.
+_ENG_BASALT_BRIDGE='ob-basalt0'
 
 _eng_basalt_reviewed() { printf '%s\n' "${OB_ENGINE_BASALT_REVIEWED:-$_ENG_BASALT_REVIEWED_DEFAULT}"; }
+_eng_basalt_patches_reviewed() { printf '%s\n' "${OB_ENGINE_BASALT_PATCHES_REVIEWED:-$_ENG_BASALT_PATCHES_REVIEWED_DEFAULT}"; }
 _eng_basalt_url()   { printf '%s\n' "${OB_ENGINE_BASALT_URL:-https://github.com/jesdga95/basalt.git}"; }
 _eng_basalt_opt()   { printf '%s\n' "${OB_ENGINE_BASALT_OPT:-$HOME/.local/opt}"; }
 _eng_basalt_docker() { "${OB_ENGINE_DOCKER:-docker}" "$@"; }
@@ -164,17 +189,31 @@ _eng_basalt_fetch() {
 # ENGINE_BASALT_PATCHES=none. From 2026-11-24 (Max) main carries
 # basalt-pr632-55f9be17.patch (upstream PR #632 head 55f9be17, Python server
 # only; review: docs/reports/STRATA_INKLING_5090-2026-11-23.md section 16),
-# so a build is the reviewed pin plus it. A reviewed file in this checkout,
-# never a download.
+# so a build is the reviewed pin plus it. A file in this checkout, never a
+# download, and only one whose name and body hash are a row of
+# _ENG_BASALT_PATCHES_REVIEWED: any other basalt-pr632-*.patch (an untracked
+# file, an edit, another OB_ENGINE_BASALT_PATCH_DIR) stops the build.
 _eng_basalt_patches() {
-  local mode f
+  local mode f row want got
   mode="$(_eng_basalt_conf ENGINE_BASALT_PATCHES)"
   [[ "${mode:-auto}" == none ]] && return 0
   [[ "${mode:-auto}" == auto ]] || { echo "ENGINE_BASALT_PATCHES='$mode' is not auto or none" >&2; return 1; }
   for f in "$(_eng_basalt_patch_dir)"/basalt-pr632-*.patch; do
-    [[ -f "$f" ]] && printf '%s\n' "$f"
+    [[ -f "$f" ]] || continue
+    row="$(_eng_basalt_patch_row "$(basename "$f")")"
+    [[ -n "$row" ]] || { echo "patch $(basename "$f") is not in the reviewed patch table (_ENG_BASALT_PATCHES_REVIEWED in scripts/engines/basalt.sh) — refusing; review it (the Strata report §16 is the template) and add a row, or remove the file" >&2; return 1; }
+    want="${row##*$'\t'}"; got="$(_eng_basalt_patch_body_sha "$f")"
+    [[ "$got" == "$want" ]] || { echo "patch $(basename "$f"): diff body sha256 $got, the reviewed table pins $want — refusing" >&2; return 1; }
+    printf '%s\n' "$f"
   done
   return 0
+}
+
+# _eng_basalt_patch_row <file name> — "name<TAB>commit<TAB>body sha256" of a reviewed patch.
+_eng_basalt_patch_row() { _eng_basalt_patches_reviewed | awk -F'\t' -v n="$1" '$1 == n && NF == 3 {print; exit}'; }
+# _eng_basalt_patch_body_sha <file> — sha256 of the diff body (the first "diff --git" line on).
+_eng_basalt_patch_body_sha() {
+  sed -n '/^diff --git/,$p' "$1" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1
 }
 
 # _eng_basalt_patch_tag <files...> — "pr632-<12 hex of their sha256s>", or empty.
@@ -187,9 +226,16 @@ _eng_basalt_patch_tag() {
 
 # _eng_basalt_apply <tree> <files...> — apply each patch, checked first. Sets _BP (record line).
 _eng_basalt_apply() {
-  local t="$1" f; shift
+  local t="$1" f row head; shift
   _BP=""
+  head="$(git -C "$t" rev-parse HEAD 2>/dev/null)" || { echo "$t is not a git checkout" >&2; return 1; }
   for f in "$@"; do
+    row="$(_eng_basalt_patch_row "$(basename "$f")")"
+    [[ -n "$row" ]] || { echo "patch $(basename "$f") is not in the reviewed patch table — refusing" >&2; return 1; }
+    [[ "$(cut -f2 <<< "$row")" == "$head" ]] \
+      || { echo "patch $(basename "$f") is reviewed for $(cut -f2 <<< "$row" | cut -c1-12), this tree is ${head:0:12} — refusing (a patch is written for one commit)" >&2; return 1; }
+    [[ "$(_eng_basalt_patch_body_sha "$f")" == "${row##*$'\t'}" ]] \
+      || { echo "patch $(basename "$f") does not hash as reviewed — refusing" >&2; return 1; }
     git -C "$t" apply --check "$f" 2>/dev/null \
       || { echo "patch $(basename "$f") does not apply to $(git -C "$t" rev-parse --short=12 HEAD) — refusing (a patch is written for one commit)" >&2; return 1; }
     git -C "$t" apply "$f" || return 1
@@ -223,14 +269,55 @@ _eng_basalt_image_build() {
   _eng_basalt_image_check "$_BI"
 }
 
+# _eng_basalt_tar_untagged <tar> — the docker-save tarball names no image:
+# stage saves by id, so a real one carries no RepoTags (manifest.json) and no
+# image name annotation (index.json). A tarball that does would make
+# `docker load` move those tags (openbeast-eval-host:…, nvidia/cuda:…) onto
+# its own image — refused before anything is loaded.
+_eng_basalt_tar_untagged() {
+  python3 -I - "$1" <<'PY'
+import json, sys, tarfile
+names = []
+try:
+    with tarfile.open(sys.argv[1]) as t:
+        for member in ("manifest.json", "index.json"):
+            try:
+                f = t.extractfile(member)
+            except KeyError:
+                continue
+            if f is None:
+                continue
+            d = json.load(f)
+            if member == "manifest.json":
+                for e in d if isinstance(d, list) else []:
+                    names += [str(x) for x in (e.get("RepoTags") or [])]
+            else:
+                for m in d.get("manifests") or []:
+                    a = m.get("annotations") or {}
+                    for k in ("io.containerd.image.name", "org.opencontainers.image.ref.name"):
+                        if a.get(k):
+                            names.append(str(a[k]))
+except (OSError, tarfile.TarError, ValueError) as e:
+    print(f"cannot read the image tarball {sys.argv[1]}: {e}", file=sys.stderr)
+    sys.exit(1)
+if names:
+    print(f"the image tarball {sys.argv[1]} names images ({', '.join(sorted(set(names)))}); a staged Basalt env image is saved by id and names none — refusing (docker load would retag them)", file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
 # _eng_basalt_image_load <tar> <sha256> <image id> — offline: the tarball is
-# what the MANIFEST says, and docker reads back that image id. Sets _BI.
+# what the MANIFEST says (integrity of the transfer), names no image, and
+# docker reads back that image id; then it is tagged with this checkout's env
+# image tag, so `docker image prune` never sees it as dangling. Sets _BI.
 _eng_basalt_image_load() {
   local tar="$1" sum="$2" id="$3" got
   [[ "$(ob_engine_sha256 "$tar")" == "$sum" ]] || { echo "checksum mismatch: $tar" >&2; return 1; }
+  _eng_basalt_tar_untagged "$tar" || return 1
   _eng_basalt_docker load -i "$tar" >/dev/null || { echo "docker load $tar failed" >&2; return 1; }
   got="$(_eng_basalt_docker image inspect --format '{{.Id}}' "$id" 2>/dev/null || true)"
   [[ "$got" == "$id" ]] || { echo "after docker load, image $id is not on this box — the tarball is not what its MANIFEST says" >&2; return 1; }
+  _eng_basalt_docker tag "$id" "$(_eng_basalt_image_tag)" || { echo "could not tag $id as $(_eng_basalt_image_tag)" >&2; return 1; }
   _BI="$id"
   _eng_basalt_image_check "$_BI"
 }
@@ -268,7 +355,9 @@ eng_basalt_install() {
     return 1
   fi
   _eng_basalt_resolve "$v" "$dig" || return 1
-  while IFS= read -r m; do [[ -n "$m" ]] && patches+=("$m"); done < <(_eng_basalt_patches) || return 1
+  local plist
+  plist="$(_eng_basalt_patches)" || return 1      # an unreviewed patch stops the install here
+  while IFS= read -r m; do [[ -n "$m" ]] && patches+=("$m"); done <<< "$plist"
   tag="$(_eng_basalt_patch_tag ${patches[@]+"${patches[@]}"})"
   d="$(_eng_basalt_dir "$_BV${tag:++$tag}")"
   tmp="$d.partial.$$"
@@ -286,12 +375,17 @@ eng_basalt_install() {
   if [[ ${#patches[@]} -gt 0 ]]; then
     _eng_basalt_apply "$tmp" "${patches[@]}" || { rm -rf "$tmp"; return 1; }
   fi
+  local dsha
+  dsha="$(ob_engine_sha256 "$(_eng_basalt_dockerfile)")"
   if [[ -n "$from" ]]; then
-    local itar isum iid
+    local itar isum iid msha
     itar="$(ob_engine_manifest_get "$m" IMAGE_TAR)"; isum="$(ob_engine_manifest_get "$m" IMAGE_TAR_SHA256)"
-    iid="$(ob_engine_manifest_get "$m" IMAGE_ID)"
+    iid="$(ob_engine_manifest_get "$m" IMAGE_ID)"; msha="$(ob_engine_manifest_get "$m" DOCKERFILE_SHA256)"
     [[ "$itar" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}\.tar$ && "$isum" =~ ^[0-9a-f]{64}$ && "$iid" =~ ^sha256:[0-9a-f]{64}$ ]] \
       || { echo "$m: IMAGE_TAR / IMAGE_TAR_SHA256 / IMAGE_ID are missing or not their shape" >&2; rm -rf "$tmp"; return 1; }
+    # The staged image must come from THIS checkout's Dockerfile (the build record says so below).
+    [[ "$msha" == "$dsha" ]] \
+      || { echo "$m: the env image was staged from a Dockerfile with sha256 ${msha:-<none>}, this checkout's scripts/engines/basalt/Dockerfile is $dsha — refusing; stage again from this checkout (engine.sh stage basalt)" >&2; rm -rf "$tmp"; return 1; }
     [[ -f "$from/$itar" ]] || { echo "$m names $itar, which is not in $from" >&2; rm -rf "$tmp"; return 1; }
     _eng_basalt_image_load "$from/$itar" "$isum" "$iid" || { rm -rf "$tmp"; return 1; }
   else
@@ -300,7 +394,7 @@ eng_basalt_install() {
   _eng_basalt_compile "$tmp" "$_BI" || { rm -rf "$tmp"; return 1; }
   printf 'VERSION=%s\nCOMMIT=%s\nPATCH_TAG=%s\nPATCHES=%s\nIMAGE_ID=%s\nBIN_SHA256=%s\nDOCKERFILE_SHA256=%s\nBUILT=%s\n' \
     "$_BV" "$_BC" "$tag" "$_BP" "$_BI" "$(ob_engine_sha256 "$tmp/bin/basalt")" \
-    "$(ob_engine_sha256 "$(_eng_basalt_dockerfile)")" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmp/OPENBEAST_BUILD"
+    "$dsha" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmp/OPENBEAST_BUILD"
   if [[ -d "$d" ]] && _eng_basalt_running_from "$d"; then
     echo "Basalt $_BV is serving from $d — stop it first (./stop.sh), then reinstall" >&2
     rm -rf "$tmp"; return 1
@@ -322,25 +416,52 @@ _eng_basalt_running_from() {
   [[ -n "$src" && "$(cd "$src" 2>/dev/null && pwd -P)" == "$(cd "$1" 2>/dev/null && pwd -P)" ]]
 }
 
-# activate <version> <ref> — relink a build still on disk at that commit
-# (the newest such build, patched or not, whose env image is still here).
+# activate <version> <ref> [note] — relink a build still on disk at that
+# commit whose env image is still here. Patched and unpatched builds of one
+# version share the commit, so the choice is: the build whose PATCH_TAG is
+# the one the history note names (patch=<tag>, written at install), else the
+# one this checkout's reviewed patches would build now (DECISIONS-2026-11-24
+# §11: Inkling on Basalt is served with #632), else the newest BUILT.
 eng_basalt_activate() {
-  local v="$1" ref="$2" d
+  local v="$1" ref="$2" note="${3:-}" d want="" best="" best_t="" t pl
+  local -a cands=() ps=()
   _eng_basalt_version_ok "$v" || return 1
   for d in "$(_eng_basalt_dir "$v")" "$(_eng_basalt_dir "$v")"+*; do
     [[ -f "$d/OPENBEAST_BUILD" && -x "$d/bin/basalt" ]] || continue
     [[ "$(_eng_basalt_build_get "$d" COMMIT)" == "$ref" ]] || continue
     _eng_basalt_docker image inspect "$(_eng_basalt_build_get "$d" IMAGE_ID)" >/dev/null 2>&1 || continue
-    ln -sfn "$d" "$(_eng_basalt_active)"
-    ENG_RESULT_VERSION="$v"; ENG_RESULT_REF="$ref"; ENG_RESULT_NOTE="relinked $(basename "$d")"
-    return 0
+    cands+=("$d")
   done
-  return 1
+  [[ ${#cands[@]} -gt 0 ]] || return 1
+  # The note is install's "image=… bin=… [patch=<tag>]" or activate's "relinked basalt-<v>[+<tag>]".
+  if [[ "$note" =~ (patch=|\+)(pr632-[0-9a-f]{12})($|[[:space:]]) ]]; then
+    want="${BASH_REMATCH[2]}"
+  elif [[ "$note" == image=* || "$note" == "relinked basalt-"* ]]; then
+    want="<none>"                  # a record of an unpatched build
+  elif pl="$(_eng_basalt_patches 2>/dev/null)"; then
+    while IFS= read -r t; do [[ -n "$t" ]] && ps+=("$t"); done <<< "$pl"
+    want="$(_eng_basalt_patch_tag ${ps[@]+"${ps[@]}"})"
+    [[ -n "$want" ]] || want="<none>"
+  fi
+  for d in "${cands[@]}"; do
+    t="$(_eng_basalt_build_get "$d" PATCH_TAG)"
+    if [[ -n "$want" && ( "$t" == "$want" || ( "$want" == "<none>" && -z "$t" ) ) ]]; then best="$d"; break; fi
+  done
+  if [[ -z "$best" ]]; then       # no build with that patch state: the newest BUILT (ISO-8601 UTC sorts as text)
+    for d in "${cands[@]}"; do
+      t="$(_eng_basalt_build_get "$d" BUILT)"
+      if [[ -z "$best" || "$t" > "$best_t" ]]; then best="$d" best_t="$t"; fi
+    done
+  fi
+  ln -sfn "$best" "$(_eng_basalt_active)"
+  ENG_RESULT_VERSION="$v"; ENG_RESULT_REF="$ref"; ENG_RESULT_NOTE="relinked $(basename "$best")"
+  return 0
 }
 
 # stage <version> <dir> — a bare one-commit repo of the source, the env image
-# (docker save) and a MANIFEST, for install --from on a closed box. The
-# patches are not staged: they travel in the checkout.
+# (docker save, by id: the tarball names no image; install --from tags it)
+# and a MANIFEST, for install --from on a closed box. The patches are not
+# staged: they travel in the checkout (and must be its reviewed ones).
 eng_basalt_stage() {
   local v="$1" dir="$2" t
   _eng_basalt_resolve "$v" "${ENG_STAGE_DIGEST:-}" || return 1
@@ -385,13 +506,14 @@ _eng_basalt_registry_row() {
 
 # _eng_basalt_profile_load <profile> — a valid profile with pinned weights.
 # Sets PF_PROFILE_NAME PF_PACK PF_SERVED_MODEL_NAME PF_PARALLEL PF_MAX_CONTEXT
-# PF_KV PF_ANSWER_ROOM PF_AGENT_PROFILE PF_MEASURED_ROW PF_PACK_SHA256 PF_PACK_BYTES.
+# PF_KV PF_ANSWER_ROOM PF_AGENT_PROFILE PF_MEASURED_ROW PF_PATCHES PF_PACK_SHA256
+# PF_PACK_BYTES.
 _eng_basalt_profile_load() {
   local f k row
   f="$(_eng_basalt_profile_path "$1")"
   [[ -f "$f" ]] || { echo "no Basalt profile $f (ls $(_eng_basalt_profiles))" >&2; return 1; }
   while IFS= read -r k; do
-    case "$k" in PACK|SERVED_MODEL_NAME|PARALLEL|MAX_CONTEXT|KV|ANSWER_ROOM|AGENT_PROFILE|MEASURED_ROW) ;;
+    case "$k" in PACK|SERVED_MODEL_NAME|PARALLEL|MAX_CONTEXT|KV|ANSWER_ROOM|AGENT_PROFILE|MEASURED_ROW|PATCHES) ;;
       *) echo "$f: unknown key '$k'" >&2; return 1 ;; esac
   done < <(sed -nE 's/^([A-Z][A-Z0-9_]*)=.*/\1/p' "$f")
   PF_PROFILE_NAME="$(basename "$f" .env)"
@@ -403,12 +525,16 @@ _eng_basalt_profile_load() {
   PF_ANSWER_ROOM="$(_eng_basalt_pf_get "$f" ANSWER_ROOM)"
   PF_AGENT_PROFILE="$(_eng_basalt_pf_get "$f" AGENT_PROFILE)"
   PF_MEASURED_ROW="$(_eng_basalt_pf_get "$f" MEASURED_ROW)"
+  PF_PATCHES="$(_eng_basalt_pf_get "$f" PATCHES)"
   [[ "$PF_PACK" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.basalt$ ]] || { echo "$f: PACK='$PF_PACK' is not a .basalt file name" >&2; return 1; }
   [[ "$PF_SERVED_MODEL_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$ ]] || { echo "$f: SERVED_MODEL_NAME is required (letters, digits, . _ : -)" >&2; return 1; }
   [[ "$PF_PARALLEL" =~ ^[1-8]$ ]] || { echo "$f: PARALLEL must be 1-8" >&2; return 1; }
   [[ "$PF_MAX_CONTEXT" =~ ^[1-9][0-9]{3,6}$ ]] || { echo "$f: MAX_CONTEXT must be a token count" >&2; return 1; }
   [[ "$PF_KV" =~ ^(fp16|int8|fp8|nvfp4|q4_0|k8v4)$ ]] || { echo "$f: KV='$PF_KV' is not a Basalt --kv value" >&2; return 1; }
   [[ "$PF_ANSWER_ROOM" =~ ^(auto|[0-9]{1,6})$ ]] || { echo "$f: ANSWER_ROOM must be auto or a token count" >&2; return 1; }
+  # PATCHES: the local patches the serving build must carry, exactly (file names, space-separated), or none.
+  [[ "$PF_PATCHES" =~ ^(none|basalt-pr632-[A-Za-z0-9._-]+\.patch( basalt-pr632-[A-Za-z0-9._-]+\.patch)*)$ ]] \
+    || { echo "$f: PATCHES is required: 'none' or the basalt-pr632-*.patch file names the build must carry" >&2; return 1; }
   row="$(_eng_basalt_registry_row "$PF_PACK")" \
     || { echo "$f: $PF_PACK has no sha256 pin in scripts/weights.registry" >&2; return 1; }
   read -r PF_PACK_SHA256 PF_PACK_BYTES <<< "$row"
@@ -416,6 +542,17 @@ _eng_basalt_profile_load() {
 }
 
 eng_basalt_profile_check() { _eng_basalt_profile_load "$1"; }
+
+# _eng_basalt_build_patches <build dir> — the patch file names a build carries,
+# sorted, space-separated ("none" when it is the pin exactly).
+_eng_basalt_build_patches() {
+  local p n out=""
+  p="$(_eng_basalt_build_get "$1" PATCHES)"
+  for n in $p; do out+="${n%%=*}"$'\n'; done
+  out="$(printf '%s' "$out" | sed '/^$/d' | sort | paste -sd' ' -)"
+  printf '%s\n' "${out:-none}"
+}
+_eng_basalt_sorted_words() { tr ' ' '\n' <<< "$1" | sed '/^$/d' | sort | paste -sd' ' -; }
 
 _eng_basalt_weights_dir() {
   local w
@@ -437,36 +574,63 @@ eng_basalt_profile_locate() {
   SP_LOCATE_RC=0 SP_MODEL_DIR="$w"
 }
 
-# ── the sandbox network, and the probe that proves it ──────────────────────
-# _eng_basalt_net — a user bridge with no NAT (no route out); created once.
-# An existing network of that name must be the same thing, or no launch.
+# ── the sandbox network, and the probe that checks it ──────────────────────
+# _eng_basalt_net — a user bridge with no NAT (no route out) on the interface
+# ob-basalt0; created once. An existing network of that name must be the same
+# thing, or no launch. Sets _BGW (its gateway: the host, seen from inside).
 _eng_basalt_net() {
-  local n="$_ENG_BASALT_NET" masq
+  local n="$_ENG_BASALT_NET" masq br
+  _BGW=""
   if ! _eng_basalt_docker network inspect "$n" >/dev/null 2>&1; then
     _eng_basalt_docker network create --driver bridge \
       -o com.docker.network.bridge.enable_ip_masquerade=false \
+      -o com.docker.network.bridge.name="$_ENG_BASALT_BRIDGE" \
       --label openbeast.engine=basalt "$n" >/dev/null \
       || { echo "could not create the docker network $n" >&2; return 1; }
   fi
   masq="$(_eng_basalt_docker network inspect -f '{{index .Options "com.docker.network.bridge.enable_ip_masquerade"}}' "$n" 2>/dev/null || true)"
   [[ "$masq" == false ]] || { echo "docker network $n has NAT (enable_ip_masquerade=${masq:-default true}) — remove it (docker network rm $n) and launch again" >&2; return 1; }
+  br="$(_eng_basalt_docker network inspect -f '{{index .Options "com.docker.network.bridge.name"}}' "$n" 2>/dev/null || true)"
+  [[ "$br" == "$_ENG_BASALT_BRIDGE" ]] || { echo "docker network $n is on interface '${br:-docker-chosen}', not $_ENG_BASALT_BRIDGE (the name the host firewall rule denies) — remove it (docker network rm $n) and launch again" >&2; return 1; }
+  _BGW="$(_eng_basalt_docker network inspect -f '{{range .IPAM.Config}}{{.Gateway}} {{end}}' "$n" 2>/dev/null | awk '{print $1}')"
+  [[ "$_BGW" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || { echo "could not read the IPv4 gateway of docker network $n (got '$_BGW')" >&2; return 1; }
 }
 
-# The probe (python3 -I, stdlib): every line must say FAIL for the launch to go on.
-_ENG_BASALT_PROBE='import socket
+# The probe (python3 -I, stdlib; argv[1] = the network's gateway): every line
+# must say FAIL for the launch to go on (_ENG_BASALT_PROBE_LINES of them).
+#   dns   getaddrinfo of public names (Docker's embedded DNS, then --dns 127.0.0.1)
+#   tcp   TCP out to public addresses, and to the host's sshd on the gateway
+#   udp53 a raw DNS query for example.com straight to a resolver, bypassing
+#         resolv.conf: the gateway, 172.17.0.1 (docker0, where a host resolver
+#         for containers usually listens) and 1.1.1.1. Any reply = a channel out.
+_ENG_BASALT_PROBE='import socket, struct, sys
 socket.setdefaulttimeout(3)
+gw = sys.argv[1]
 for n in ("example.com", "huggingface.co", "github.com"):
     try:
         socket.getaddrinfo(n, 443)
         print("dns", n, "RESOLVED")
     except Exception as e:
         print("dns", n, "FAIL", type(e).__name__)
-for h, p in (("1.1.1.1", 443), ("8.8.8.8", 53)):
+for h, p in (("1.1.1.1", 443), ("8.8.8.8", 53), (gw, 22)):
     try:
         socket.create_connection((h, p), 3).close()
         print("tcp", h, p, "CONNECTED")
     except Exception as e:
-        print("tcp", h, p, "FAIL", type(e).__name__)'
+        print("tcp", h, p, "FAIL", type(e).__name__)
+q = struct.pack(">HHHHHH", 0x4f42, 0x0100, 1, 0, 0, 0) + b"".join(bytes([len(x)]) + x for x in (b"example", b"com")) + b"\0" + struct.pack(">HH", 1, 1)
+for h in (gw, "172.17.0.1", "1.1.1.1"):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect((h, 53))
+        s.send(q)
+        s.recv(512)
+        print("udp53", h, 53, "ANSWERED")
+    except Exception as e:
+        print("udp53", h, 53, "FAIL", type(e).__name__)
+    finally:
+        s.close()'
+_ENG_BASALT_PROBE_LINES=9
 
 # _eng_basalt_sandbox_args — the network and isolation flags the probe and the
 # server share (so the probe proves the server's sandbox, not another one).
@@ -486,17 +650,20 @@ _eng_basalt_sandbox_args() {
     -e HOME=/tmp -e PYTHONDONTWRITEBYTECODE=1)
 }
 
-# _eng_basalt_probe <image> — 0 only when nothing resolves and nothing connects.
+# _eng_basalt_probe <image> <gateway> — 0 only when nothing resolves, nothing
+# connects and no resolver answers a raw query.
 _eng_basalt_probe() {
-  local img="$1" out
-  out="$(_eng_basalt_docker run --rm "${_BSB[@]}" --entrypoint python3 "$img" -I -c "$_ENG_BASALT_PROBE" 2>&1)" \
+  local img="$1" gw="$2" out
+  out="$(_eng_basalt_docker run --rm "${_BSB[@]}" --entrypoint python3 "$img" -I -c "$_ENG_BASALT_PROBE" "$gw" 2>&1)" \
     || { echo "the sandbox probe did not run: $out" >&2; return 1; }
-  if grep -qE 'RESOLVED|CONNECTED' <<< "$out" || [[ "$(grep -c ' FAIL ' <<< "$out")" -ne 5 ]]; then
-    echo "REFUSING to serve: the Basalt sandbox is not closed (DNS or TCP reached out):" >&2
+  if grep -qE 'RESOLVED|CONNECTED|ANSWERED' <<< "$out" || [[ "$(grep -c ' FAIL ' <<< "$out")" -ne $_ENG_BASALT_PROBE_LINES ]]; then
+    echo "REFUSING to serve: the Basalt sandbox is not closed (DNS, TCP or a raw DNS query reached out):" >&2
     printf '  %s\n' "$out" >&2
+    grep -q '^udp53 .* ANSWERED' <<< "$out" \
+      && echo "  a resolver answers on the bridge: deny the sandbox's interface on the host (sudo ufw insert 1 deny in on $_ENG_BASALT_BRIDGE; docs/ENGINES.md)" >&2
     return 1
   fi
-  echo "sandbox probe: no DNS, no TCP out ($(tr '\n' ';' <<< "$out" | sed 's/;$//'))"
+  echo "sandbox probe: no DNS, no TCP out, no raw DNS answer ($(tr '\n' ';' <<< "$out" | sed 's/;$//'))"
 }
 
 # ── managed, single host ───────────────────────────────────────────────────
@@ -524,6 +691,14 @@ eng_basalt_launch() {
       || { echo "Basalt is not installed — scripts/engine.sh install basalt" >&2; return 1; }
     if [[ -n "$pin" && "${pin#*@}" != "$(_eng_basalt_build_get "$home" COMMIT)" ]]; then
       echo "the active Basalt build is $(_eng_basalt_build_get "$home" COMMIT | cut -c1-12), the pin is ${pin#*@} — engine.sh install basalt --version ${pin%%@*} (or rollback)" >&2
+      return 1
+    fi
+    # The profile names the build it serves: a patched build under a profile
+    # of the unpatched pin (or the reverse) is another serve than the row it names.
+    local bp
+    bp="$(_eng_basalt_build_patches "$home")"
+    if [[ "$bp" != "$(_eng_basalt_sorted_words "$PF_PATCHES")" ]]; then
+      echo "the active Basalt build carries patches '$bp', the profile $PF_PROFILE_NAME serves PATCHES='$PF_PATCHES' — refusing: reinstall (engine.sh install basalt; ENGINE_BASALT_PATCHES=none builds the pin), roll back, or use a profile that names this build" >&2
       return 1
     fi
     eng_basalt_profile_locate "$profile"
@@ -557,14 +732,16 @@ eng_basalt_launch() {
     return 0
   fi
   _eng_basalt_net || return 1
-  _eng_basalt_probe "$img" || return 1
+  _eng_basalt_probe "$img" "$_BGW" || return 1
   if [[ -n "$keyf" ]]; then
     ( umask 077; mkdir -p "$(dirname "$keyf")"; printf '%s\n' "$LLAMA_API_KEY" > "$keyf.tmp"; mv -f "$keyf.tmp" "$keyf" )
   fi
   # A container of THIS checkout left by a SIGKILLed launcher holds the port
   # and the GPU: it is ours by name, so it goes.
   _eng_basalt_docker rm -f "$cname" >/dev/null 2>&1 || true
-  echo "Basalt $(eng_basalt_installed 2>/dev/null || echo '?'): $PF_PROFILE_NAME ($PF_SERVED_MODEL_NAME, row $PF_MEASURED_ROW) on http://127.0.0.1:$port — container $cname"
+  local prow="row $PF_MEASURED_ROW"
+  [[ "$PF_PATCHES" == none ]] || prow="row $PF_MEASURED_ROW's serve; build + $PF_PATCHES"
+  echo "Basalt $(eng_basalt_installed 2>/dev/null || echo '?'): $PF_PROFILE_NAME ($PF_SERVED_MODEL_NAME, $prow) on http://127.0.0.1:$port — container $cname"
   "${CMD[@]}" &
   child=$!
   trap '_eng_basalt_docker stop -t 30 "'"$cname"'" >/dev/null 2>&1 || true; wait '"$child"' 2>/dev/null; exit 143' TERM INT

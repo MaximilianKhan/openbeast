@@ -98,6 +98,7 @@ def test_stop_without_own_server_is_a_noop(ba):
     assert not any(c and c[0] in ("pkill", "killall") for c in ba._test_calls)
 
 
+@pytest.mark.linux_only(reason="/proc process and port ownership")
 def test_refuses_a_port_someone_else_serves(ba, tmp_path):
     held = socket.socket()
     held.bind(("127.0.0.1", ba.LLAMA_PORT))
@@ -323,6 +324,7 @@ def stranger():
     p.wait()
 
 
+@pytest.mark.linux_only(reason="/proc process and port ownership")
 def test_refuses_to_load_while_someone_else_holds_the_lease(ba, tmp_path, stranger):
     _write_lease(tmp_path / "run", stranger.pid)
     marker = tmp_path / "loaded"
@@ -339,6 +341,7 @@ def test_refuses_to_load_while_someone_else_holds_the_lease(ba, tmp_path, strang
     assert ba._own_server["proc"] is None
 
 
+@pytest.mark.linux_only(reason="/proc process and port ownership")
 def test_a_lease_held_by_our_ancestor_is_ours(ba, tmp_path):
     """A campaign runs us under `gpu-lease.sh run`: its lease must not refuse
     its own sweep. (Holder = this test process, an ancestor of the check.)"""
@@ -424,6 +427,7 @@ def test_the_reexec_keeps_interpreter_flags(ba, monkeypatch):
     assert got == [sys.executable, "-u", me, "--models", "m"]
 
 
+@pytest.mark.linux_only(reason="/proc process and port ownership")
 def test_a_reexecd_sweep_refuses_to_load_once_the_lease_reads_free(ba, tmp_path,
                                                                      monkeypatch):
     """`gpu-lease.sh run` puts the sweep in its own process group, so a

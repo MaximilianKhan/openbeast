@@ -13,6 +13,7 @@ import hashlib
 import http.server
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -608,6 +609,7 @@ def test_adopt_and_rollback_run(stubs, tmp_path):
     entry = (state / "glm53-flash-exl3-native-tp2.env").read_text()
     assert "UNIT=beast-recipe-glm53-flash-exl3-native-tp2.service" in entry and "SERVED=glm-5.3-flash-ablit" in entry
     assert "TENSORFOLD_VERSION=1.2.10" in entry                  # beast-spark checks it before stopping anything
+    assert re.search(r"^SLOTS=[1-9]\d*$", entry, re.M)            # beast-spark sets INFERENCE_SLOTS from it
     # adopt checks the engine and the checkout on every node, installs the unit (the path beast-spark NAME
     # needs), daemon-reloads
     assert (home / ".config/systemd/user/beast-recipe-glm53-flash-exl3-native-tp2.service").is_file()

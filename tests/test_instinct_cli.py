@@ -59,6 +59,7 @@ def test_scripts_parse():
         assert subprocess.run(["bash", "-n", str(s)]).returncode == 0
 
 
+@pytest.mark.linux_only(reason="GNU stat -c")
 def test_up_status_down_pidfile_hygiene(tmp_path):
     cfgp = H.write_config(tmp_path, {}, decisions=["router.spawn_intent"])
     os.unlink(tmp_path / "instinct.key")          # `up` must mint it
@@ -90,6 +91,7 @@ def test_up_status_down_pidfile_hygiene(tmp_path):
     assert "not running" in sh(INSTINCT_SH, "down", env=env).stdout
 
 
+@pytest.mark.linux_only(reason="GNU stat -c")
 def test_up_refuses_an_occupied_port(tmp_path):
     cfgp = H.write_config(tmp_path, {}, decisions=["router.spawn_intent"])
     s = socket.socket()
@@ -104,6 +106,7 @@ def test_up_refuses_an_occupied_port(tmp_path):
         s.close()
 
 
+@pytest.mark.linux_only(reason="GNU stat -c")
 def test_up_refuses_a_world_readable_key(tmp_path):
     cfgp = H.write_config(tmp_path, {}, decisions=["router.spawn_intent"])
     os.chmod(tmp_path / "instinct.key", 0o644)
@@ -151,6 +154,7 @@ def test_scorer_without_weights_dir_fails_on_the_model_not_earlier(tmp_path):
     assert "already held" not in r.stderr and "primary" not in r.stderr
 
 
+@pytest.mark.linux_only(reason="GNU stat -c")
 def test_stats_demote_promote_cli(tmp_path):
     cfgp, _ = H.promote_linear(tmp_path, mode="shadow")
     env = {**os.environ, "PYTHONPATH": str(REPO / "agents")}

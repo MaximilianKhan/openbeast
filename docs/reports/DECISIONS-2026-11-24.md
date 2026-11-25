@@ -392,6 +392,18 @@ it measured below the stock pack in both draws (−4, −2) with about twice
 the empty capped turns (§8). *Switch the reference rig now*: no, it is
 running I_UP8k on Basalt; Max applies the switch when the GPU frees up.
 
+**Addendum (2026-11-24 review, not a new decision).** "Exactly board row
+`INK-T2-STOCK`" above holds for the pack, the serve args and the agent
+setup, not the build: from §11 on, a build of the default through the
+adapter is the pin plus the PR #632 patch, and `INK-T2-STOCK` ran the
+unpatched pin. No board row has measured pin + #632 at answer room `auto`,
+and the Strata report §16.6 probe saw that pairing end 9 of 12 patched
+replies at the cap mid-call (unpatched 5). The profile now names its build
+(`PATCHES=basalt-pr632-55f9be17.patch`; the launch refuses another), its
+comments and MODELS.md / INSTALL.md / ENGINES.md say so, and the answer room
+of the default stays `auto` until I_T3's decision (§12; TODO "Basalt after
+the switch").
+
 ---
 
 ## 11. Basalt PR #632 as our local patch for Inkling

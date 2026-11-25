@@ -565,11 +565,34 @@ DeepSeek's UP on the same harness
   server log: the adapter runs the container in the foreground, so Basalt's
   log goes to the stack's inference log like llama-server's (no
   `docker logs` needed).
+- [ ] **Rig firewall: deny the Basalt sandbox's bridge before the switch**
+  (2026-11-24 review, security-02). The rig's ufw has
+  `-A ufw-user-input -p udp -d 172.17.0.1 --dport 53 -s 172.16.0.0/12 -j ACCEPT`
+  (and the same for 192.168.0.0/16), and its host resolver answers on
+  172.17.0.1:53: any container on a Docker network in those ranges can send
+  a raw DNS query out, around the sandbox's `--dns 127.0.0.1`. The
+  adapter's launch probe now sends exactly that query (and to the bridge
+  gateway, and TCP to the gateway's port 22) and **refuses to serve while
+  it is answered**, so the switch needs this first. The adapter's network
+  is on a fixed interface, `ob-basalt0`, so one rule closes it without
+  touching other Docker networks' DNS. On the rig, Max, `sudo`, any time
+  (the rule names an interface that does not exist until the first adapter
+  launch; the I_T3 eval runs on `strata-bench-net` and is not affected):
+  1. `sudo ufw status numbered`: note the two `172.17.0.1 53/udp` ALLOW rules.
+  2. `sudo ufw insert 1 deny in on ob-basalt0`
+  3. `sudo ufw status numbered`: the deny is rule 1, ahead of those ALLOWs.
+  4. At the switch's first launch the log says `sandbox probe: no DNS, no
+     TCP out, no raw DNS answer`; a `REFUSING … udp53 … ANSWERED` means the
+     rule is missing or behind the ALLOW.
+  Undo: `sudo ufw delete deny in on ob-basalt0`. The eval network
+  `strata-bench-net` (172.23.0.0/16, no NAT) is inside the same 172.16/12
+  ALLOW, so the eval serves have the same path; narrowing that ALLOW is a
+  separate host change (review finding security-03).
 - [ ] **Switch the 5090 rig to Inkling 2 Mini (Basalt): Max, after the GPU
   frees up** (I_UP8k is done; the improved #632 arm first; nothing on the rig
   changed for this PR). Steps and rollback:
   [MODELS.md](MODELS.md#switching-the-rtx-5090-to-its-default-and-back).
-  Before: `git pull --ff-only` in `~/Documents/openbeast`; the toolkit's
+  Before: the firewall item above; `git pull --ff-only` in `~/Documents/openbeast`; the toolkit's
   `docker run --gpus device=0` works; `scripts/engine.sh install basalt`
   (builds the env image from the pinned Dockerfile: **its first build**, so
   check `dpkg-query` pins pass and `bin/basalt` builds; compare its sha256
@@ -600,11 +623,16 @@ DeepSeek's UP on the same harness
   Then tick this item with the date, and note it in MODELS.md (as the
   `qwen38-best` application was). Rollback if any check fails: the
   MODELS.md block (Qwen3.8 on llama.cpp, `qwen38-best`).
-- [ ] **Basalt after the switch**: the #632 patch through the adapter's hook
-  (its file is on `main` from 2026-11-24; a reinstall builds `basalt-v0.5.7+pr632-…`;
-  rerun the #588 reproduction, `max_tokens` 3000 and
-  `reasoning_budget_tokens` 400, before trusting a budget wrap), and the
-  profile's `ANSWER_ROOM` per that arm's decision; a re-pin to an upstream
+- [ ] **Basalt after the switch**: the switch's `engine.sh install basalt`
+  already builds the pin + the #632 patch (`basalt-v0.5.7+pr632-…`; the
+  profile's `PATCHES` requires it): rerun the #588 reproduction,
+  `max_tokens` 3000 and `reasoning_budget_tokens` 400, before trusting a
+  budget wrap. **The profile's `ANSWER_ROOM` per I_T3's decision**: the
+  default serves pin + #632 at `auto`, which no board row measured and the
+  Strata §16.6 probe flagged (9 of 12 patched replies cut mid-call at the
+  8,192 cap); if I_T3 (or its `I_T3_8k` follow-up, cap 8,192 at `auto`)
+  does not settle it, run the default as an arm before calling it measured,
+  and then point the profile's `MEASURED_ROW` at that row; a re-pin to an upstream
   release that merges #632 (a new review row); Basalt's own `serve/tests`
   once against the distro package set; a slim serve image (the env image
   carries the compilers).
@@ -1231,6 +1259,26 @@ same arms on further models (Qwen3.8's L1/L2 are done: zig packs +4 of
 escalation unresolved, all within churn); GLM's D and F only on Max's word.
 
 ## 🟩 DGX SPARK INFERENCE — LIVE 2026-11-13 as spark-hydra
+
+- [ ] **Deploy the 2026-11-24 review's beast-spark fixes on spark-1** (code on `main`; nothing
+  on the Sparks changed by that PR). What they fix: a reboot after `beasthy4` or a recipe left
+  `openbeast.conf` on Hy4's / the recipe's backend and id while DeepSeek served (now
+  `beast-spark boot-check`, an `ExecStartPre` drop-in of `openbeast.service`); no switch wrote
+  `INFERENCE_SLOTS` (now every one does: DeepSeek 8 from `local.sh`, GLM 4, Hy4 4, a recipe
+  `SLOTS=`); `wait_ready` used a nonexistent `systemctl is-activating` (a DeepSeek / GLM unit
+  in `activating (auto-restart)` during its load is now waited for); a GLM that did not come
+  back in `ds`'s rollback lost the guidance line. Steps, spark-1, any time no switch runs and
+  no arm needs the gate restarted (the install restarts nothing):
+  1. `cd ~/openbeast && git pull --ff-only` (spark-2 too, same commit).
+  2. `beast-spark install`: writes `~/.config/systemd/user/openbeast.service.d/beast-spark.conf`
+     (`ExecStartPre=-/home/max/.local/bin/beast-spark boot-check`) and runs
+     `systemctl --user daemon-reload`. Check: `systemctl --user cat openbeast | grep -n boot-check`.
+  3. `beast-spark boot-check` by hand: with DeepSeek serving and the conf on it, it says
+     "nothing to point back" and changes nothing (`git diff --no-index` of a copy taken before).
+  4. `grep -n '^INFERENCE_SLOTS' ~/openbeast/openbeast.conf` is 8 (DeepSeek); the next
+     `beastglm` / `beastds` logs `INFERENCE_SLOTS=4` / `=8`. Re-adopted recipes get a `SLOTS=`
+     line (`beast-recipe adopt NAME --run`); an older `recipes.d/*.env` without it counts as 4.
+  Rollback: `rm ~/.config/systemd/user/openbeast.service.d/beast-spark.conf && systemctl --user daemon-reload`.
 
 - [ ] **TensorFold recipe for Hy4-flash; beat vLLM (31.4 / 77.8 tok/s, measured).** Max, 2026-11-22.
   The plan is `recipes/hy4-flash-exl3-tensorfold-tp2` (`scripts/beast-recipe.sh plan

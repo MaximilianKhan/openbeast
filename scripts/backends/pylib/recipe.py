@@ -2209,6 +2209,8 @@ def cmd_adopt(args) -> int:
     entry = (f"# beast-spark registry entry for recipe {r.name} (beast-recipe adopt; parsed, never sourced)\n"
              f"UNIT={unit_of(r, launcher)}\nSERVED={r.get('SERVED_NAME')}\n"
              f"BACKEND={'vllm' if launcher == 'd2-vllm' else 'tensorfold'}\nWAIT_S=2400\n"
+             # the streams it serves: beast-spark writes INFERENCE_SLOTS from it (the gate's per-device cap)
+             f"SLOTS={int(r.num('PARALLEL') or 4)}\n"
              + (f"TENSORFOLD_VERSION={tfv}\n" if tfv else ""))
     f = state_dir() / f"{r.name}.env"
     if args.run:

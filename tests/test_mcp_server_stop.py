@@ -78,7 +78,9 @@ def test_signal_kills_in_flight_bash_child(tmp_path, sig):
             time.sleep(0.05)
         assert pid, "bash call never started"
         srv.send_signal(sig)
-        srv.wait(timeout=15)
+        # Generous: under a full serial run on a loaded box the server's teardown took >15 s
+        # (2026-11-24 review: failed in the full run, passed alone twice). The assertion is below.
+        srv.wait(timeout=60)
         assert _gone(pid), f"bash child {pid} outlived the MCP server"
     finally:
         if srv.poll() is None:

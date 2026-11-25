@@ -17,10 +17,16 @@ Basalt v0.5.7 (`400b411c`) through `scripts/engines/basalt.sh`, profile
 `inkling2-mini-stock` (the stock pack `jesdga/Inkling-2-Mini-Basalt` @
 `c2afac3a`, `Inkling-2-Mini-NVFP4-MX8.basalt`, sha256 `28ec7072…1b99`;
 `--parallel 1 --max-context 262144 --kv fp8`, DSpark at the pack default,
-answer room auto), agent setup `AGENT_PROFILE=inkling-best`: exactly board
-row `INK-T2-STOCK`, **53/71 scored, SCORE 78.2** (SOLVE 75.4, LANG 86.7), #4
-on the v5 board and the top RTX 5090 row, 2026-11-24, single seed, 0 units
-lost, 0 excluded. It is the shipped default of `main` from that date; the
+answer room auto), agent setup `AGENT_PROFILE=inkling-best`: the serve
+args and agent setup of board row `INK-T2-STOCK`, **53/71 scored, SCORE
+78.2** (SOLVE 75.4, LANG 86.7), #4 on the v5 board and the top RTX 5090 row,
+2026-11-24, single seed, 0 units lost, 0 excluded. **Not exactly that row:**
+a build through the adapter is the pin plus the PR #632 patch (DECISIONS §11,
+profile key `PATCHES`), and `INK-T2-STOCK` ran the unpatched pin. No board
+row has measured pin + #632 at answer room auto; the Strata report §16.6
+probe saw that pairing end more replies at the cap mid-call, which is why
+arm I_T3 serves the patch with `--answer-room 8192`. The profile's answer
+room follows I_T3's decision ([TODO.md](TODO.md) "Basalt after the switch"). It is the shipped default of `main` from that date; the
 reference rig switches when its GPU frees up ([TODO.md](TODO.md) "Switch the
 5090 rig to Inkling 2 Mini"). How to switch and roll back:
 [below](#switching-the-rtx-5090-to-its-default-and-back); a fresh install:

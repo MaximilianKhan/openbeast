@@ -26,11 +26,12 @@ declare -A WANT=(
 )
 SRC=${1:?usage: $0 SRC_TREE DST_TREE}; DST=${2:?usage: $0 SRC_TREE DST_TREE}
 die() { echo "basalt-apply-pr632: $*" >&2; exit 1; }
+# The patch file first (it is checked whatever the trees are), then the trees.
+got=$(sed -n '/^diff --git/,$p' "$PATCH" | sha256sum | cut -d' ' -f1)
+[[ $got == "$BODY_SHA256" ]] || die "patch body sha256 $got, want $BODY_SHA256"
 [[ -e $DST ]] && die "$DST exists; pick a new directory"
 [[ $(git -C "$SRC" rev-parse HEAD) == "$PIN" ]] || die "$SRC is not at v0.5.7 ($PIN)"
 [[ -z $(git -C "$SRC" status --porcelain --untracked-files=no) ]] || die "$SRC has tracked changes"
-got=$(sed -n '/^diff --git/,$p' "$PATCH" | sha256sum | cut -d' ' -f1)
-[[ $got == "$BODY_SHA256" ]] || die "patch body sha256 $got, want $BODY_SHA256"
 cp -a "$SRC" "$DST"
 git -C "$DST" apply --check "$PATCH"
 git -C "$DST" apply "$PATCH"

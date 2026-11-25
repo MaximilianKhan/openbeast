@@ -13,11 +13,13 @@ fail() { echo "  FAIL: $*"; FAIL=$((FAIL + 1)); }
 echo "=== spark-beast tests ==="
 
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
-mkdir -p "$T/bin" "$T/prep/rollback" "$T/state" "$T/pack"
+mkdir -p "$T/bin" "$T/prep/rollback" "$T/state" "$T/pack" "$T/prep/runtime/scripts"
+# DeepSeek's runtime serves 8 streams (spark-1's local.sh since 2026-11-23): what `ds` sets INFERENCE_SLOTS to
+printf '# local\nCONTEXT=1048576\nPARALLEL=8   # streams\n' > "$T/prep/runtime/scripts/local.sh"
 V2=Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1.1-2.9-bpw-v2
 export SB_PREP="$T/prep" SB_DS_PACK="$T/pack" SB_DS_ID="$V2" SB_CONF="$T/beast-spark.env" SB_KEY_FILE="$T/key" \
        SB_WAIT_S=10 SB_HY4_WAIT_S=10 SB_LOCK="$T/model.lock" SB_OB_CONF="$T/openbeast.conf" ST="$T/state" LOG="$T/log" \
-       SB_BIN_DIR="$T/nobin" SB_CHECKOUT="$T/nocheckout" SB_RECIPES_D="$T/recipes.d"
+       SB_BIN_DIR="$T/nobin" SB_CHECKOUT="$T/nocheckout" SB_RECIPES_D="$T/recipes.d" SB_UNIT_DIR="$T/units"
 echo SECRETKEY123 > "$T/key"
 # systemctl --user: state files $ST/<unit>.active / .enabled; every mutating call logged.
 cat > "$T/bin/systemctl" <<'S'
@@ -27,15 +29,27 @@ op=$1; shift
 case "$op" in
   is-enabled) [[ -f "$ST/$1.enabled" ]] && { echo enabled; exit 0; }
               [[ -f "$ST/$1.installed" ]] && { echo static; exit 0; }; echo disabled; exit 1 ;;
-  show) u=${!#}; [[ -f "$ST/$u.installed" ]] && echo loaded || echo not-found ;;
+  # show -p LoadState / -p ActiveState --value UNIT ($ST/<unit>.activating: starting, or a
+  # Restart=on-failure unit in auto-restart)
+  show) u=${!#}
+        if [[ "$*" == *ActiveState* ]]; then
+          if [[ -f "$ST/$u.active" ]]; then echo active; elif [[ -f "$ST/$u.activating" ]]; then echo activating; else echo inactive; fi
+        else [[ -f "$ST/$u.installed" ]] && echo loaded || echo not-found; fi ;;
   # $ST/fail-cc-restart: restarting openbeast.service fails (its stop timed out, 2026-11-23);
   # $ST/fail-cc-start: so does starting it.
   restart) for u; do echo "restart $u" >> "$LOG"; if [[ "$u" == openbeast.service && -f "$ST/fail-cc-restart" ]]; then exit 1; fi; done ;;
   reset-failed) echo "reset-failed $*" >> "$LOG" ;;
   is-active) q=0; [[ "$1" == --quiet ]] && { q=1; shift; }
              [[ -f "$ST/$1.active" ]] && { ((q)) || echo active; exit 0; }; ((q)) || echo inactive; exit 3 ;;
-  is-activating) exit 1 ;;
-  start) for u; do echo "start $u" >> "$LOG"; [[ "$u" == openbeast.service && -f "$ST/fail-cc-start" ]] && exit 1; [[ "$u" == hy4-vllm-inference.service && -f "$ST/fail-hy4" ]] || [[ "$u" == beast-recipe-* && -f "$ST/fail-recipe" ]] || touch "$ST/$u.active"; done ;;
+  # systemd 255 has no is-activating verb (spark-1: "Unknown command verb"): as the real one, exit 1
+  is-activating) echo "Unknown command verb 'is-activating', did you mean 'is-active'?" >&2; exit 1 ;;
+  # $ST/start-activating: a started inference unit stays "activating"; $ST/fail-glm: GLM's unit dies at
+# once; $ST/fail-start: every inference unit does
+  start) for u; do echo "start $u" >> "$LOG"; [[ "$u" == openbeast.service && -f "$ST/fail-cc-start" ]] && exit 1
+           if [[ -f "$ST/start-activating" && "$u" != openbeast.service ]]; then touch "$ST/$u.activating"; continue; fi
+           [[ "$u" == spark-hydra-inference.service && -f "$ST/fail-glm" ]] && continue
+           [[ "$u" != openbeast.service && -f "$ST/fail-start" ]] && continue
+           [[ "$u" == hy4-vllm-inference.service && -f "$ST/fail-hy4" ]] || [[ "$u" == beast-recipe-* && -f "$ST/fail-recipe" ]] || touch "$ST/$u.active"; done ;;
   stop) for u; do echo "stop $u" >> "$LOG"; rm -f "$ST/$u.active"; done ;;
   enable) for u; do echo "enable $u" >> "$LOG"; touch "$ST/$u.enabled"; done ;;
   disable) for u; do echo "disable $u" >> "$LOG"; rm -f "$ST/$u.enabled"; done ;;
@@ -75,12 +89,17 @@ rm -f "$ST/spark-hydra-inference.service.enabled"
 S
 cat > "$T/prep/rollback/restore-glm.sh" <<'S'
 echo restore-glm >> "$LOG"; rm -f "$ST/deepseek-v41-inference.service."{active,enabled}
-touch "$ST/spark-hydra-inference.service.active" "$ST/spark-hydra-inference.service.enabled"
+touch "$ST/spark-hydra-inference.service.enabled"
+# $ST/glm-no-come-back: the script succeeds but GLM's unit dies (never serves)
+[[ -f "$ST/glm-no-come-back" ]] || touch "$ST/spark-hydra-inference.service.active"
 S
 chmod +x "$T"/bin/* "$T/prep/spark-deepseek-pack.sh"
 export PATH="$T/bin:$PATH"
 reset() { rm -f "$ST"/* "$LOG"; touch "$LOG"; echo "${1:-$V2}" > "$ST/pack"
-  printf '# conf\nINFERENCE_BACKEND=tensorfold\nINFERENCE_THINKING=on\nINFERENCE_MODEL="DeepSeek-V4.1-Flash-1017"\nAGENT_PROFILE=deepseek-best\n' > "$T/openbeast.conf"; }
+  printf '# conf\nINFERENCE_BACKEND=tensorfold\nINFERENCE_THINKING=on\nINFERENCE_MODEL="DeepSeek-V4.1-Flash-1017"\nAGENT_PROFILE=deepseek-best\nINFERENCE_SLOTS=8\n' > "$T/openbeast.conf"; }
+# openbeast.conf as GLM leaves it (its 4 streams): for tests of a GLM-selected pair
+glm_conf() { sed -i.bak -e 's/^INFERENCE_MODEL=.*/INFERENCE_MODEL="GLM-5.3-Flash-EXL3"/' -e 's/^INFERENCE_SLOTS=.*/INFERENCE_SLOTS=4/' "$T/openbeast.conf"; }
+conf_slots() { sed -n 's/^INFERENCE_SLOTS=//p' "$T/openbeast.conf" | tr -d '"'; }
 conf_model() { sed -n 's/^INFERENCE_MODEL=//p' "$T/openbeast.conf"; }
 conf_backend() { sed -n 's/^INFERENCE_BACKEND=//p' "$T/openbeast.conf"; }
 run() { bash "$SB" "$@" > "$T/out" 2>&1; }
@@ -127,12 +146,12 @@ if run down && [[ "$(calls)" == "stop openbeast.service;stop deepseek-v41-infere
 else fail "down: $(calls)"; fi
 
 # beastup: the selected unit, then the command center
-reset; touch "$ST/spark-hydra-inference.service.enabled"
+reset; glm_conf; touch "$ST/spark-hydra-inference.service.enabled"
 if run up && [[ "$(calls)" == "start spark-hydra-inference.service;start openbeast.service" ]]; then pass "up: selected GLM first, then the command center"
 else fail "up glm: $(calls) / $(cat "$T/out")"; fi
 
 # beastup with the OTHER model still running: it is stopped first (both need both GPUs)
-reset; touch "$ST/spark-hydra-inference.service.enabled" "$ST/deepseek-v41-inference.service.active"
+reset; glm_conf; touch "$ST/spark-hydra-inference.service.enabled" "$ST/deepseek-v41-inference.service.active"
 if run up && [[ "$(calls)" == "stop deepseek-v41-inference.service;start spark-hydra-inference.service;start openbeast.service" ]]; then
   pass "up: the non-selected unit is stopped before the selected one starts"
 else fail "up stops other: $(calls) / $(cat "$T/out")"; fi
@@ -180,11 +199,11 @@ rm -f "$T/beast-spark.env"
 
 # a unit that dies while starting is reported, not waited on forever
 reset; touch "$ST/deepseek-v41-inference.service.enabled"
-# systemctl start no longer brings the unit up
-sed -i.bak 's/^  start) for u; do echo "start $u" >> "$LOG"; .*/  start) for u; do echo "start $u" >> "$LOG"; done ;;/' "$T/bin/systemctl"
+# systemctl start no longer brings the unit up ($ST/fail-start: no inference unit comes up)
+touch "$ST/fail-start"
 if ! run up && grep -q 'is not running' "$T/out"; then pass "up: a unit that does not come up fails fast"
 else fail "up dead unit: $(cat "$T/out")"; fi
-mv -f "$T/bin/systemctl.bak" "$T/bin/systemctl"   # units come up again
+rm -f "$ST/fail-start"   # units come up again
 
 # --- Hy4-flash (NVFP4, vLLM TP2): served for now, never selected ---------------------
 HY4U=hy4-vllm-inference.service
@@ -430,7 +449,7 @@ if run hy4 && [[ "$(calls)" == "stop deepseek-v41-inference.service;start $HY4U;
   pass "hy4: a failed command-center restart is retried; Hy4 is not rolled back"
 else fail "hy4 cc retry: $(calls) / $(cat "$T/out")"; fi
 # beastup: a failed command-center start is retried too, then a warning
-reset; touch "$ST/spark-hydra-inference.service.enabled" "$ST/fail-cc-start"
+reset; glm_conf; touch "$ST/spark-hydra-inference.service.enabled" "$ST/fail-cc-start"
 run up; rc=$?
 if (( rc == 3 )) && [[ "$(calls)" == "start spark-hydra-inference.service;start openbeast.service;stop openbeast.service;reset-failed openbeast.service openbeast-stack.service;start openbeast.service" ]] \
    && grep -q "WARNING: the command center did not start" "$T/out"; then
@@ -503,6 +522,85 @@ if run hy4 && [[ "$(calls)" == "restart openbeast.service" ]] && [[ "$(sed -n 's
    && run hy4 && [[ "$(calls)" == "restart openbeast.service;start openbeast.service" ]]; then
   pass "hy4 already serving: key synced + command center restarted; again: only started"
 else fail "hy4 already serving: $(calls) / $(cat "$T/out")"; fi
+
+# ---- 2026-11-24 review fixes
+# wait_ready: a unit that is still activating (start, or Restart=on-failure's auto-restart after a rank
+# crash) is waited for up to the limit, not declared dead at once (is-activating is not a verb)
+reset; glm_conf; touch "$ST/spark-hydra-inference.service.enabled" "$ST/start-activating"
+run up; rc=$?
+if (( rc != 0 )) && grep -q "GLM-5.3-Flash-EXL3 is not on" "$T/out" && ! grep -q "is not running" "$T/out" && grep -q "waiting for spark-hydra" "$T/out"; then
+  pass "wait_ready: an activating unit is waited for until the limit (ActiveState, not a nonexistent verb)"
+else fail "wait_ready activating (rc $rc): $(cat "$T/out")"; fi
+# ... and a unit that is neither active nor activating still fails fast
+reset; glm_conf; touch "$ST/spark-hydra-inference.service.enabled" "$ST/fail-glm"
+if ! run up && grep -q "spark-hydra-inference.service is not running" "$T/out"; then
+  pass "wait_ready: a unit that is not running at all still fails at once"
+else fail "wait_ready dead: $(cat "$T/out")"; fi
+
+# ds failing, GLM restored by restore-glm.sh but never serving: the trap logs the guidance and keeps rc
+reset Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw
+touch "$ST/spark-hydra-inference.service.active" "$ST/spark-hydra-inference.service.enabled" "$ST/fail-activate" "$ST/glm-no-come-back"
+run ds; rc=$?
+if (( rc == 1 )) && grep -q "GLM did not come back either" "$T/out" && grep -q "activate-stock.sh failed" "$T/out"; then
+  pass "ds rollback: GLM not coming back prints the guidance (wait_ready in a subshell inside the trap)"
+else fail "ds_exit wait_ready (rc $rc): $(cat "$T/out")"; fi
+
+# INFERENCE_SLOTS follows every switch: ds 8 (local.sh PARALLEL) -> glm 4 -> hy4 (HY4_SLOTS=3) -> recipe (SLOTS=6) -> ds 8
+printf 'UNIT=%s\nSERVED=demo-served\nBACKEND=tensorfold\nWAIT_S=10\nSLOTS=6\n' "$RU" > "$T/recipes.d/demo.env"
+printf 'HY4_SLOTS=3\n' > "$T/beast-spark.env"
+reset; touch "$ST/deepseek-v41-inference.service.active" "$ST/deepseek-v41-inference.service.enabled" "$ST/$HY4U.installed" "$ST/$RU.installed"
+seq=""
+run glm && seq+="glm=$(conf_slots) "
+run hy4 && seq+="hy4=$(conf_slots) "
+run demo && seq+="demo=$(conf_slots) "
+run ds && seq+="ds=$(conf_slots)"
+if [[ "$seq" == "glm=4 hy4=3 demo=6 ds=8" ]]; then pass "slots: ds -> glm 4 -> hy4 3 -> recipe 6 -> ds 8 (every switch writes INFERENCE_SLOTS)"
+else fail "slots sequence: '$seq' / $(cat "$T/out")"; fi
+# a failed hy4 switch puts INFERENCE_SLOTS back with the model
+reset; touch "$ST/deepseek-v41-inference.service.active" "$ST/deepseek-v41-inference.service.enabled" "$ST/$HY4U.installed" "$ST/fail-hy4"
+if ! run hy4 && [[ "$(conf_slots)" == 8 && "$(conf_model)" == '"DeepSeek-V4.1-Flash-1017"' ]]; then pass "slots: a failed hy4 switch leaves INFERENCE_SLOTS as it was"
+else fail "slots hy4 fail: $(conf_slots) / $(cat "$T/out")"; fi
+# up after a Hy4 session on GLM: model AND slots back at GLM's
+reset; glm_conf; touch "$ST/spark-hydra-inference.service.enabled" "$ST/$HY4U.installed"
+sed -i.bak -e 's/^INFERENCE_MODEL=.*/INFERENCE_MODEL="Hy4-flash-NVFP4"/' -e 's/^INFERENCE_SLOTS=.*/INFERENCE_SLOTS=3/' "$T/openbeast.conf"
+if run up && [[ "$(conf_slots)" == 4 && "$(conf_model)" == '"GLM-5.3-Flash-EXL3"' ]] && [[ "$(calls)" == "start spark-hydra-inference.service;restart openbeast.service" ]]; then
+  pass "up after Hy4 on GLM: openbeast.conf back at GLM's id and 4 slots, the command center restarted"
+else fail "up slots: $(conf_slots) $(conf_model) $(calls) / $(cat "$T/out")"; fi
+rm -f "$T/beast-spark.env"
+printf '# adopted\nUNIT=%s\nSERVED=demo-served\nBACKEND=tensorfold\nWAIT_S=10\n' "$RU" > "$T/recipes.d/demo.env"
+
+# boot-check (openbeast.service ExecStartPre): after a reboot the enabled DeepSeek serves, openbeast.conf
+# still names Hy4: pointed back (backend, id, slots), and nothing is started or stopped
+reset; touch "$ST/deepseek-v41-inference.service.enabled" "$ST/$HY4U.installed"
+sed -i.bak -e 's/^INFERENCE_BACKEND=.*/INFERENCE_BACKEND="vllm"/' -e 's/^INFERENCE_MODEL=.*/INFERENCE_MODEL="Hy4-flash-NVFP4"/' -e 's/^INFERENCE_SLOTS=.*/INFERENCE_SLOTS=4/' "$T/openbeast.conf"
+if run boot-check && [[ "$(calls)" == "" && "$(conf_model)" == '"DeepSeek-V4.1-Flash-1017"' && "$(conf_backend)" == '"tensorfold"' && "$(conf_slots)" == 8 ]]; then
+  pass "boot-check: openbeast.conf naming a Hy4 that does not run is pointed back at DeepSeek (id, tensorfold, 8 slots); no unit touched"
+else fail "boot-check: $(calls) / $(conf_model) $(conf_backend) $(conf_slots) / $(cat "$T/out")"; fi
+# ... the same for a recipe that does not run, with GLM selected
+reset; glm_conf; touch "$ST/spark-hydra-inference.service.enabled"
+sed -i.bak -e 's/^INFERENCE_MODEL=.*/INFERENCE_MODEL="demo-served"/' "$T/openbeast.conf"
+if run boot-check && [[ "$(conf_model)" == '"GLM-5.3-Flash-EXL3"' && "$(conf_slots)" == 4 && "$(calls)" == "" ]]; then pass "boot-check: a stale recipe id goes back to the selected GLM"
+else fail "boot-check recipe: $(conf_model) / $(cat "$T/out")"; fi
+# ... but not while Hy4 serves (a restart of the command center during a Hy4 session), and not during a switch
+reset; touch "$ST/deepseek-v41-inference.service.enabled" "$ST/$HY4U.installed" "$ST/$HY4U.active"
+sed -i.bak -e 's/^INFERENCE_MODEL=.*/INFERENCE_MODEL="Hy4-flash-NVFP4"/' "$T/openbeast.conf"; cp "$T/openbeast.conf" "$T/conf.before"
+if run boot-check && cmp -s "$T/openbeast.conf" "$T/conf.before"; then pass "boot-check: leaves openbeast.conf alone while Hy4 serves"
+else fail "boot-check hy4 active: $(cat "$T/out")"; fi
+rm -f "$ST/$HY4U.active"; touch "$ST/lock-busy"
+if run boot-check && cmp -s "$T/openbeast.conf" "$T/conf.before" && grep -q "a model switch holds" "$T/out"; then pass "boot-check: skipped while a switch holds the lock"
+else fail "boot-check lock: $(cat "$T/out")"; fi
+rm -f "$ST/lock-busy"
+# a conf that already names the selection: untouched
+reset; touch "$ST/deepseek-v41-inference.service.enabled"; cp "$T/openbeast.conf" "$T/conf.before"
+if run boot-check && cmp -s "$T/openbeast.conf" "$T/conf.before"; then pass "boot-check: a conf at the selection is untouched"
+else fail "boot-check noop: $(cat "$T/out")"; fi
+
+# install wires boot-check into openbeast.service (a drop-in), once
+rm -rf "$T/units"
+if inst && grep -qx "ExecStartPre=-$T/inst/bin/beast-spark boot-check" "$T/units/openbeast.service.d/beast-spark.conf" \
+   && inst && grep -q "unchanged: $T/units/openbeast.service.d/beast-spark.conf" "$T/out"; then
+  pass "install: the boot-check drop-in for openbeast.service (ExecStartPre=-…), unchanged the second time"
+else fail "install drop-in: $(cat "$T/out") / $(cat "$T/units/openbeast.service.d/beast-spark.conf" 2>&1)"; fi
 
 echo "=== $PASS passed, $FAIL failed ==="
 (( FAIL == 0 ))

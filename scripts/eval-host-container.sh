@@ -128,7 +128,7 @@ cmd_save() {
 
 cmd_load() {
   local f="${1:-}" want have
-  [ -n "$f" ] && [ -f "$f" ] || die "load FILE (a tarball from \`save\`)"
+  if [ -z "$f" ] || [ ! -f "$f" ]; then die "load FILE (a tarball from \`save\`)"; fi
   need_docker
   if [ -f "$f.sha256" ]; then
     want="$(awk '{print $1; exit}' "$f.sha256")"; have="$(sha256_of "$f")"

@@ -56,6 +56,7 @@ def test_grep_skips_git_dir(tmp_path):
     assert "src.txt" in out and ".git" not in out
 
 
+@pytest.mark.linux_only(reason="GNU grep -P")
 def test_grep_pcre_hint_on_zero_matches(tmp_path):
     (tmp_path / "a.txt").write_text("abc 123\n")
     out = tools.grep(r"\d+", str(tmp_path))
@@ -533,7 +534,8 @@ def test_stop_agent_falls_back_to_the_ledger(tmp_path, monkeypatch):
         assert sessions.register("detached-1", pid=proc.pid, pgid=proc.pid)
         out = mcp_server.stop_agent("detached-1")
         assert "stopped" in out, out
-        assert proc.wait(timeout=5) == -_signal.SIGTERM
+        # 30 s, not 5: a loaded full run missed 5 (2026-11-24 review); SIGTERM is still required
+        assert proc.wait(timeout=30) == -_signal.SIGTERM
         # Already gone now: reported, never signalled again.
         assert "Error: unknown" not in mcp_server.stop_agent("detached-1")
     finally:
