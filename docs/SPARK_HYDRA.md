@@ -755,7 +755,7 @@ block, `systemctl --user enable --now openbeast`. The first start installs
 the watchdog and logrotate timers and runs `configure-webui.sh`, which wires
 the tool servers and installs the random seed filter and, with
 `INFERENCE_THINKING` set, the thinking default filter
-([G6](#g6-updating), [E2a](#e2a-recommended-serving-configuration-from-v5)). Expect `healthcheck.sh` to say "All 9 services
+([G6](#g6-updating), [E2a](#e2a-recommended-serving-configuration-from-v5)). Expect `healthcheck.sh` to say "All 10 services
 healthy" once the model has loaded ([E4](#e4-the-healthy-state)).
 
 **13. WebUI admin, then publish** (spark-1; [E5](#e5-webui-auth-and-the-admin-account-before-publishing),
@@ -816,7 +816,7 @@ the OS, its own device key, and `EDGE_READ_TIMEOUT=3600` on spark-1 (step 11).
 **21. Prove it** (spark-1 and the Mac; [G1](#g1-health)):
 
 ```bash
-~/openbeast/scripts/healthcheck.sh          # on spark-1: "All 9 services healthy"
+~/openbeast/scripts/healthcheck.sh          # on spark-1: "All 10 services healthy"
 ~/openbeast/scripts/doctor.sh               # on spark-1: exit 0 (no FAIL row)
 sudo ~/openbeast/scripts/backends/spark-guard.sh --status   # on each Spark: "rules: current"
 curl -sk https://spark-1.tail4109f9.ts.net:8444/api/slot | python3 -m json.tool | head -30   # from the Mac
@@ -1389,7 +1389,7 @@ rank 1 on spark-2 over ssh. If spark-2 is not up yet, the unit fails and
 retries every 60 s (`Restart=on-failure`; GLM's unit every 30 s). Loading
 takes 2-6 min. spark-guard (B3) loads its own table before the network comes
 up, as on any boot. Then `scripts/healthcheck.sh` on spark-1 should report
-all 9 services healthy (E4).
+all 10 services healthy (E4).
 
 **Step 4: verify, on each Spark.** `--verify` takes the **peer's** fabric
 IPv4 on every Up rail, **all of them in one call**. Running it once per IP
@@ -2311,7 +2311,7 @@ reboot, everything comes back by itself:
 
 ```bash
 systemctl --user status deepseek-v41-inference openbeast --no-pager | grep -E 'Active|●'   # spark-hydra-inference while GLM is selected
-~/openbeast/scripts/healthcheck.sh        # expect "All 9 services healthy" once the model has loaded
+~/openbeast/scripts/healthcheck.sh        # expect "All 10 services healthy" once the model has loaded
 ```
 
 ### E4. The healthy state
@@ -2321,6 +2321,7 @@ Stack health check — 2026-11-15 13:03:38
   OK   TensorFold (tensorfold @ http://127.0.0.1:8000)
   OK   Tool server
   OK   Open WebUI
+  OK   Open WebUI model connection (URL + key)
   OK   SearXNG
   OK   beast-gate
   OK   beast-chat console
@@ -2331,7 +2332,7 @@ Stack health check — 2026-11-15 13:03:38
 
   Unified memory: 9751 MiB available of 124607 MiB (the model's share is in the total)
 
-All 9 services healthy.
+All 10 services healthy.
 ```
 
 ### E5. WebUI auth and the admin account, before publishing
@@ -2948,7 +2949,7 @@ dies with its base interpreter. The prefix is durable on purpose.
 
 ```bash
 # on spark-1
-~/openbeast/scripts/healthcheck.sh               # expect "All 9 services healthy" + the unified-memory line
+~/openbeast/scripts/healthcheck.sh               # expect "All 10 services healthy" + the unified-memory line
 curl -s http://127.0.0.1:8000/health             # ok, streams, pool tokens, requests_total
 ~/openbeast/scripts/doctor.sh                    # 39 ok, 1 warning on 2026-11-15 (SSD wear needs a sudoers rule)
 ~/openbeast/start.sh --status                    # stack + island state
@@ -3111,7 +3112,7 @@ the wheelhouse filled by `pydeps.sh wheelhouse` on an online aarch64 box
 
 ```bash
 systemctl --user restart openbeast       # or "start", after step 3's stop
-~/openbeast/scripts/healthcheck.sh       # "All 9 services healthy"
+~/openbeast/scripts/healthcheck.sh       # "All 10 services healthy"
 ~/openbeast/scripts/doctor.sh
 ```
 

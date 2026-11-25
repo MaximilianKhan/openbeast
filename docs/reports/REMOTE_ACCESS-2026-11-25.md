@@ -222,14 +222,125 @@ edit. None of them needs the internet or an image pull. Tailscale itself
 needs its coordination server to bring up *new* connections; an islanded
 pair still serves the LAN and `ssh spark-3dc6.local`.
 
-## Deploy
+## Deploy log
 
-See [Deploy log](#deploy-log) below for what was run and what it printed.
+PR [#322](https://github.com/MaximilianKhan/openbeast/pull/322) was merged
+as `554f6cee`. It was deployed by [G6](../SPARK_HYDRA.md#g6-updating) on
+2026-11-25 at about 01:40 PST, with the pair idle (`slots.busy` none; only
+the Mac's 30-second `/v1/models` poll). No image pin moved, so no WebUI
+backup was needed. DeepSeek (`deepseek-v41-inference`) was **not**
+restarted and stayed `active` throughout.
 
-## Verification matrix
+```text
+# both Sparks were at ea45b9fb (#299), 52 commits behind; the gate change in #319 was not yet live
+spark-1$ git pull --ff-only && ./scripts/pydeps.sh install     # 554f6cee; lock moved (starlette 1.10.0, pydantic 2.14.3, …)
+spark-2$ git pull --ff-only                                     # 554f6cee (same commit)
 
-See [Verification](#verification) below.
+spark-1$ ./scripts/configure-webui.sh --check-connection   → 1   (stale: the live finding)
+spark-1$ ./scripts/configure-webui.sh --sync-connection    → 0
+spark-1$ ./scripts/configure-webui.sh --check-connection   → 0
+         TensorFold 401s in the following 2 minutes: 0
+
+spark-1$ systemctl --user restart openbeast      # the gate now runs #319 + the new lock
+spark-1$ ./scripts/healthcheck.sh
+  OK   TensorFold (tensorfold @ http://127.0.0.1:8000)
+  OK   Tool server
+  OK   Open WebUI
+  OK   Open WebUI model connection (URL + key)
+  OK   SearXNG
+  OK   beast-gate
+  OK   beast-chat console
+  OK   beast-artifact
+  OK   Dashboard (beast-slot)
+  OK   Tailscale (remote access)
+All 10 services healthy.
+```
+
+**The watchdog heal, proved on the live host.** We wrote `not-needed` back
+into `openai.api_keys`, then ran one watchdog pass:
+
+```text
+--check-connection → 1
+healthcheck.sh --restart:
+  DOWN Open WebUI model connection — its stored URL or key is not this host's: the WebUI lists no models
+       → re-synced (configure-webui.sh --sync-connection)
+--check-connection → 0
+```
+
+The WebUI had no key for a few seconds. No chat was in flight.
+
+## Verification
+
+After the deploy (2026-11-25, 01:40-01:50 PST). Keys went to curl as
+`--config` lines on stdin and were never printed or put on argv.
+"Tailnet" means the request used only `*.tail4109f9.ts.net` names, which
+resolve to `100.x` addresses, and arrived from a `100.x` source.
+
+| Path | Device / key | Network | Result |
+|---|---|---|---|
+| WebUI `:443` page + `/api/config` | Mac browser path | tailnet (Mac 100.90.53.29) | 200, 200 |
+| WebUI sign-in as Max's account | Mac | tailnet | 200, role `admin` |
+| WebUI `/api/models` | Mac, Max's account | tailnet | **`['DeepSeek-V4.1-Flash-1017', 'arena-model']`** (was `[]`) |
+| WebUI chat completion (`/api/chat/completions`) | Mac, Max's account | tailnet | "391" in 1.9 s |
+| WebUI WebSocket (`/ws/socket.io`, upgrade) | Mac; rig | tailnet | `101 Switching Protocols`, both |
+| WebUI CORS for its origin | Mac | tailnet | `access-control-allow-origin: https://spark-1.tail4109f9.ts.net` |
+| WebUI page, `/api/config` | rig (`beast`, 100.100.201.38) | tailnet | 200, 200 |
+| gate `:8443` `/v1/models`, no key | Mac | tailnet | 401 (auth enforced) |
+| gate `/v1/models` | `macbook` key (the Mac's own file) | tailnet | 200 |
+| gate streaming completion (SSE) | `macbook` key | tailnet | streamed, `data:` events |
+| gate completion | `phone` key (spark-1's copy) | tailnet name (spark-1's own `100.x`) | 200, "42" |
+| gate `/v1/models` | `rig-eval` key | tailnet (from `beast`) | 200 |
+| gate, wrong key | — | tailnet | 401 |
+| `openbeast-client status` (beast-slot on the laptop) | Mac | tailnet | 9 ok: model API, beast-slot, search, opencode |
+| beast-slot `:8444/api/slot` | Mac; rig | tailnet | 200, 200 |
+| beast-chat `:8445` | Mac; rig | tailnet | 200, 200 |
+| beast-artifact `:8446` | Mac | tailnet | 200 |
+| dashboard `:8447` page + `/api/status` | Mac; rig | tailnet | 200; 200 |
+| SearXNG `:8889` | Mac | tailnet | 200 (JSON search) |
+| TLS `:443` | Mac | tailnet | `CN = spark-1.tail4109f9.ts.net`, valid to 2027-02-13 |
+| `ssh spark-1` / `ssh spark-2` | Mac | tailnet | arrives from `100.90.53.29` (was `.local`, LAN only) |
+| `ssh beast` | Mac | tailnet | arrives from `100.90.53.29` |
+| WebUI on the phone over cellular, 2026-11-24 (before the fix) | phone | cellular 174.239.x → tailnet | network fine; **empty model list** (root cause 1) |
+
+**What this does and does not prove.** All of the above ran from home,
+where Tailscale carries the session over the direct LAN path. Nothing in
+the serving path can tell home from away. Every surface is a `tailscale
+serve` listener on spark-1's `100.66.191.118`, every request arrives from a
+`100.x` source, and no rule anywhere keys on the underlay. The phone's
+cellular session on 2026-11-24 is the off-LAN control: its packets arrived
+from 174.239.160.143 and every request was answered. The one thing
+not yet re-run **after** the fix from off the LAN is the phone itself: see
+below.
 
 ## Left for Max
 
-See [Left for Max](#left-for-max-1) below.
+No sudo is needed for any of this.
+
+1. **Phone, 1 minute, on cellular** (Wi-Fi off, Tailscale on): open
+   `https://spark-1.tail4109f9.ts.net`, pull to refresh (or sign out and in),
+   and pick `DeepSeek-V4.1-Flash-1017`. Send one message. That is the
+   off-LAN confirmation of the fix. If the picker is still empty, the
+   phone's page is stale: close the tab and reopen it.
+2. **NVIDIA Sync on the laptop** still names the Sparks `spark-3dc6.local` /
+   `spark-9f26.local` in its own device settings. Terminal `ssh spark-1` no
+   longer cares (our blocks sit before Sync's `Include`, so a Sync rewrite of
+   its file does not undo them). If you use **Sync's app** (its terminal,
+   JupyterLab or port forwards) away from home, edit each device in Sync and
+   set the hostname to `spark-1.tail4109f9.ts.net` /
+   `spark-2.tail4109f9.ts.net`.
+3. **An ssh app on the phone** (if you use one): use the tailnet names,
+   never `.local` and never `192.168.40.x`.
+4. **The plaintext gate-key copies on spark-1**
+   (`~/.config/openbeast/gate-keys/`, the E7 known issue). `macbook.key`
+   there is stale: it no longer works (401), and the Mac has the current key.
+   `phone.key` still works. When the phone is confirmed, run
+   `shred -u ~/.config/openbeast/gate-keys/*.key`.
+5. **The rig's dashboard** `https://beast.tail4109f9.ts.net:8447` answers
+   502 right now. That is expected: the rig's command center is stopped
+   while the Inkling/Basalt eval holds the GPU, and the dashboard comes back
+   when the rig's stack starts. We did not touch it.
+
+One process note: the WebUI end-to-end check signed in as Max's own account.
+Its password was copied from spark-1's `~/.config/openbeast/webui-max-password`
+into a 0600 temp file on the Mac for the duration of one script, then
+deleted. It was never printed.

@@ -28,7 +28,7 @@ a bare repository on spark-1 ([11](#11-developing-with-github-unreachable)).
 
 The launch and operations runbook for the pair is
 [`SPARK_HYDRA.md`](SPARK_HYDRA.md). This page assumes the pair is up
-(`healthcheck.sh`: "All 9 services healthy").
+(`healthcheck.sh`: "All 10 services healthy").
 
 | Section | |
 |---|---|
