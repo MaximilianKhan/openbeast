@@ -889,14 +889,30 @@ export OPENBEAST_PROBE_HOST
 #       never follow it. spark-1: on (docs/SPARK_HYDRA.md).
 # The llama defaults are resolved even when nothing is set, so every consumer
 # below reads the same values it always did.
+#
+# The env side of all five is read through _ob_override and exported through
+# _ob_derive (OPENBEAST_DERIVED_INFERENCE_*). They were plain exports, so a
+# process that sourced this file and THEN rewrote openbeast.conf handed the
+# OLD values to everything it started as if the operator had exported them:
+# `scripts/engine.sh use default` on the rig (2026-11-25) wrote
+# INFERENCE_BACKEND=basalt, restarted the stack, and start.sh -- reading the
+# inherited OPENBEAST_INFERENCE_BACKEND=llama as an override -- launched the
+# old llama SERVE_SCRIPT on :8080 under the Inkling profile. engine-gate.sh's
+# candidate start had the same hole. An env value that differs from the
+# record is still a real override and wins (tests/test_engine_switch_env.sh).
+_ob_ib_env=0; _ob_iu_env=0; _ob_imn_env=0; _ob_is_env=0
+_ob_override INFERENCE_BACKEND >/dev/null && _ob_ib_env=1
+_ob_override INFERENCE_URL >/dev/null && _ob_iu_env=1
+_ob_override INFERENCE_MANAGED >/dev/null && _ob_imn_env=1
+_ob_override INFERENCE_SLOTS >/dev/null && _ob_is_env=1
 if [[ -f "$(dirname "${BASH_SOURCE[0]}")/backend.sh" ]]; then
   # shellcheck source=backend.sh
   source "$(dirname "${BASH_SOURCE[0]}")/backend.sh"
-  INFERENCE_BACKEND="$(ob_backend_normalize "${OPENBEAST_INFERENCE_BACKEND:-$(_ob_conf_value INFERENCE_BACKEND || true)}")"
+  INFERENCE_BACKEND="$(ob_backend_normalize "$(_ob_override INFERENCE_BACKEND || _ob_conf_value INFERENCE_BACKEND || true)")"
 else
   INFERENCE_BACKEND=llama
 fi
-_ob_infer_url="${OPENBEAST_INFERENCE_URL:-$(_ob_conf_value INFERENCE_URL || true)}"
+_ob_infer_url="$(_ob_override INFERENCE_URL || _ob_conf_value INFERENCE_URL || true)"
 _ob_infer_url="${_ob_infer_url%%[[:space:]]*}"   # a trailing `# comment` is not part of a URL
 _ob_infer_url="${_ob_infer_url%/}"
 _ob_infer_url="${_ob_infer_url%/v1}"             # a pasted .../v1 means the same server
@@ -918,7 +934,7 @@ else
   INFERENCE_URL="http://${OPENBEAST_PROBE_HOST}:8080"
 fi
 unset _ob_infer_url
-_ob_managed_raw="${OPENBEAST_INFERENCE_MANAGED:-$(_ob_conf_value INFERENCE_MANAGED || true)}"
+_ob_managed_raw="$(_ob_override INFERENCE_MANAGED || _ob_conf_value INFERENCE_MANAGED || true)"
 if [[ "$INFERENCE_BACKEND" == "llama" ]]; then
   # A llama INFERENCE_URL on ANOTHER box is not ours to launch: defaulting to
   # managed there started a LOCAL llama-server while start.sh waited on the
@@ -962,7 +978,7 @@ else
   # <<< engine-plane hook
 fi
 unset _ob_managed_raw
-INFERENCE_SLOTS="${OPENBEAST_INFERENCE_SLOTS:-$(_ob_conf_value INFERENCE_SLOTS || true)}"
+INFERENCE_SLOTS="$(_ob_override INFERENCE_SLOTS || _ob_conf_value INFERENCE_SLOTS || true)"
 INFERENCE_SLOTS="${INFERENCE_SLOTS%%[[:space:]#]*}"
 if [[ -n "$INFERENCE_SLOTS" && ! "$INFERENCE_SLOTS" =~ ^[1-9][0-9]*$ ]]; then
   echo "WARNING: INFERENCE_SLOTS='$INFERENCE_SLOTS' is not a positive integer — ignoring it." >&2
@@ -986,19 +1002,26 @@ INFERENCE_MODEL="${INFERENCE_MODEL%"${INFERENCE_MODEL##*[![:space:]]}"}"   # rtr
 INFERENCE_MODEL="${INFERENCE_MODEL%\"}"; INFERENCE_MODEL="${INFERENCE_MODEL#\"}"
 INFERENCE_MODEL="${INFERENCE_MODEL%\'}"; INFERENCE_MODEL="${INFERENCE_MODEL#\'}"
 if [[ -n "$INFERENCE_MODEL" && "$INFERENCE_BACKEND" != "llama" ]]; then
-  export OPENBEAST_INFERENCE_MODEL="$INFERENCE_MODEL"
+  _ob_derive INFERENCE_MODEL "$INFERENCE_MODEL" "$_ob_im_env"
+else
+  _ob_underive INFERENCE_MODEL   # a stale id of ours (basalt -> llama) must not reach the runner
 fi
 export INFERENCE_BACKEND INFERENCE_URL INFERENCE_MANAGED
-export OPENBEAST_INFERENCE_BACKEND="$INFERENCE_BACKEND"
-export OPENBEAST_INFERENCE_MANAGED="$INFERENCE_MANAGED"
+_ob_derive INFERENCE_BACKEND "$INFERENCE_BACKEND" "$_ob_ib_env"
+_ob_derive INFERENCE_MANAGED "$INFERENCE_MANAGED" "$_ob_imn_env"
 # Same export discipline as AGENT_INFERENCE_URL: only when configured, so a
 # reader can tell "the operator pointed us somewhere" from "the default".
 if [[ "$INFERENCE_URL_SET" == "true" ]]; then
-  export OPENBEAST_INFERENCE_URL="$INFERENCE_URL"
+  _ob_derive INFERENCE_URL "$INFERENCE_URL" "$_ob_iu_env"
+else
+  _ob_underive INFERENCE_URL
 fi
 if [[ -n "$INFERENCE_SLOTS" ]]; then
-  export OPENBEAST_INFERENCE_SLOTS="$INFERENCE_SLOTS"
+  _ob_derive INFERENCE_SLOTS "$INFERENCE_SLOTS" "$_ob_is_env"
+else
+  _ob_underive INFERENCE_SLOTS
 fi
+unset _ob_ib_env _ob_iu_env _ob_imn_env _ob_is_env
 # INFERENCE_THINKING: the serving host's thinking default for requests that
 # name none — beast-gate injects it, the WebUI thinking filter applies it
 # (configure-webui.sh) and this host's own (non-eval) agents send it. Exported only when set, so
@@ -1149,7 +1172,11 @@ else
       export OPENBEAST_INFERENCE_MODEL="$INFERENCE_MODEL"
     fi
     _ob_underive HYDRA; _ob_underive HYDRA_PORT; _ob_underive HYDRA_CONFIG
-    _ob_underive HYDRA_DEFAULT_MODEL; _ob_underive INFERENCE_MODEL
+    # INFERENCE_MODEL is not underived here: the block above already
+    # re-resolved it from the conf and recorded that (a hydra-era `beast`
+    # record no longer matches), and dropping it now would take the real id
+    # from the agents.
+    _ob_underive HYDRA_DEFAULT_MODEL
     unset OPENBEAST_HYDRA_UPSTREAM_MODEL OPENBEAST_HYDRA_OPERATOR_MODEL
   fi
 fi

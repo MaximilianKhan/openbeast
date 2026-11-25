@@ -129,7 +129,14 @@ is only a reasoning-effort hint there, with no thinking budget), so T2's
 (report §12; none of UP_8k's switches) passed 52/71 on 2026-11-25 (row
 `INK-T3`, SCORE 77.4): level with `INK-T2-STOCK`, at twice the time, with
 four context overflows; `inkling-best` and the stock default stay
-([report](reports/V5_INKLING2_MINI_I_T3-2026-11-25.md)).
+([report](reports/V5_INKLING2_MINI_I_T3-2026-11-25.md)). **Applied on the
+rig 2026-11-25 (~09:45-09:50 PST)** in `~/Documents/openbeast/openbeast.conf`
+(`engine.sh use default` + `AGENT_PROFILE=inkling-best`; Basalt v0.5.7 +
+#632, profile `inkling2-mini-stock`), verified through the gate over
+Tailscale (conformance PASS, the sandbox and container limits, a spawned
+agent answering); Qwen3.8 on llama.cpp with `qwen38-best` is the rollback
+below. What was checked and the conf backups: [TODO.md](TODO.md) "Switch
+the 5090 rig to Inkling 2 Mini (Basalt)".
 
 ## Switching the RTX 5090 to its default, and back
 
@@ -158,6 +165,13 @@ scripts/engine.sh use basalt                   # = `use default` on a 5090: stop
                                                #   INFERENCE_MODEL="inkling-2-mini" INFERENCE_SLOTS=1,
                                                #   then starts it (the tool server reads AGENT_PROFILE then)
 ```
+
+Before 2026-11-25 the restart inside `engine.sh use` could relaunch the
+OLD engine (the first rig switch started the Qwen `SERVE_SCRIPT` under the
+basalt conf): if `.run/stack.log`'s supervisor line names a `serve-*.sh`
+after a switch away from llama, `./stop.sh && ./start.sh -d` from a plain
+shell. Fixed in `lib/conf.sh` and `engine.sh` the same day
+(`tests/test_engine_switch_env.sh`).
 
 The launch refuses, and the stack stays down with the reason in the log,
 when the sandbox probe resolves a name or reaches out, the network has NAT,

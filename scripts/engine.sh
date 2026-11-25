@@ -67,6 +67,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# The environment this command was started with, by name: the restart in
+# `use` hands start.sh exactly that (run_entry_env), never what conf.sh
+# exported below from the conf as it was BEFORE the switch. Inherited, the
+# old OPENBEAST_INFERENCE_BACKEND=llama made start.sh relaunch the old llama
+# SERVE_SCRIPT under a basalt conf (rig, 2026-11-25). conf.sh no longer
+# reads its own exports back as overrides either; this is the second lock,
+# and it also keeps OB_CONF_READONLY (set just below) out of start.sh.
+_OB_ENTRY_ENV=" $(compgen -e | tr '\n' ' ') "
 export OB_CONF_READONLY=1
 # shellcheck source=lib/conf.sh
 source "$SCRIPT_DIR/lib/conf.sh"
@@ -92,6 +100,17 @@ runs_here() { # runs_here <engine> <class>
 }
 stack_running() { ob_recorded_pid_ours "$RUN_DIR/supervisor.pid" 'start\.sh' 2>/dev/null; }
 stop_cmd()  { printf '%s\n' "${OB_ENGINE_STOP_CMD:-$REPO_DIR/stop.sh}"; }
+# run_entry_env CMD... — CMD with the caller's environment: every variable
+# exported since this script began (conf.sh's OPENBEAST_*, INFERENCE_*,
+# OB_CONF_*) is dropped; what the caller exported (a real override, the
+# systemd user session start.sh's memory-capped scope needs) stays.
+run_entry_env() (
+  local v
+  for v in $(compgen -e); do
+    [[ "$_OB_ENTRY_ENV" == *" $v "* ]] || unset "$v" 2>/dev/null || true
+  done
+  exec "$@"
+)
 start_cmd() { printf '%s\n' "${OB_ENGINE_START_CMD:-$REPO_DIR/start.sh -d}"; }
 
 # spark_env_sync <engine> <version> <ref> — keep the Spark launchers'
@@ -318,7 +337,7 @@ cmd_use() {
   fi
   if [[ $running -eq 1 && $NORESTART -eq 0 ]]; then
     read -r -a _c <<< "$(start_cmd)"
-    "${_c[@]}"
+    run_entry_env "${_c[@]}"
   fi
 }
 

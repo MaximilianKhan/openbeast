@@ -714,8 +714,9 @@ DeepSeek's UP on the same harness
   Rollback: restore `basalt-serve.sh.orig-<date>`; if noexec `/tmp` breaks
   Basalt, keep the pid and memory limits and leave `/tmp` exec (and record
   it).
-- [ ] **Switch the 5090 rig to Inkling 2 Mini (Basalt): Max, after the GPU
-  frees up** (I_UP8k and the improved #632 arm I_T3 are done; nothing on the rig
+- [x] **Switch the 5090 rig to Inkling 2 Mini (Basalt): Max, after the GPU
+  frees up. Done 2026-11-25 (~09:45-09:50 PST; evidence at the end of this
+  item)** (I_UP8k and the improved #632 arm I_T3 are done; nothing on the rig
   changed for this PR). Steps and rollback:
   [MODELS.md](MODELS.md#switching-the-rtx-5090-to-its-default-and-back).
   Before: the firewall item above; `git pull --ff-only` in `~/Documents/openbeast`; the toolkit's
@@ -749,6 +750,64 @@ DeepSeek's UP on the same harness
   Then tick this item with the date, and note it in MODELS.md (as the
   `qwen38-best` application was). Rollback if any check fails: the
   MODELS.md block (Qwen3.8 on llama.cpp, `qwen38-best`).
+
+  **Done 2026-11-25.** The rig (`~/Documents/openbeast` at `36619bd2`)
+  serves stock Inkling 2 Mini on Basalt v0.5.7 + the #632 patch (profile
+  `inkling2-mini-stock`, `AGENT_PROFILE=inkling-best`). Conf backups:
+  `~/openbeast-runs/openbeast.conf.before-inkling-20261125-0907` and
+  `.engines/conf-backups/openbeast.conf.20261125T094457.671678`. The
+  switch hit a bug: `engine.sh use default` wrote the basalt conf and
+  restarted the stack, but start.sh relaunched the OLD llama
+  `SERVE_SCRIPT` (Qwen) on :8080 under the Inkling profile (log
+  `~/openbeast-runs/switch-inkling-20261125-0944.out`; `.run/stack.log`
+  09:44:58). Cause: engine.sh had sourced `lib/conf.sh` before rewriting
+  the conf, and conf.sh's plain `OPENBEAST_INFERENCE_*` exports read back
+  in the restarted start.sh as operator overrides. A restart from a plain
+  ssh shell launched Basalt correctly; fixed in code since (conf.sh derive
+  records + engine.sh restarts with its caller's environment,
+  `tests/test_engine_switch_env.sh`; [ENGINES.md](ENGINES.md#basalt-the-rtx-5090-default)).
+  Checks, all passed:
+  - **build**: the first adapter build on the rig, `basalt-v0.5.7+pr632-d62ab74d2299`;
+    `bin/basalt` sha256 `0fd5583db679b731…`, not the measured
+    `5dc8a63c…`, as anticipated above (same pin + #632, a different
+    compiler path); `engine.sh status`: basalt ready at the pin +pr632;
+  - **the sandbox**: launch log `sandbox probe: no DNS, no TCP out, no raw
+    DNS answer` (Max ran `sudo ufw insert 1 deny in on ob-basalt0` that
+    morning); `docker inspect`: `ReadonlyRootfs true`, `CapDrop [ALL]`,
+    `Dns [127.0.0.1]`, `PidsLimit 256`, `Memory` 32 GiB, user `1000:1000`,
+    `no-new-privileges`, `/tmp` `noexec,nosuid,nodev` 8g, port
+    `127.0.0.1:8080` only, network `openbeast-basalt-net` on bridge
+    `ob-basalt0`. **The noexec `/tmp` works with Basalt** (ENGINES.md);
+  - **conformance** PASS at c=1
+    (`.run/conformance/conformance-20261125T174700Z-inkling-2-mini.json`:
+    chat, stream, `reasoning_content`, tools, tool_result, parallel,
+    max_tokens);
+  - **the gate**, over Tailscale from the Mac
+    (`https://beast.tail4109f9.ts.net:8443`): `/v1/models` lists
+    `inkling-2-mini` (n_ctx 262144); a chat answered (391) with the
+    reasoning separated; no key → 401; `:8444` slot 200 (model
+    `inkling-2-mini`, 1 slot); `:8447` (the dashboard) 200; `:8080`
+    closed off the box;
+  - **a spawned agent answers**: `./agent.sh` (agents/runner.py, the
+    rig's conf) ran two tasks to `task_done` on `inkling-2-mini`: a
+    write-and-verify file task (3 iterations, ~2 s) and a sieve module +
+    unittest + 2,000-prime file (6 iterations, ~5 s, 33,671 tokens, tests
+    pass, `primes.txt` 2,000 lines ending 17389), 0 API errors. The agent
+    router's classify call replayed against Basalt returns
+    `{"spawn": true, …}` in 0.2 s (grammar + thinking off work); a spawn
+    through `:8088` needs the WebUI's signed identity on this rig (JWT
+    mode), so the end-to-end spawn is the WebUI's to exercise;
+  - **`docker stats`** of `openbeast-engine-basalt-9f33f079` during those
+    turns (streamed, 20 samples): peak 2.50 GiB of the 32 GiB limit and 18
+    of the 256 PIDs (host RAM; the weights sit in VRAM);
+  - **doctor**: 43 ok / 2 warnings / 1 failure; the failure was doctor
+    reading the hand-mounted dashboard on `:8447` as ntfy, and it called
+    the managed Basalt "not managed here" (both fixed since). The
+    dashboard labelled the one Basalt slot `mtp-single-slot` and gave no
+    `backend`, so clients got the llama catalog (Basalt 404s an id it does
+    not serve, checked: `model_not_found`); fixed since (`single-slot`,
+    `backend: "basalt"`), live on the rig after its next pull and
+    `./scripts/ext.sh restart dashboard`.
 - [ ] **Basalt after the switch**: the switch's `engine.sh install basalt`
   already builds the pin + the #632 patch (`basalt-v0.5.7+pr632-…`; the
   profile's `PATCHES` requires it): rerun the #588 reproduction,
