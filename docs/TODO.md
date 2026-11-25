@@ -1260,6 +1260,16 @@ escalation unresolved, all within churn); GLM's D and F only on Max's word.
 
 ## 🟩 DGX SPARK INFERENCE — LIVE 2026-11-13 as spark-hydra
 
+- [ ] **Two full-run-only test failures (2026-11-24 review, not fixed by raising waits).**
+  `tests/test_hardening.py::test_stop_agent_falls_back_to_the_ledger` ("force-killed after
+  timeout": the SIGTERMed `sleep` still counts alive after `_stop_ledger_agent`'s 10 s) and
+  `tests/test_mcp_server_stop.py::test_signal_kills_in_flight_bash_child[15]` (the server does not
+  exit within 60 s of SIGTERM) fail in a FULL `pytest tests/` on both the Mac and the Linux image
+  (scripts/gate.sh, both runs at 94d4ad0f), and pass alone and with their two files run together
+  (53 passed). So they depend on state an earlier test leaves (a signal disposition, a child not
+  reaped, a subreaper), not on load. Next: bisect with `pytest -p no:randomly tests/ --lf` halves
+  (or `pytest-bisect`), then fix the leaking test; until then the PR body names them.
+
 - [ ] **Deploy the 2026-11-24 review's beast-spark fixes on spark-1** (code on `main`; nothing
   on the Sparks changed by that PR). What they fix: a reboot after `beasthy4` or a recipe left
   `openbeast.conf` on Hy4's / the recipe's backend and id while DeepSeek served (now
