@@ -75,3 +75,12 @@ faf5d5ba25954a2c1cbc78c50760e1a76fdc70c5a4b737adc5b39b4afb549a3d	9430112	Huihui-
 # the INK-T2-STOCK arm. evals/boards/v5/weights.json
 # inkling2-mini-basalt-nvfp4-mx8-stock has the evidence.
 28ec70723feaa037942a02f55b9d5e898276f3e62a3b1fa083745f932a041b99	19606374189	Inkling-2-Mini-NVFP4-MX8.basalt	jesdga/Inkling-2-Mini-Basalt	-
+# Inkling 2 Mini, SC117's abliterated edit as a Basalt NVFP4-MX8 pack: built here, on no Hub repo ("derived": the
+# fifth column names the script that rebuilds it offline; fetch-weight.sh refuses a download). SC117's edit
+# (SC117/Inkling-2-Mini-abliterated-Strata @ ae324ac3676b97a3f67b475ffc2534c7521ff7c4, Apache-2.0: rank-1 refusal
+# direction removed from attn.wo_ud of layers 4-23) moved, as BF16 bytes, from its SQ-20 into
+# thinkingmachines/Inkling-2-Mini @ b85c3cfa615fc413cc9af3379f491b963f3b586a, converted by Basalt v0.5.7's
+# tools/convert. The same converter rebuilds the stock pack above byte for byte from b85c3cfa; this pack differs from
+# it only in the 20 Q8_0 tensors blk.{4..23}.attn_output.weight and meta.checkpoint.dir. Built and checked on the
+# reference rig 2026-11-25 (docs/reports/V5_INKLING2_MINI_SC117-2026-11-25.md section 2).
+6eaa50d3620a8f3913c726b239b7981880e440f7d9c2dffe0613148b01c6e89b	19606374187	Inkling-2-Mini-SC117-abliterated-NVFP4-MX8.basalt	derived	scripts/engines/inkling-sc117-pack.sh

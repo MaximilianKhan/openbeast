@@ -1149,6 +1149,50 @@ def test_i_t3_follow_ups_each_put_one_change_back():
     assert not C.validate_campaign(camp)
 
 
+# --- 13e. SC117's abliterated weights on Basalt: I_T2_sc117 (the pack is the only variable) ----
+#
+# I_T2_stock exactly, served from the pack built by scripts/engines/inkling-sc117-pack.sh (SC117's 20 edited
+# attn.wo_ud tensors transplanted into the official checkpoint, then Basalt's converter).
+
+INK_SC117 = "Inkling 2 Mini SC117 abliterated (Basalt NVFP4-MX8)"
+SC117_PACK = "Inkling-2-Mini-SC117-abliterated-NVFP4-MX8.basalt"
+SC117_SHA = "6eaa50d3620a8f3913c726b239b7981880e440f7d9c2dffe0613148b01c6e89b"
+
+
+def test_i_t2_sc117_is_i_t2_stock_with_its_own_model_name():
+    camp = C.load_campaign(TF)
+    assert C.resolve_arm(camp, "I_T2_sc117") == C.resolve_arm(camp, "I_T2_stock") == C.resolve_arm(camp, "I_T2")
+    spec = C.arm_spec(camp, "I_T2_sc117")
+    assert spec["base"] == "I_T2_stock" and spec["optional"] is True
+    assert spec["jobs"] == 1 and spec["slots"] == 1
+    assert spec["model"] == INK_SC117 and spec["served_model"] == "inkling-2-mini"
+    names = {INK_SC117: "I_T2_sc117", INK_STOCK: "I_T2_stock", INK: "I_T2"}
+    slugs = {C.slugify(C.arm_model_name(camp, m, a)) for m, a in names.items()}
+    assert len(slugs) == 3
+    assert len({C.state_dir_for("/t", camp, m) for m in names}) == 3
+    assert C.composite_for(camp, INK_SC117)[0] == "I_T2"
+    assert "I_T2_sc117" not in C.run_order(camp)
+    assert C.served_model_mismatch(camp, ["I_T2_sc117"], "Qwen3.8 27B Uncensored MTP Q5")
+    assert C.served_model_mismatch(camp, ["I_T2_sc117"], "inkling-2-mini") == []
+    for fact in (SC117_SHA, SC117_PACK, "--patch none", "ae324ac3", "b85c3cfa", "28ec7072", "f38a29c7",
+                 "docker inspect", "inkling-sc117-pack.sh", "UNVERIFIED"):
+        assert fact in spec["note"], fact
+    assert not C.validate_campaign(camp)
+
+
+def test_the_sc117_pack_pin_is_one_value_everywhere():
+    root = Path(__file__).resolve().parents[1]
+    rows = [line.split("\t") for line in (root / "scripts" / "weights.registry").read_text().splitlines()
+            if line and not line.startswith("#") and line.split("\t")[2:3] == [SC117_PACK]]
+    assert len(rows) == 1
+    sha, size, _name, repo, remote = rows[0]
+    assert sha == SC117_SHA and int(size) == 19606374187
+    assert repo == "derived" and remote == "scripts/engines/inkling-sc117-pack.sh"
+    script = (root / remote).read_text()
+    assert f"WANT_PACK={SC117_SHA}" in script and f"NAME={SC117_PACK}" in script
+    assert "--network none" in script and "python3 -I" in script
+
+
 def test_the_pr632_patch_file_is_the_pinned_diff():
     import hashlib
     p = Path(__file__).resolve().parents[1] / "scripts" / "engines" / "patches" / "basalt-pr632-55f9be17.patch"
