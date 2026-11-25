@@ -171,7 +171,7 @@ copy.
   first by SCORE. Say "65/71" for the model; don't say "65/71 twice" as
   evidence of stability (the two arms differ in one variable).
 
-**E. Eval safety** (extends 11-19 Rule E):
+**E. Eval safety** (extends 11-19 Rule E; amended 2026-11-25 there: prompts and per-unit results are public, solutions, validators and sealed notes never):
 
 - **E1. The new board notes leak more.** After a resync, `DS-T3`'s status
   says which *kind* of unit the 4,096 cap gained and lost, and `DS-T2`'s says
