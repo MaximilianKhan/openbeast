@@ -24,6 +24,12 @@
 #       not, 4 when the running WebUI has login off (or /api/config does not
 #       say) so the probe did not run, 3 when WebUI is unreachable, 5 when
 #       the sign-in did not answer yes or no (429 rate limit, 5xx, timeout).
+#   ./scripts/configure-webui.sh --check-connection       read-only: exit 0
+#       when WebUI's stored model connection (URL AND key) matches this
+#       host's (OPENBEAST_MODEL_URL, LLAMA_API_KEY), 1 when it is stale (the
+#       WebUI then lists no models), 3 when it could not be read.
+#   ./scripts/configure-webui.sh --sync-connection        rewrite only that
+#       connection: exit 0 when it is right afterwards, 3 when it could not.
 
 set -euo pipefail
 
@@ -32,7 +38,9 @@ case "${1:-}" in
   "") ;;
   --secure-default-admin) MODE=secure ;;
   --check-default-admin)  MODE=check ;;
-  -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  --check-connection)     MODE=check-connection ;;
+  --sync-connection)      MODE=sync-connection ;;
+  -h|--help) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
   *) echo "Unknown option: $1 (see --help)" >&2; exit 2 ;;
 esac
 
@@ -40,7 +48,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # --check-default-admin is a read-only probe: it must not be the thing that
 # creates openbeast.conf (conf.sh mints the SearXNG secret unless told not to).
-[[ "$MODE" == "check" ]] && export OB_CONF_READONLY=1
+[[ "$MODE" == "check" || "$MODE" == "check-connection" ]] && export OB_CONF_READONLY=1
 source "$SCRIPT_DIR/lib/conf.sh"   # WEBUI_ADMIN_EMAIL / WEBUI_ADMIN_PASSWORD
 # Every credential header below (the admin JWT, LLAMA_API_KEY) goes through
 # ob_curl_hdr / ob_curl_bearer — curl --config on fd 3, never argv, because
@@ -57,6 +65,64 @@ _OB_LOCAL_HOST="${OPENBEAST_PROBE_HOST:-127.0.0.1}"
 [[ "$_OB_LOCAL_HOST" == "127.0.0.1" ]] && _OB_LOCAL_HOST=localhost
 WEBUI_URL="${WEBUI_URL:-http://$_OB_LOCAL_HOST:3000}"
 MCPO_URL="${MCPO_URL:-http://$_OB_LOCAL_HOST:3001}"
+
+# _model_connection <check|sync> — WebUI's ONE OpenAI connection: the URL and
+# the key it sends upstream. Open WebUI PERSISTS both in its DB (config rows
+# openai.api_base_urls / openai.api_keys) and IGNORES the OPENAI_API_BASE_URL /
+# OPENAI_API_KEY env vars once the DB has a value, so docker-compose's env only
+# seeds a fresh install. OPENBEAST_MODEL_URL (lib/conf.sh) is the router
+# (:8088) when AGENT_ROUTER=true, else the inference server. The key is the one
+# compose would seed today: LLAMA_API_KEY (lib/conf.sh), else "not-needed".
+#
+# Why the key: until 2026-11-25 only the URL was synced. spark-1's WebUI DB
+# kept the "not-needed" key compose seeded at its first boot (2026-11-13, GLM,
+# an unkeyed engine). DeepSeek serves with an engine key (since 2026-11-17), so
+# every /v1/models the WebUI sent got a 401 and the WebUI listed NO models for
+# anyone, at home or away. Max found it from his phone on cellular
+# (docs/reports/REMOTE_ACCESS-2026-11-25.md).
+#
+# The key travels on stdin, never argv (`ps` shows argv to every uid), and is
+# never printed. Open WebUI 0.13.x reads config rows straight from the DB per
+# request (open_webui/models/config.py), so a sync needs no restart.
+# Returns: 0 = already right, 1 = differs (check) / was rewritten (sync),
+# 3 = could not ask (container down, no docker, unreadable DB).
+_model_connection() {
+  local rc=0
+  printf '%s' "${LLAMA_API_KEY:-}" | docker exec -i -e MODEL_URL="${OPENBEAST_MODEL_URL:-}" \
+      -e OB_MC_MODE="$1" open-webui python3 -c "
+import sqlite3, json, os, sys, time
+db = sqlite3.connect('/app/backend/data/webui.db')
+want = {'openai.api_base_urls': [os.environ['MODEL_URL']],
+        'openai.api_keys': [sys.stdin.read().strip() or 'not-needed']}
+stale = []
+for k, v in want.items():
+    row = db.execute('SELECT value FROM config WHERE key=?', (k,)).fetchone()
+    if not row or not row[0] or json.loads(row[0]) != v:
+        stale.append((k, v, row))
+if not stale:
+    sys.exit(0)
+if os.environ['OB_MC_MODE'] == 'sync':
+    for k, v, row in stale:
+        if row:
+            db.execute('UPDATE config SET value=?, updated_at=? WHERE key=?', (json.dumps(v), int(time.time()), k))
+        else:
+            db.execute('INSERT INTO config (key, value, updated_at) VALUES (?, ?, ?)', (k, json.dumps(v), int(time.time())))
+    db.commit()
+sys.exit(42)   # stale (check) / rewritten (sync); docker's own failures are 1, 125-127
+" >/dev/null 2>&1 || rc=$?
+  case "$rc" in 0) ;; 42) rc=1 ;; *) rc=3 ;; esac
+  return "$rc"
+}
+
+# --check-connection / --sync-connection: only the model connection, no
+# sign-in, no wait (healthcheck.sh runs these on every watchdog tick).
+case "$MODE" in
+  check-connection|sync-connection)
+    [[ -n "${OPENBEAST_MODEL_URL:-}" ]] || exit 3
+    _mc_rc=0; _model_connection "${MODE%-connection}" || _mc_rc=$?
+    [[ "$MODE" == "sync-connection" && "$_mc_rc" == 1 ]] && _mc_rc=0
+    exit "$_mc_rc" ;;
+esac
 
 # Open WebUI's built-in default admin (open_webui/routers/auths.py, the
 # WEBUI_AUTH == False branch of signin): with auth OFF, signing in as
@@ -338,31 +404,16 @@ fi
 
 AUTH="Authorization: Bearer ${TOKEN:-}"
 
-# --- 0. Point WebUI's model connection at the OpenBeast endpoint ---
-# Open WebUI PERSISTS the OpenAI connection in its DB and IGNORES the
-# OPENAI_API_BASE_URL env var once the DB has a value. So the env in
-# docker-compose only seeds a fresh install — for an existing WebUI we must set
-# the DB connection ourselves. OPENBEAST_MODEL_URL (from lib/conf.sh) is the
-# router (:8088) when AGENT_ROUTER=true, else llama-server (:8080). Idempotent.
+# --- 0. Point WebUI's model connection at the OpenBeast endpoint, with its key ---
+# _model_connection (above) does it; see there for why the key matters.
 if [[ -n "${OPENBEAST_MODEL_URL:-}" ]]; then
-  echo "  Setting WebUI model connection → $OPENBEAST_MODEL_URL ..."
-  if docker exec -e MODEL_URL="$OPENBEAST_MODEL_URL" open-webui python3 -c "
-import sqlite3, json, os, sys
-db = sqlite3.connect('/app/backend/data/webui.db')
-url = os.environ['MODEL_URL']
-row = db.execute(\"SELECT value FROM config WHERE key='openai.api_base_urls'\").fetchone()
-cur = json.loads(row[0]) if row and row[0] else []
-if cur != [url]:
-    db.execute(\"UPDATE config SET value=? WHERE key='openai.api_base_urls'\", (json.dumps([url]),))
-    db.commit()
-    sys.exit(3)   # signal 'changed'
-" 2>/dev/null; then
-    echo "    already set"
-  elif [[ $? -eq 3 ]]; then
-    echo "    connection updated"
-  else
-    echo "    (could not set connection — WebUI may not be up yet)"
-  fi
+  echo "  Setting WebUI model connection → $OPENBEAST_MODEL_URL (with the inference key) ..."
+  _mc_rc=0; _model_connection sync || _mc_rc=$?
+  case "$_mc_rc" in
+    0) echo "    already set" ;;
+    1) echo "    connection updated (URL and/or key)" ;;
+    *) echo "    (could not set connection — WebUI may not be up yet)" ;;
+  esac
 fi
 
 # --- 1. Configure MCPO tool servers with RBAC (two connections, same MCPO) ---
