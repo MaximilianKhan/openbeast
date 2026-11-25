@@ -470,6 +470,7 @@ def test_greedy_floor_default_runs_both_rows_live(floor_repo):
     assert not any(ln.startswith("pkill") for ln in rec.read_text().splitlines())
 
 
+@pytest.mark.linux_only(reason="bash >= 4 (greedy_floor.sh arrays under set -u)")
 def test_greedy_floor_single_slot_is_single_slot(floor_repo):
     repo, rec, env = floor_repo
     r = subprocess.run(["bash", str(repo / "scratch/greedy_floor.sh"), "--single-slot"],
@@ -511,6 +512,7 @@ def test_greedy_floor_single_slot_aborts_when_its_server_dies(floor_repo):
     assert not any(ln.startswith("run_eval") for ln in lines)
 
 
+@pytest.mark.linux_only(reason="bash >= 4 (greedy_floor.sh arrays under set -u)")
 def test_greedy_floor_single_slot_aborts_on_wrong_slot_count(floor_repo):
     r, lines = _single(floor_repo, STUB_SLOTS="6")
     assert r.returncode == 1 and "total_slots='6'" in r.stderr, r.stdout + r.stderr
@@ -528,6 +530,7 @@ def test_greedy_floor_single_slot_refuses_a_server_still_loading(floor_repo):
     assert not any(ln.startswith(("serve ", "run_eval")) for ln in lines)
 
 
+@pytest.mark.linux_only(reason="bash >= 4 (greedy_floor.sh arrays under set -u)")
 def test_greedy_floor_single_slot_falls_back_to_slots_endpoint(floor_repo):
     r, lines = _single(floor_repo, PROPS_NO_SLOTS="1")          # /slots says 1
     assert r.returncode == 0, r.stdout + r.stderr
@@ -543,6 +546,7 @@ def test_greedy_floor_single_slot_aborts_when_it_cannot_verify(floor_repo, env):
     assert not any(ln.startswith("run_eval") for ln in lines)
 
 
+@pytest.mark.linux_only(reason="bash >= 4 (greedy_floor.sh arrays under set -u)")
 def test_greedy_floor_single_slot_rechecks_slots_before_run_2(floor_repo):
     # The port's slot count changes after run 1: run 2 must not start.
     r, lines = _single(floor_repo, SLOTS_AFTER_RUN="6")

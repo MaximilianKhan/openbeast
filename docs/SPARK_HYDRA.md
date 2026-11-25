@@ -26,7 +26,10 @@ against 116.5 at 4 (+27% / +15%), with 1-4 stream decode, TTFT and prefill uncha
 The full 1,048,576-token window was verified (a needle at 999,059 tokens, a cache-hit turn on it in 3.1 s)
 and so was `KV_SHARD=1`, but 1M costs 0.88 GiB a rank on spark-1, the tightest host, so it waits for spark-1
 headless and/or the WebUI moving off it (the report's plan). Rollback: `local.sh.bak-20261123-tuning` and
-`INFERENCE_SLOTS=4` (the report). After `beastglm`, set `INFERENCE_SLOTS=4` (GLM serves 4); back to 8 after `beastds`.
+`INFERENCE_SLOTS=4` (the report). Since the 2026-11-24 review every `beast-spark` switch writes
+`INFERENCE_SLOTS` with the model (DeepSeek: the runtime's `PARALLEL`, 8; GLM 4; Hy4 4; a recipe its
+`SLOTS=`, else 4; `DS_SLOTS` / `GLM_SLOTS` / `HY4_SLOTS` in `beast-spark.env` override), so there is
+nothing to set by hand after `beastglm` / `beastds`.
 
 **Live deployment, 2026-11-18.** The pair serves **DeepSeek-V4.1-Flash (Mia EXL3)** by default since 2026-11-18 (`DeepSeek-V4.1-Flash-1017`, unit `deepseek-v41-inference`, enabled for boot (GLM's `spark-hydra-inference` was the boot selection during the 2026-11-23 GLM window; `beastds` restored DeepSeek the same evening, ~19:00 PST); 524,288-token window, four streams, eight since the 2026-11-23 tuning session): Max's decision after hands-on testing, with v5 61/71, the board's #1 (65/71 under arm T2 since 2026-11-19, its default agent setup: [E2b](#e2b-deepseek-best-configuration-v5-t2); the preset `AGENT_PROFILE=deepseek-best` is on `main` since #232 and live in spark-1's `openbeast.conf` since 2026-11-19, E2b (out of `openbeast.conf` during the 2026-11-23 GLM window; back since that evening, after `beastds`)). **GLM-5.3-Flash is staged as the alternative** (`GLM-5.3-Flash-EXL3`, unit `spark-hydra-inference`, 1,048,576-token window): `beastglm` switches to it, `beastds` back (it stops GLM, re-selects the Mia EXL3 pack, [DeepSeek packs](#deepseek-packs-spark-deepseek-pack), and runs `activate-stock.sh`). Switch only through `beast-spark` (the `beast*` aliases, [Everyday shortcuts](#quickstart)); `activate-stock.sh` and `restore-glm.sh` are its internals, and `activate-stock.sh` never stops GLM itself. `beastup` with nothing selected picks DeepSeek. The pair serves these two models, one at a time; **Hy4-flash (NVFP4, vLLM TP2) is staged on both Sparks and measured** (`beasthy4`, never a boot default; v5 60/71 under arm H_T2, 5 units behind DeepSeek's T2 on the same harness, single seed; [Hy4-flash](#hy4-flash-nvfp4-vllm-tp2-measured)). The command center and beast-gate run on spark-1. The DeepSeek sections below record its deployment and describe the serving default; the GLM recipe, tuning measurements and rebuild examples describe the alternative, which the fresh-install checklist still builds first. (History: GLM served 2026-11-13 to 11-17, DeepSeek from 11-17, GLM again for part of 11-18, then DeepSeek by Max's decision.)
 
@@ -130,8 +133,12 @@ ablation H_C 55/71 (SCORE 82.2, row HY4-C). The unit served without a
 restart until 2026-11-22 12:11 PST, after H_C; the pair is back on DeepSeek. (State on 2026-11-19: the code on `main`, nothing on the Sparks;
 staging waited for the U arms, because serving Hy4 means stopping DeepSeek,
 and because the docker steps run outside any memory scope.) Hy4 is **never a boot default**: its unit cannot be
-enabled, `beastup` never picks it, and a reboot comes back to the selection
-(DeepSeek). It is here to be measured (v5 arm `H_T2`, a public-interest
+enabled, `beastup` never picks it, and after a reboot the selection
+(DeepSeek) serves again. `openbeast.conf` follows it only through `beast-spark
+boot-check`, the command center's `ExecStartPre` that `beast-spark install`
+writes as a drop-in (2026-11-24 review: before it, a reboot after `beasthy4`
+left the command center and the gate on Hy4's backend and id while DeepSeek
+served; [TODO.md](TODO.md) has the install step for spark-1). It is here to be measured (v5 arm `H_T2`, a public-interest
 measurement) and to be tried by hand. Why this build and not another: the
 review [HY4_FLASH_ENGINES-2026-11-19](reviews/HY4_FLASH_ENGINES-2026-11-19.md).
 
@@ -253,7 +260,8 @@ backup carries both). Nothing in `start.sh` reaches beyond the link
 ```bash
 beasthy4                     # = ~/.local/bin/beast-spark hy4
 beaststatus                  # the hy4 row, what :8000 serves; "the selection stays ds"
-beastds                      # back to DeepSeek (or beastglm); a reboot also comes back to DeepSeek
+beastds                      # back to DeepSeek (or beastglm); a reboot serves DeepSeek again, and
+                             # openbeast.conf follows it once beast-spark boot-check is installed (beast-spark install)
 ```
 
 `beast-spark hy4` holds the model-switch lock, stops whichever of
@@ -871,7 +879,7 @@ How to reach each box:
 | Helpers | spark-1, `~/openbeast-recipes/deepseek-prep/` | beast-spark's internals: `activate-stock.sh` (starts and verifies DeepSeek, enables it, disables GLM; it does **not** stop GLM, so `beastds` stops GLM first), `rollback/restore-glm.sh` (DeepSeek → GLM). Also `spark-deepseek-pack.sh`, `spark-deepseek-prepare-local.sh`, `verify-chat.py`, conformance records (`conformance-4/`, `conformance-v2/`) |
 | Shortcuts | spark-1, `~/.local/bin/beast-spark` + aliases in `~/.bashrc` | `beastup`, `beastdown`, `beastds`, `beastglm`, `beasthy4`, `beaststatus`: **the** switch path (from `scripts/backends/spark-beast.sh`; `spark-beast.sh install` puts it and the aliases in place) |
 | GLM unit | spark-1, `spark-hydra-inference` (**disabled** since 2026-11-18; enabled only while GLM is selected) | the staged alternative; see the GLM table below |
-| Command center | spark-1, `openbeast` (enabled) + transient `openbeast-stack` scope | as in the GLM table. `INFERENCE_MODEL` follows the selection (`restore-glm.sh` and `activate-stock.sh` rewrite it): `DeepSeek-V4.1-Flash-1017` with the default (checked 2026-11-18), `GLM-5.3-Flash-EXL3` while GLM serves. `INFERENCE_THINKING=on`, `EDGE_GATE=true` either way; `INFERENCE_SLOTS=8` with DeepSeek since 2026-11-23 (its `PARALLEL=8`), 4 with GLM (set by hand after a switch: no switch script rewrites it) |
+| Command center | spark-1, `openbeast` (enabled) + transient `openbeast-stack` scope | as in the GLM table. `INFERENCE_MODEL` follows the selection (`restore-glm.sh` and `activate-stock.sh` rewrite it): `DeepSeek-V4.1-Flash-1017` with the default (checked 2026-11-18), `GLM-5.3-Flash-EXL3` while GLM serves. `INFERENCE_THINKING=on`, `EDGE_GATE=true` either way; `INFERENCE_SLOTS=8` with DeepSeek since 2026-11-23 (its `PARALLEL=8`), 4 with GLM (every `beast-spark` switch writes it since the 2026-11-24 review; `restore-glm.sh` / `activate-stock.sh` themselves do not) |
 | opencode | both, `~/.opencode/bin/opencode` v2.3.2 | provider `spark-hydra-local` at `127.0.0.1:8000`, default model `DeepSeek-V4.1-Flash-1017` (since 2026-11-18), GLM also listed; on spark-2 through the `opencode-model-link` ssh tunnel ([SELF_DEVELOPMENT.md](SELF_DEVELOPMENT.md#opencode-on-the-sparks)) |
 
 **GLM-5.3-Flash, the staged alternative (since 2026-11-18; the first deployment, 2026-11-13 to 2026-11-17, and the default for part of 2026-11-18).** Checked read-only on 2026-11-18 while it served: unit `spark-hydra-inference` (`WorkingDirectory=~/openbeast-recipes/glm53`, `FOREGROUND=1 PREPARE=0`, `Restart=on-failure`, `RestartSec=30`), container `glm53-flash-tf` from image `tensorfold-glm53:v0.6.0` on both Sparks, model id `GLM-5.3-Flash-EXL3` on `127.0.0.1:8000`, which answers without a key (v0.6.0 has no API key; a bearer header is ignored). The rest of the table is as recorded when it was set up.
@@ -2014,7 +2022,7 @@ leaves these lines alone, adjust them by hand after `beastglm` or `beastds`.
 | `INFERENCE_BACKEND` | `tensorfold` | the model is the recipe's TensorFold server |
 | `INFERENCE_URL` | `http://127.0.0.1:8000` | same box, loopback. Spawned agents follow it (conf.sh exports `OPENBEAST_AGENT_INFERENCE_URL=$INFERENCE_URL/v1`) |
 | `INFERENCE_MODEL` | `GLM-5.3-Flash-EXL3` | the served name; exported as `OPENBEAST_INFERENCE_MODEL`, which `agents/runner.py` sends |
-| `INFERENCE_SLOTS` | `4` (GLM); `8` with DeepSeek since 2026-11-23 | matches the serving recipe's streams (GLM 4; DeepSeek `PARALLEL=8` since the [tuning session](reports/DEEPSEEK_TUNING-2026-11-23.md)); no switch script rewrites it, so set it after `beastglm` / `beastds`; beast-slot reports it. With `EDGE_MAX_INFLIGHT` unset it is also beast-gate's per-device cap, so one device (the Mac running parallel agents) may hold every stream: the per-device cap equals `INFERENCE_SLOTS` (8 with DeepSeek, 4 with GLM). Before the 2026-11-16 review the gate admitted 2 per device whatever the engine served; the audit showed `max_inflight` 429s with streams idle, each costing an agent turn ~7 s. Live since the 2026-11-16 restart: `/api/slot` reports `admission.per_device_inflight: 4` |
+| `INFERENCE_SLOTS` | `4` (GLM); `8` with DeepSeek since 2026-11-23 | matches the serving recipe's streams (GLM 4; DeepSeek `PARALLEL=8` since the [tuning session](reports/DEEPSEEK_TUNING-2026-11-23.md)); every `beast-spark` switch (glm, ds, hy4, a recipe, up's and boot-check's point-back) writes it with the model since the 2026-11-24 review (Hy4 4, a recipe its `SLOTS=`); beast-slot reports it. With `EDGE_MAX_INFLIGHT` unset it is also beast-gate's per-device cap, so one device (the Mac running parallel agents) may hold every stream: the per-device cap equals `INFERENCE_SLOTS` (8 with DeepSeek, 4 with GLM). Before the 2026-11-16 review the gate admitted 2 per device whatever the engine served; the audit showed `max_inflight` 429s with streams idle, each costing an agent turn ~7 s. Live since the 2026-11-16 restart: `/api/slot` reports `admission.per_device_inflight: 4` |
 | `EDGE_GATE` | `true` | beast-gate (:8090) is the one inference door (:8443) |
 | `EDGE_READ_TIMEOUT` | `3600` | seconds the gate waits for each byte from the model (default 600). A non-streaming completion sends nothing until it is done, so a long eval turn hit the gate's 504 at 600 s. Needed on any pair an eval harness targets ([F6](#f6-the-eval-harness-host-benchmarking-the-pair)) |
 | `TS_HOSTNAME` | `spark-1` | the tailnet name `setup-tailscale.sh` joins as. A Spark has no default and the script refuses without it ([E6](#e6-publish-on-the-tailnet-setup-tailscalesh-as-tailscaleds-operator)) |

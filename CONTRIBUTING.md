@@ -82,19 +82,26 @@ workflows above are still the definition of "green", but nothing runs them,
 so the author runs them before merging. Until a free local runner replaces
 this (`docs/TODO.md`, "A free local CI runner"):
 
-1. **On the Mac (or any dev box), from the PR branch,** with a Python ≥ 3.10
-   that has the locked deps (the eval venv works:
-   `~/.local/opt/openbeast-eval-venv/bin/python`):
+1. **On the Mac (or any dev box), the PR's head commit, in a clean tree:**
+   `scripts/gate.sh`, with a Python ≥ 3.10 that has the locked deps (the
+   eval venv works: `~/.local/opt/openbeast-eval-venv/bin/python`):
 
    ```bash
-   PY=~/.local/opt/openbeast-eval-venv/bin/python
-   $PY evals/suite_stats.py --check          # docs cite the generated eval counts
-   $PY evals/v5_board.py --check             # RESULTS / README v5 board blocks are current
-   $PY -m pytest tests/ -q                   # or, for a docs-only PR, at least the doc-pinning tests:
-   $PY -m pytest -q tests/test_suite_stats.py tests/test_beast_docs.py \
-       tests/test_beast_slot_ports_doc.py tests/test_v5_board.py
-   ruff check agents evals tests scripts extensions --select E9,F
+   PY=~/.local/opt/openbeast-eval-venv/bin/python scripts/gate.sh            # full: ruff E9,F, shellcheck -S error, suite_stats/v5_board --check, pytest tests/
+   PY=~/.local/opt/openbeast-eval-venv/bin/python scripts/gate.sh --quick    # a docs-only PR: the doc-pinning tests instead of the whole pytest run
+   scripts/gate.sh --linux                                                   # the same commit in the Linux test image (docker): tests/run_tests.sh
    ```
+
+   **Never run the checks in your working checkout only.** `gate.sh` makes a
+   fresh `git worktree add --detach` of the commit, so a file that exists in
+   your checkout but not in the commit (untracked, or hidden by
+   `.gitignore`) cannot make it pass: #314 merged a `main` on which 17 Basalt
+   tests failed, because its profile was ignored by `*.env` and only the
+   author's tree had it. The Mac baseline is **0 failed**: tests that need
+   Linux (`/proc`, GNU `stat`/`sed`/`grep -P`, bash ≥ 4) carry the
+   `linux_only` marker (`tests/conftest.py`) and skip there, so any failure
+   is new. Paste the summary block (commit, one line per step) into the PR
+   body.
 
    For a docs change, also check that every `#anchor` link in the files you
    touched resolves (the doc-pinning tests do not cover every page).

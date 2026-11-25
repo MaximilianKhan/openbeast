@@ -2068,9 +2068,18 @@ class _HTier:
         return i if self.ts[i] == t0 and self.n[i] > 0 else None
 
     def rows(self, now):
-        lo = now - self.step * self.cap
-        return sorted([int(self.ts[i]), self.s[i], self.n[i], self.lo[i], self.hi[i]]
-                      for i in range(self.cap) if self.n[i] > 0 and lo < self.ts[i] <= now + 300)
+        return _tier_rows(self.step, self.cap, self.ts, self.s, self.n, self.lo, self.hi, now)
+
+    def copy_arrays(self):
+        """(step, cap, ts, s, n, lo, hi) with the arrays copied (a C-level copy: microseconds)."""
+        return (self.step, self.cap, self.ts[:], self.s[:], self.n[:], self.lo[:], self.hi[:])
+
+
+def _tier_rows(step, cap, ts, s, n, lo_a, hi_a, now):
+    """The live slots of one tier as [t0, sum, count, min, max] rows, oldest first."""
+    lo = now - step * cap
+    return sorted([int(ts[i]), s[i], n[i], lo_a[i], hi_a[i]]
+                  for i in range(cap) if n[i] > 0 and lo < ts[i] <= now + 300)
 
 
 def _g(v, digits=6):
@@ -2226,15 +2235,27 @@ class HistoryStore:
                 out.append([b0, round(tot, 1) if any_ else None])
         return out
 
-    def dump(self, now=None, tiers=None):
-        now = time.time() if now is None else now
+    def snapshot(self):
+        """A copy of every metric's tier arrays, taken under the lock. The
+        lock is held only for the copies (~1 ms at the 128-metric cap), so a
+        save never stalls the samplers or /api/history; dump() builds the
+        rows from the copy outside it. (2026-11-24 review: building them
+        under the lock held it 0.4 s at 52 metrics and ~1 s at 128, twice
+        when the body went over HIST_FILE_MAX, and add() waited that long.)"""
         with self._lock:
-            out = {}
-            for name, (kind, ts) in self._m.items():
-                t_ = {str(t.step): [[r[0], _g(r[1]), r[2], _g(r[3], 5), _g(r[4], 5)] for r in t.rows(now)]
-                      for j, t in enumerate(ts) if tiers is None or j in tiers}
-                if any(t_.values()):           # a dead name (no rows left) is not saved
-                    out[name] = {"k": kind, "t": t_}
+            return [(name, kind, [t.copy_arrays() for t in ts]) for name, (kind, ts) in self._m.items()]
+
+    def dump(self, now=None, tiers=None, snap=None):
+        """The store as {name: {"k": kind, "t": {step: rows}}}, from `snap`
+        (a snapshot(); one is taken when None). Builds the rows unlocked."""
+        now = time.time() if now is None else now
+        snap = self.snapshot() if snap is None else snap
+        out = {}
+        for name, kind, ts in snap:
+            t_ = {str(a[0]): [[r[0], _g(r[1]), r[2], _g(r[3], 5), _g(r[4], 5)] for r in _tier_rows(*a, now)]
+                  for j, a in enumerate(ts) if tiers is None or j in tiers}
+            if any(t_.values()):           # a dead name (no rows left) is not saved
+                out[name] = {"k": kind, "t": t_}
         return out
 
     def load(self, doc, now=None):
@@ -2333,10 +2354,11 @@ def save_history(store=None, path=None, now=None, lock_timeout=-1):
     if not path:
         return 0
     now = time.time() if now is None else now
-    doc = {"v": 1, "saved_at": round(now), "tiers": [list(t) for t in store.tiers], "metrics": store.dump(now)}
+    snap = store.snapshot()            # the only moment the store's lock is held
+    doc = {"v": 1, "saved_at": round(now), "tiers": [list(t) for t in store.tiers], "metrics": store.dump(now, snap=snap)}
     body = json.dumps(doc, separators=(",", ":")).encode()
     if len(body) > HIST_FILE_MAX:
-        doc["metrics"] = store.dump(now, tiers=range(1, len(store.tiers)))
+        doc["metrics"] = store.dump(now, tiers=range(1, len(store.tiers)), snap=snap)
         body = json.dumps(doc, separators=(",", ":")).encode()
         if len(body) > HIST_FILE_MAX:
             return 0

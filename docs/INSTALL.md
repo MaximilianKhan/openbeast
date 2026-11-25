@@ -687,8 +687,11 @@ is Inkling 2 Mini, Basalt's stock NVFP4-MX8 pack
 (`jesdga/Inkling-2-Mini-Basalt` @ `c2afac3a`, sha256 `28ec7072…1b99`,
 19.6 GB), served by Basalt v0.5.7 (`400b411c`) through
 `scripts/engines/basalt.sh` (profile `inkling2-mini-stock`) with
-`AGENT_PROFILE=inkling-best`: the serve and agent setup of board row
-`INK-T2-STOCK` (53/71 scored, SCORE 78.2, single seed). Any other GPU keeps
+`AGENT_PROFILE=inkling-best`: the serve args and agent setup of board row
+`INK-T2-STOCK` (53/71 scored, SCORE 78.2, single seed), on a build of the
+pin **plus** the PR #632 patch (`scripts/engines/patches/`, DECISIONS §11),
+which that row ran without: no board row has measured this exact build yet
+([ENGINES.md](ENGINES.md#basalt-the-rtx-5090-default)). Any other GPU keeps
 llama.cpp. What you need beyond §1-§5: the NVIDIA Container Toolkit
 ([above](#gpu-in-docker-the-nvidia-container-toolkit); Basalt runs in a
 container with `--gpus`), ~20 GB more disk for the pack and ~4 GB for the
@@ -717,7 +720,7 @@ network):
 hf download jesdga/Inkling-2-Mini-Basalt Inkling-2-Mini-NVFP4-MX8.basalt \
   --revision c2afac3adb772e14d77b2ea2ac7068ad4460e932 --local-dir /media/usb/weights
 # on the rig
-OFFLINE=true ./scripts/engine.sh install basalt --from /media/usb/basalt  # every hash and the commit re-checked, compile with --network none
+OFFLINE=true ./scripts/engine.sh install basalt --from /media/usb/basalt  # commit vs the pin, Dockerfile hash vs this checkout, tarball sha256 + image id vs MANIFEST; compile with --network none
 cp /media/usb/weights/Inkling-2-Mini-NVFP4-MX8.basalt "$WEIGHTS_DIR"/ && ./scripts/verify-weights.sh --file Inkling-2-Mini-NVFP4-MX8.basalt
 ./scripts/engine.sh use default        # then AGENT_PROFILE=inkling-best, ./stop.sh && ./start.sh -d, as above
 ```

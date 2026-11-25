@@ -53,6 +53,67 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "host_probes: run with the real nvidia-smi / pgrep / tailscale "
                    "on PATH (the default is a stub that finds nothing)")
+    config.addinivalue_line(
+        "markers", "linux_only(reason): needs the Linux userland the rigs and Sparks run "
+                   "(/proc, GNU stat/sed/grep -P, bash >= 4, ss); skipped elsewhere, so a Mac run's "
+                   "baseline is 0 failed and any failure there is new")
+
+
+# --- linux_only ------------------------------------------------------------------
+# Some tests drive scripts written for the Linux hosts (they read /proc, call GNU
+# `stat -c`, GNU sed, `grep -P`, bash 4 arrays under set -u, ss). On macOS they
+# failed every run (~24 a run), so "25 failed" was the normal state and a real
+# regression hid in the count (#317: 42 = 25 + 17 real). They run on Linux, in
+# scripts/gate.sh --linux, and on the rig / spark-2 (tests/run_tests.sh).
+_LINUX_USERLAND = None
+
+
+def _linux_userland_missing() -> str:
+    """'' when this host has the Linux userland, else what is missing."""
+    global _LINUX_USERLAND
+    if _LINUX_USERLAND is not None:
+        return _LINUX_USERLAND
+    import shutil
+    import subprocess
+    import sys
+    miss = []
+    if not sys.platform.startswith("linux"):
+        miss.append(f"platform {sys.platform}")
+    if not os.path.isdir("/proc/self"):
+        miss.append("/proc")
+
+    def ok(cmd):
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            return None
+    r = ok(["stat", "--version"])
+    if not r or "GNU" not in r.stdout:
+        miss.append("GNU stat")
+    r = ok(["sed", "--version"])
+    if not r or "GNU" not in r.stdout:
+        miss.append("GNU sed")
+    r = ok(["grep", "-P", "x", "/dev/null"])
+    if not r or r.returncode not in (0, 1):
+        miss.append("grep -P")
+    bash = shutil.which("bash")
+    r = ok([bash, "-c", "echo ${BASH_VERSINFO[0]}"]) if bash else None
+    if not r or not r.stdout.strip().isdigit() or int(r.stdout.strip()) < 4:
+        miss.append("bash >= 4")
+    _LINUX_USERLAND = ", ".join(miss)
+    return _LINUX_USERLAND
+
+
+def pytest_collection_modifyitems(config, items):
+    marked = [it for it in items if it.get_closest_marker("linux_only")]
+    if not marked:
+        return
+    missing = _linux_userland_missing()
+    if not missing:
+        return
+    for it in marked:
+        why = it.get_closest_marker("linux_only").kwargs.get("reason", "the Linux userland")
+        it.add_marker(pytest.mark.skip(reason=f"linux_only ({why}): this host lacks {missing}"))
 
 
 def pytest_unconfigure(config):

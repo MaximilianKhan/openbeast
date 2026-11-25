@@ -625,6 +625,7 @@ def test_probe_on_the_primary_uses_fewer_replays(tmp_path):
     assert len(completions) == 2 + 3     # known answers + REPLAY_N_PRIMARY, not 2 + 10
 
 
+@pytest.mark.linux_only(reason="GNU stat -c")
 def test_instinct_sh_hands_the_primary_key_to_the_service_env_only(tmp_path):
     """`instinct.sh up` resolves LLAMA_API_KEY like conf.sh (OPENBEAST_API_KEY
     first) and gives it to the service through its ENVIRONMENT: present in

@@ -256,6 +256,7 @@ def test_lost_transition_is_persisted(ledger):
     assert on_disk["state"] == "lost"
 
 
+@pytest.mark.linux_only(reason="/proc/<pid>/stat")
 def test_pid_start_time_handles_comm_with_spaces_and_parens(tmp_path, monkeypatch):
     """`comm` is attacker-shaped: rpartition(')') is the only correct split."""
     fake = tmp_path / "stat"
@@ -482,6 +483,7 @@ def _zombie() -> int:
     return pid
 
 
+@pytest.mark.linux_only(reason="/proc/<pid>/stat")
 def test_a_zombie_is_not_alive(ledger):
     """E3 — the premise of the whole feature.
 
@@ -545,6 +547,7 @@ def test_is_alive_rejects_junk_and_dead_pids(ledger):
     assert sessions.is_alive({"pid": _dead_pid(), "meta": {"pid_start": 1}}) is False
 
 
+@pytest.mark.linux_only(reason="/proc/<pid>/stat")
 def test_proc_state_and_start_time_come_from_one_parse(tmp_path, monkeypatch):
     """`comm` is attacker-shaped: rpartition(')') is the only correct split,
     and the state char is field 3 == index 0 after it."""
@@ -864,6 +867,7 @@ def test_register_stamps_the_boot(ledger):
     assert rec["meta"]["boot_id"] == sessions._boot_id()
 
 
+@pytest.mark.linux_only(reason="/proc boot id")
 def test_a_record_from_another_boot_is_never_alive(ledger, monkeypatch):
     """pid_start is ticks since BOOT, so across a reboot the comparison is
     two different clocks — the documented reboot guarantee was void by

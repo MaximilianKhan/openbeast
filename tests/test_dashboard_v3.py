@@ -13,9 +13,7 @@ import json
 import math
 import os
 import shutil
-import subprocess
 import time
-import urllib.parse
 
 import pytest
 
@@ -1050,3 +1048,52 @@ def test_tensorfold_lane_wait_with_a_full_stream_is_not_kv_full(monkeypatch):
     s.sample(now=T0)
     assert s.snapshot()["kv_pct"] == 99.0
     assert "kv:full" in d.alert_conditions(d.alert_thresholds(conf={}), [], s.snapshot(), {}, T0)
+
+
+def test_history_save_holds_the_store_lock_only_for_the_copy(monkeypatch, tmp_path):
+    """performance-4 (2026-11-24 review): save_history built every row under the
+    store's lock (0.4-1 s at 52-128 metrics; twice over HIST_FILE_MAX), so a
+    sampler's add() waited that long. Now the lock is taken once, for a copy of
+    the arrays, and the rows are built from the copy."""
+    d = load(monkeypatch)
+    s = d.HistoryStore()
+    now = time.time()
+    for k in range(720):
+        s.add("node:spark-1:gpu_util", k % 100, now - 3600 + k * 5)
+
+    class CountingLock:
+        def __init__(self):
+            self.inner, self.n, self.held = d.threading.Lock(), 0, False
+
+        def __enter__(self):
+            self.inner.acquire()
+            self.n += 1
+            self.held = True
+            return self
+
+        def __exit__(self, *a):
+            self.held = False
+            self.inner.release()
+
+    lock = CountingLock()
+    s._lock = lock
+    built = []
+    real_rows = d._tier_rows
+
+    def rows(*a):
+        built.append(lock.held)
+        return real_rows(*a)
+
+    monkeypatch.setattr(d, "_tier_rows", rows)
+    path = tmp_path / "h.json"
+    assert d.save_history(s, path=str(path), now=now) > 0
+    assert lock.n == 1 and built and not any(built)          # one hold, every row built outside it
+    # over the cap: the second dump (without the 5 s tier) reuses the copy, no second hold
+    monkeypatch.setattr(d, "HIST_FILE_MAX", len(path.read_bytes()) - 1)
+    lock.n = 0
+    assert d.save_history(s, path=str(path), now=now) > 0
+    assert lock.n == 1
+    # the copy is a copy: a reading after the snapshot does not change it
+    snap = s.snapshot()
+    s.add("node:spark-1:gpu_util", 55, now)
+    assert d.HistoryStore.dump(s, now, snap=snap) != s.dump(now)

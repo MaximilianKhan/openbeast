@@ -85,6 +85,7 @@ def free_port() -> int:
     return p
 
 
+@pytest.mark.linux_only(reason="GNU sed")
 def test_script_parses_and_documents_the_contract(tmp_path):
     assert subprocess.run(["bash", "-n", str(SH)]).returncode == 0
     # On a box with NO weights directory: help must not need one.
@@ -96,6 +97,7 @@ def test_script_parses_and_documents_the_contract(tmp_path):
         assert needle in r.stdout, needle
 
 
+@pytest.mark.linux_only(reason="GNU sed")
 def test_dry_run_plans_a_pinned_offline_readonly_container(tmp_path):
     env = env_for(tmp_path)
     r = sh("up", "--dry-run", "--port", str(free_port()), env=env)
@@ -151,6 +153,7 @@ def _fake_llama_servers(tmp_path, environs: dict[int, bytes | None]):
     return str(proc)
 
 
+@pytest.mark.linux_only(reason="GNU sed")
 def test_refuses_a_host_running_llama_server(tmp_path):
     env = env_for(tmp_path)
     env["OPENJEV_PROC_ROOT"] = _fake_llama_servers(tmp_path, {4242: b"PATH=/usr/bin\0"})
@@ -160,6 +163,7 @@ def test_refuses_a_host_running_llama_server(tmp_path):
     assert sh("up", "--dry-run", env=env).returncode == 0
 
 
+@pytest.mark.linux_only(reason="GNU sed")
 def test_the_cpu_instinct_scorer_does_not_block_the_freed_5090(tmp_path):
     """Review minor: the rig's own CPU 0.6B scorer (CUDA_VISIBLE_DEVICES="")
     used to make the freed-5090 path need OPENJEV_ALLOW_SHARED_HOST=1.
@@ -175,6 +179,7 @@ def test_the_cpu_instinct_scorer_does_not_block_the_freed_5090(tmp_path):
     assert r.returncode == 2 and "GPU of its own" in r.stderr
 
 
+@pytest.mark.linux_only(reason="GNU sed")
 def test_stock_base_for_validation_only(tmp_path):
     r = sh("up", "--dry-run", "--base", "stock", "--validation-only", env=env_for(tmp_path))
     assert r.returncode == 0 and "Qwen/Qwen3.8-27B@1d4bf0f2" in r.stdout
