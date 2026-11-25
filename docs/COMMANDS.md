@@ -97,7 +97,7 @@ thinking off; the gate's default is on (`INFERENCE_THINKING=on`).
 ## 2. spark-1: status and logs (read-only)
 
 ```bash
-~/openbeast/scripts/healthcheck.sh                      # expect "All 9 services healthy" + the unified-memory line
+~/openbeast/scripts/healthcheck.sh                      # expect "All 10 services healthy" + the unified-memory line
 ~/openbeast/start.sh status                             # what is running (pids)
 ~/openbeast/scripts/doctor.sh                           # config / security / supply-chain / health fix-list
 python3 ~/openbeast/agents/island.py status             # online or islanded, and why
