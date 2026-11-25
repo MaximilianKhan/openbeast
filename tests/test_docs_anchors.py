@@ -6,7 +6,6 @@ GitHub's slug rule: lower-case, drop backticks and punctuation other than
 '-' and '_', spaces to '-', a repeated heading gets -1, -2, ...
 """
 
-import os
 import re
 from pathlib import Path
 
