@@ -468,8 +468,9 @@ fi
 #         65/71, SCORE 94.9, board row DS-T2, 2026-11-19, single seed
 #         (docs/SPARK_HYDRA.md "DeepSeek best configuration").
 #       qwen38-best   = T2 on Qwen3.8 27B Uncensored MTP Q5_K_M (llama.cpp),
-#         the RTX 5090's previous default, one stream (arm Q_T2): 52/71 scored,
-#         SCORE 75.6, board row Q38U-T2, 2026-11-23, single seed, against
+#         the RTX 5090's previous default, one stream (arm Q_T2): 51/71 scored,
+#         SCORE 75.0 (52/71, 75.6 before the 2026-11-25 integrity rescan),
+#         board row Q38U-T2, 2026-11-23, single seed, against
 #         39/71 (SCORE 63.3) for its bare L0 baseline (row Q38U-L0; that pair
 #         also crosses harness10 -> harness9). The rig's default setup
 #         2026-11-23 to 2026-11-24 (docs/MODELS.md; report

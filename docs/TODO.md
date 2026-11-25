@@ -5,7 +5,7 @@
 **RTX 5090 (2026-11-24):** stock Inkling 2 Mini on Basalt (board row
 INK-T2-STOCK, 53/71, SCORE 78.2) is the 5090 default by decision
 ([DECISIONS-2026-11-24 §10](reports/DECISIONS-2026-11-24.md)); Qwen3.8
-(Q38U-T2, 52/71) is the fallback. The rig's own switch is still pending
+(Q38U-T2, 51/71 after the 2026-11-25 integrity rescan) is the fallback. The rig's own switch is still pending
 (its `openbeast.conf` says `AGENT_PROFILE=qwen38-best`). The improved arm
 `I_T3` finished 2026-11-25 at 52/71 (board row INK-T3, SCORE 77.4: level
 with INK-T2-STOCK, 4 context overflows; the default stays stock,
@@ -558,24 +558,23 @@ DeepSeek's UP on the same harness
     tests against `I_T2_stock` and Q38U-T2 (report §12 recipe), then §6's
     switch rule. Follow-ups `I_T3_t15`, `I_T3_8k` and a seed repeat only
     with Max's go.
-- [ ] **Rescan the rig arms with the review-1124 integrity scan** (after
-  `I_T3` ends; read only, no host change). **INK-T2-STOCK done
-  2026-11-25** (I_T3's wrap-up): one hit, a false positive (`nc` used as a
-  variable in code read as a network command), fixed in the scanner;
-  0 contaminated (sealed review `ink-t3-integrity-2026-11-25.md`).
-  Remaining: INK-T2, -S1, -UP8K, Q_T2, the calibration, Q38U-L0. The scan before review 1124
-  flagged a result line only when it STARTED with `/Users/`, `/home/` or
-  `/tmp/claude-`, so an `ls -l` / `find -ls` / `du -a` line, a `./home/...`
-  line after `cd /` or a `/root/...` / `/work/...` root went unseen, and
-  `pip install`, `cargo add`, `nc`, `ssh`, httpie and python socket/urllib
-  one-liners were not network. INK-T2, -S1, -STOCK and -UP8K's "0 more
-  contaminated" rests on the old tool plus a manual substring sweep. Steps:
-  copy each arm's transcripts off the rig read-only (`rsync -a
-  beast:~/ob-ink*/.claude/worktrees/h9/agents/logs/ /tmp/rig-logs/<arm>/`,
-  never into the live trees), run `evals/audit/integrity_scan.py` from
-  main over them with each arm's results file, and record any new hit in
-  the sealed review and DECISIONS (contaminated units are excluded, never
-  re-scored). Also Q_T2, the calibration and Q38U-L0.
+- [x] **Rescan the rig arms with the review-1124 integrity scan: DONE
+  2026-11-25** (read only on the rig, transcripts copied to the Mac, the
+  scanner from main). Every board row and diagnostic that ran on the RTX
+  5090 rig: Q38U-L0 (71 transcripts, 3 contaminated, unchanged), Q38U-T2
+  main + r1 (81, **6: +2**), INK-T2 (71, 0), INK-T2-S1 (71, 0),
+  INK-T2-STOCK (81, 0, confirmed), INK-UP8K (71, 1, unchanged), INK-T3
+  (75, 0, confirmed), the DeepSeek T2 calibration with its rerun and
+  redo-fails (89, 0) and the Q38U L1/L2 profile (52, 0). The two new
+  Q38U-T2 units are package installs from the agent's shell, which the
+  2026-11-23 scan did not check (one a pass); both excluded:
+  **Q38U-T2 52/71 → 51/71, SCORE 75.6 → 75.0**, rank unchanged
+  ([DECISIONS-2026-11-25 §5](reports/DECISIONS-2026-11-25.md#5-the-rig-arms-rescanned-q38u-t2-loses-two-more-units-52--51)).
+  Scanner fixes: a network command the shell reports as `command not
+  found` is an attempt (one more Q_T2 pass was a false positive), and
+  the failed-connection test no longer matches `ENOTFOUND` inside
+  Python's `ModuleNotFoundError`. Sealed review
+  `evals/audit/reviews/rig-arms-rescan-2026-11-25.md`.
 - [ ] **Next era (runner): do not execute a tool call from a reply that
   ended `length`.** Basalt returns a call the cap cut with its arguments
   closed into valid JSON, and the runner runs it: 51-82 truncated

@@ -47,6 +47,16 @@
       "reason": "contaminated: the integrity scan flagged off-host access from the agent's shell (integrity scan 2026-11-23; on Linux the agent shell has no network deny, evals/README.md residual gaps)"
     },
     {
+      "unit": "123_nbody_b",
+      "run": "Q38U-T2",
+      "reason": "contaminated: the review-1124 rescan flagged off-host access from the agent's shell (a package install from the public index, which the 2026-11-23 scan did not check; integrity rescan 2026-11-25)"
+    },
+    {
+      "unit": "168_linearizability_kv_c",
+      "run": "Q38U-T2",
+      "reason": "contaminated: the review-1124 rescan flagged a package install from the agent's shell whose output was discarded (counted as a read, as Q38U-L0's 163_bigint_divmod_e, though the eval-host user cannot install system packages; a fail, so no score effect; integrity rescan 2026-11-25)"
+    },
+    {
       "unit": "163_bigint_divmod_c",
       "run": "INK-UP8K",
       "reason": "contaminated: a find / listing printed sealed reference file names (evals/refs/163_bigint_divmod/, the paths only; both reads of a file were refused by the eval guard); the unit failed, so the scored count is unchanged (integrity scan 2026-11-24; the Linux container mounts the eval tree, docs/HARNESS_NOTES.md)"
