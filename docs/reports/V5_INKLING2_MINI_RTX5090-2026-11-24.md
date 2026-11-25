@@ -16,8 +16,11 @@
 > Basalt (§10.9, the wrap-up; read for I_T3 in §12.6). **The
 > improved arm `I_T3`** (stock pack + wall-bound turns + a 16,384 cap with
 > an 8,192 answer room + Basalt PR #632's patch, which targets Basalt issue
-> #588) is staged in §12 and has been RUNNING on the rig since 2026-11-24
-> 16:29 PST (launched after this report was written; no result yet). Engine choice and its review:
+> #588) is designed in §12 and **finished 2026-11-25 at 52/71** (SCORE 77.4,
+> board row `INK-T3`, listed, not ranked): level with INK-T2-STOCK
+> (2 gained, 3 lost, p 1.0), 4 of its fails context overflows; the
+> default stays stock. Its wrap-up is §13 and the companion report
+> [V5_INKLING2_MINI_I_T3-2026-11-25.md](V5_INKLING2_MINI_I_T3-2026-11-25.md). Engine choice and its review:
 > [STRATA_INKLING_5090-2026-11-23.md](STRATA_INKLING_5090-2026-11-23.md)
 > §11 and §15; decisions: [DECISIONS-2026-11-24.md](DECISIONS-2026-11-24.md).
 
@@ -1663,7 +1666,29 @@ with 0 empty replies, runs the arm, and logs the server's wrap and
 
 **Status (added after merge).** Launched 2026-11-24 16:29:10 PST (gate
 passed 16:30:37, arm started 16:30:39; the campaign prints an ETA of
-~11.5 h, longer than the ~8-10 h above). No result yet. When it ends, read
-it with the audit tools at **its** cap: `basalt_log.py … --cap 16384` and
+~11.5 h, longer than the ~8-10 h above). Ended 2026-11-25 02:18 PST
+(the main pass 8 h 42 min, the campaign's rerun of 4 units 1 h 05 min): **52/71**,
+§13. It was read with the audit tools at **its** cap: `basalt_log.py … --cap 16384` and
 `capped_turns.py` (which takes the cap from each `output_cap` event, or
 `--cap 16384`); at the 8,192 default the cap-reply rates come out empty.
+
+## 13. I_T3: the result (2026-11-25)
+
+> **Added 2026-11-25.** The full wrap-up is a companion report,
+> [V5_INKLING2_MINI_I_T3-2026-11-25.md](V5_INKLING2_MINI_I_T3-2026-11-25.md)
+> (its generated tables are for the stock model, where this report's §4 is
+> for the Derisked one). Decision: [DECISIONS-2026-11-25 §4](DECISIONS-2026-11-25.md#4-i_t3-does-not-beat-ink-t2-stock-the-5090-default-stays-stock).
+
+Against §12.7's expectations:
+
+| §12.7 expected | Measured |
+|---|---|
+| A point estimate of 54-56 from the stock base of 53 | **52/71**, SCORE 77.4 (INK-T3); against INK-T2-STOCK 2 gained, 3 lost, p 1.0 |
+| A lead on the 65 units paired with Q38U-T2 (stock: −2) | −3 (2 gained, 5 lost, p 0.45) |
+| Turns +1 to +4 | 2 passes needed more than 60 turns (`163_bigint_divmod_e` 88, `178_codebase_qa` 69); 2 of stock's last-turn passes were lost at 180; 3 of 5 genuine turn-limit fails looped; 8 fails now end at the wall |
+| Cap and answer room 0 to +2 (the cut calls) | capped replies with a call 43 (stock 83), truncated heredocs 33 (82); the targeted units still failed |
+| #588 patch 0 to +2 (no empty turns) | **0 empty capped turns** (stock 105); 93 capped turns of text without a call instead |
+| Risk: a long empty turn now costs ~33 s | did not arise (no empty turns) |
+| Not foreseen | **4 context overflows** (+1 at the wall): the turns, the longer replies and the 16,384 reservation outgrew the 262,144 window, and the harness9 runner does not compact on Basalt's wording; counted fails by Max's rule (DECISIONS-2026-11-25 §1) |
+| Time ~8-10 h (UNVERIFIED) | 8 h 42 min (+ 1 h 05 min rerun); 8.7 unit-hours against 4.3 |
+

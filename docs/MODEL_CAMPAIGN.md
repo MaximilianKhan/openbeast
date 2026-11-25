@@ -582,6 +582,8 @@ below). `--dry-run` prints them for your settings.
 | I_T2_s1 | I_T2 | I_T2 under `--seed 1` (optional, harness9; `noise_of: I_T2`) | `--seed 1`; Derisked pack. Basalt honours a request seed on Inkling (`request_prefill.cpp`; unseeded requests take a clock seed, so I_T2 itself is a fresh draw, unlike the Spark server's fixed seed); a seeded request keeps DSpark drafts by the plain rule (`draw_drafts=false`) | 2.3 | ~1.5-2 h (UNVERIFIED); **4 h 11 min measured** | the Inkling noise margin **51/71 (board row INK-T2-S1, a seed replicate: `replicate_of: INK-T2`, never ranked); 2 of 71 units flipped against I_T2, both gains (p 0.50)** |
 | I_T2_stock | I_T2 | I_T2 on Basalt's stock pack (optional, harness9) | I_T2 exactly, `inkling-v5.sh start stock` (`c2afac3a`, `28ec7072…`); `--model-name "Inkling 2 Mini (Basalt NVFP4-MX8, stock)"`; the queue checks the pack with `docker inspect` (the alias is the same for both packs) | 2.3 | ~1.5-2 h (UNVERIFIED); **4 h 18 min measured** | the derisking edit's effect (control) **53/71 scored, SCORE 78.2, #4 (board row INK-T2-STOCK, weights `inkling2-mini-basalt-nvfp4-mx8-stock`); against I_T2 +4 (p 0.22), I_T2_s1 +2 (p 0.63); against Q38U-T2 −2 over 65 clean units (p 0.69): parity; Qwen3.8 stays the default** (superseded the same day: stock Inkling became the 5090 default, [DECISIONS-2026-11-24 §10](reports/DECISIONS-2026-11-24.md)) |
 | I_UP8k | UP_8k | UP_8k at one stream on Inkling, Derisked pack (optional, harness10) | UP_8k exactly with `"jobs": 1, "slots": 1`; harness10 tree (era `9bcd5aa6`), no `--arm-tree` | 2.3 | ~1.5-2 h (UNVERIFIED); campaign estimate 4.2 h; **4 h 3 min measured** | DeepSeek's other 65/71 setup against I_T2 (crosses the era, as DS-UP8k vs DS-T2) **49/71, SCORE 75.1 (board row INK-UP8K, listed, not ranked: INK-T2 is the pack's best); against I_T2 3 gained, 3 lost (p 1.0): level, T2 stays. On Basalt the forced-act turn did not stop thinking (`enable_thinking=false` → effort "none", no budget): 67 of 68 still thought, 50 ended empty, 18 acted; do not run U-type arms on Basalt with Inkling (DECISIONS-2026-11-24 §13)** |
+| I_T3 | I_T2_stock | the improved composite on the stock pack (optional, harness9) | `--turns-per-wall-s 5`, `--reasoning-budget 16384`, `OPENBEAST_AGENT_MAX_TOKENS=16384`; served by `inkling-v5.sh start stock --patch pr632 --answer-room 8192` (Basalt `400b411c` + PR #632 `55f9be17`); launcher `~/openbeast-runs/ink-I_T3-run.sh` | 2.3 | ~8-10 h (UNVERIFIED), campaign ~11.5 h; **8 h 42 min measured + 1 h 05 min rerun** | turns + cap + #588 patch against I_T2_stock (53) and Q38U-T2 (52) **52/71, SCORE 77.4 (board row INK-T3, listed, not ranked; INK-T2-STOCK stays the default); against I_T2_stock 2 in, 3 out (p 1.0); against Q38U-T2 −3 over 65 (p 0.45); 4 context overflows (counted fails) + 1 at the wall; 0 empty capped turns (DECISIONS-2026-11-25 §4)** |
+| I_T3_t15, I_T3_8k | I_T3 | the follow-ups that take I_T3 apart (turns; cap and answer room) | `--turns-per-wall-s 15`; `--reasoning-budget 8192` + `MAX_TOKENS=8192` at `--answer-room auto` | 2.3 | ~4-5 h; ~8-10 h (UNVERIFIED) | **not queued** (DECISIONS-2026-11-25 §4: wait for the next-era overflow fix) |
 | T_j2 | T | 2 concurrent units (optional) | `"jobs": 2, "slots": 2` in the arm (wins over the CLI); only with `--only T_j2` or `--include T_j2` | 2.3 | ~7.7 h (~9 h for DeepSeek) | the contention model: same tokens per unit, at 2 streams (see the note below) |
 
 **DeepSeek's composite is T2 (2026-11-19).** DeepSeek-V4.1-Flash (Mia EXL3)
@@ -1353,7 +1355,21 @@ GLM, its N0 is arm B (36/71, thinking pinned off).
       `without_budget_line` counts the thinking-off requests from the server
       side; check they agree, and that a forced turn actually acts (on
       DeepSeek and GLM all did) before reading the arm as a test of it.
-- [ ] **RUNNING since 2026-11-24 16:29 PST: the improved Inkling arm `I_T3`**
+- [x] **The improved Inkling arm `I_T3`** (2026-11-25, 00:30:39 to
+      09:13:10 UTC + the campaign's rerun of 4 units to 10:18:12): 52/71,
+      SCORE 77.4, board row INK-T3 (listed; INK-T2-STOCK stays the pack's
+      row and the 5090 default; DECISIONS-2026-11-25 §4). Level with
+      I_T2_stock (2 in, 3 out, p 1.0); 4 context overflows, counted as
+      fails under Max's rule (`overflow.json`), + 1 at the wall; #632: 0
+      empty capped turns (105 on stock), 93 text-only capped turns
+      ([report](reports/V5_INKLING2_MINI_I_T3-2026-11-25.md)). **For an arm
+      whose units may outgrow the window** (more turns, a bigger cap):
+      `overflow_audit.py <main>` (or main + reruns: each file's window now
+      ends at the next file's start), add the server-log evidence to
+      `overflow.json`, and commit the campaign's rerun file too, as the
+      record; under the rule it supersedes nothing. On Basalt until the next
+      era, a wall-bound arm overflows: the runner does not compact on its
+      wording. The launch record:
       (DECISIONS-2026-11-24 §12; it takes none of UP_8k's switches, §13;
       launcher pid 7275 on the rig, `PACK=stock`, campaign ETA ~11.5 h;
       live paths and the stop-safely steps in TODO); read against

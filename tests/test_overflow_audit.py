@@ -72,3 +72,32 @@ def test_audit_end_to_end(tmp_path):
     assert got["1_x"]["verdict"] == "overflow" and got["2_y"]["verdict"] == "not_overflow"
     assert got["1_x"]["file"] == res.name and got["1_x"]["label"] == "server_error"
     assert "2 API errors (row: 2)" in got["1_x"]["evidence"]
+
+
+def test_audit_main_file_never_matches_its_reruns_transcript(tmp_path):
+    """A main file and its repair file under one --until (the campaign's end):
+    the main row is matched to its own transcript, not to the rerun's (I_T3)."""
+    tree = tmp_path / "tree"
+    (tree / "evals" / "tasks").mkdir(parents=True)
+    (tree / "evals" / "tasks" / "1_x.json").write_text(json.dumps({"id": "1_x", "task": "Do X."}))
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    for name, ts, errs in (("agent-20261125-010000-aaaaaaaa.jsonl", "2026-11-25T01:00:00", [BASALT] * 2),
+                           ("agent-20261125-030000-bbbbbbbb.jsonl", "2026-11-25T03:00:00", [])):
+        lines = [{"type": "start", "task": "Do X.", "timestamp": ts},
+                 {"type": "response_model"}] + [{"type": "error", "error": e} for e in errs]
+        (logs / name).write_text("\n".join(json.dumps(x) for x in lines) + "\n")
+    main = tmp_path / "eval-m-x-20261125-005900.json"
+    main.write_text(json.dumps({"timestamp": "2026-11-25T00:59:00", "tasks": [
+        {"id": "1_x", "passed": False, "reason": "server_error", "api_errors": 2, "tokens_completion": 9}]}))
+    rerun = tmp_path / "eval-m-x-20261125-025900.json"
+    rerun.write_text(json.dumps({"timestamp": "2026-11-25T02:59:00", "tasks": [
+        {"id": "1_x", "passed": False, "api_errors": 0, "tokens_completion": 9}]}))
+    O.T.set_default_tz("UTC")
+    try:
+        got = O.audit([str(main), str(rerun)], str(tree), str(logs),
+                      until=O.T.parse_time("2026-11-25T04:00:00"))
+    finally:
+        O.T.set_default_tz(None)
+    assert len(got) == 1 and got[0]["verdict"] == "overflow"
+    assert "aaaaaaaa" in got[0]["evidence"]

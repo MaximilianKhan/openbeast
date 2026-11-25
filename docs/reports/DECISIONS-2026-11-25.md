@@ -11,6 +11,7 @@
 1. [A context overflow is a model loss](#1-a-context-overflow-is-a-model-loss)
 2. [The audit: no board unit was lost to an overflow](#2-the-audit-no-board-unit-was-lost-to-an-overflow)
 3. [The rule is enforced by the board tooling, from a committed ledger](#3-the-rule-is-enforced-by-the-board-tooling-from-a-committed-ledger)
+4. [I_T3 does not beat INK-T2-STOCK; the 5090 default stays stock](#4-i_t3-does-not-beat-ink-t2-stock-the-5090-default-stays-stock)
 
 ---
 
@@ -178,3 +179,83 @@ repair supersedes; the `--check` problems; every engine's wording; the
 committed ledger covers every `server_error` row), `tests/test_ablation.py`
 (an overflow stays in the pair), `tests/test_campaign.py` (never lost),
 `tests/test_overflow_audit.py` (the transcript classification, end to end).
+
+---
+
+## 4. I_T3 does not beat INK-T2-STOCK; the 5090 default stays stock
+
+**Decision.** Arm `I_T3` (the improved Inkling composite: the stock pack +
+`--turns-per-wall-s 5` + a 16,384 cap with `--answer-room 8192` + Basalt
+PR #632's patch; DECISIONS-2026-11-24 §12) scored **52/71**, SCORE 77.4,
+against `INK-T2-STOCK`'s 53/71, SCORE 78.2. It goes on the board as run
+`INK-T3`, listed and never the stock pack's shown row (the board shows the
+best SCORE per model and weights). Therefore:
+
+1. **The RTX 5090 default stays stock** (`INK-T2-STOCK`, profile
+   `inkling2-mini-stock`, `AGENT_PROFILE=inkling-best`; Max, 2026-11-24,
+   [DECISIONS-2026-11-24 §10](DECISIONS-2026-11-24.md#10-stock-inkling-2-mini-on-basalt-is-the-rtx-5090-default)).
+   `board.json` `defaults` is unchanged.
+2. **The I_T3 follow-ups `I_T3_t15` and `I_T3_8k` are not queued.** They
+   stay defined in `evals/campaigns/v5-thinking-first.json`.
+3. **The next Inkling step waits for the next-era overflow fix**
+   ([HARNESS_NOTES](../HARNESS_NOTES.md#next-era-context-overflow-is-a-model-outcome-2026-11-25)
+   proposal (a): the runner compacts on Basalt's overflow wording).
+
+**When / who.** 2026-11-25, on the wrap-up of the arm (the rule of §6 of
+DECISIONS-2026-11-24 for a new configuration of the default's model:
+switch only on a measured improvement). Max's decisions of 2026-11-24 stand;
+nothing here changes the shipped profile.
+
+**Reason.**
+
+- **Level with its base, inside noise.** Paired over 71 units against
+  INK-T2-STOCK: 2 gained (`163_bigint_divmod_e`, `178_codebase_qa`), 3 lost
+  (`158_karatsuba_bytes_c`, `163_bigint_divmod_a`,
+  `196_polyphase_resampler`), p 1.0; the MDE is 7 units at Inkling's
+  measured seed churn. Against Q38U-T2 over 65 units: 2 gained, 5 lost,
+  p 0.45 (the arm's aim, a lead on these units, did not come). Single seed.
+- **Twice the cost.** 8.7 unit-hours against 4.3, 3.0× the tokens, for the
+  same count.
+- **A new failure mode the composite causes and the harness cannot handle
+  yet.** Four units (`163_bigint_divmod_d`, `176_intermittent_500s_a`,
+  `183_heston_little_trap`, `192_pike_regex`) outgrew the 262,144 window and
+  a fifth (`168_linearizability_kv_c`) overflowed and ran to its wall: more
+  turns, longer replies and a 16,384 reservation per request. The harness9
+  runner does not recognise Basalt's "exceeds the context window", so it
+  never compacted and resent the request until the turn limit. Counted as
+  fails by §1 (`overflow.json`); the campaign's rerun of the four (all
+  failed again, none an overflow) supersedes nothing: 52 either way. Taking
+  the composite apart (`I_T3_t15`, `I_T3_8k`) before that gap is closed
+  would measure the gap as much as the levers.
+
+**Evidence.** [V5_INKLING2_MINI_I_T3-2026-11-25.md](V5_INKLING2_MINI_I_T3-2026-11-25.md)
+(§3 the row, §5 the pairs, §6 the overflows, §7 the three changes, §9 time
+and speed); board row `INK-T3`; `overflow.json` (4 entries with the
+transcript and server-log evidence); the sealed review
+`evals/audit/reviews/ink-t3-integrity-2026-11-25.md` (0 contaminated;
+`122_gemm_blocked_d` `dlsym` replay PASS 3 of 3, a validator note).
+
+**What I_T3 says about the #632 patch, and the recommendation.** The
+shipped default build is the pin plus #632 (#319; the profile's `PATCHES`).
+In I_T3 the patch removed the empty capped turn entirely (0 in 3,204
+replies; INK-T2-STOCK 105, the Derisked arms 167-226), and what is left is
+the model writing text to the cap without a call (93 replies): visible, not
+empty, still not an action. Its score effect is not separable (bundled, and
+not ablated by policy). **Recommendation, not applied: keep #632 in the
+default build** (the report's §11.2); Max decides. Measure the default build
+exactly as an arm when the GPU is free (TODO "Basalt after the switch").
+
+**Alternatives.** (a) Make I_T3 the default's agent setup: lost, it does not
+beat the stock row and costs twice the time. (b) Queue `I_T3_t15` and
+`I_T3_8k` now: lost for now (above). (c) Drop the #632 patch from the
+default: not recommended, the patch removes a measured failure and costs
+nothing measured.
+
+**Tooling changed with this entry** (the same PR): `integrity_scan.py`
+no longer reads `nc` used as a variable in code as a network command (a
+false positive found when INK-T2-STOCK was rescanned with the review-1124
+scanner; INK-T2-STOCK stays 0 contaminated), and `overflow_audit.py` ends
+each results file's window at the next file's start (given a main file and
+its rerun under one `--until`, it had matched the main rows to the rerun's
+transcripts; its error-count guard caught it).
+

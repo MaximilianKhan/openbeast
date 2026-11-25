@@ -162,6 +162,42 @@
       "cause": "the validator timed out (60 s) after the agent ran to its turn limit; superseded on the board by the repair file's verdict (GLM-L0's second file)",
       "evidence": "row: api_errors 0, compactions 0, iterations 30, validation_output 'Validation timed out (60s)'; transcript Mac agents/logs/agent-20261116-061757-c3a43cf8.jsonl (the openbeast.nosync checkout): 30 iterations, a max_iterations stop, 0 error events, 0 compactions, no context_overflow_unrecoverable",
       "checked": "2026-11-25"
+    },
+    {
+      "file": "eval-inkling-2-mini-basalt-nvfp4-mx8-stock-v5-thinking-first-i-t3-20261125-003039.json",
+      "unit": "163_bigint_divmod_d",
+      "label": "server_error",
+      "verdict": "overflow",
+      "cause": "context overflow: Basalt HTTP 400 'request exceeds the context window' (the prompt plus the per-turn max_tokens 16384 over the 262,144-token window); the runner's _CTX_OVERFLOW_RE does not match Basalt's wording, so it never compacted and resent the identical request every 5 s until the turn limit",
+      "evidence": "transcript rig:~/ob-ink3/.claude/worktrees/h9/agents/logs/agent-20261125-022332-e95b477f.jsonl: 95 API errors (row: 95), all of them Basalt's overflow 400, all after the last reply (evals/audit/overflow_audit.py), 85 replies, the first error at turn 86 (02:42:02Z, 2026-11-25), 0 compactions, the run ended max_iterations; rig (ssh beast) ~/openbeast-runs/basalt-server-logs/basalt-I_T3-20261124-162910.log (the I_T3 serve, started 2026-11-25 00:29Z, --max-context 262144, --answer-room 8192): 95 'engine reported request exceeds the context window' lines in the unit's window, each within 1 ms of a transcript error, the prompt 261,884 tokens at the first and 261,913 at the last (room left 252 tokens against the 16,384 asked); the retries took 8.0 of its 26.5 minutes. The campaign's rerun (the run's second file, eval-inkling-2-mini-basalt-nvfp4-mx8-stock-v5-thinking-first-i-t3-20261125-091311.json) failed the unit again without an overflow; this verdict keeps the first row, so the rerun never supersedes it (Max's rule)",
+      "checked": "2026-11-25"
+    },
+    {
+      "file": "eval-inkling-2-mini-basalt-nvfp4-mx8-stock-v5-thinking-first-i-t3-20261125-003039.json",
+      "unit": "176_intermittent_500s_a",
+      "label": "server_error",
+      "verdict": "overflow",
+      "cause": "context overflow: Basalt HTTP 400 'request exceeds the context window' (the prompt plus the per-turn max_tokens 16384 over the 262,144-token window); the runner's _CTX_OVERFLOW_RE does not match Basalt's wording, so it never compacted and resent the identical request every 5 s until the turn limit",
+      "evidence": "transcript rig:~/ob-ink3/.claude/worktrees/h9/agents/logs/agent-20261125-064104-74fb19a1.jsonl: 58 API errors (row: 58), all of them Basalt's overflow 400, all after the last reply (evals/audit/overflow_audit.py), 242 replies, the first error at turn 243 (06:54:30Z, 2026-11-25), 0 compactions, the run ended max_iterations; rig (ssh beast) ~/openbeast-runs/basalt-server-logs/basalt-I_T3-20261124-162910.log (the I_T3 serve, started 2026-11-25 00:29Z, --max-context 262144, --answer-room 8192): 58 'engine reported request exceeds the context window' lines in the unit's window, each within 1 ms of a transcript error, the prompt 245,865 tokens at the first and 245,894 at the last (room left 16,271 tokens against the 16,384 asked); the retries took 4.9 of its 18.3 minutes. The campaign's rerun (the run's second file, eval-inkling-2-mini-basalt-nvfp4-mx8-stock-v5-thinking-first-i-t3-20261125-091311.json) failed the unit again without an overflow; this verdict keeps the first row, so the rerun never supersedes it (Max's rule)",
+      "checked": "2026-11-25"
+    },
+    {
+      "file": "eval-inkling-2-mini-basalt-nvfp4-mx8-stock-v5-thinking-first-i-t3-20261125-003039.json",
+      "unit": "183_heston_little_trap",
+      "label": "server_error",
+      "verdict": "overflow",
+      "cause": "context overflow: Basalt HTTP 400 'request exceeds the context window' (the prompt plus the per-turn max_tokens 16384 over the 262,144-token window); the runner's _CTX_OVERFLOW_RE does not match Basalt's wording, so it never compacted and resent the identical request every 5 s until the turn limit",
+      "evidence": "transcript rig:~/ob-ink3/.claude/worktrees/h9/agents/logs/agent-20261125-071403-26ce8002.jsonl: 74 API errors (row: 74), all of them Basalt's overflow 400, all after the last reply (evals/audit/overflow_audit.py), 106 replies, the first error at turn 107 (07:28:38Z, 2026-11-25), 0 compactions, the run ended max_iterations; rig (ssh beast) ~/openbeast-runs/basalt-server-logs/basalt-I_T3-20261124-162910.log (the I_T3 serve, started 2026-11-25 00:29Z, --max-context 262144, --answer-room 8192): 74 'engine reported request exceeds the context window' lines in the unit's window, each within 1 ms of a transcript error, the prompt 247,259 tokens at the first and 247,288 at the last (room left 14,877 tokens against the 16,384 asked); the retries took 6.2 of its 20.8 minutes. The campaign's rerun (the run's second file, eval-inkling-2-mini-basalt-nvfp4-mx8-stock-v5-thinking-first-i-t3-20261125-091311.json) failed the unit again without an overflow; this verdict keeps the first row, so the rerun never supersedes it (Max's rule)",
+      "checked": "2026-11-25"
+    },
+    {
+      "file": "eval-inkling-2-mini-basalt-nvfp4-mx8-stock-v5-thinking-first-i-t3-20261125-003039.json",
+      "unit": "192_pike_regex",
+      "label": "server_error",
+      "verdict": "overflow",
+      "cause": "context overflow: Basalt HTTP 400 'request exceeds the context window' (the prompt plus the per-turn max_tokens 16384 over the 262,144-token window); the runner's _CTX_OVERFLOW_RE does not match Basalt's wording, so it never compacted and resent the identical request every 5 s until the turn limit",
+      "evidence": "transcript rig:~/ob-ink3/.claude/worktrees/h9/agents/logs/agent-20261125-081135-d1eac0aa.jsonl: 112 API errors (row: 112), all of them Basalt's overflow 400, all after the last reply (evals/audit/overflow_audit.py), 68 replies, the first error at turn 69 (08:25:47Z, 2026-11-25), 0 compactions, the run ended max_iterations; rig (ssh beast) ~/openbeast-runs/basalt-server-logs/basalt-I_T3-20261124-162910.log (the I_T3 serve, started 2026-11-25 00:29Z, --max-context 262144, --answer-room 8192): 112 'engine reported request exceeds the context window' lines in the unit's window, each within 1 ms of a transcript error, the prompt 249,367 tokens at the first and 249,396 at the last (room left 12,769 tokens against the 16,384 asked); the retries took 9.4 of its 23.6 minutes. The campaign's rerun (the run's second file, eval-inkling-2-mini-basalt-nvfp4-mx8-stock-v5-thinking-first-i-t3-20261125-091311.json) failed the unit again without an overflow; this verdict keeps the first row, so the rerun never supersedes it (Max's rule)",
+      "checked": "2026-11-25"
     }
   ]
 }

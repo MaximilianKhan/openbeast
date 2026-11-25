@@ -7,7 +7,10 @@ INK-T2-STOCK, 53/71, SCORE 78.2) is the 5090 default by decision
 ([DECISIONS-2026-11-24 §10](reports/DECISIONS-2026-11-24.md)); Qwen3.8
 (Q38U-T2, 52/71) is the fallback. The rig's own switch is still pending
 (its `openbeast.conf` says `AGENT_PROFILE=qwen38-best`). The improved arm
-`I_T3` is RUNNING on the rig since 16:29 PST (item below). INK-T2,
+`I_T3` finished 2026-11-25 at 52/71 (board row INK-T3, SCORE 77.4: level
+with INK-T2-STOCK, 4 context overflows; the default stays stock,
+[DECISIONS-2026-11-25 §4](reports/DECISIONS-2026-11-25.md#4-i_t3-does-not-beat-ink-t2-stock-the-5090-default-stays-stock);
+item below). INK-T2,
 INK-T2-S1 and INK-UP8K are the Derisked pack's rows.
 
 Where the v5 work stands. Every arm is single seed. The working log is
@@ -498,8 +501,21 @@ DeepSeek's UP on the same harness
   - 226 empty capped turns (50 of them forced turns), the server log
     agreeing exactly; §10.9.8 reconciles §12.6's earlier figures (its "176"
     is the thinking-turn subset).
-- [ ] **RUNNING since 2026-11-24 16:29:10 PST: arm `I_T3`, Inkling's improved
-  composite** (launcher pid 7275, `PACK=stock`; gate passed 16:30:37; arm
+- [x] **Arm `I_T3`, Inkling's improved composite: DONE 2026-11-25, 52/71**
+  (board row `INK-T3`, SCORE 77.4, listed, not the pack's shown row;
+  [report](reports/V5_INKLING2_MINI_I_T3-2026-11-25.md),
+  [DECISIONS-2026-11-25 §4](reports/DECISIONS-2026-11-25.md#4-i_t3-does-not-beat-ink-t2-stock-the-5090-default-stays-stock)).
+  Main pass 00:30:39-09:13:10Z, the campaign's rerun of 4 units to
+  10:18:12Z, `RESTORE OK` 02:18:19 PST. Against INK-T2-STOCK 2 gained, 3
+  lost (p 1.0); against Q38U-T2 (65 units) 2 gained, 5 lost (p 0.45): the
+  default stays stock. 4 context overflows (`overflow.json`; the runner
+  does not compact on Basalt's wording, HARNESS_NOTES (a)) + 1 at the
+  wall; the #632 patch: 0 empty capped turns (stock 105), 93 text-only
+  capped turns instead. Integrity 0 contaminated; dlsym replay PASS 3/3.
+  **Follow-ups `I_T3_t15`, `I_T3_8k` and a seed repeat: not queued; the
+  next Inkling step waits for the next-era overflow fix.** The launch
+  record follows, kept for the recipe. (Was: RUNNING since 2026-11-24
+  16:29:10 PST; launcher pid 7275, `PACK=stock`; gate passed 16:30:37; arm
   started 16:30:39, the campaign's ETA ~11.5 h, so about 04:00 PST on
   11-25) ([DECISIONS-2026-11-24 §12](reports/DECISIONS-2026-11-24.md#12-the-improved-inkling-arm-i_t3-turns-cap-patch)):
   `I_T2_stock` (the stock pack, §8) + `--turns-per-wall-s 5` + a 16,384
@@ -543,7 +559,11 @@ DeepSeek's UP on the same harness
     switch rule. Follow-ups `I_T3_t15`, `I_T3_8k` and a seed repeat only
     with Max's go.
 - [ ] **Rescan the rig arms with the review-1124 integrity scan** (after
-  `I_T3` ends; read only, no host change). The scan before review 1124
+  `I_T3` ends; read only, no host change). **INK-T2-STOCK done
+  2026-11-25** (I_T3's wrap-up): one hit, a false positive (`nc` used as a
+  variable in code read as a network command), fixed in the scanner;
+  0 contaminated (sealed review `ink-t3-integrity-2026-11-25.md`).
+  Remaining: INK-T2, -S1, -UP8K, Q_T2, the calibration, Q38U-L0. The scan before review 1124
   flagged a result line only when it STARTED with `/Users/`, `/home/` or
   `/tmp/claude-`, so an `ls -l` / `find -ls` / `du -a` line, a `./home/...`
   line after `cd /` or a `/root/...` / `/work/...` root went unseen, and
@@ -695,7 +715,7 @@ DeepSeek's UP on the same harness
   Basalt, keep the pid and memory limits and leave `/tmp` exec (and record
   it).
 - [ ] **Switch the 5090 rig to Inkling 2 Mini (Basalt): Max, after the GPU
-  frees up** (I_UP8k is done; the improved #632 arm first; nothing on the rig
+  frees up** (I_UP8k and the improved #632 arm I_T3 are done; nothing on the rig
   changed for this PR). Steps and rollback:
   [MODELS.md](MODELS.md#switching-the-rtx-5090-to-its-default-and-back).
   Before: the firewall item above; `git pull --ff-only` in `~/Documents/openbeast`; the toolkit's
@@ -736,8 +756,9 @@ DeepSeek's UP on the same harness
   budget wrap. **The profile's `ANSWER_ROOM` per I_T3's decision**: the
   default serves pin + #632 at `auto`, which no board row measured and the
   Strata §16.6 probe flagged (9 of 12 patched replies cut mid-call at the
-  8,192 cap); if I_T3 (or its `I_T3_8k` follow-up, cap 8,192 at `auto`)
-  does not settle it, run the default as an arm before calling it measured,
+  8,192 cap); I_T3 (2026-11-25) did not settle it (it ran 16,384 with an
+  answer room of 8,192, inside a composite; 0 empty capped turns, and
+  `I_T3_8k` is not queued), so run the default as an arm before calling it measured,
   and then point the profile's `MEASURED_ROW` at that row; a re-pin to an upstream
   release that merges #632 (a new review row); Basalt's own `serve/tests`
   once against the distro package set; a slim serve image (the env image
@@ -1366,8 +1387,9 @@ control INK-T2-STOCK 53/71 (SCORE 78.2, the top 5090 row; level with
 Q38U-T2 paired; report §10), the RTX 5090 default since 2026-11-24
 (DECISIONS-2026-11-24 §10); DeepSeek's UP_8k setup on the Derisked pack,
 INK-UP8K 49/71 (SCORE 75.1, listed, not ranked; one unit excluded by the
-integrity scan; report §10.9), and the improved arm I_T3 running since
-2026-11-24 16:29 PST (report §12). The cross-model reading
+integrity scan; report §10.9), and the improved arm I_T3, 52/71
+(INK-T3, SCORE 77.4, listed, not ranked; level with INK-T2-STOCK, 4 context
+overflows counted as fails; [report](reports/V5_INKLING2_MINI_I_T3-2026-11-25.md)). The cross-model reading
 is in [HARNESS_NOTES.md](HARNESS_NOTES.md). The GLM status as of 2026-11-17
 (evening) follows; it was GLM only at that point. GLM's arms L0 26
 → A 31 → B 36 → C 51/71 scored (54 raw; thinking) → E 50/71, against the

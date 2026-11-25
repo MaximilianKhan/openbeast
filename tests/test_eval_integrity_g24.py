@@ -453,6 +453,9 @@ def test_scan_flags_other_network_paths(cmd):
     "go build ./... && go install ./cmd/x", "cargo build --release", "nc -l 8080",
     "nc 127.0.0.1 9000", "python3 -c \"import socket; s=socket.socket(); s.bind(('127.0.0.1', 0))\"",
     "python3 app.py & curl -s http://localhost:8000/", "echo http ok", "ssh -V",
+    # `nc` as an identifier in code written through a heredoc (INK-T2-STOCK's
+    # 168_linearizability_kv_e, the review-1124 rescan of 2026-11-25)
+    "python3 - << 'EOF'\nsrc = 'let nc = ops.len(); if nc == 0 { return; } for _ in 0..nc {'\nEOF",
 ])
 def test_scan_ignores_local_package_and_loopback_work(cmd):
     S = _scan_mod()
