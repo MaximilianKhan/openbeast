@@ -178,20 +178,22 @@ def test_published_glm_up_control():
 
 def test_published_inkling_against_qwen38():
     """INK-T2 49/71 (SCORE 76.5) on Q38U-T2's harness9 tree, one stream, the same rig container:
-    above it on SCORE, -4 on the board's view (Q38U-T2's excluded passes count as its fails)."""
+    above it on SCORE, -3 on the board's view (Q38U-T2's excluded passes count as its fails; -4 before
+    the 2026-11-25 rescan excluded 123_nbody_b, DECISIONS-2026-11-25 section 5)."""
     r = v5_report.build("Inkling 2 Mini Derisked (Basalt NVFP4-MX8)", context=("Q38U-T2",), pairs=["Q38U-T2:I_T2"])
     (i,) = [a for a in r["arms"] if a["id"] == "INK-T2"]
     assert (i["passed"], round(i["score"], 1), i["era"], i["turn_cap"]) == (49, 76.5, "036638ddd68698ce", 8192)
     assert (i["wall_hits"], i["lost"], i["excluded"]) == (0, {}, [])
     (d,) = r["deltas"]
-    assert (d["compared"], d["net"]) == (68, -4)
-    assert sorted(d["gained"]) == ["122_gemm_blocked_b", "124_rkf45", "126_hmac_scratch"]
+    assert (d["compared"], d["net"]) == (68, -3)
+    assert sorted(d["gained"]) == ["122_gemm_blocked_b", "123_nbody_b", "124_rkf45", "126_hmac_scratch"]
     assert len(d["lost"]) == 7 and "163_bigint_divmod_a" in d["lost"]
 
 
 def test_published_inkling_seed_and_stock():
     """I_T2_s1 (seed 1) and I_T2_stock (Basalt's stock pack), 2026-11-24: the seed flipped 2 units, both
-    gains; the stock pack against Derisked +4 (5 gained, 1 lost), and level with Q38U-T2 on the board's view."""
+    gains; the stock pack against Derisked +4 (5 gained, 1 lost), and +1 over Q38U-T2 on the board's view
+    (level before the 2026-11-25 rescan)."""
     r = v5_report.build("Inkling 2 Mini Derisked (Basalt NVFP4-MX8)", context=("INK-T2-STOCK", "Q38U-T2"),
                         pairs=["I_T2:I_T2_s1", "I_T2:INK-T2-STOCK", "I_T2_s1:INK-T2-STOCK", "Q38U-T2:INK-T2-STOCK"])
     (s1,) = [a for a in r["arms"] if a["id"] == "INK-T2-S1"]
@@ -205,7 +207,23 @@ def test_published_inkling_seed_and_stock():
     assert (st["compared"], st["net"], len(st["gained"]), st["lost"]) == (71, 4, 5, ["178_codebase_qa"])
     assert d[("I_T2_s1", "INK-T2-STOCK")]["net"] == 2
     q = d[("Q38U-T2", "INK-T2-STOCK")]
-    assert (q["compared"], q["net"], len(q["gained"]), len(q["lost"])) == (68, 0, 4, 4)
+    assert (q["compared"], q["net"], len(q["gained"]), len(q["lost"])) == (68, 1, 5, 4)   # level before the rescan
+
+
+def test_published_sc117_against_stock_and_derisked():
+    """I_T2_sc117 (SC117's abliterated pack, INK-T2-STOCK's arm exactly), 2026-11-25: 51/71, SCORE 75.3;
+    -2 against the stock pack (1 gained, 3 lost), +2 against Derisked (3 gained, 1 lost)."""
+    r = v5_report.build("Inkling 2 Mini SC117 abliterated (Basalt NVFP4-MX8)", context=("INK-T2-STOCK", "INK-T2"),
+                        pairs=["INK-T2-STOCK:I_T2_sc117", "INK-T2:I_T2_sc117"])
+    (a,) = [x for x in r["arms"] if x["id"] == "INK-T2-SC117"]
+    assert (a["passed"], round(a["score"], 1), a["era"], a["turn_cap"], a["wall_hits"], a["lost"], a["excluded"]) == (
+        51, 75.3, "036638ddd68698ce", 8192, 0, {}, [])
+    d = {(x["base"], x["arm"]): x for x in r["deltas"]}
+    st = d[("INK-T2-STOCK", "I_T2_sc117")]
+    assert (st["compared"], st["net"], st["gained"], sorted(st["lost"])) == (
+        71, -2, ["178_codebase_qa"], ["163_bigint_divmod_c", "175_crdt_orset_rga", "196_polyphase_resampler"])
+    dr = d[("INK-T2", "I_T2_sc117")]
+    assert (dr["compared"], dr["net"], len(dr["gained"]), dr["lost"]) == (71, 2, 3, ["175_crdt_orset_rga"])
 
 
 def test_cli_runs_and_writes_nothing():

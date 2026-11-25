@@ -249,7 +249,7 @@ def test_committed_board_numbers():
     assert {k: runs[k]["passed"] for k in runs} == {
         "GLM-L0": 26, "GLM-A": 31, "GLM-B": 36, "GLM-C": 51, "GLM-E": 50, "DS-T": 61, "DS-T2": 65, "DS-Ts1": 61, "DS-T3": 65,
         "DS-U": 59, "DS-UP": 62, "DS-UPA": 59, "DS-U8k": 63, "DS-UP8k": 65, "DS-UPA8k": 62, "HY4-T2": 60, "HY4-C": 55, "Q38U-L0": 39, "Q38U-T2": 51,
-        "GLM-UP": 56, "INK-T2": 49, "INK-T2-S1": 51, "INK-T2-STOCK": 53, "INK-UP8K": 49, "INK-T3": 52, "OPUS-REF": 71}
+        "GLM-UP": 56, "INK-T2": 49, "INK-T2-S1": 51, "INK-T2-STOCK": 53, "INK-UP8K": 49, "INK-T3": 52, "INK-T2-SC117": 51, "OPUS-REF": 71}
     assert runs["GLM-C"]["passed_raw"] == 54  # 122 b/d/e excluded: contaminated (G25 scan)
     assert runs["GLM-E"]["passed_raw"] == 50  # scan clean; 122_c is a noted validator false FAIL
     assert runs["DS-T"]["passed_raw"] == 61  # scan clean (2026-11-18); first run under review 1118
@@ -260,6 +260,9 @@ def test_committed_board_numbers():
     assert runs["Q38U-L0"]["passed_raw"] == 40  # 126 (a pass), 163_e, 192 excluded: the shell reached the network
     assert sorted(runs["Q38U-L0"]["excluded"]) == ["126_hmac_scratch", "163_bigint_divmod_e", "192_pike_regex"]
     assert runs["Q38U-T2"]["passed_raw"] == 54  # main file (71) + the r1 rerun of 7 lost units, harness9
+    sc = runs["INK-T2-SC117"]  # SC117's abliterated pack, INK-T2-STOCK's arm exactly (2026-11-25)
+    assert (sc["passed_raw"], round(sc["score"], 1), sc["lost"], sc["excluded"]) == (51, 75.3, {}, [])
+    assert sc["weights_id"] == "inkling2-mini-sc117-abliterated-basalt-nvfp4-mx8"
     # 124 and 126 (passes) and 122_d (r1) excluded: the shell reached the network (scan 2026-11-23);
     # 123_nbody_b (a pass) and 168_c: package installs, found by the review-1124 rescan (2026-11-25)
     assert sorted(runs["Q38U-T2"]["excluded"]) == ["122_gemm_blocked_d", "123_nbody_b", "124_rkf45",
