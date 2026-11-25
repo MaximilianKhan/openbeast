@@ -17,6 +17,7 @@ stands and is never re-rolled. The procedure is step 3 of
 | `transcripts.py` | maps result rows to `agents/logs/agent-*.jsonl` (run_eval does not record the path) |
 | `langaudit.py` | the per-language failure taxonomy (knowledge / lint / borrow / host / research), the evidence for or against a language pack |
 | `integrity_scan.py` | every transcript of an arm: tool calls that read or listed what a measured unit must not see (a checkout's `evals/`, `tests/`, `agents/logs/`, `~/.claude`, `/tmp/claude-<uid>`, ledgers), per unit with its verdict; CONTAMINATED units are reported as such, never re-scored. `--trailing-dot` counts the turns the G24 path bug cost. The reference row's scan is `evals/reference/integrity_scan.py` |
+| `overflow_audit.py` | every `server_error` row of a results file: did its run end on a context overflow? Reads the row's transcript (any engine's overflow wording, Basalt's included, or the runner's `context_overflow_unrecoverable`) and proposes the `evals/boards/v5/overflow.json` verdicts the board applies: an overflow is a model loss, a counted fail (Max's rule, 2026-11-25) |
 
 ## The verdicts
 

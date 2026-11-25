@@ -532,6 +532,14 @@ def compute_category_balanced(tasks: list[dict], lang_multi_only: bool = True) -
 INFRA_REASONS = frozenset({"skipped_cache_miss", "server_unhealthy", "setup_failed",
                            "server_error", "env_error", "low_disk", "interpreter_error",
                            "served_model_changed"})
+# Row reasons that record a MODEL outcome although the row may carry API
+# errors: never infrastructure, always a counted fail. context_overflow: the
+# unit ended because the model's session outgrew the context window (Max's
+# rule, 2026-11-25, docs/reports/DECISIONS-2026-11-25.md). A run_eval row
+# written before the rule says server_error; evals/boards/v5/overflow.json
+# records which of those were overflows, and the board and ablation.py
+# relabel them context_overflow. Disjoint from INFRA_REASONS (tested).
+MODEL_LOSS_REASONS = frozenset({"context_overflow"})
 
 
 def ineligibility_reasons(results: dict) -> list[str]:

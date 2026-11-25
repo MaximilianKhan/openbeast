@@ -22,6 +22,16 @@ How rows are built:
   validator interpreter failed to start, a validator timeout, a server
   error). A repair run fills in lost units; it never re-rolls a real verdict.
   A unit still lost after the merge counts as a fail.
+- **A context overflow is a model loss.** A unit that ends because the
+  model's session outgrew the context window is a counted fail, never an
+  infrastructure loss, and no repair run re-rolls it (Max's rule, 2026-11-25;
+  [DECISIONS](reports/DECISIONS-2026-11-25.md#1-a-context-overflow-is-a-model-loss)).
+  Rows written before the rule may say `server_error`;
+  [`evals/boards/v5/overflow.json`](../evals/boards/v5/overflow.json) records
+  a verdict with its evidence for every `server_error` row of every committed
+  file, and the board relabels the confirmed overflows. As of 2026-11-25 none
+  of the board's lost units was an overflow (the Qwen3.8 rows' were
+  llama-server's truncated-tool-call 500), so no number moved.
 - **Seed replicates never rank.** A run that repeats another run's setup
   under a new seed (DS-Ts1, INK-T2-S1) names it with `replicate_of` in
   `board.json`: it is listed with every run and never chosen as the best

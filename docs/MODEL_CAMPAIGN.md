@@ -702,7 +702,11 @@ wall: `--wall-scale 3` at `--jobs 2`.
   applied by `report` (§6).
 - **Never scores infra.** After each arm, every row the agent never really
   ran is **lost**: interpreter startup, no output in < 2 s, signal death,
-  server error, budget skip. `rerun_lost.rounds` (1) reruns them at once
+  server error, budget skip. A context overflow is NOT infra (2026-11-25):
+  a row labelled `context_overflow` is a counted fail and never rerun; a
+  pre-rule `server_error` that was an overflow is still rerun by the chain,
+  and the board ignores that rerun once `overflow.json` records the verdict
+  (§ adding a run, step 4). `rerun_lost.rounds` (1) reruns them at once
   through a sub-manifest (`evals/suites/_lost-*.json`, untracked, coverage
   floor relaxed to zero, the same `suite` field). If more than
   `max_lost_fraction` (5%) are still lost, the chain stops: fix the cause,
@@ -979,6 +983,29 @@ an arm goes on the board, record which weights it measured, every time:
 
    `--add` refuses a run without `--weights-id`, and `--check` (CI) fails on
    a run whose `weights_id` is missing or names another model's weights.
+4. **Audit every `server_error` row for a context overflow** (Max's rule,
+   2026-11-25: a unit that ends on CONTEXT OVERFLOW is a MODEL LOSS, a
+   counted fail, never an infra loss;
+   [DECISIONS](reports/DECISIONS-2026-11-25.md#1-a-context-overflow-is-a-model-loss)).
+   Today's runner counts an overflow whose wording it does not know (Basalt's
+   "exceeds the context window") as an API error, and run_eval then labels the
+   unit `server_error`. On the host that ran the arm:
+
+   ```bash
+   python3 evals/audit/overflow_audit.py evals/results/eval-<slug>-<ts>.json [rerun files ...] \
+       --tree <the arm's tree> --tz UTC --json /tmp/overflow-<arm>.json
+   ```
+
+   It reads each `server_error` row's transcript and says how the run ended
+   (`overflow`, `not_overflow` with the error class, or `undetermined`).
+   Add one entry per row to `evals/boards/v5/overflow.json` with the
+   server-log line that confirms it (llama.cpp `.run/stack.log`, the Basalt
+   log the log saver kept, the Sparks' engine journal); an `undetermined`
+   row stays lost until someone reads the server log. Then `--write`.
+   `--check` fails while any `server_error` row of a committed file has no
+   verdict. An `overflow` verdict makes the row a fail that no repair run
+   supersedes, so a `rerun-lost` round that re-ran it does not change the
+   board (and ablation.py pairs it as the model's fail).
 
 The board picks the best configuration per (model, weights), so a second
 quantization of a model (another bpw on three Sparks, another pack) becomes
