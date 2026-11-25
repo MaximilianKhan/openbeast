@@ -588,6 +588,36 @@ elif $RESTART && [[ "${OPENBEAST_WEBUI_OFFLINE:-false}" == "false" ]] \
   fi
 fi
 
+# Open WebUI's model connection: "up" is not "usable". The WebUI stores the
+# URL and key it sends upstream in its own DB, and a stale key (spark-1,
+# 2026-11-17 to 11-25: the first-boot "not-needed" against the keyed
+# DeepSeek engine) answers every login with an EMPTY model list while every
+# check above stays green (docs/reports/REMOTE_ACCESS-2026-11-25.md). Read-only
+# unless --restart, which rewrites just that connection (no container restart:
+# 0.13.x reads it from the DB per request). Skipped when the container is not
+# running or cannot be asked (exit 3): the check above already says so.
+if [[ -n "${OPENBEAST_MODEL_URL:-}" ]] \
+   && [[ "$(docker inspect -f '{{.State.Running}}' open-webui 2>/dev/null || true)" == "true" ]]; then
+  _wc_rc=0
+  "$SCRIPT_DIR/configure-webui.sh" --check-connection >/dev/null 2>&1 || _wc_rc=$?
+  if [[ "$_wc_rc" == 0 ]]; then
+    echo "  OK   Open WebUI model connection (URL + key)"
+    HEALTHY=$((HEALTHY + 1))
+  elif [[ "$_wc_rc" == 1 ]]; then
+    echo "  DOWN Open WebUI model connection — its stored URL or key is not this host's: the WebUI lists no models"
+    UNHEALTHY=$((UNHEALTHY + 1))
+    if _may_restart; then
+      if "$SCRIPT_DIR/configure-webui.sh" --sync-connection >/dev/null 2>&1; then
+        echo "       → re-synced (configure-webui.sh --sync-connection)"
+      else
+        echo "       → re-sync FAILED: run ./scripts/configure-webui.sh"
+      fi
+    else
+      echo "       → fix: ./scripts/configure-webui.sh --sync-connection"
+    fi
+  fi
+fi
+
 # SearXNG
 if ! check "SearXNG" "$SEARXNG_URL" "searx"; then
   if _may_restart; then

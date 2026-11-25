@@ -19,6 +19,19 @@ SIGTERM) is fixed since 2026-11-23 (#294; [TODO](TODO.md), the report's bug 1);
 spark-1 runs #294 (pending: deployed after the GLM UP arm, in the safe order in
 [TODO](TODO.md)).
 
+**2026-11-25, remote access ([report](reports/REMOTE_ACCESS-2026-11-25.md)).** Max, away from home on
+2026-11-24 (phone on cellular, 21:12-22:00 PST), could log in to the WebUI but saw no models. Two root
+causes, neither a network or tailnet problem: (1) the WebUI's **stored connection key** was still the
+`not-needed` that docker-compose seeded at its first boot (2026-11-13, GLM, unkeyed). Open WebUI keeps
+the key in its DB and ignores the env afterwards, and `configure-webui.sh` synced only the URL, so since
+DeepSeek began serving with an engine key (2026-11-17) every model fetch the WebUI made was a 401 and it
+listed **no models for anyone, at home too**. `configure-webui.sh` now syncs the key with the URL
+(`--check-connection` / `--sync-connection`), and the watchdog checks and heals it
+([E5](#e5-webui-auth-and-the-admin-account-before-publishing)). (2) `ssh spark-1` / `ssh spark-2` on the
+Mac went to NVIDIA Sync's `.local` mDNS names, which resolve only on the home LAN; the short names now go
+over the tailnet everywhere ([F1](#f1-ssh-from-the-mac)). beast-gate, `tailscale serve`, MagicDNS, TLS,
+spark-guard and the device keys all worked from cellular, with evidence in the report.
+
 **2026-11-23, DeepSeek tuning session ([report](reports/DEEPSEEK_TUNING-2026-11-23.md)).** DeepSeek now
 serves **8 streams** (`PARALLEL=8` in the runtime's `scripts/local.sh`, `INFERENCE_SLOTS=8` in
 `openbeast.conf`) at the same 524,288-token window: 147.4 tok/s aggregate at 8 streams and 133.8 at 6,
@@ -2350,6 +2363,59 @@ On spark-1:
 - The WebUI database is spark-1's own: accounts and chats from the beast rig do
   not carry over.
 
+**The WebUI's model connection: URL *and* key.** Open WebUI stores its one
+OpenAI connection in its own database (`webui.db`, config rows
+`openai.api_base_urls` and `openai.api_keys`) the first time it boots, and
+from then on it **ignores** the `OPENAI_API_BASE_URL` / `OPENAI_API_KEY` that
+docker-compose passes. Compose seeds the key from `LLAMA_API_KEY`, or the
+placeholder `not-needed` when the engine is unkeyed. So the key the WebUI
+sends upstream is whatever was true at its first boot, unless something
+rewrites it. `configure-webui.sh` (run by every start, so by every
+`beast*` model switch) rewrites both rows to this host's
+`OPENBEAST_MODEL_URL` and `LLAMA_API_KEY` (or `not-needed`). The key goes to
+the container on stdin, never argv, and is never printed. Open WebUI 0.13.x
+reads these rows from the database on each request, so no restart is needed.
+
+Until 2026-11-25 only the URL was synced. spark-1's WebUI kept `not-needed`
+from its first boot under GLM, DeepSeek has served keyed since 2026-11-17,
+and the engine answered every WebUI model fetch with 401. The result was
+that you could log in but the model list was **empty**, for every account,
+on every network. Every health check stayed green, because the WebUI itself
+was up. The watchdog now checks this:
+
+```bash
+./scripts/configure-webui.sh --check-connection; echo $?   # 0 right, 1 stale (no models), 3 could not ask
+./scripts/configure-webui.sh --sync-connection             # rewrite just the connection (no restart)
+./scripts/healthcheck.sh | grep 'model connection'         # "OK   Open WebUI model connection (URL + key)"
+```
+
+`healthcheck.sh` prints `DOWN Open WebUI model connection` when the stored
+URL or key is not this host's. Under `--restart` (the watchdog, every 5
+minutes) it runs `--sync-connection` itself. **Offline:** all of this is
+local (a `docker exec` into the running container plus the SQLite file), so
+it needs no network and no image pull. To verify by hand without a browser,
+sign in as the configured admin and list models; an empty list with the
+engine up is this problem:
+
+```bash
+# on spark-1; prints model ids only, never the key
+python3 - <<'EOF'
+import json, re, urllib.request
+c = {m[1]: m[2].strip().strip('"\'') for m in (re.match(r"\s*([A-Z_]+)=(.*)", l) for l in open("/home/max/openbeast/openbeast.conf")) if m}
+def call(path, body=None, tok=None):
+    h = {"Content-Type": "application/json", **({"Authorization": "Bearer " + tok} if tok else {})}
+    r = urllib.request.Request("http://127.0.0.1:3000" + path, json.dumps(body).encode() if body else None, h)
+    return json.load(urllib.request.urlopen(r, timeout=30))
+tok = call("/api/v1/auths/signin", {"email": c["WEBUI_ADMIN_EMAIL"], "password": c["WEBUI_ADMIN_PASSWORD"]})["token"]
+print([m["id"] for m in call("/api/models", tok=tok)["data"]])
+EOF
+```
+
+A model switch (`beastds`, `beastglm`, `beasthy4`) restarts the command
+center, whose start runs `configure-webui.sh`. The key therefore follows
+the engine: GLM unkeyed gets `not-needed`, and DeepSeek or Hy4 get the engine
+key that `beast-spark` writes to `LLAMA_API_KEY`.
+
 ### E6. Publish on the tailnet (`setup-tailscale.sh`, as tailscaled's operator)
 
 `spark-root-setup.sh` set `--operator=max`, so this needs no sudo on a Spark:
@@ -2441,11 +2507,33 @@ curl -s https://spark-1.tail4109f9.ts.net:8444/api/slot | python3 -m json.tool  
 
 ### F1. ssh from the Mac
 
-NVIDIA Sync's `.local` names resolve only on the home LAN. For away from home,
-the Mac's `~/.ssh/config` has tailnet entries that reuse the Sync key and pin
-the known host keys with `HostKeyAlias`:
+NVIDIA Sync writes `Host spark-1` / `Host spark-2` blocks (in
+`~/Library/Application Support/NVIDIA/Sync/config/ssh_config`, pulled in by
+an `Include` at the top of `~/.ssh/config`) that point the short names at
+`spark-3dc6.local` / `spark-9f26.local`. Those are **mDNS names and resolve
+only on the home LAN**. Away from home, `ssh spark-1` fails with "Could not
+resolve hostname", even though the tailnet is up. That was half of the
+2026-11-24 "can't reach anything away from home" report
+([REMOTE_ACCESS-2026-11-25](reports/REMOTE_ACCESS-2026-11-25.md)).
+
+The fix (on Max's Mac since 2026-11-25): point the short names at the
+tailnet names **before** the `Include`. ssh keeps the first value it reads
+for each option, so `HostName` comes from these blocks, and `User`, `Port`
+and `IdentityFile` still come from Sync's blocks. `HostKeyAlias` pins the
+host keys already known under the `.local` names:
 
 ```
+Host spark-1
+  HostName spark-1.tail4109f9.ts.net
+  HostKeyAlias spark-3dc6.local
+Host spark-2
+  HostName spark-2.tail4109f9.ts.net
+  HostKeyAlias spark-9f26.local
+
+# Back to global scope: an Include inside a Host block applies only to that host.
+Host *
+Include "/Users/<you>/Library/Application Support/NVIDIA/Sync/config/ssh_config"
+
 Host spark-1.tail4109f9.ts.net
   HostKeyAlias spark-3dc6.local
   User max
@@ -2456,8 +2544,23 @@ Host spark-2.tail4109f9.ts.net
   IdentityFile <the NVIDIA Sync key>
 ```
 
-Without `HostKeyAlias`, the first tailnet login asks to trust a "new" host
-whose key is in fact already known under the `.local` name.
+**The `Host *` line matters.** An `Include` is scoped by the `Host` block it
+sits in. Placed straight after `Host spark-2 …`, Sync's file applied only to
+spark-2, and `ssh spark-1` lost its user and key ("Permission denied
+(publickey)"). This happened once while the fix was being written.
+
+Check it with `ssh -G spark-1 | grep -E '^(hostname|user|hostkeyalias) '`
+(expect the tailnet name, `max`, `spark-3dc6.local`), then
+`ssh spark-1 'echo ${SSH_CONNECTION%% *}'`. That should print the Mac's
+`100.x` tailnet address on every network. At home, Tailscale uses the direct
+LAN path (`tailscale status` shows `direct 192.168.40.x`), so nothing gets
+slower. If Tailscale is off at home, use `ssh spark-3dc6.local`. `ssh beast`
+already used `beast.tail4109f9.ts.net`. NVIDIA Sync's own app connections
+and port forwards still use its `.local` names; see the report for that
+phone- and app-side step.
+
+**Without `HostKeyAlias`**, the first tailnet login asks you to trust a "new"
+host whose key is in fact already known under the `.local` name.
 
 **Quote remote commands.** `ssh spark-1 cat ~/.config/openbeast/x` expands `~`
 on the **Mac** (`/Users/…`) before ssh sends it. Write
@@ -3179,7 +3282,9 @@ Every row below was hit on the way to the live pair.
 | Symptom | Cause | Fix |
 |---|---|---|
 | WebUI / SearXNG DOWN; `.run/stack.log`: "docker daemon not ready" | the systemd user manager started before `max` joined the `docker` group | reboot once; `systemd-run --user --wait --pipe docker info` proves it |
-| `ssh spark-1` cannot resolve `spark-3dc6.local` | mDNS right after a reboot, or away from home | `ssh -o HostName=192.168.40.153 spark-1` at home; the tailnet name with `HostKeyAlias` away ([F1](#f1-ssh-from-the-mac)) |
+| `ssh spark-1` cannot resolve `spark-3dc6.local` | the short name still goes to NVIDIA Sync's mDNS name: mDNS right after a reboot, or away from home | point `spark-1` / `spark-2` at the tailnet names before the Sync `Include` ([F1](#f1-ssh-from-the-mac)); at home, `ssh -o HostName=192.168.40.153 spark-1` also works |
+| `ssh spark-1`: "Permission denied (publickey)" right after editing `~/.ssh/config` | the Sync `Include` ended up inside a `Host` block, so it applies only to that host | put `Host *` on the line before the `Include` ([F1](#f1-ssh-from-the-mac)) |
+| WebUI login works, but the model picker is **empty** (any device, any network); TensorFold's log shows `GET /v1/models … 401 - key=unauthenticated` at each login | the WebUI's **stored** connection key (its DB, not the env) is not the engine's key: compose's first-boot `not-needed` against a keyed engine | `./scripts/configure-webui.sh --sync-connection`, no restart ([E5](#e5-webui-auth-and-the-admin-account-before-publishing)); the watchdog does it by itself since 2026-11-25 |
 | `ssh spark-1.tail4109f9.ts.net` asks to trust a new host key | no `HostKeyAlias` | add `HostKeyAlias spark-3dc6.local` to that `Host` block |
 | `ssh spark-1 cat ~/.config/openbeast/x`: "No such file" | the Mac's shell expanded `~` to `/Users/…` | quote the remote command: `ssh spark-1 'cat ~/.config/openbeast/x'` |
 | ranks cannot reach each other | a firewall drops the peer on the fabric (ufw, if someone enables it without the fabric rules) | `spark-root-setup.sh` adds a ufw rule per Up link for that link's subnet; `spark-guard.sh` always accepts the fabric. ufw itself is **disabled** on DGX OS (`/etc/ufw/ufw.conf` `ENABLED=no`) and was never what blocked or protected anything here |
