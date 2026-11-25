@@ -235,6 +235,22 @@ DeepSeek's UP on the same harness
   (2026-11-19). Shred the keys once the devices hold them (E7); delete the
   password file once it is changed (E5). The Mac's copy there is also stale
   since its 2026-11-17 rotation (`SPARK_HYDRA.md` G7).
+  **Re-read 2026-11-24 (review, security-07):** `macbook.key` (Nov 15
+  12:37) and `phone.key` (Nov 15 10:27) are still in
+  `spark-1:~/.config/openbeast/gate-keys/` (0600, max), readable by the
+  admin-tier tools that run as max (E7). Safe any time (no service reads
+  these copies; the gate checks hashes in `~/openbeast/.run/clients.json`):
+  1. Confirm each device holds its key: on the Mac
+     `test -s ~/.config/openbeast/spark-hydra-gate.key && echo present`
+     and a chat through the gate answers 200; the phone's client answers.
+  2. On spark-1: `shred -u ~/.config/openbeast/gate-keys/macbook.key ~/.config/openbeast/gate-keys/phone.key`,
+     then `ls -la ~/.config/openbeast/gate-keys/` (no `.key` left).
+  3. If a device does not hold its key, rotate instead
+     (`clients.sh rotate macbook` / `phone`), carry the new key straight to
+     the device, and do not leave a copy in `gate-keys/`.
+  Never `cat` a key to check it (G7). Rollback: none needed for the shred
+  (the devices hold the keys); a lost device key is fixed by `clients.sh
+  rotate <device>`, which revokes the old hash.
 - [ ] **zig 0.16 and the beast-docs mirror on spark-1** (`SPARK_HYDRA.md` G6
   step 6): zig is absent and the mirror holds only `tailscale` (2026-11-19).
 - [ ] **A one-command swap to a *new* model on the pair, with rollback**
@@ -588,6 +604,96 @@ DeepSeek's UP on the same harness
   `strata-bench-net` (172.23.0.0/16, no NAT) is inside the same 172.16/12
   ALLOW, so the eval serves have the same path; narrowing that ALLOW is a
   separate host change (review finding security-03).
+- [ ] **Rig firewall: narrow the `allow-docker-dns` rules to `docker0`**
+  (2026-11-24 review, security-03; Max, `sudo`, **only after `I_T3` ends**
+  and before any further rig arm). Confirmed read only: `/etc/ufw/user.rules`
+  holds two rules commented `allow-docker-dns`, `udp 53` to `172.17.0.1`
+  from `172.16.0.0/12` and from `192.168.0.0/16`, with no interface, so
+  `strata-bench-net` (`br-f471e6a45884`, 172.23.0.0/16, where I_T3's
+  `basalt-serve` runs now) matches them; the host resolver at
+  172.17.0.1:53 answers public names (example.com: 2 answers, queried
+  from the host). Not yet tested from inside a container. Steps:
+  1. `sudo cp -a /etc/ufw/user.rules /etc/ufw/user.rules.bak-$(date +%Y%m%d-%H%M)`
+     (and `user6.rules` the same way).
+  2. `sudo ufw status numbered`: note the two `172.17.0.1 53/udp` ALLOW
+     rules (comment `allow-docker-dns`).
+  3. `sudo ufw allow in on docker0 from 172.17.0.0/16 to 172.17.0.1 port 53 proto udp comment 'allow-docker-dns-docker0'`
+  4. Delete the two old rules by number (`sudo ufw delete <n>`, highest
+     number first, re-reading `status numbered` between deletes).
+  5. Check: on `docker0` a container still resolves (`docker run --rm alpine nslookup example.com`);
+     on each no-egress net a probe gets no answer:
+     `docker run --rm --network strata-bench-net alpine nslookup -timeout=3 example.com 172.17.0.1`
+     must time out (repeat for `openbeast-basalt-net` / `ob-basalt0` once it exists).
+  6. If another compose network (a user-defined bridge in 172.16/12 or
+     192.168/16) needs the host resolver, add a rule for that bridge's
+     interface by name rather than restoring the range.
+  Rollback: `sudo cp -a /etc/ufw/user.rules.bak-<ts> /etc/ufw/user.rules`
+  (and `user6.rules`), `sudo ufw reload`, then `sudo ufw status numbered`
+  shows the two range rules again.
+- [ ] **Restrict spark-1's `rig_pull` key on the rig** (2026-11-24 review,
+  security-01, high). Confirmed read only: `beast:~/.ssh/authorized_keys`
+  line 2 (comment `spark-1`) carries only
+  `from="100.66.191.118,192.168.40.153",no-agent-forwarding,no-X11-forwarding,no-port-forwarding`:
+  no `command=`, no `restrict`, no `no-pty`. It logs in as max, who is in
+  `docker` and `wheel` on the rig, so the login is root-equivalent through
+  docker. The private key `spark-1:~/.ssh/id_ed25519_rig_pull` (0600,
+  created 2026-11-22) has **no passphrase**, and spark-1's `~/.ssh/config`
+  maps `Host beast` to it. The repo does not document it (`git grep
+  rig_pull` is empty; `SPARK_BACKUP_RESTORE.md` lists only the cluster
+  key). With `SPARK_HYDRA.md` E7 (spark-1's admin-tier tools run as max and
+  can be prompt-injected), a prompt-injected admin chat on spark-1 reaches
+  root on the rig and its live eval containers. Safe window: editing
+  `authorized_keys` does not touch the eval, but do it **after `I_T3`
+  ends** so nothing on the rig changes mid-arm. Steps:
+  1. Find what spark-1 pulls with it (the name says spark-1 pulls from the
+     rig; read spark-1's shell history and scripts for `ssh beast` /
+     `rsync beast:`). Write the answer down before restricting.
+  2. On the rig: `cp -a ~/.ssh/authorized_keys ~/.ssh/authorized_keys.bak-$(date +%Y%m%d-%H%M)`.
+     Keep a second ssh session to the rig open from the Mac (its own key,
+     line 1, is not changed) until step 4 passes.
+  3. Rewrite line 2's options to
+     `restrict,from="100.66.191.118,192.168.40.153",command="/usr/bin/rrsync -ro <dir>"`
+     (rrsync ships with rsync; `-ro` read only, rooted at the one
+     directory the pull needs). If the pull is not rsync, use a small
+     wrapper that allows only the needed command via
+     `$SSH_ORIGINAL_COMMAND`. Stronger: a separate rig user that is not in
+     `docker` or `wheel`, owning or reading only that directory.
+  4. Check from spark-1: the real pull works; `ssh beast id` and
+     `ssh beast docker ps` are refused (rrsync rejects them).
+  5. Document the key (purpose, the forced command, `from=`) in
+     `SPARK_HYDRA.md` (E7 known issues) and add
+     `~/.ssh/id_ed25519_rig_pull` to the secrets row of
+     `SPARK_BACKUP_RESTORE.md`.
+  Rollback: `cp -a ~/.ssh/authorized_keys.bak-<ts> ~/.ssh/authorized_keys`
+  on the rig (from the still-open session). Option: give the key a
+  passphrase only if the pull is interactive (an unattended pull cannot
+  use one).
+- [ ] **Harden the rig's eval serve script for the next arms** (2026-11-24
+  review, security-06, low; availability, not escape). Confirmed with
+  `docker inspect basalt-serve` during I_T3: `PidsLimit` unset, `Memory 0`,
+  `Tmpfs /tmp:rw,size=8g,exec`, network `strata-bench-net`, image
+  `ob-strata-env:2026-11-23` (not the pinned `openbeast-basalt-env`). It
+  does have User 1000:1000, `ReadonlyRootfs`, `CapDrop [ALL]`,
+  `no-new-privileges`, `Dns [127.0.0.1]`, `127.0.0.1:8099` only and the
+  key file read only. The Strata report (§15, the open gaps) and the
+  adapter's row in ENGINES.md list these limits. **Only after `I_T3`
+  ends; never edit `~/openbeast-runs/inkling-perf-2026-11-23/` while an
+  arm runs.** Steps:
+  1. `cp -a scripts/basalt-serve.sh scripts/basalt-serve.sh.orig-$(date +%Y%m%d)`
+     in that directory.
+  2. Add `--pids-limit 256 --memory 32g --memory-swap 32g` and make the
+     tmpfs `/tmp:rw,noexec,nosuid,size=8g` (the adapter's values).
+  3. Start it once outside an arm (`inkling-v5.sh start stock`), check
+     `docker inspect` shows the limits, a chat answers, and record whether
+     Basalt runs with noexec `/tmp` (ENGINES.md: the question is open);
+     then `inkling-v5.sh stop`.
+  4. The serve's limits are part of the recipe: note the change in the
+     RESULTS recipe of the next arm (`I_T3_t15`, `I_T3_8k`, a seed repeat),
+     or serve those arms through `scripts/engine-serve.sh` /
+     `scripts/engines/basalt.sh` so they get the adapter's checked flags.
+  Rollback: restore `basalt-serve.sh.orig-<date>`; if noexec `/tmp` breaks
+  Basalt, keep the pid and memory limits and leave `/tmp` exec (and record
+  it).
 - [ ] **Switch the 5090 rig to Inkling 2 Mini (Basalt): Max, after the GPU
   frees up** (I_UP8k is done; the improved #632 arm first; nothing on the rig
   changed for this PR). Steps and rollback:
@@ -644,7 +750,8 @@ DeepSeek's UP on the same harness
   `scripts/engines/probes/probe-163rs-it39.json`, the one that reproduces
   it), then remove `scripts/engines/patches/basalt-pr632-55f9be17.patch`,
   `scripts/engines/basalt-apply-pr632.sh` and the rig's
-  `inkling-v5.sh --patch` (DECISIONS-2026-11-24 §11).- [ ] **Strata forces Inkling's thinking off** (`HAS_THINKING = False`,
+  `inkling-v5.sh --patch` (DECISIONS-2026-11-24 §11).
+- [ ] **Strata forces Inkling's thinking off** (`HAS_THINKING = False`,
   every reasoning effort normalized to `"none"`, in
   `terminal/strata_control/inkling_family.py` and
   `terminal/serve/inkling_dialect.py` at `6a6db7ff`). So Strata cannot serve
@@ -700,6 +807,21 @@ DeepSeek's UP on the same harness
   header (the 2026-11-22 note). Run `deploy/deploy.sh prod` on the Mac Mini,
   then purge Cloudflare's `/_next/static/` prefix, and **record the deployed
   website commit here** (the 2026-11-24 deploy did not).
+- [ ] **The site's 5090 wording vs the live rig** (2026-11-24 review,
+  website-content-04). The website (`/hardware/` engine table,
+  `src/app/hardware/page.tsx:179` "Default since Nov 24 · Inkling 2 Mini
+  pack · hardened container behind the gate"; the home topology's RIG row
+  "Inkling 2 Mini (stock), the shipped default") describes the default
+  OpenBeast ships, while the rig itself still runs `qwen38-best` (read
+  only 2026-11-24: `~/Documents/openbeast/openbeast.conf` has
+  `AGENT_PROFILE=qwen38-best`; the I_T3 arm holds the GPU). The
+  `/hardware/` lede says it is the shipped default, so this is not false,
+  but it does not match the running rig. Close it either way: (a) the
+  rig switch item ("Open — Inkling 2 Mini on the 5090") lands after `I_T3`, then nothing changes on the
+  site; or (b) before the next website deploy, if the switch has not
+  landed, say "the default OpenBeast ships" in the engine-table cell and
+  the RIG row, or mark the rig switch as pending. No host change; website
+  repo only.
 - [x] **The website names the pair's new default.** Confirmed live
   2026-11-22: the home page names DeepSeek-V4.1-Flash (Mia EXL3) as the
   pair's default. History: the live site (2026-11-19)
