@@ -185,8 +185,9 @@ two draws of one setup (DS-Ts1 is marked the same way). INK-T2-STOCK is
 I_T2 on Basalt's stock Inkling pack (no behavioural edit), its own model
 and weights row: 53/71 scored (SCORE 78.2), #4 and the top RTX 5090 row;
 +4 and +2 against the two Derisked draws (p 0.22 and 0.63) and level with
-Q38U-T2 (−2 over the 63 units both measured cleanly, p 0.69; 0 on the
-board's view), single seed. Every gap among these rows is inside the
+Q38U-T2 (−2 over the 63 units both measured cleanly, p 0.69; +1 on the
+board's view, 5 gained and 4 lost over 68 units, 0 before the 2026-11-25
+integrity rescan), single seed. Every gap among these rows is inside the
 measured seed noise; Qwen3.8 stayed the default pending an improved arm,
 until Max made the stock Inkling the RTX 5090 default the same day
 (DECISIONS-2026-11-24 §10). The third ablation, INK-UP8K, is DeepSeek's
