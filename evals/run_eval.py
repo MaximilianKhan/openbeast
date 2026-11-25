@@ -37,6 +37,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -811,6 +812,98 @@ def _fetch_server_slots(base_url: str) -> int | None:
     except Exception:
         pass
     return None
+
+
+def _slot_url_for(base_url: str) -> str | None:
+    """The beast-slot URL (/api/slot) that reports the engine's in-flight
+    generations, or None: OPENBEAST_EVAL_SLOT_URL when set ("off" disables),
+    else, for a gate on :8443, the same host's published :8444/api/slot
+    (docs/BEAST_SLOT.md). Review 1124: with DeepSeek at PARALLEL=8 the gate
+    admits other clients beside a --jobs 4 arm, and per-stream decode (the
+    wall-scaled turn budget) falls 22-35%; the run should record it."""
+    env = os.environ.get("OPENBEAST_EVAL_SLOT_URL", "").strip()
+    if env:
+        return None if env.lower() in ("off", "0", "none") else env
+    try:
+        u = urllib.parse.urlsplit(base_url)
+    except ValueError:
+        return None
+    if u.port == 8443 and u.hostname:
+        return f"{u.scheme}://{u.hostname}:8444/api/slot"
+    return None
+
+
+class SlotLoadSampler:
+    """Samples beast-slot's slots.busy during a live run (a daemon thread,
+    every `interval` s) and records what it saw. busy counts every in-flight
+    generation on the engine, this run's own included, so busy > jobs means
+    another client generated beside the arm (its streams then ran slower
+    than the board's). The converse is not provable: outside load while this
+    run had fewer than `jobs` units in flight reads as no excess. Best
+    effort: an unreachable URL is counted, never an error."""
+
+    def __init__(self, url: str | None, jobs: int, interval: float = 60.0, fetch=None):
+        self.url, self.jobs, self.interval = url, int(jobs), float(interval)
+        self._fetch = fetch or self._fetch_busy
+        self._stop = threading.Event()
+        self._thread = None
+        self.samples = self.unavailable = self.over = 0
+        self.busy_max = None
+        self.total = None
+        self.first_over = self.last_over = None
+        self.busy_at_start = None
+
+    def _fetch_busy(self):
+        req = urllib.request.Request(self.url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        slots = body.get("slots") or {}
+        return slots.get("busy"), slots.get("total")
+
+    def sample(self) -> None:
+        try:
+            busy, total = self._fetch()
+        except Exception:  # noqa: BLE001 — best effort
+            busy, total = None, None
+        if not isinstance(busy, int):
+            self.unavailable += 1
+            return
+        self.samples += 1
+        if self.busy_at_start is None:
+            self.busy_at_start = busy
+        if isinstance(total, int):
+            self.total = total
+        self.busy_max = busy if self.busy_max is None else max(self.busy_max, busy)
+        if busy > self.jobs:
+            now = datetime.now().astimezone().isoformat(timespec="seconds")
+            self.over += 1
+            self.first_over = self.first_over or now
+            self.last_over = now
+
+    def _loop(self) -> None:
+        while not self._stop.wait(self.interval):
+            self.sample()
+
+    def start(self) -> "SlotLoadSampler":
+        if self.url:
+            self.sample()
+            self._thread = threading.Thread(target=self._loop, name="slot-load", daemon=True)
+            self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=10)
+
+    def summary(self) -> dict | None:
+        if not self.url:
+            return None
+        return {"url": self.url, "jobs": self.jobs, "interval_s": self.interval,
+                "samples": self.samples, "unavailable": self.unavailable,
+                "slots_total": self.total, "busy_at_start": self.busy_at_start,
+                "busy_max": self.busy_max, "samples_over_jobs": self.over,
+                "first_over": self.first_over, "last_over": self.last_over}
 
 
 _GATE_PROBE_N = 1024
@@ -4223,6 +4316,12 @@ def run_eval(
             return 0.0
         return unit_est_s(task, prior)
 
+    load = SlotLoadSampler(None if cache_only else _slot_url_for(base_url), jobs,
+                           float(os.environ.get("OPENBEAST_EVAL_SLOT_INTERVAL_S") or 60)).start()
+    if load.busy_at_start is not None and load.busy_at_start > 0:
+        print(f"WARNING: the engine already has {load.busy_at_start} generation(s) in flight "
+              f"({load.url}) before this run starts: another client shares it, and per-stream "
+              f"speed (the wall-scaled turn budget) will differ from a quiet engine's")
     if jobs == 1:
         for g in groups:
             for idx, task, c in g:
@@ -4257,6 +4356,14 @@ def run_eval(
         with ThreadPoolExecutor(max_workers=jobs) as pool:
             for fut in [pool.submit(run_group, g) for g in groups]:
                 fut.result()
+    load.stop()
+    load_summary = load.summary()
+    if load_summary and load_summary["samples_over_jobs"]:
+        print(f"WARNING: outside load: beast-slot reported more generations in flight than "
+              f"--jobs {jobs} in {load_summary['samples_over_jobs']} of "
+              f"{load_summary['samples']} samples (max {load_summary['busy_max']}, "
+              f"{load_summary['first_over']} .. {load_summary['last_over']}); recorded in "
+              f"harness.engine_load")
 
     # --- per-arm finalization --------------------------------------------------
     out_by_arm = {}
@@ -4264,6 +4371,8 @@ def run_eval(
         st = states[c.name]
         results, counters, indexed = st["results"], st["counters"], st["indexed"]
         results_path = st["path"]
+        if load_summary:
+            results["harness"]["engine_load"] = load_summary
         # beast-assist latency + exposure (ship-rule clause: p95 per-write
         # <= 1s; exposure tells "never fired" from "no effect").
         try:

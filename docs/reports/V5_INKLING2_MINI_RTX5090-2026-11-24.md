@@ -15,7 +15,9 @@
 > with I_T2, and its forced-act turns did not run with thinking off on
 > Basalt (§10.9, the wrap-up; read for I_T3 in §12.6). **The
 > improved arm `I_T3`** (stock pack + wall-bound turns + a 16,384 cap with
-> an 8,192 answer room + Basalt's #588 patch) is staged, not launched: §12. Engine choice and its review:
+> an 8,192 answer room + Basalt PR #632's patch, which targets Basalt issue
+> #588) is staged in §12 and has been RUNNING on the rig since 2026-11-24
+> 16:29 PST (launched after this report was written; no result yet). Engine choice and its review:
 > [STRATA_INKLING_5090-2026-11-23.md](STRATA_INKLING_5090-2026-11-23.md)
 > §11 and §15; decisions: [DECISIONS-2026-11-24.md](DECISIONS-2026-11-24.md).
 
@@ -73,8 +75,10 @@ loaded with `ablation._load` (exclusions applied), as for §5.
 
 The Basalt speed and acceptance (§10.6) need the rig's saved server logs
 (`~/openbeast-runs/basalt-server-logs/`, not committed):
-`python3 evals/audit/basalt_log.py <log> --since <START> --until <END>`
-with the arm's START and END lines of its `campaign.log` (UTC); the
+`python3 evals/audit/basalt_log.py <log> --since <START> --until <END> --cap <CAP>`
+with the arm's START and END lines of its `campaign.log` (UTC) and its
+per-turn cap (8192 for the T2 arms and I_UP8k, 16384 for `I_T3`; the
+tool's default is 8192); the
 commands are in the sealed review
 `evals/audit/reviews/ink-t2-s1-stock-integrity-2026-11-24.md` (I_UP8k's:
 `ink-up8k-integrity-2026-11-24.md`). Its `without_budget_line` block counts
@@ -1457,12 +1461,13 @@ validator's CPU budget), `wrong-answer`, `crash/exception`, `build-fail`,
 
 Reading the table:
 
-- **Every failure but one ran to the turn limit.** In all three arms the
-  only failed unit that did not use (nearly) all its turns is
-  `122_gemm_blocked_d`, the validator's `dlsym` stop (§3.6). 18 of
-  `I_T2`'s 22 failures, 18 of `I_T2_s1`'s 20 and 17 of `I_T2_stock`'s 18
-  ended exactly at the limit (the rest at 58-59 or after a crash in
-  turn 7-12). They used a median 26% / 30% / 28% of their wall (max 73% /
+- **Most failures ran to the turn limit.** 18 of `I_T2`'s 22 failures,
+  18 of `I_T2_s1`'s 20 and 17 of `I_T2_stock`'s 18 ended exactly at the
+  limit (60/60). The others: `122_gemm_blocked_d` in all three arms, the
+  validator's `dlsym` stop (§3.6; turn 9 / 12 / 24); in `I_T2`,
+  `122_gemm_blocked_e` (a crash at turn 7), `163_bigint_divmod_a` (58) and
+  `168_linearizability_kv_a` (59); in `I_T2_s1`, `168_linearizability_kv_c`
+  (49). They used a median 26% / 30% / 28% of their wall (max 73% /
   66% / 79%); median 8.7 / 8.9 / 8.2 s a turn. **No Inkling unit has hit
   its wall in 213 units.**
 - **Passes land on the last turn.** 3 / 3 / 4 passes per arm ended at the
@@ -1478,8 +1483,9 @@ Reading the table:
 - **168 looks like a design failure, as on DeepSeek.** 14 of 18
   `168_linearizability_kv` attempts failed on the CPU budget or a crash,
   the other 4 on a build failure or a missing file. The CPU-budget timeout
-  is the signature DeepSeek's 168 investigation traced to a global search
-  where a per-key split is the tractable design (HARNESS_NOTES); Inkling's
+  is the signature DeepSeek's 168 investigation traced to an early design
+  choice that cannot meet the limits (HARNESS_NOTES; the design itself is
+  in the sealed review under `evals/audit/reviews/`); Inkling's
   code was not read for this. Q38U-T2 passed none either.
   More turns or a bigger cap will not obviously fix it; the planning lines
   (UP) target it.
@@ -1654,3 +1660,10 @@ image and the patched tree's hashes check out; then it owns the GPU
 gates on the serve's arguments, mount, DNS fix, a chat and a #588 probe
 with 0 empty replies, runs the arm, and logs the server's wrap and
 "no answer" counts.
+
+**Status (added after merge).** Launched 2026-11-24 16:29:10 PST (gate
+passed 16:30:37, arm started 16:30:39; the campaign prints an ETA of
+~11.5 h, longer than the ~8-10 h above). No result yet. When it ends, read
+it with the audit tools at **its** cap: `basalt_log.py … --cap 16384` and
+`capped_turns.py` (which takes the cap from each `output_cap` event, or
+`--cap 16384`); at the 8,192 default the cap-reply rates come out empty.

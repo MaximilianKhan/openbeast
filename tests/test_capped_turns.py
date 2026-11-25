@@ -53,7 +53,8 @@ def test_counts_each_kind_of_capped_turn(tmp_path):
     assert units["u_pass"]["empty"] == 0  # the unscored transcript is not counted
     s = capped_turns.summary(units)
     assert (s["empty"], s["empty_in_fails"], s["failed_units_with_empty"]) == (2, 2, ["u_fail"])
-    assert s["rate_8192"]["n"] == 3 and s["rate_8192"]["median"] == 512  # 8192 tokens in 16 s
+    assert s["rate_cap"]["n"] == 3 and s["rate_cap"]["median"] == 512  # 8192 tokens in 16 s
+    assert s["caps"] == [8192]
     # a copy of the logs elsewhere: --logs-dir re-roots by file name
     moved = tmp_path / "copy"
     moved.mkdir()
@@ -92,3 +93,27 @@ def test_counts_forced_act_turns(tmp_path):
     assert s["forced"] == 3 and s["forced_units"] == ["u"] and s["forced_reasoning_chars_median"] == 500
     # an arm without the switch reports zeros
     assert capped_turns.summary({})["forced"] == 0
+
+
+def test_rate_follows_the_arms_cap(tmp_path):
+    # review 1124: I_T3 runs at a 16,384 cap; a hard-coded 8,192 found no
+    # reply "at the cap" there and left the rate empty
+    a = tmp_path / "agent-16k.jsonl"
+    _transcript(a, [("length", "empty"), ("length", "text"), ("tool_calls", "tools")])
+    a.write_text(a.read_text().replace('"max_tokens": 8192, "completion_tokens": 8192',
+                                       '"max_tokens": 16384, "completion_tokens": 16384'))
+    scan = [{"label": "I_T3", "units": {"u": [{"unit": "u", "transcript": str(a), "scored": True,
+                                                "passed": False}]}}]
+    s = capped_turns.summary(capped_turns.from_scan(scan, None, None))
+    assert s["caps"] == [16384]
+    assert s["rate_cap"]["n"] == 2 and s["rate_cap"]["median"] == 1024  # 16384 tokens in 16 s
+    # an explicit --cap that does not match finds no reply at the cap
+    s8 = capped_turns.summary(capped_turns.from_scan(scan, None, None, cap=8192))
+    assert s8["rate_cap"]["n"] == 0
+    assert capped_turns.main([_scan_file(tmp_path, scan), "--cap", "16384"]) == 0
+
+
+def _scan_file(tmp_path, scan):
+    p = tmp_path / "scan.json"
+    p.write_text(json.dumps(scan))
+    return str(p)

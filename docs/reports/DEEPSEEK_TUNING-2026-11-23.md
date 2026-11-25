@@ -177,7 +177,17 @@ D → end state); each restart took about 37 s to `/v1/models`. The
   Mac can hold 8 streams; each then runs at ~20 tok/s instead of ~31.
 - **Evals:** `run_eval` reads the gate's cap and clamps `--jobs` to it. A
   profile at `--jobs 4` still runs 4 workers at the same ~31 tok/s per
-  stream as the board's arms, so the board stays comparable. Do not raise
+  stream as the board's arms, so the board stays comparable, **provided no
+  other client decodes at the same time**: at `PARALLEL=4` the arm held
+  every slot and others queued; at 8 the gate admits another device (a
+  WebUI chat, opencode, a Mac swarm) beside it, and each extra stream cuts
+  the arm's per-stream rate (6 streams ~24, 8 ~20 tok/s). Keep the pair
+  quiet during an arm. Since review 1124 `run_eval` samples beast-slot's
+  `slots.busy` every 60 s and records it in the results file
+  (`harness.engine_load`: samples, max busy, samples with busy above
+  `--jobs`), warning at the start and the end when another client was
+  seen; `OPENBEAST_EVAL_SLOT_URL` names the slot URL when the base URL is
+  not a gate on `:8443`. Do not raise
   an arm's `--jobs` above 4 without noting it: per-stream decode, and with
   it the wall-scaled turn budget, changes.
 - **`beastglm`:** GLM's recipe serves 4 streams, and no switch script

@@ -1191,7 +1191,7 @@ PR `https://github.com/jesdga95/basalt/pull/632`; the pack repo
 > whenever we serve Inkling on Basalt, until upstream merges it.** Reviewed
 > 2026-11-24 ~09:00-10:00 PST, read only, from the §15 review clone
 > (`git fetch origin pull/632/head`). Decision record:
-> [DECISIONS-2026-11-24.md §6](DECISIONS-2026-11-24.md#6-basalt-pr-632-as-our-local-patch-for-inkling).
+> [DECISIONS-2026-11-24.md §11](DECISIONS-2026-11-24.md#11-basalt-pr-632-as-our-local-patch-for-inkling).
 > This closes §15.8 item 2 by a local patch rather than a re-pin.
 > Validated live on the rig 2026-11-24 14:29-15:01 PST (§16.6).
 

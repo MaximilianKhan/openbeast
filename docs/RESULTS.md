@@ -43,8 +43,10 @@ How rows are built:
   Spark pair (TensorFold, one model at a time), `--jobs 4`, driven from the
   Mac harness host. Hy4-flash (NVFP4) ran on the same pair under vLLM (TP2
   + expert parallel), `--jobs 4`, from the Mac harness host. The Qwen3.8 27B
-  Uncensored MTP row (the RTX 5090 default, llama.cpp) and the two Inkling
-  2 Mini rows (stock and Derisked packs, Basalt) ran on one RTX 5090,
+  Uncensored MTP row (the RTX 5090 fallback since 2026-11-24, llama.cpp)
+  and the four Inkling 2 Mini runs (two ranked rows, INK-T2-STOCK on the
+  stock pack, the 5090 default, and INK-T2 on the Derisked pack; plus the
+  seed repeat INK-T2-S1 and INK-UP8K, listed, not ranked; Basalt) ran on one RTX 5090,
   `--jobs 1`, driven from
   the rig's eval-host container (Linux): a different harness host,
   calibrated against the Mac host on 2026-11-23 with DeepSeek on harness9

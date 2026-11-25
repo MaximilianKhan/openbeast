@@ -28,6 +28,7 @@
 11. [Basalt with the Derisked pack for the Inkling v5 run](#11-basalt-with-the-derisked-pack-for-the-inkling-v5-run)
 12. [Queue three Inkling ablation arms behind I_T2](#12-queue-three-inkling-ablation-arms-behind-i_t2)
 13. [Project Maya for Inkling: review, measure, not adopted](#13-project-maya-for-inkling-review-measure-not-adopted)
+14. [DeepSeek tuning: PARALLEL=8 live, the 1M window deferred, the WebUI stays](#14-deepseek-tuning-parallel8-live-the-1m-window-deferred-the-webui-stays)
 
 ---
 
@@ -573,3 +574,43 @@ is closable on this Docker: `--dns 127.0.0.1` on the no-NAT bridge made
 every lookup FAIL while the published port worked (report §9.1). The rig's
 Basalt serve script was given the same flag for the ablation queue (§12,
 [TODO](../TODO.md)); Maya's run is a second, independent confirmation.
+
+## 14. DeepSeek tuning: PARALLEL=8 live, the 1M window deferred, the WebUI stays
+
+*(Added 2026-11-24 by review 1124: the production change was recorded only
+in its report, [DEEPSEEK_TUNING-2026-11-23.md](DEEPSEEK_TUNING-2026-11-23.md),
+and in no decision log.)*
+
+**Decision.** At the end of the tuning session (19:04-20:05 PST, approved
+by Max), the pair serves DeepSeek-V4.1-Flash with `PARALLEL=8` at the
+524,288-token window, and spark-1's `openbeast.conf` has
+`INFERENCE_SLOTS=8` (the gate's per-device cap follows it). The verified
+1,048,576-token window and `KV_SHARD=1` stay out of production. The Open
+WebUI stays on spark-1.
+
+**Reason and evidence** (the report's tables, one probe through beast-gate,
+same pair, same day): `PARALLEL=8` aggregates **147.4 tok/s** at 8 streams
+against **116.5** at 4 (+27%) and matches `PARALLEL=4` within noise at 1-4
+streams; memory is unchanged (no per-stream allocation). The 1M window
+works (a needle at 999,059 tokens found) but costs 0.88 GiB per rank of
+headroom on spark-1, which has the least.
+
+**Cost, stated so no one misreads it.** Per-stream decode falls from ~31
+tok/s at 4 streams to ~24 at 6 and ~20 at 8. At `PARALLEL=4` an arm at
+`--jobs 4` held every engine slot, so other clients queued; at 8 another
+client can decode beside an arm and slow its streams (and with them the
+wall-scaled turn budget). Since review 1124, `run_eval` samples beast-slot's
+`slots.busy` during a live run and records it in the results file
+(`harness.engine_load`; it warns when busy exceeds `--jobs`); keep other
+clients off the pair during an arm (MODEL_CAMPAIGN precondition).
+
+**Alternatives considered.** *Stay at 4*: rejected, 27% of aggregate left
+on the table for parallel agents. *1M now*: rejected until spark-1 has the
+headroom back (the report's "What would unlock 1M"). *Move the WebUI now*:
+needs Max's decisions and code work (the report's plan).
+
+**Rollback** (spark-1): `local.sh.bak-20261123-tuning` back over
+`~/openbeast-recipes/deepseek-prep/runtime/scripts/local.sh` and
+`openbeast.conf.bak-20261123-tuning` (or `INFERENCE_SLOTS=4`), then restart
+the unit and the command center; exact commands in the report's
+"Rollback".

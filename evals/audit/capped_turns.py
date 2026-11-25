@@ -33,10 +33,13 @@ So, per unit:
                   its end marker (serve/models/inkling2.py finish/_whole), one
                   of its lenient parsing paths; the transcript cannot say which
                   path produced a call
-  rate_8192       end-to-end tokens/s of each reply that hit an 8,192-token cap
-                  exactly (8,192 / the time from the turn's start to its
+  rate_cap        end-to-end tokens/s of each reply that hit the arm's cap
+                  exactly (cap / the time from the turn's start to its
                   response): prefill and request overhead included, so a lower
-                  bound on decode speed
+                  bound on decode speed. The cap is each output_cap event's
+                  own max_tokens (8,192 for the T2 arms, 16,384 for I_T3);
+                  --cap N overrides it (review 1124: a hard-coded 8,192 left
+                  the rate empty on a 16,384-cap arm)
 
 And, on a harness10 arm with the forced-act turn (OPENBEAST_AGENT_FORCE_ACT=1:
 after N capped thinking turns in a row the next request goes with
@@ -67,12 +70,13 @@ from datetime import datetime
 CAP = 8192
 
 
-def count(path: str) -> dict:
+def count(path: str, cap: int | None = None) -> dict:
     """The counts for one transcript (see the module docstring)."""
     turns = length = empty = capped_text = length_call = 0
     forced = {"forced": 0, "forced_thought": 0, "forced_length": 0, "forced_call": 0, "forced_empty": 0}
     forced_chars: list[int] = []
     rates: list[float] = []
+    caps: set[int] = set()
     started: dict[int, datetime] = {}
     cur, finish, calls = None, None, 0
 
@@ -113,16 +117,19 @@ def count(path: str) -> dict:
                 else:
                     capped_text += 1
                 t0 = started.get(e.get("iteration"))
-                if e.get("completion_tokens") == CAP and t0 and e.get("timestamp"):
+                c = cap or e.get("max_tokens") or CAP
+                caps.add(c)
+                if e.get("completion_tokens") == c and t0 and e.get("timestamp"):
                     dt = (datetime.fromisoformat(e["timestamp"]) - t0).total_seconds()
                     if dt > 0:
-                        rates.append(CAP / dt)
+                        rates.append(c / dt)
     close()
     return {"turns": turns, "length": length, "empty": empty, "capped_text": capped_text,
-            "length_call": length_call, "rate_8192": rates, **forced, "forced_chars": forced_chars}
+            "length_call": length_call, "rate_cap": rates, "caps": sorted(caps), **forced,
+            "forced_chars": forced_chars}
 
 
-def from_scan(scan: list, label: str | None, logs_dir: str | None) -> dict:
+def from_scan(scan: list, label: str | None, logs_dir: str | None, cap: int | None = None) -> dict:
     """{unit: counts + passed + transcript} for the scored units of one scanned arm."""
     arms = [a for a in scan if label is None or a.get("label") == label]
     if len(arms) != 1:
@@ -135,13 +142,13 @@ def from_scan(scan: list, label: str | None, logs_dir: str | None) -> dict:
             path = ent["transcript"]
             if logs_dir:
                 path = os.path.join(logs_dir, os.path.basename(path))
-            out[unit] = {**count(path), "passed": bool(ent.get("passed")),
+            out[unit] = {**count(path, cap), "passed": bool(ent.get("passed")),
                          "transcript": os.path.basename(path)}
     return out
 
 
 def summary(units: dict) -> dict:
-    rates = sorted(r for u in units.values() for r in u["rate_8192"])
+    rates = sorted(r for u in units.values() for r in u["rate_cap"])
     fails = {u: v for u, v in units.items() if not v["passed"]}
 
     def pct(p):
@@ -156,7 +163,8 @@ def summary(units: dict) -> dict:
         "failed_units_without_empty": sorted(u for u, v in fails.items() if not v["empty"]),
         "capped_text": sum(v["capped_text"] for v in units.values()),
         "length_call": sum(v["length_call"] for v in units.values()),
-        "rate_8192": {"n": len(rates), "p10": pct(0.1),
+        "caps": sorted({c for v in units.values() for c in v.get("caps", [])}),
+        "rate_cap": {"n": len(rates), "p10": pct(0.1),
                       "median": round(statistics.median(rates)) if rates else None, "p90": pct(0.9)},
         **{k: sum(v.get(k, 0) for v in units.values())
            for k in ("forced", "forced_thought", "forced_length", "forced_call", "forced_empty")},
@@ -172,18 +180,21 @@ def main(argv=None) -> int:
     ap.add_argument("--label", help="the arm's label in that report (needed when it has several)")
     ap.add_argument("--logs-dir", help="read the transcripts from here (a copy) instead of the scan's paths")
     ap.add_argument("--json", help="write {summary, units} here")
+    ap.add_argument("--cap", type=int, help="the arm's per-turn output cap (default: each output_cap "
+                    "event's own max_tokens, else 8192); I_T3 runs at 16384")
     a = ap.parse_args(argv)
     with open(a.scan, encoding="utf-8") as f:
-        units = from_scan(json.load(f), a.label, a.logs_dir)
+        units = from_scan(json.load(f), a.label, a.logs_dir, a.cap)
     s = summary(units)
     print(f"{s['units']} units, {s['turns']} turns, {s['length']} ended at the cap: "
           f"{s['empty']} empty (no answer, no call) in {len(s['empty_units'])} units, "
           f"{s['capped_text']} with text only, {s['length_call']} still carrying a tool call")
     print(f"empty capped turns in failed units: {s['empty_in_fails']}, in "
           f"{len(s['failed_units_with_empty'])} of {len(s['failed_units_with_empty']) + len(s['failed_units_without_empty'])} fails")
-    r = s["rate_8192"]
+    r = s["rate_cap"]
     if r["n"]:
-        print(f"replies at exactly {CAP:,} tokens: {r['n']}, end-to-end tok/s p10 {r['p10']}, "
+        caps = "/".join(f"{c:,}" for c in s["caps"]) or f"{CAP:,}"
+        print(f"replies at exactly the cap ({caps} tokens): {r['n']}, end-to-end tok/s p10 {r['p10']}, "
               f"median {r['median']}, p90 {r['p90']} (prefill included)")
     if s["forced"]:
         print(f"forced-act turns: {s['forced']} in {len(s['forced_units'])} units; {s['forced_thought']} still "
@@ -202,7 +213,7 @@ def main(argv=None) -> int:
                       f"{v['forced_length']} | {v['forced_empty']} | {v['forced_call']}")
     if a.json:
         with open(a.json, "w", encoding="utf-8") as f:
-            json.dump({"summary": s, "units": {u: {k: x for k, x in v.items() if k not in ("rate_8192", "forced_chars")}
+            json.dump({"summary": s, "units": {u: {k: x for k, x in v.items() if k not in ("rate_cap", "forced_chars")}
                                                for u, v in units.items()}}, f, indent=1)
     return 0
 

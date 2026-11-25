@@ -1,6 +1,14 @@
 # TODO
 
-## 🧰 v5 HARNESS + MODEL CAMPAIGN — opened 2026-11-16, refreshed 2026-11-21
+## 🧰 v5 HARNESS + MODEL CAMPAIGN — opened 2026-11-16, refreshed 2026-11-21 (RTX 5090 line 2026-11-24)
+
+**RTX 5090 (2026-11-24):** stock Inkling 2 Mini on Basalt (board row
+INK-T2-STOCK, 53/71, SCORE 78.2) is the 5090 default by decision
+([DECISIONS-2026-11-24 §10](reports/DECISIONS-2026-11-24.md)); Qwen3.8
+(Q38U-T2, 52/71) is the fallback. The rig's own switch is still pending
+(its `openbeast.conf` says `AGENT_PROFILE=qwen38-best`). The improved arm
+`I_T3` is RUNNING on the rig since 16:29 PST (item below). INK-T2,
+INK-T2-S1 and INK-UP8K are the Derisked pack's rows.
 
 Where the v5 work stands. Every arm is single seed. The working log is
 [`HARNESS_NOTES.md`](HARNESS_NOTES.md) "Headroom", the runbook is
@@ -75,8 +83,12 @@ DeepSeek's UP on the same harness
   it runs Next.js 16.4.5, which closes the advisory item). Read live
   2026-11-22: the deployed build is website #28 (`fa2877a`, Last-Modified
   18:18 GMT), which names DeepSeek-V4.1-Flash (Mia EXL3) as the pair's
-  default. Website #29-#31 and later are merged but not deployed; see "Open —
-  process and the website".
+  default. **Redeployed 2026-11-24** (read live 2026-11-24 evening:
+  Last-Modified Tue, 24 Nov 2026 22:38:39 GMT = 14:38 PST, after website
+  #51 `66bc476` merged at 14:30 PST and before #52; `/models/` says
+  "Inkling 2 Mini on Basalt by default", `/recipes/` answers 200). Website
+  #52 (INK-UP8K) and later are merged but not live; see "Open — process
+  and the website".
 
 **Done since the 2026-11-17 morning refresh (#194–#204, plus operator steps):**
 
@@ -470,8 +482,10 @@ DeepSeek's UP on the same harness
   - 226 empty capped turns (50 of them forced turns), the server log
     agreeing exactly; §10.9.8 reconciles §12.6's earlier figures (its "176"
     is the thinking-turn subset).
-- [ ] **READY, not launched (Max launches): arm `I_T3`, Inkling's improved
-  composite** ([DECISIONS-2026-11-24 §12](reports/DECISIONS-2026-11-24.md#12-the-improved-inkling-arm-i_t3-turns-cap-patch)):
+- [ ] **RUNNING since 2026-11-24 16:29:10 PST: arm `I_T3`, Inkling's improved
+  composite** (launcher pid 7275, `PACK=stock`; gate passed 16:30:37; arm
+  started 16:30:39, the campaign's ETA ~11.5 h, so about 04:00 PST on
+  11-25) ([DECISIONS-2026-11-24 §12](reports/DECISIONS-2026-11-24.md#12-the-improved-inkling-arm-i_t3-turns-cap-patch)):
   `I_T2_stock` (the stock pack, §8) + `--turns-per-wall-s 5` + a 16,384
   cap + `--answer-room 8192` + the PR #632 patch (§11). Launch on the rig:
   `setsid nohup ~/openbeast-runs/ink-I_T3-run.sh > ~/openbeast-runs/ink-I_T3-run.out 2>&1 < /dev/null &`
@@ -481,19 +495,59 @@ DeepSeek's UP on the same harness
   `036638dd`), the image and the patched tree's hashes; stops the default
   stack and restores it on exit; gates on the serve's args, mount, DNS
   fix, a chat and a #588 probe; keeps the server log in
-  `~/openbeast-runs/basalt-server-logs/basalt-I_T3-<ts>.log`. ETA
-  UNVERIFIED ~8-10 h. After: integrity scan, `capped_turns.py`,
-  `evals/audit/basalt_log.py` on the kept log, the `dlsym` procedure, the
-  paired tests against `I_T2_stock` and Q38U-T2 (report §12 recipe), then
-  §6's switch rule. Follow-ups `I_T3_t15`, `I_T3_8k` and a seed repeat only
-  with Max's go.
+  `~/openbeast-runs/basalt-server-logs/basalt-I_T3-<ts>.log`.
+  - **Live paths:** launcher log `~/openbeast-runs/ink-I_T3-run.out`;
+    campaign log `~/openbeast-runs/beast-inkling-I_T3-20261124-1630.out`;
+    state `~/ob-ink3/evals/results/campaigns/v5-thinking-first-inkling-2-mini-basalt-nvfp4-mx8-stock/`
+    (`state.json`, `arm-I_T3.log`); trees `~/ob-ink3` @ `bffe5ecd` and
+    `~/ob-ink3/.claude/worktrees/h9` @ `f38a29c7` (era `036638dd`); image
+    `openbeast-eval-host:8d1e28442569`; server log
+    `~/openbeast-runs/basalt-server-logs/basalt-I_T3-20261124-162910.log`.
+    The rig's `openbeast.conf` still says `AGENT_PROFILE=qwen38-best`; the
+    launcher restores the default stack (`./start.sh -d`) on exit.
+  - **Stop safely:** do **not** kill `ink-I_T3-run.sh` (its EXIT trap owns
+    the restore). Stop the arm's eval container instead:
+    `docker stop $(docker ps -q --filter ancestor=openbeast-eval-host:8d1e28442569)`.
+    The launcher then logs the exit, runs `inkling-v5.sh stop` (saves the
+    server log), `./start.sh -d`, checks the gate `:8091` (200 and a chat)
+    and writes `RESTORE OK|FAILED` and `I_T3 LAUNCHER DONE` in the `.out`.
+  - **Restore by hand** (only on `RESTORE FAILED` or a launcher that died
+    without a `RESTORE` line): `docker stop basalt-serve` if it is still
+    up, then `cd ~/Documents/openbeast && ./start.sh -d`, then
+    `curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $(cat ~/.config/openbeast/rig-eval.key)" http://127.0.0.1:8091/v1/models`
+    must print 200.
+  - **After:** integrity scan (the review-1124 scan: listings in any format
+    and the package-manager / nc / ssh network paths; rerun it read-only
+    over the earlier rig arms' transcripts too, item below),
+    `evals/audit/capped_turns.py <scan.json> --cap 16384`,
+    `evals/audit/basalt_log.py <kept log> --since … --until … --cap 16384`
+    (I_T3's cap is 16,384, not the tools' 8,192 default: at the default the
+    cap-reply rates come out empty), the `dlsym` procedure, the paired
+    tests against `I_T2_stock` and Q38U-T2 (report §12 recipe), then §6's
+    switch rule. Follow-ups `I_T3_t15`, `I_T3_8k` and a seed repeat only
+    with Max's go.
+- [ ] **Rescan the rig arms with the review-1124 integrity scan** (after
+  `I_T3` ends; read only, no host change). The scan before review 1124
+  flagged a result line only when it STARTED with `/Users/`, `/home/` or
+  `/tmp/claude-`, so an `ls -l` / `find -ls` / `du -a` line, a `./home/...`
+  line after `cd /` or a `/root/...` / `/work/...` root went unseen, and
+  `pip install`, `cargo add`, `nc`, `ssh`, httpie and python socket/urllib
+  one-liners were not network. INK-T2, -S1, -STOCK and -UP8K's "0 more
+  contaminated" rests on the old tool plus a manual substring sweep. Steps:
+  copy each arm's transcripts off the rig read-only (`rsync -a
+  beast:~/ob-ink*/.claude/worktrees/h9/agents/logs/ /tmp/rig-logs/<arm>/`,
+  never into the live trees), run `evals/audit/integrity_scan.py` from
+  main over them with each arm's results file, and record any new hit in
+  the sealed review and DECISIONS (contaminated units are excluded, never
+  re-scored). Also Q_T2, the calibration and Q38U-L0.
 - [ ] **Next era (runner): do not execute a tool call from a reply that
   ended `length`.** Basalt returns a call the cap cut with its arguments
   closed into valid JSON, and the runner runs it: 51-82 truncated
   heredocs per Inkling arm (report §12.2). Return "your call was cut by
   the output cap: re-issue it whole, or split it" instead, as a model-turn
   error (with HARNESS_NOTES next-era (a), the llama.cpp side of the same
-  fault).- [x] **Basalt code review** done 2026-11-23 (read only, the Strata report
+  fault).
+- [x] **Basalt code review** done 2026-11-23 (read only, the Strata report
   [§15](reports/STRATA_INKLING_5090-2026-11-23.md#15-basalt-security-and-supply-chain-review)):
   no malware, telemetry or credential access, no network code in the
   engine; OK to keep serving `I_T2` in its sandbox.
@@ -607,12 +661,17 @@ DeepSeek's UP on the same harness
   16.4.5 (website commit `208ad30`; Dependabot's #16 closed).
 - [x] **The website's arm E update.** `/benchmarks/` shows E at 50/71, 74.7%
   (checked 2026-11-19).
-- [ ] **Deploy website main.** Read live 2026-11-22: production serves the
-  #28 build; `/recipes/` (#29) answers 404, the HY4-C 55/71 ablation (#30),
-  the double-pass p1 fixes (#31) and later are not live, and a missing
-  `/_next/static/*` file still returns 404 with the immutable cache header.
-  Run `deploy/deploy.sh prod` on the Mac Mini, then purge Cloudflare's
-  `/_next/static/` prefix, and record the deployed commit here.
+- [ ] **Deploy website main (#52 and later).** Read live 2026-11-24
+  evening: production was redeployed 2026-11-24 14:38 PST (Last-Modified
+  22:38:39 GMT; most likely website main at #51 `66bc476`: it is the last
+  merge before that time, and the deploy recorded no commit); `/recipes/`
+  answers 200 and `/models/` names Inkling as the 5090 default.
+  **Not live:** website #52 (`d5ff300`, the INK-UP8K row; `/benchmarks/`
+  has no "UP8K") and anything after it. Re-check that a missing
+  `/_next/static/*` file no longer returns 404 with the immutable cache
+  header (the 2026-11-22 note). Run `deploy/deploy.sh prod` on the Mac Mini,
+  then purge Cloudflare's `/_next/static/` prefix, and **record the deployed
+  website commit here** (the 2026-11-24 deploy did not).
 - [x] **The website names the pair's new default.** Confirmed live
   2026-11-22: the home page names DeepSeek-V4.1-Flash (Mia EXL3) as the
   pair's default. History: the live site (2026-11-19)
@@ -1135,7 +1194,9 @@ paper's central result either way. Prereqs: the v5 arms for GLM (L0/L1/L2,
 thinking on, runner v2), a Qwen3.8 v5 row when the rig is back, DeepSeek v4.1
 Flash, and the Claude Opus 5.5 reference row as the ceiling.
 
-Status 2026-11-22: four models measured, all single seed.
+Status 2026-11-24: five model families measured (DeepSeek, GLM, Hy4,
+Qwen3.8, Inkling 2 Mini), all single seed (Inkling's INK-T2-S1 is the one
+seed repeat).
 DeepSeek-V4.1-Flash (Mia EXL3) on the thinking-first campaign has T 61,
 T_s1 61, T2 65 (SCORE 94.9, best), T3 65, U 59, UP 62, UPA 59, U_8k 63,
 UP_8k 65 and UPA_8k 62 (series complete), with a GLM UP control as the
@@ -1153,7 +1214,10 @@ default then; [report](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md)); its see
 repeat INK-T2-S1 51/71 (2 units flipped; never ranked) and the stock-pack
 control INK-T2-STOCK 53/71 (SCORE 78.2, the top 5090 row; level with
 Q38U-T2 paired; report §10), the RTX 5090 default since 2026-11-24
-(DECISIONS-2026-11-24 §10). The cross-model reading
+(DECISIONS-2026-11-24 §10); DeepSeek's UP_8k setup on the Derisked pack,
+INK-UP8K 49/71 (SCORE 75.1, listed, not ranked; one unit excluded by the
+integrity scan; report §10.9), and the improved arm I_T3 running since
+2026-11-24 16:29 PST (report §12). The cross-model reading
 is in [HARNESS_NOTES.md](HARNESS_NOTES.md). The GLM status as of 2026-11-17
 (evening) follows; it was GLM only at that point. GLM's arms L0 26
 → A 31 → B 36 → C 51/71 scored (54 raw; thinking) → E 50/71, against the
