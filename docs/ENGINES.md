@@ -384,7 +384,9 @@ Each line says why, so the question is not reopened without new evidence.
 Revisit Strata only if (a) a thinking mode for Inkling lands, (b) the DSpark
 fix is in a reviewed commit, and (c) its own SQ packs beat Basalt (the report's §11: SQ-20 201 / 131 tok/s
 against Basalt's 403 / 356, and ~1,400 at 64 streams, not 4,089.7). There is no `scripts/engines/strata.sh`
-adapter, and none is planned.
+adapter, and none is planned. Status of (a), 2026-11-25: thinking for Inkling
+is in Strata v0.2.21 by source, not yet measured; (c) is unchanged
+([SC117 report](reports/SC117_INKLING_STRATA-2026-11-25.md)).
 
 Revisit Maya for Inkling only if (a) a reviewed release reads `inkling2_loop`
 GGUFs or the Derisked checkpoint, (b) its prose drafting stops running below its
