@@ -861,6 +861,8 @@
 
     // KPI tiles
     setId('sig-toks', toks(sv.tok_s));
+    const sm = sv.streams || {};
+    setId('sig-toks-sub', 'per stream ' + streamLine(sm));
     const hist = (sv.history && sv.history.tok_s) || [];
     const svg = $('spark-toks');
     if (svg) svg._step = sv.interval_s || 3;
@@ -915,7 +917,9 @@
     setId('sv-kv', kvKnown ? frac(sv.kv_usage, 1) : fill !== null ? 'context fill ' + pct(fill, 1) : DASH);
     setId('sv-pool', isNum(cap.ctx_total) ? int(cap.ctx_total) + (cap.ctx_shared ? ' shared' : '') : (cap.ctx_shared ? 'shared pool' : DASH));
     setId('sv-prompt', toks(sv.prompt_tok_s));
-    setId('sv-gen', toks(sv.tok_s));
+    setId('sv-gen', toks(sv.tok_s) + (isNum(sm.aggregate_60s_tok_s) ? ' · 60 s ' + toks(sm.aggregate_60s_tok_s) : ''));
+    setId('sv-per-stream', isNum(sm.per_stream_tok_s) ? toks(sm.per_stream_tok_s) + ' · ' + PER_STREAM_FROM[sm.per_stream_source || ''] : DASH);
+    setId('sv-streams', (isNum(sm.decoding) ? sm.decoding : DASH) + ' · ' + (isNum(sm.prefilling) ? sm.prefilling : DASH) + (isNum(sm.active) ? ' of ' + sm.active + ' active' : ''));
     setId('sv-profile', str(cap.serving_profile, 32));
     const adm = sv.admission;
     setId('sv-admission', adm ? adm.per_device_inflight + ' in flight · ' + adm.per_device_rate_per_min + '/min' : DASH);
@@ -1283,7 +1287,7 @@
 
   // ------------------------------------------------------------ serving detail
   const SV_CHARTS = [
-    { key: 'tok', title: 'Generation', fmt: v => toks(v) + ' tok/s', series: [['serve:tok_s', 'generated']] },
+    { key: 'tok', title: 'Generation', fmt: v => toks(v) + ' tok/s', series: [['serve:tok_s', 'all streams'], ['serve:per_stream_tok_s', 'per stream']] },
     { key: 'prompt', title: 'Prompt processing', fmt: v => toks(v) + ' tok/s', series: [['serve:prompt_tok_s', 'prompt']] },
     { key: 'req', title: 'Requests', fmt: v => isNum(v) ? (Math.round(v * 10) / 10).toString() : DASH, series: [['serve:running', 'running'], ['serve:waiting', 'waiting']] },
     { key: 'kv', title: 'KV cache / context', max: 100, fmt: v => pct(v, 1), series: [['serve:kv_pct', 'KV use'], ['serve:ctx_fill_pct', 'context fill']] },
@@ -1296,6 +1300,15 @@
     { key: 'reqs', title: 'Requests completed', perMin: true, fmt: v => isNum(v) ? v.toFixed(v < 10 ? 1 : 0) + '/min' : DASH, series: [['serve:requests', 'per min']] },
   ];
 
+  // Where the per-stream rate comes from (dashboard.py streams_view).
+  const PER_STREAM_FROM = { slots: 'median of the slots', batch: 'batched: each decoding stream',
+    estimate: 'all streams / running (a lower bound)', finished: 'finished requests, 5 min', '': '' };
+  function streamLine(sm) {
+    if (!sm || !isNum(sm.per_stream_tok_s)) return DASH;
+    const n = isNum(sm.decoding) ? sm.decoding : sm.active;
+    return toks(sm.per_stream_tok_s) + (isNum(n) ? ' · ' + n + (n === 1 ? ' stream' : ' streams') : '');
+  }
+
   function renderServing(doc) {
     if (!doc) return;
     const nw = doc.now || {}, det = doc.detail || {}, lat = det.latency || {}, spc = det.spec || null, pr = det.per_request || {};
@@ -1306,7 +1319,11 @@
     // no observation and the value falls back to the lifetime) the engine's start.
     const W = (h, q) => h && isNum(h[q]) ? lw : 'since engine start';
     const items = [
-      { key: 'gen', k: 'generation', v: unit(nw.tok_s, toks, ' tok/s'), s: nw.tok_s_source === 'engine-completed' ? 'per finished request' : 'all streams' },
+      { key: 'gen', k: 'generation · all streams', v: unit(nw.tok_s, toks, ' tok/s'), s: nw.tok_s_source === 'engine-completed' ? 'per finished request'
+        : 'aggregate' + (nw.streams && isNum(nw.streams.active) ? ' over ' + nw.streams.active + ' active' : '') },
+      { key: 'stream', k: 'generation · per stream', v: unit((nw.streams || {}).per_stream_tok_s, toks, ' tok/s'),
+        s: nw.streams && isNum(nw.streams.per_stream_tok_s) ? PER_STREAM_FROM[nw.streams.per_stream_source || ''] + (isNum(nw.streams.decoding) ? ' · ' + nw.streams.decoding + ' decoding' : '')
+          + (isNum(nw.streams.prefilling) && nw.streams.prefilling ? ' · ' + nw.streams.prefilling + ' prefilling' : '') : 'no stream decoding' },
       { key: 'prompt', k: 'prompt', v: unit(nw.prompt_tok_s, toks, ' tok/s'), s: nw.prompt_tok_s_source === 'engine-completed' ? 'per finished prefill' : 'computed prefill, cache hits excluded' },
       { key: 'req', k: 'running · waiting', v: (isNum(nw.running) ? nw.running : DASH) + ' · ' + (isNum(nw.waiting) ? nw.waiting : DASH),
         s: isNum(nw.stalled_s) && nw.stalled_s > 30 ? 'no token for ' + dur(nw.stalled_s) : isNum(det.requests_per_min) ? det.requests_per_min.toFixed(1) + ' done / min' : '',

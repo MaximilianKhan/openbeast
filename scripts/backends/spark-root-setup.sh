@@ -33,6 +33,14 @@
 #      a keyed engine that must be reached directly. By default inference
 #      listens on loopback behind the pair's (spark-hydra's) beast-gate.
 #      Nothing else in ufw is touched; status is printed before and after.
+#   5. Blacklists the mstflint_access kernel module
+#      (/etc/modprobe.d/openbeast-blacklist-mstflint.conf) and unloads it when
+#      nothing holds it. NVIDIA's hourly OTA check (dgx-dashboard-admin ->
+#      spark-ota-check -> `mstflint q`) hit an oops in it on spark-1 on
+#      2026-11-24, and each later call hung in D state, 40 an hour
+#      (docs/reports/SPARK1_SLOWDOWN-2026-11-25.md, SPARK_HYDRA.md G9).
+#      Nothing in OpenBeast, RoCE or NCCL needs it. Remove the file only for
+#      a ConnectX-7 firmware flash.
 #
 # OFFLINE: --debs DIR installs libnccl2 and tailscale from .deb files staged
 # there beforehand. On a Spark with internet (apt checked the repo signature
@@ -157,7 +165,7 @@ if [[ -n "$DEBS" ]]; then
   fi
 fi
 
-step "1/4 libnccl2 $NCCL_VERSION"
+step "1/5 libnccl2 $NCCL_VERSION"
 if [[ "$(dpkg-query -W -f='${Version}' libnccl2 2>/dev/null || true)" == "$NCCL_VERSION" ]]; then
   echo "already installed"
 else
@@ -172,11 +180,11 @@ fi
 apt-mark hold libnccl2 >/dev/null
 ldconfig -p | grep -q 'libnccl.so.2 ' && echo "libnccl.so.2 visible to the loader"
 
-step "2/4 linger for $SUDO_USER"
+step "2/5 linger for $SUDO_USER"
 loginctl enable-linger "$SUDO_USER"
 loginctl show-user "$SUDO_USER" -p Linger
 
-step "3/4 Tailscale as '$TS_HOSTNAME'"
+step "3/5 Tailscale as '$TS_HOSTNAME'"
 if [[ $NO_TS -eq 1 ]]; then
   echo "skipped (--no-tailscale)"
 elif [[ -n "$TS_DEB" ]]; then
@@ -206,7 +214,7 @@ if [[ $NO_TS -eq 0 ]]; then
   echo "tailnet IPv4: $(tailscale ip -4 2>/dev/null || echo none)"
 fi
 
-step "4/4 ufw (fabric allow rules) and exposure"
+step "4/5 ufw (fabric allow rules) and exposure"
 UFW_STATE="not installed"
 if command -v ufw >/dev/null; then
   UFW_STATE="$(ufw status 2>/dev/null | head -1 || true)"
@@ -247,6 +255,19 @@ if [[ "$UFW_STATE" != "Status: active" ]]; then
   !!   sudo $HERE/spark-guard.sh            (or re-run this with --guard)
 EOF
 fi
+step "5/5 mstflint_access blacklist"
+MST_CONF=/etc/modprobe.d/openbeast-blacklist-mstflint.conf
+printf '%s\n' "# OpenBeast: an oops in this module hung NVIDIA's hourly OTA check (SPARK_HYDRA.md G9)" \
+  "blacklist mstflint_access" "install mstflint_access /bin/false" > "$MST_CONF"
+echo "  wrote $MST_CONF"
+if lsmod | awk '$1 == "mstflint_access" {found = 1; if ($3 != 0) busy = 1} END {exit !(found && !busy)}'; then
+  modprobe -r mstflint_access && echo "  unloaded mstflint_access"
+elif lsmod | grep -q '^mstflint_access '; then
+  echo "  !! mstflint_access is in use (processes stuck on it?): reboot this Spark to drop it" >&2
+else
+  echo "  mstflint_access not loaded"
+fi
+
 if [[ $GUARD -eq 1 ]]; then
   step "spark-guard"
   "$HERE/spark-guard.sh"

@@ -61,7 +61,7 @@
         </ul>
       </div>
       <ul class="kpis" aria-label="Now">
-        <li><a class="kpi" href="#/serving"><span class="kpi-k">tokens / s</span><span class="kpi-v" id="sig-toks">—</span><span class="spark-wrap"><svg class="spark" id="spark-toks" viewBox="0 0 120 28" preserveAspectRatio="none" role="img" aria-label="tokens per second, last 15 minutes"></svg><span class="spark-read" id="spark-toks-read"></span></span></a></li>
+        <li><a class="kpi" href="#/serving"><span class="kpi-k">tok/s · all streams</span><span class="kpi-v" id="sig-toks">—</span><span class="kpi-s" id="sig-toks-sub">per stream —</span><span class="spark-wrap"><svg class="spark" id="spark-toks" viewBox="0 0 120 28" preserveAspectRatio="none" role="img" aria-label="tokens per second, last 15 minutes"></svg><span class="spark-read" id="spark-toks-read"></span></span></a></li>
         <li><a class="kpi" href="#/serving"><span class="kpi-k">requests</span><span class="kpi-v" id="sig-reqs">—</span><span class="kpi-s" id="sig-reqs-sub">running · waiting</span></a></li>
         <li><a class="kpi" href="#/serving"><span class="kpi-k" id="sig-kv-k">KV cache</span><span class="kpi-v" id="sig-kv">—</span><span class="meter" aria-hidden="true"><i id="sig-kv-bar"></i></span><span class="kpi-s" id="sig-kv-sub">—</span></a></li>
         <li><a class="kpi" href="#/serving"><span class="kpi-k" id="sig-lat-k">latency</span><span class="kpi-v" id="sig-lat">—</span><span class="kpi-s" id="sig-lat-sub">—</span></a></li>
@@ -179,7 +179,9 @@
           <div><dt>KV usage</dt><dd id="sv-kv">—</dd></div>
           <div><dt>token pool</dt><dd id="sv-pool">—</dd></div>
           <div><dt>prompt tok/s</dt><dd id="sv-prompt">—</dd></div>
-          <div><dt>gen tok/s</dt><dd id="sv-gen">—</dd></div>
+          <div><dt>gen tok/s · all streams</dt><dd id="sv-gen">—</dd></div>
+          <div><dt>gen tok/s · per stream</dt><dd id="sv-per-stream">—</dd></div>
+          <div><dt>streams decoding · prefilling</dt><dd id="sv-streams">—</dd></div>
           <div><dt>profile</dt><dd id="sv-profile">—</dd></div>
           <div><dt>per device</dt><dd id="sv-admission">—</dd></div>
           <div><dt>backend</dt><dd id="sv-backend">—</dd></div>

@@ -117,7 +117,8 @@ The `dashboard` slot API established the sanctioned pattern. Follow it:
   on a 1440x900 screen and on a phone: the **verdict** (all systems
   nominal / degraded / critical / model down, with the reason), the served
   model, engine, inference unit and its uptime, then one tile each for
-  tokens/s (with a 15-min sparkline), requests running and waiting, KV
+  tokens/s over all streams (with a 15-min sparkline, and the median
+  stream's rate and the stream count under it), requests running and waiting, KV
   cache (context fill of the busiest slot on llama.cpp, which reports no KV
   use), latency (TTFT p50 on vLLM, decode speed per request on llama.cpp),
   **one** power figure (the cluster's watts now and the 1 h average), gate
@@ -175,7 +176,21 @@ The `dashboard` slot API established the sanctioned pattern. Follow it:
   openbeast.conf or the environment (also `OPENBEAST_DASHBOARD_ALERT_<NAME>`),
   read at start; a value out of range keeps the default.
   `DASHBOARD_ALERTS_OFF=temp,disk` turns rules off (peer, engine, stall,
-  temp, mem, throttle, disk, gate, kv, service).
+  temp, mem, throttle, disk, gate, kv, service, slow, dstate, load, kernel,
+  memtrend).
+
+  **Per-stream vs aggregate tok/s (2026-11-25).** The aggregate is the
+  engine's live generation counter over all streams. The per-stream rate is
+  the median decoding stream: measured per slot from `/slots` on llama.cpp
+  and Basalt; on TensorFold, the aggregate over `/health`'s
+  `streams.decoding`, because batched decode advances every decoding stream
+  once per round; on vLLM, the aggregate over the running requests (a lower
+  bound, since prefilling requests count too); with nothing decoding, the
+  finished requests' 5-min decode rate, labelled as such. `/api/status`
+  `serving.streams` and `/api/serving` `now.streams` carry
+  `{aggregate_tok_s, aggregate_60s_tok_s, per_stream_tok_s,
+  per_stream_source, per_stream_min_tok_s, active, decoding, prefilling}`,
+  and the history has `serve:per_stream_tok_s` and `serve:streams`.
 
   | Alert | Level | Fires when | Setting (default) |
   |---|---|---|---|
@@ -190,6 +205,11 @@ The `dashboard` slot API established the sanctioned pattern. Follow it:
   | gate down | critical | beast-gate on but not answering | `ENGINE_DOWN_S` |
   | KV cache full | warning | KV use at or above P % with requests waiting (TensorFold: pool use from `/health` only; its per-stream ratio is context fill, shown, not alerted) | `KV_PCT` (98), `KV_S` (60 s) |
   | service down | warning | tools, WebUI, search, chat, artifact or instinct down | `SERVICE_S` (30 s) |
+  | streams far below baseline | warning | per-stream decode under P % of the model's baseline at that stream count (built in: DeepSeek-V4.1-Flash, Hy4; `DASHBOARD_STREAM_BASELINE="1:68,4:31,8:20"` for any model) | `SLOW_STREAM_PCT` (35), `SLOW_STREAM_S` (120 s) |
+  | processes in D state | warning / critical | at least N processes in uninterruptible sleep, naming the most common command (unkillable: a reboot clears them) | `DSTATE_N` (20), `DSTATE_CRIT_N` (200), `DSTATE_S` (60 s) |
+  | load anomaly | warning | 1-min load above N per CPU | `LOAD_PER_CPU` (8); held 60 s |
+  | kernel oops | critical | `/proc/sys/kernel/tainted` bit 128 (D: an oops or BUG since boot) | — |
+  | available memory falling | warning | MemAvailable falling faster than N MiB/h (least squares over 6 h, at least 3 h of readings) and reaching the memguard floor within H hours | `MEM_TREND_MIB_H` (25), `MEM_TREND_H` (72); held 60 s |
 
   **Logs and rollups (v3).** `.run/dashboard-log.json` (every 30 s when
   changed, and on SIGTERM; 2 MB cap) keeps the event log (500 events: a
