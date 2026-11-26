@@ -517,6 +517,17 @@ fi
 _ob_profile_value() {
   local _ob_set
   _ob_set="$(_ob_profile_set "$AGENT_PROFILE")" || return 1
+  # Serving defaults that belong to one profile NAME, not its switch table:
+  # GATE_DEFAULT_MAX_TOKENS is beast-gate's reply cap for requests that set
+  # none, needed on the Spark pair (TensorFold reserves a request's reply
+  # budget in the shared KV pool; 32,768 when the request names none) and
+  # nowhere else, so the RTX 5090 profiles (qwen38-best, inkling-best) leave
+  # the gate's default off. 8192 = T2's AGENT_MAX_TOKENS (docs/SPARK_HYDRA.md
+  # "beast-gate's default max_tokens").
+  case "$AGENT_PROFILE:$1" in
+    deepseek-best:GATE_DEFAULT_MAX_TOKENS) printf '8192\n'; return 0 ;;
+    *:GATE_DEFAULT_MAX_TOKENS) return 1 ;;
+  esac
   case "$_ob_set:$1" in
     t2:INFERENCE_THINKING) printf 'on\n' ;;
     t2:AGENT_MAX_TOKENS)   printf '8192\n' ;;
@@ -891,6 +902,10 @@ export OPENBEAST_PROBE_HOST
 #       WebUI thinking filter does the same for WebUI chats, and this host's
 #       own agents send it. Empty = nothing injected anywhere. Eval runs
 #       never follow it. spark-1: on (docs/SPARK_HYDRA.md).
+#   GATE_DEFAULT_MAX_TOKENS N                             default empty (off)
+#       beast-gate's max_tokens for a chat/completions request that names no
+#       cap; 0 = off. AGENT_PROFILE=deepseek-best gives 8192 (resolved below
+#       INFERENCE_THINKING).
 # The llama defaults are resolved even when nothing is set, so every consumer
 # below reads the same values it always did.
 #
@@ -1052,6 +1067,29 @@ else
   _ob_underive INFERENCE_THINKING
 fi
 unset _ob_it_env
+# GATE_DEFAULT_MAX_TOKENS: beast-gate's max_tokens for a chat/completions
+# request that sets neither max_tokens nor max_completion_tokens (agents/
+# edge.py max_tokens_default). env > openbeast.conf > AGENT_PROFILE
+# (deepseek-best: 8192; the other profiles: none). 0 or unset = the gate
+# injects nothing. A device's own `max_tokens_default` (clients.sh
+# max-tokens) overrides it per device.
+_ob_gm_env=0
+if _ob_gm="$(_ob_override GATE_DEFAULT_MAX_TOKENS)"; then
+  _ob_gm_env=1
+else
+  _ob_gm="$(_ob_conf_value GATE_DEFAULT_MAX_TOKENS || _ob_profile_value GATE_DEFAULT_MAX_TOKENS || true)"
+fi
+_ob_gm="${_ob_gm%%[[:space:]#]*}"
+if [[ -n "$_ob_gm" && ! "$_ob_gm" =~ ^[0-9]+$ ]]; then
+  _OB_CONF_PROBLEMS+=("GATE_DEFAULT_MAX_TOKENS='$_ob_gm' is not a whole number — ignoring it (beast-gate adds no default max_tokens)")
+  _ob_gm=""
+fi
+if [[ -n "$_ob_gm" ]]; then
+  _ob_derive GATE_DEFAULT_MAX_TOKENS "$_ob_gm" "$_ob_gm_env"
+else
+  _ob_underive GATE_DEFAULT_MAX_TOKENS
+fi
+unset _ob_gm _ob_gm_env
 # ── beast-hydra + beast-instinct (docs/BEAST_HYDRA_PLAN.md §6.7,
 #    docs/BEAST_INSTINCT_PLAN.md §5.2/§5.9) ─────────────────────────────────
 # Both are OPT-IN. With HYDRA and INSTINCT off (the default) this block

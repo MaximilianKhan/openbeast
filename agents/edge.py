@@ -55,6 +55,13 @@ Env (resolved from openbeast.conf by scripts/lib/conf.sh):
                                chat_template_kwargs.enable_thinking set to
                                it (see _apply_thinking_default). Unset (the
                                default) = bodies forwarded as before
+  OPENBEAST_GATE_DEFAULT_MAX_TOKENS  max_tokens for a chat/completions
+                               request that sets neither max_tokens nor
+                               max_completion_tokens (GATE_DEFAULT_MAX_TOKENS;
+                               AGENT_PROFILE=deepseek-best gives 8192). A
+                               device's registry `max_tokens_default`
+                               overrides it. Unset / 0 = nothing injected
+                               (see _apply_max_tokens_default)
   OPENBEAST_EDGE_ALLOW_ANON    "true" = while there is NO registry file, serve
                                every caller as the "anon" device (default
                                false = fail closed). Ignored for good once
@@ -210,6 +217,57 @@ def _apply_thinking_default(body: dict, default: str | None) -> bool:
         return False
     body["chat_template_kwargs"] = {**ctk, "enable_thinking": default == "on"}
     return True
+
+def max_tokens_default(env=os.environ) -> int:
+    """GATE_DEFAULT_MAX_TOKENS: the max_tokens a generation request that
+    names no cap gets, or 0 (unset, 0, or not a whole number: nothing
+    injected). Why it exists (docs/SPARK_HYDRA.md, "beast-gate's default
+    max_tokens"; docs/reports/DEEPSEEK_SERVING_OPT-2026-11-25.md): TensorFold
+    on the Spark pair reserves a request's whole reply budget in the shared
+    524,288-token KV pool, and a request with no max_tokens reserves the
+    engine's 32,768 default. With 47-92K-token prompts that held concurrency
+    near 4 of the 8 slots and evicted cached prefixes, while replies average
+    1.1-1.4K tokens. 8192 is the DeepSeek best config's own turn cap (T2,
+    AGENT_MAX_TOKENS=8192)."""
+    raw = env.get("OPENBEAST_GATE_DEFAULT_MAX_TOKENS", "").split("#", 1)[0].strip()
+    if not raw.isdigit():
+        if raw:
+            print(f"[beast-gate] GATE_DEFAULT_MAX_TOKENS={raw[:32]!r} is not a "
+                  "whole number: no default max_tokens", file=sys.stderr, flush=True)
+        return 0
+    return int(raw)
+
+
+MAX_TOKENS_DEFAULT = max_tokens_default()
+# Any of these in the body is the client's own reply cap, honoured as sent
+# (never clamped up or down). n_predict is llama.cpp's native spelling.
+_MAX_TOKENS_KEYS = ("max_tokens", "max_completion_tokens", "n_predict")
+# The generation endpoints. /v1/embeddings generates nothing.
+_MAX_TOKENS_PATHS = frozenset({"/v1/chat/completions", "/v1/completions"})
+
+
+def device_max_tokens(device: dict, default: int) -> int:
+    """The default max_tokens for this device: its registry
+    `max_tokens_default` when that is a whole number (0 = never inject for
+    this device), else the gate's `default`. Set with
+    `./scripts/clients.sh max-tokens <id> N|default`."""
+    v = device.get("max_tokens_default")
+    if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
+        return v
+    return default
+
+
+def _apply_max_tokens_default(body: dict, n: int) -> bool:
+    """Set max_tokens = n on a body that names no reply cap. True when it
+    did. A key present with JSON null counts as absent (OpenAI reads null
+    as unset, and the engine would reserve its own default for it)."""
+    if n <= 0:
+        return False
+    if any(body.get(k) is not None for k in _MAX_TOKENS_KEYS):
+        return False
+    body["max_tokens"] = n
+    return True
+
 
 # The ONLY paths a remote client may reach. Everything else 404s — a remote
 # caller should not be able to tell which of the many llama-server routes
@@ -564,6 +622,9 @@ _METRICS = {
     "prompt_tokens": {},      # (device, uid) -> count
     "completion_tokens": {},  # (device, uid) -> count
     "latency_ms": {},         # (device, uid) -> cumulative
+    # Forwarded requests that got the gate's default max_tokens (a count;
+    # nothing of the request is kept).
+    "max_tokens_defaulted": {},  # (device, uid) -> count
 }
 
 
@@ -869,16 +930,20 @@ _remote_media = remote_media
 
 def _sanitize_body(raw: bytes, device: dict,
                    path: str = "/v1/chat/completions",
-                   thinking: str | None = None
-                   ) -> tuple[bytes, str | None, bool, int]:
+                   thinking: str | None = None,
+                   max_tokens: int = 0,
+                   ) -> tuple[bytes, str | None, bool, int, bool]:
     """Strip client-controlled tenancy knobs; inject server-side affinity.
 
     `thinking` ("on" / "off" / None) is the host's thinking default for a
     chat body that names none (_apply_thinking_default); the gate passes
     THINKING_DEFAULT unless the request opted out (GATE_DEFAULTS_HEADER).
+    `max_tokens` (0 = none) is the reply cap for a chat/completions body
+    that names none (_apply_max_tokens_default); the gate passes the
+    device's (device_max_tokens), and 0 under the same opt-out.
 
-    Returns (body, model_name, streaming, generations) — see _generations
-    for the last. Raises BadBody for anything that
+    Returns (body, model_name, streaming, generations, max_tokens_defaulted)
+    — see _generations for the fourth. Raises BadBody for anything that
     is not a JSON object within MAX_JSON_DEPTH. FAIL CLOSED: every tenancy
     and metering guarantee below depends on the gate having parsed the body,
     so a body it cannot parse must never reach llama-server verbatim — that
@@ -923,6 +988,8 @@ def _sanitize_body(raw: bytes, device: dict,
         body["id_slot"] = slot
     if path == "/v1/chat/completions":
         _apply_thinking_default(body, thinking)
+    defaulted = (path in _MAX_TOKENS_PATHS
+                 and _apply_max_tokens_default(body, max_tokens))
     streaming = bool(body.get("stream"))
     if streaming:
         # Without this the streaming path — which is the DEFAULT for chat —
@@ -933,7 +1000,7 @@ def _sanitize_body(raw: bytes, device: dict,
         opts["include_usage"] = True
         body["stream_options"] = opts
     return (_encode_body(body), _audit_model(body.get("model")), streaming,
-            _generations(body, path))
+            _generations(body, path), defaulted)
 
 
 # What the audit row records as "model". The field is client-supplied and
@@ -1309,9 +1376,12 @@ async def gate(request: Request):
             if len(buf) > MAX_BODY_BYTES:
                 return _too_large()
         raw = bytes(buf)
-        body, model, streaming, gens = raw, None, False, 1
-        thinking = (None if request.headers.get(GATE_DEFAULTS_HEADER, "")
-                    .strip().lower() == "off" else THINKING_DEFAULT)
+        body, model, streaming, gens, defaulted = raw, None, False, 1, False
+        opted_out = (request.headers.get(GATE_DEFAULTS_HEADER, "")
+                     .strip().lower() == "off")
+        thinking = None if opted_out else THINKING_DEFAULT
+        max_tokens = 0 if opted_out else device_max_tokens(
+            device, MAX_TOKENS_DEFAULT)
         if raw and path in JSON_PATHS:
             try:
                 if len(raw) > _SANITIZE_INLINE_BYTES:
@@ -1328,11 +1398,13 @@ async def gate(request: Request):
                     # 220 ms worst case with four senders vs ~70 ms serialized
                     # (2026-11-16 review).
                     async with _big_sanitize_gate():
-                        body, model, streaming, gens = await asyncio.to_thread(
-                            _sanitize_body, raw, device, path, thinking)
+                        (body, model, streaming, gens,
+                         defaulted) = await asyncio.to_thread(
+                            _sanitize_body, raw, device, path, thinking,
+                            max_tokens)
                 else:
-                    body, model, streaming, gens = _sanitize_body(
-                        raw, device, path, thinking)
+                    body, model, streaming, gens, defaulted = _sanitize_body(
+                        raw, device, path, thinking, max_tokens)
             except BadBody as e:
                 # Authenticated, so it is audited (an identity to attribute);
                 # nothing was forwarded, so there is no usage to meter.
@@ -1376,6 +1448,8 @@ async def gate(request: Request):
                                 else "2"}))
         if holds:
             released["held"] = gens
+        if defaulted:
+            _bump("max_tokens_defaulted", (device_id, uid))
         headers = _upstream_headers(request, device, request_id)
         registry.touch(device_id, uid)
 
@@ -1656,7 +1730,9 @@ async def metrics(request: Request):
             ("completion_tokens", "openbeast_edge_completion_tokens_total",
              "Completion tokens generated per device."),
             ("latency_ms", "openbeast_edge_latency_ms_total",
-             "Cumulative upstream latency per device.")):
+             "Cumulative upstream latency per device."),
+            ("max_tokens_defaulted", "openbeast_edge_max_tokens_defaulted_total",
+             "Requests forwarded with the gate's default max_tokens.")):
         lines += [f"# HELP {name} {helptext}", f"# TYPE {name} counter"]
         for (dev,), n in series(metric):
             lines.append(f'{name}{{device="{_esc(dev)}"}} {n}')
@@ -1679,6 +1755,7 @@ async def health(request: Request):
         "devices": len(reg._by_hash),
         "upstream": UPSTREAM,
         "thinking_default": THINKING_DEFAULT,
+        "max_tokens_default": MAX_TOKENS_DEFAULT,
     })
 
 
@@ -1749,8 +1826,8 @@ def main() -> None:
             "anon": "ANON (OPENBEAST_EDGE_ALLOW_ANON=true)",
             "closed": "CLOSED — enroll a device: ./scripts/clients.sh enroll <id>",
             }[_auth_mode(reg)]
-    print(f"beast-gate on http://{BIND}:{PORT} -> {UPSTREAM}  auth={mode}",
-          flush=True)
+    print(f"beast-gate on http://{BIND}:{PORT} -> {UPSTREAM}  auth={mode}  "
+          f"default max_tokens={MAX_TOKENS_DEFAULT or 'off'}", flush=True)
     # Loopback by default like every other service; publish via tailscale.
     # timeout_graceful_shutdown: without it uvicorn waits FOREVER on SIGTERM
     # for every open request, and a generation through the gate runs for up

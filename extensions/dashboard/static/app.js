@@ -948,6 +948,8 @@
       { key: 'dev', k: 'devices', v: isNum(g.devices) ? String(g.devices) : DASH, s: (isNum(g.active_devices) ? g.active_devices : DASH) + ' active · 15 min' },
       { key: 'ref', k: 'refused · total', v: int(g.denied_total), s: int(g.denied_identity) + ' with no identity' },
       { key: 'auth', k: 'auth', v: str(g.auth || st.auth, 24), s: g.enabled ? (g.up ? 'gate up' : g.up === false ? 'gate DOWN' : 'starting') : 'gate off' },
+      { key: 'mtd', k: 'default max_tokens', v: isNum(g.max_tokens_default) ? (g.max_tokens_default > 0 ? String(g.max_tokens_default) : 'off') : DASH,
+        s: isNum(g.max_tokens_defaulted) ? int(g.max_tokens_defaulted) + ' requests given it' : 'requests with no cap' },
     ]);
     const rb = g.denied_by_reason && typeof g.denied_by_reason === 'object' ? g.denied_by_reason : {};
     const rw = g.denied_by_reason_window && typeof g.denied_by_reason_window === 'object' ? g.denied_by_reason_window : null;

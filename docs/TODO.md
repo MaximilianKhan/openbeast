@@ -1513,6 +1513,29 @@ escalation unresolved, all within churn); GLM's D and F only on Max's word.
   Steps in the [report](reports/DEEPSEEK_SERVING_OPT-2026-11-25.md#prepared-not-run-the-clean-bench).
 - [ ] **Max's job shape:** the shared corpus in the system message, `max_tokens` ~4096 instead of the
   server's 32,768 reservation, 5-6 in flight ([advice](reports/DEEPSEEK_SERVING_OPT-2026-11-25.md#advice-for-maxs-job)).
+  The gate's default `max_tokens` (below) covers the reservation part for any client that sends none.
+- [ ] **Deploy beast-gate's default `max_tokens` (8192) on spark-1 — deploy at Max's next break.** Merged to
+  `main` 2026-11-25 (Max approved; [SPARK_HYDRA.md E7a](SPARK_HYDRA.md#e7a-beast-gates-default-max_tokens)).
+  **Not deployed:** a gate restart drops every generation in flight through `:8443`, and Max's job was
+  running. spark-1's `openbeast.conf` already has `AGENT_PROFILE=deepseek-best`, which supplies
+  `GATE_DEFAULT_MAX_TOKENS=8192`, so no conf edit is needed. Steps, when Max's client is idle:
+  1. On spark-1: `cd ~/openbeast && git status --short && git pull --ff-only` (the checkout must be clean;
+     never pull while an eval arm runs from this checkout).
+  2. Restart the command center, which carries the gate and the dashboard (never the inference unit):
+     `systemctl --user restart openbeast`, then `./scripts/healthcheck.sh` (all services healthy) and
+     `grep 'beast-gate on' .run/stack.log | tail -1` (ends `default max_tokens=8192`).
+  3. Verify on spark-1. Health first:
+     `curl -s -H "X-OpenBeast-Local: $(cat .run/edge-local.token)" http://127.0.0.1:8090/gate/health`
+     shows `"max_tokens_default": 8192`. Then define the counter:
+     `mtd() { curl -s -H "X-OpenBeast-Local: $(cat ~/openbeast/.run/edge-local.token)" http://127.0.0.1:8090/gate/metrics | awk '/^openbeast_edge_max_tokens_defaulted_total/{s+=$2} END{print s+0}'; }`
+     and run `mtd` (note N).
+  4. From the Mac, a request **without** `max_tokens` (thinking off keeps it short):
+     `curl -s https://spark-1.tail4109f9.ts.net:8443/v1/chat/completions -H "Authorization: Bearer $(cat ~/.config/openbeast/spark-hydra-gate.key)" -H 'Content-Type: application/json' -d '{"model":"DeepSeek-V4.1-Flash-1017","messages":[{"role":"user","content":"Say OK."}],"chat_template_kwargs":{"enable_thinking":false}}' | python3 -c 'import json,sys; r=json.load(sys.stdin); print(r["choices"][0]["finish_reason"], r["usage"])'`
+     → `stop`, then on spark-1 `mtd` reads **N+1**.
+  5. The same request with `"max_tokens": 16` added and `"content":"Count from 1 to 100."`: `finish_reason`
+     `length` with `completion_tokens` ≤ 16 (its own cap, untouched), and `mtd` stays **N+1**.
+  6. The dashboard's Gate page shows the "default max_tokens" tile: 8192, with the count.
+  Rollback: `GATE_DEFAULT_MAX_TOKENS=0` in `openbeast.conf`, then `systemctl --user restart openbeast`.
 - [ ] **Dashboard follow-ups from the 2026-11-25 incident:** fan RPM (`/sys/class/hwmon/hwmon{0,1}/fan1_input`
   on the Sparks) and the ACPI zone maximum next to the GPU temperature; a GLM stream baseline for the
   `slow` alert (built in only for DeepSeek-V4.1-Flash and Hy4; `DASHBOARD_STREAM_BASELINE` overrides).

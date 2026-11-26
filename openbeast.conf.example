@@ -310,6 +310,10 @@
 #                            it replaces REASONING_BUDGET + 12288 (32768) for
 #                            agents; the server's --reasoning-budget is
 #                            untouched (Q_T2 ran against the rig's 20480)
+#   GATE_DEFAULT_MAX_TOKENS=8192  deepseek-best ONLY (a serving default,
+#                            not a T2 switch): beast-gate's max_tokens for a
+#                            request that names none; see EDGE_* below.
+#                            inkling-best / qwen38-best leave it off
 #   AGENT_ACT_NUDGE=1        applies: from the 2nd capped turn in a row with
 #                            no tool call (or the 1st that ends neither capped
 #                            nor as an answer): "your next reply must be a
@@ -512,6 +516,20 @@
 # Concurrent generations, per device (unset: INFERENCE_SLOTS when that is set,
 # so one device may use every stream the server has; else 2):
 #EDGE_MAX_INFLIGHT=2
+
+# Default reply cap the gate gives a /v1/chat/completions or /v1/completions
+# request that sets neither max_tokens nor max_completion_tokens (nor
+# llama.cpp's n_predict). A request that sets one is forwarded untouched,
+# never clamped. Unset or 0 = nothing injected (the default everywhere but
+# AGENT_PROFILE=deepseek-best, which gives 8192: TensorFold on the Spark pair
+# reserves each request's whole reply budget in its shared KV pool, 32768
+# when the request names none, which held concurrency near 4 of 8 slots with
+# long prompts; docs/SPARK_HYDRA.md "beast-gate's default max_tokens"). A
+# device's own default overrides this one:
+#   ./scripts/clients.sh max-tokens <id> N|0|default
+# Eval requests (X-OpenBeast-Gate-Defaults: off) are never touched. No
+# trailing comment. Env: $OPENBEAST_GATE_DEFAULT_MAX_TOKENS.
+#GATE_DEFAULT_MAX_TOKENS=8192
 
 # Largest request body the gate accepts, in bytes (default 8388608 = 8 MiB;
 # a bigger body gets 413). Raise it only for clients that send large inline

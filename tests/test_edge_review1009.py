@@ -157,13 +157,13 @@ class TestSanitizeOffTheLoop:
         seen = []
         real = edge._sanitize_body
 
-        def spy(raw, device, path, thinking=None):
+        def spy(raw, device, path, thinking=None, max_tokens=0):
             try:
                 asyncio.get_running_loop()
                 seen.append("loop")
             except RuntimeError:
                 seen.append("thread")
-            return real(raw, device, path, thinking)
+            return real(raw, device, path, thinking, max_tokens)
 
         monkeypatch.setattr(edge, "_sanitize_body", spy)
         return seen

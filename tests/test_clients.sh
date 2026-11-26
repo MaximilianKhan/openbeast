@@ -332,6 +332,45 @@ if ! "$CLI" scope legacy-box grant chat >/dev/null 2>&1 \
 else
   fail "scope accepted a bad action or an unknown device"
 fi
+# max-tokens: the device's default max_tokens for beast-gate (edge.py
+# device_max_tokens reads `max_tokens_default`). No key rotation.
+_maxtok() { python3 -c 'import json,sys; d=[x for x in json.load(open(sys.argv[1]))["devices"] if x["id"]==sys.argv[2]][0]; print(d.get("max_tokens_default","ABSENT"))' "$REG" "$1"; }
+_keyhash() { python3 -c 'import json,sys; print([x for x in json.load(open(sys.argv[1]))["devices"] if x["id"]==sys.argv[2]][0]["key_sha256"])' "$REG" "$1"; }
+_h0="$(_keyhash legacy-box)"
+if "$CLI" max-tokens legacy-box 4096 | grep -q "max_tokens=4096" \
+   && [[ "$(_maxtok legacy-box)" == "4096" && "$(_keyhash legacy-box)" == "$_h0" ]] \
+   && "$CLI" show legacy-box | grep -q "max_tokens_default: *4096"; then
+  pass "max-tokens N sets the device default, keeps the key, shows in show"
+else
+  fail "max-tokens N did not set max_tokens_default ($(_maxtok legacy-box))"
+fi
+if "$CLI" max-tokens legacy-box 0 | grep -q "never adds" && [[ "$(_maxtok legacy-box)" == "0" ]]; then
+  pass "max-tokens 0 opts the device out"
+else
+  fail "max-tokens 0 did not store 0"
+fi
+if "$CLI" max-tokens legacy-box default >/dev/null && [[ "$(_maxtok legacy-box)" == "ABSENT" ]]; then
+  pass "max-tokens default clears the field (the gate's default applies)"
+else
+  fail "max-tokens default did not clear the field"
+fi
+if ! "$CLI" max-tokens legacy-box lots >/dev/null 2>&1 \
+   && ! "$CLI" max-tokens legacy-box -1 >/dev/null 2>&1 \
+   && ! "$CLI" max-tokens ghost-device 100 >/dev/null 2>&1 \
+   && ! "$CLI" max-tokens legacy-box >/dev/null 2>&1; then
+  pass "max-tokens refuses a non-number, a negative, an unknown device, no value"
+else
+  fail "max-tokens accepted bad input"
+fi
+"$CLI" max-tokens legacy-box 2048 >/dev/null
+"$CLI" rotate legacy-box >/dev/null
+if [[ "$(_maxtok legacy-box)" == "2048" ]]; then
+  pass "rotate preserves a device's max_tokens_default"
+else
+  fail "rotate dropped max_tokens_default"
+fi
+"$CLI" max-tokens legacy-box default >/dev/null
+
 # Rotating a scoped device must not silently drop its grants — the key
 # changes, the authorization does not.
 "$CLI" rotate phone >/dev/null

@@ -133,13 +133,14 @@ class TestBigSanitizeDoesNotStallTheLoop:
         lock = threading.Lock()
         state = {"now": 0, "peak": 0}
 
-        def _slow(raw, device, path="/v1/chat/completions", thinking=None):
+        def _slow(raw, device, path="/v1/chat/completions", thinking=None,
+                  max_tokens=0):
             with lock:
                 state["now"] += 1
                 state["peak"] = max(state["peak"], state["now"])
             time.sleep(0.15)
             try:
-                return real(raw, device, path, thinking)
+                return real(raw, device, path, thinking, max_tokens)
             finally:
                 with lock:
                     state["now"] -= 1
