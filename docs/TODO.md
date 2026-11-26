@@ -197,9 +197,9 @@ DeepSeek's UP on the same harness
     outage, and spark-guard rules (sudo). [Plan](reports/DEEPSEEK_TUNING-2026-11-23.md#moving-the-open-webui-off-the-head-node).
   - [ ] **The 1M re-test** after either step: the report's probe at `CONTEXT=1048576 KV_SHARD=1`. Adopt it
     if spark-1's lowest reading under the 999K needle and resume stays ≥ 5.1 GiB.
-  - [ ] **Prefill cut-in:** a long cold prompt blocks new requests' prompts (7 streams finished 14 requests
-    in 257 s during a 499K prefill; the same at `PARALLEL=4`). Measure the recipe's
-    `TF_FILL_CHUNKS=1 TF_FILL_FIRST=1 TF_FILL_CUT_IN=8192` against `PREFILL_INTERLEAVE_MS=250`.
+  - [ ] **Prefill cut-in:** live since 2026-11-25 18:29 (`TF_FILL_CHUNKS=1 TF_FILL_FIRST=1 TF_FILL_CUT_IN=8192`,
+    with spill v2; [report](reports/DEEPSEEK_SERVING_OPT-2026-11-25.md)). Still to measure on an idle pair:
+    a short request's TTFT during a long cold prompt, against `PREFILL_INTERLEAVE_MS=250` (the clean bench below).
   - [ ] Thinking-on numbers at 6 and 8 streams (the session measured thinking off).
 - [ ] **The backup capture outage window** (Max to pick a time): the capture
   takes about 20 min, and drill G with the full restore drill 5 on spark-2
@@ -1500,10 +1500,19 @@ escalation unresolved, all within churn); GLM's D and F only on Max's word.
   watches for it. Next: confirm with a per-process RssAnon log over a day (is it the WebUI alone?), then
   either a nightly WebUI restart between jobs or the WebUI move off the head node
   ([DEEPSEEK_TUNING](reports/DEEPSEEK_TUNING-2026-11-23.md#moving-the-open-webui-off-the-head-node)).
-- [ ] **TensorFold's prompt-cache `failed` counter** rose with almost every request from 14:24 on
-  2026-11-25 (8 → 275, with the 512 MiB cache full and 848 evicted) while Max's no-shared-prefix job ran.
-  It is not a cause of the slowdown, but what `failed` counts is undocumented: ask at the next TensorFold
-  review (a state the cache could not keep?).
+- [x] **TensorFold's prompt-cache `failed` counter** (2026-11-25, [serving opt report](reports/DEEPSEEK_SERVING_OPT-2026-11-25.md)):
+  it counts lookups that matched a kept prefix whose KV rows the full 524K pool had already given to newer
+  requests (stale), not a bug and not the 512 MiB budget. Max's prompts do share ~40K-token prefixes. Fixed
+  by spill v2 (`SPILL_GIB=64`, kept states restored from NVMe), live since 2026-11-25 18:29 with prefill
+  cut-in (`TF_FILL_CHUNKS=1 TF_FILL_FIRST=1 TF_FILL_CUT_IN=8192`): cached prompt tokens 0.7% → 18.2%,
+  failed 88 → 0 on Max's job (first 10 min).
+- [ ] **DeepSeek serving: the clean bench** (deferred 2026-11-25, Max's client never paused). With the engine
+  idle, run `scripts/backends/deepseek-serving-bench.py` on `local.sh.bak-20261125-serving` (baseline), the
+  live config and `local.sh.cand-all` (+ `KV_SHARD=1`, pool 1,052,672 at about the same memory); keep
+  `KV_SHARD=1` only if it measures better; then gfunc and conformance at 4 and 8 on the final config.
+  Steps in the [report](reports/DEEPSEEK_SERVING_OPT-2026-11-25.md#prepared-not-run-the-clean-bench).
+- [ ] **Max's job shape:** the shared corpus in the system message, `max_tokens` ~4096 instead of the
+  server's 32,768 reservation, 5-6 in flight ([advice](reports/DEEPSEEK_SERVING_OPT-2026-11-25.md#advice-for-maxs-job)).
 - [ ] **Dashboard follow-ups from the 2026-11-25 incident:** fan RPM (`/sys/class/hwmon/hwmon{0,1}/fan1_input`
   on the Sparks) and the ACPI zone maximum next to the GPU temperature; a GLM stream baseline for the
   `slow` alert (built in only for DeepSeek-V4.1-Flash and Hy4; `DASHBOARD_STREAM_BASELINE` overrides).

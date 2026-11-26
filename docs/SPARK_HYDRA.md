@@ -32,6 +32,16 @@ Mac went to NVIDIA Sync's `.local` mDNS names, which resolve only on the home LA
 over the tailnet everywhere ([F1](#f1-ssh-from-the-mac)). beast-gate, `tailscale serve`, MagicDNS, TLS,
 spark-guard and the device keys all worked from cellular, with evidence in the report.
 
+**2026-11-25, DeepSeek serving optimisation ([report](reports/DEEPSEEK_SERVING_OPT-2026-11-25.md)).** The
+prompt cache's `failed` lookups were kept prefixes the full 524,288-position pool had already given away (Max's
+long-prompt job, each request reserving prompt + 32,768). **Spill v2 (`SPILL_GIB=64`) and prefill cut-in
+(`export TF_FILL_CHUNKS=1 TF_FILL_FIRST=1 TF_FILL_CUT_IN=8192`) are live** in the runtime's `scripts/local.sh`,
+after `PARALLEL=8`: stale prefixes are restored from each Spark's NVMe, and a prompt of at most 8,192 new
+tokens runs between a long prompt's 2,048-token pieces. On Max's job the cached share of prompt tokens went
+from 0.7% to 18.2%, and the failed lookups from 88 to 0 (first 10 minutes). Rollback:
+`local.sh.bak-20261125-serving`. `KV_SHARD=1` and a clean bench are deferred (TODO). A fresh install adds the
+same three lines to `local.sh`; `spark-deepseek-pack.sh use` keeps them (it rewrites only its block).
+
 **2026-11-23, DeepSeek tuning session ([report](reports/DEEPSEEK_TUNING-2026-11-23.md)).** DeepSeek now
 serves **8 streams** (`PARALLEL=8` in the runtime's `scripts/local.sh`, `INFERENCE_SLOTS=8` in
 `openbeast.conf`) at the same 524,288-token window: 147.4 tok/s aggregate at 8 streams and 133.8 at 6,
