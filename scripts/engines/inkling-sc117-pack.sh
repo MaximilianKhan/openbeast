@@ -8,7 +8,7 @@
 # OFFICIAL_DIR   thinkingmachines/Inkling-2-Mini @ b85c3cfa615fc413cc9af3379f491b963f3b586a (hf download ... --revision;
 #                offline: from the ark copy). Weights identical to main c9d02830 (same LFS sha256); b85c3cfa is the
 #                revision jesdga converted (the stock pack's meta.checkpoint.dir).
-# OFFICIAL_SQ20  strata-engine/Inkling-2-Mini-Strata @ 04996a1e, Inkling-2-Mini-SQ-20.strata
+# OFFICIAL_SQ20  strata-engine/Inkling-2-Mini-Strata @ 04996a1e2c45009b6a04f2af126cb6bdb2ba3587, Inkling-2-Mini-SQ-20.strata
 # SC117_SQ20     SC117/Inkling-2-Mini-abliterated-Strata @ ae324ac3676b97a3f67b475ffc2534c7521ff7c4,
 #                Inkling-2-Mini-SQ-20-abliterated.strata
 # BASALT_TREE    the Basalt v0.5.7 tree (400b411c; tools/convert is the same with or without the #632 patch, which

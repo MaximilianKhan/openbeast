@@ -72,7 +72,7 @@ def _adapter_defaults() -> list[str]:
 
 def test_basalt_default_is_found():
     # The scan above must see the case that motivated it.
-    assert "scripts/engines/basalt/profiles/inkling2-mini-stock.env" in _adapter_defaults()
+    assert "scripts/engines/basalt/profiles/inkling2-mini-sc117.env" in _adapter_defaults()
 
 
 def test_every_adapter_default_profile_is_tracked(tracked):
@@ -92,7 +92,8 @@ def test_every_referenced_profile_is_tracked(tracked):
         for m in REF.finditer(text):
             if not PLACEHOLDER.search(m.group(1)):
                 refs.setdefault(m.group(1), f)
-    assert "scripts/engines/basalt/profiles/inkling2-mini-stock.env" in refs
+    assert "scripts/engines/basalt/profiles/inkling2-mini-stock.env" in refs     # the rollback, still named
+    assert "scripts/engines/basalt/profiles/inkling2-mini-sc117.env" in refs     # the default since 2026-11-25
     missing = {p: by for p, by in refs.items() if p not in tracked}
     assert not missing, f"profiles named in tracked files but not committed (path: named in): {missing}"
 

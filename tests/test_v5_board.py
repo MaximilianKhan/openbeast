@@ -508,12 +508,14 @@ def test_shipped_defaults_are_validated_and_rendered(tmp_path):
 
 
 def test_committed_defaults():
-    """The RTX 5090 ships INK-T2-STOCK since 2026-11-24 (Max), Q38U-T2 its fallback; the pair ships DS-T2."""
+    """The RTX 5090 ships INK-T2-SC117 since 2026-11-25 (Max), INK-T2-STOCK (2026-11-24) the rollback and
+    Q38U-T2 the fallback; the pair ships DS-T2."""
     bd = v5_board.load_board()
     assert v5_board.defaults_problems(bd) == []
     d = {x["platform"]: x for x in bd["defaults"]}
-    assert (d["rtx5090"]["run"], d["rtx5090"]["since"], d["rtx5090"]["agent_profile"]) == ("INK-T2-STOCK", "2026-11-24", "inkling-best")
-    assert [(p["run"], p["role"]) for p in d["rtx5090"]["previous"]] == [("Q38U-T2", "fallback")]
+    assert (d["rtx5090"]["run"], d["rtx5090"]["since"], d["rtx5090"]["agent_profile"]) == ("INK-T2-SC117", "2026-11-25", "inkling-best")
+    assert [(p["run"], p["role"], p["from"], p["until"]) for p in d["rtx5090"]["previous"]] == [
+        ("INK-T2-STOCK", "rollback", "2026-11-24", "2026-11-25"), ("Q38U-T2", "fallback", "2026-11-23", "2026-11-24")]
     assert (d["spark-pair"]["run"], d["spark-pair"]["agent_profile"]) == ("DS-T2", "deepseek-best")
 
 

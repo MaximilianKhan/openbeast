@@ -1,5 +1,11 @@
 # v5 report: SC117's abliterated Inkling 2 Mini on Basalt, arm I_T2_sc117 (2026-11-25)
 
+> **Update, the same day: Max made this pack the RTX 5090 default**
+> ([DECISIONS-2026-11-25 §7](DECISIONS-2026-11-25.md#7-sc117s-abliterated-inkling-2-mini-is-the-rtx-5090-default): the
+> uncensored-preferred policy; profile `inkling2-mini-sc117`, the stock pack
+> the rollback). §0's last point and §9's points 1-3 record the
+> recommendation before that decision.
+
 > **Final (2026-11-25).** Max approved Path B of the Phase 1 review
 > ([SC117_INKLING_STRATA-2026-11-25.md](SC117_INKLING_STRATA-2026-11-25.md),
 > PR #328): SC117's abliterated Inkling 2 Mini on Basalt via Basalt's own

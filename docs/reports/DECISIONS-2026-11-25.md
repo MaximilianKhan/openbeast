@@ -13,7 +13,8 @@
 3. [The rule is enforced by the board tooling, from a committed ledger](#3-the-rule-is-enforced-by-the-board-tooling-from-a-committed-ledger)
 4. [I_T3 does not beat INK-T2-STOCK; the 5090 default stays stock](#4-i_t3-does-not-beat-ink-t2-stock-the-5090-default-stays-stock)
 5. [The rig arms rescanned: Q38U-T2 loses two more units (52 → 51)](#5-the-rig-arms-rescanned-q38u-t2-loses-two-more-units-52--51)
-6. [SC117's abliterated Inkling on Basalt: level with stock; the default stays stock](#6-sc117s-abliterated-inkling-on-basalt-level-with-stock-the-default-stays-stock)
+6. [SC117's abliterated Inkling on Basalt: level with stock; the default stays stock](#6-sc117s-abliterated-inkling-on-basalt-level-with-stock-the-default-stays-stock) *(superseded by §7)*
+7. [SC117's abliterated Inkling 2 Mini is the RTX 5090 default](#7-sc117s-abliterated-inkling-2-mini-is-the-rtx-5090-default)
 
 ---
 
@@ -321,6 +322,9 @@ verdict changed). Sealed detail: `evals/audit/reviews/rig-arms-rescan-2026-11-25
 
 ## 6. SC117's abliterated Inkling on Basalt: level with stock; the default stays stock
 
+> **Superseded the same day by §7:** Max made SC117's pack the RTX 5090
+> default. The measurements below stand; points 1 and 2 do not.
+
 **Decision.** Arm `I_T2_sc117` (Max approved 2026-11-25: Path B of
 [SC117_INKLING_STRATA-2026-11-25.md](SC117_INKLING_STRATA-2026-11-25.md), PR
 #328; the arm PR #331) ran SC117's abliterated Inkling 2 Mini as a Basalt
@@ -381,3 +385,66 @@ family and its v0.2.21 delta unreviewed.
 integrity: 0 contaminated, no overflow, dlsym replay PASS 3/3 (sealed
 review `evals/audit/reviews/ink-t2-sc117-integrity-2026-11-25.md`);
 progress log on the rig `~/openbeast-runs/sc117-basalt.log`.
+
+## 7. SC117's abliterated Inkling 2 Mini is the RTX 5090 default
+
+**Decision.** The RTX 5090's shipped default changes from the stock
+Inkling 2 Mini pack (`INK-T2-STOCK`, since 2026-11-24) to SC117's
+abliterated pack (`INK-T2-SC117`): profile `inkling2-mini-sc117` of
+`scripts/engines/basalt.sh`, `AGENT_PROFILE=inkling-best` unchanged.
+`board.json` `defaults` names `INK-T2-SC117` since 2026-11-25, with
+`INK-T2-STOCK` as the previous default (the rollback) and Q38U-T2 before it.
+`engine.sh use default` on an RTX 5090 now writes `inkling2-mini-sc117`,
+also over a conf that names the stock profile; `inkling2-mini-stock` stays a
+selectable profile.
+
+**When / who.** 2026-11-25, Max, after the I_T2_sc117 wrap-up (§6). His
+words: *"because of our rule of helping businesses like legal firms and
+medicine practices serve uncensored models, we do need to actually make
+sc117 our default model for openbeast over the stock model with the
+justifications that we've written into the website and project (like the
+fact the medical doctors need unaligned intelligence to give them the most
+neutral and honest answer for all aspects of their work, weight objectivity
+over a lab's post-trained preferences)."*
+
+**Reason.** The model policy is uncensored-preferred, stock allowed (memory
+"uncensored-preferred"; the website's professional-audience copy, AGENTS.md
+there): OpenBeast serves professionals whose work cannot depend on a
+vendor's alignment choices. Between two packs the suite cannot tell apart,
+the policy picks the abliterated one. The evidence (§6 and the
+[report](V5_INKLING2_MINI_SC117-2026-11-25.md)):
+
+- **Capability, within noise.** 51/71 against 53/71 on INK-T2-STOCK's exact
+  arm (same harness, era, host, engine build, serve args); paired 1 gained,
+  3 lost, p 0.63, MDE 9.5 (about 7 at Inkling's seed churn); every flipped
+  unit had flipped between earlier Inkling arms. SCORE 75.3 against 78.2.
+- **Speed, identical.** Same day, same prompts: 418.7 / 344.0 tok/s code /
+  prose against 416.1 / 339.1; prefill within 0.2%; in the arms 457 tok/s
+  over all replies against 444.
+- **The edit is narrow in scope.** Only the 20 `attn.wo_ud` matrices of
+  layers 4-23 differ from the release (verified byte by byte); the experts,
+  drafter, tokenizer and template are the release's. The pack is rebuilt
+  offline from pinned inputs by `scripts/engines/inkling-sc117-pack.sh`.
+- **Behaviour.** Six benign professional prompts: both packs answered all
+  six; the stock pack hedged two openings, SC117 none; the stock pack
+  declined the 16K needle once.
+
+**What it costs.** Two units on the one-variable pair, inside one seed's
+noise; a larger divergence from the reference (KLD 0.0354 against 0.0128,
+top-1 92.18% against 94.93%) that did not show as a v5 cost; and a pack that
+is built locally rather than downloaded (three pinned downloads, ~60 GB of
+scratch, a few minutes of CPU). Abliteration changes refusals only: access
+control, roles, audit and sandboxing are unchanged, and the operator stays
+responsible for use. The build carries #632, which neither row ran (as for
+the stock profile; DECISIONS-2026-11-24 §11).
+
+**Alternatives and why they lost.** *Keep stock (§6):* the numerically
+better row, but within noise, against the policy. *Blackfrost's Derisked
+pack:* level with SC117 on v5 (49 against 51) with 203 against 87 empty
+capped turns and an unverified base revision. *Qwen3.8 27B Uncensored MTP
+(abliterated, llama.cpp):* 51/71 too, about 3× slower over the arm.
+
+**Rollback.** `scripts/engine.sh use basalt --profile inkling2-mini-stock`
+(the stock pack: `scripts/fetch-weight.sh Inkling-2-Mini-NVFP4-MX8.basalt`
+first if it is not on disk), or Qwen3.8 on llama.cpp as before
+([MODELS.md](../MODELS.md#switching-the-rtx-5090-to-its-default-and-back)).

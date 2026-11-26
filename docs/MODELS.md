@@ -10,33 +10,32 @@ default via `SERVE_SCRIPT` in `openbeast.conf`. Capability rankings (where a
 model has been benchmarked) are in the [eval leaderboard](RESULTS.md) and
 [`evals/README.md`](../evals/README.md).
 
-**The RTX 5090's default since 2026-11-24 is Inkling 2 Mini (stock) on
-Basalt** (Max's decision,
-[DECISIONS-2026-11-24 §10](reports/DECISIONS-2026-11-24.md#10-stock-inkling-2-mini-on-basalt-is-the-rtx-5090-default)):
+**The RTX 5090's default since 2026-11-25 is Inkling 2 Mini with SC117's
+abliteration, on Basalt** (Max's decision,
+[DECISIONS-2026-11-25 §7](reports/DECISIONS-2026-11-25.md#7-sc117s-abliterated-inkling-2-mini-is-the-rtx-5090-default)):
 Basalt v0.5.7 (`400b411c`) through `scripts/engines/basalt.sh`, profile
-`inkling2-mini-stock` (the stock pack `jesdga/Inkling-2-Mini-Basalt` @
-`c2afac3a`, `Inkling-2-Mini-NVFP4-MX8.basalt`, sha256 `28ec7072…1b99`;
+`inkling2-mini-sc117` (`Inkling-2-Mini-SC117-abliterated-NVFP4-MX8.basalt`,
+sha256 `6eaa50d3…9b`, built offline by `scripts/engines/inkling-sc117-pack.sh`
+from the release @ `b85c3cfa` and SC117's pack @ `ae324ac3`; it differs from
+the stock pack only in the 20 attention-output matrices SC117 edited;
 `--parallel 1 --max-context 262144 --kv fp8`, DSpark at the pack default,
-answer room auto), agent setup `AGENT_PROFILE=inkling-best`: the serve
-args and agent setup of board row `INK-T2-STOCK`, **53/71 scored, SCORE
-78.2** (SOLVE 75.4, LANG 86.7), #4 on the v5 board and the top RTX 5090 row,
-2026-11-24, single seed, 0 units lost, 0 excluded. **Not exactly that row:**
-a build through the adapter is the pin plus the PR #632 patch (DECISIONS §11,
-profile key `PATCHES`), and `INK-T2-STOCK` ran the unpatched pin. No board
-row has measured pin + #632 at answer room auto; the Strata report §16.6
-probe saw that pairing end more replies at the cap mid-call, which is why
-arm I_T3 served the patch with `--answer-room 8192`. I_T3 (2026-11-25,
-52/71, row `INK-T3`) ran it inside a composite with 180 turns and a 16,384
-cap: no empty capped turn, level with `INK-T2-STOCK`, so it did not decide
-the answer room; the profile stays at auto until the default build is
-measured as an arm ([DECISIONS-2026-11-25 §4](reports/DECISIONS-2026-11-25.md#4-i_t3-does-not-beat-ink-t2-stock-the-5090-default-stays-stock),
-[TODO.md](TODO.md) "Basalt after the switch"). It is the shipped default of `main` from that date; the
-reference rig switches when its GPU frees up ([TODO.md](TODO.md) "Switch the
-5090 rig to Inkling 2 Mini"). How to switch and roll back:
-[below](#switching-the-rtx-5090-to-its-default-and-back); a fresh install:
-[INSTALL.md](INSTALL.md#rtx-5090-the-default-model-inkling-2-mini-on-basalt).
-Why, and the case against (a paired −2 on the 63 clean units, one seed, a
-young engine with upstream #588 unfixed in the pin): the decision record.
+answer room auto), agent setup `AGENT_PROFILE=inkling-best`: the serve args
+and agent setup of board row `INK-T2-SC117`, **51/71 scored, SCORE 75.3**,
+2026-11-25, single seed, 0 lost, 0 excluded. Against the stock pack on the
+same arm (`INK-T2-STOCK`, 53/71, SCORE 78.2): 1 gained, 3 lost, p 0.63,
+within noise, at the same speed. Max's reason: the uncensored-preferred
+policy (professionals such as legal firms and medical practices served
+unaligned, neutral answers; quoted in the decision). **Not exactly that
+row:** a build through the adapter is the pin plus the PR #632 patch
+(DECISIONS-2026-11-24 §11, profile key `PATCHES`), and `INK-T2-SC117` ran
+the unpatched pin (as `INK-T2-STOCK` did); no board row has measured pin +
+#632 at answer room auto on either pack ([TODO.md](TODO.md) "Basalt after
+the switch"). **Before it, 2026-11-24 to 2026-11-25:** the stock pack
+(profile `inkling2-mini-stock`, `jesdga/Inkling-2-Mini-Basalt` @ `c2afac3a`,
+`28ec7072…1b99`; [DECISIONS-2026-11-24 §10](reports/DECISIONS-2026-11-24.md#10-stock-inkling-2-mini-on-basalt-is-the-rtx-5090-default)),
+now the first rollback; Qwen3.8 on llama.cpp the second. How to switch and
+roll back: [below](#switching-the-rtx-5090-to-its-default-and-back); a
+fresh install (the pack build): [INSTALL.md](INSTALL.md#rtx-5090-the-default-model-inkling-2-mini-sc117-abliterated-on-basalt).
 The source of truth for "the rig's default" is `evals/boards/v5/board.json`
 `"defaults"` ([RESULTS.md](RESULTS.md#shipped-default-per-platform)).
 
@@ -140,10 +139,10 @@ offline by `scripts/engines/inkling-sc117-pack.sh`; it differs from the
 stock pack only in those 20 matrices) and ran INK-T2-STOCK's arm exactly:
 51/71 (row `INK-T2-SC117`, SCORE 75.3), level with stock (−2, p 0.63) and
 with Derisked (+2, p 0.63) at the same speed, KLD 0.0354 against stock's
-0.0128. The default stays stock; if an abliterated Inkling is wanted on
-the 5090, SC117's pack is the recommendation over Derisked
-([report](reports/V5_INKLING2_MINI_SC117-2026-11-25.md),
-[DECISIONS-2026-11-25 §6](reports/DECISIONS-2026-11-25.md#6-sc117s-abliterated-inkling-on-basalt-level-with-stock-the-default-stays-stock)). **Applied on the
+0.0128 ([report](reports/V5_INKLING2_MINI_SC117-2026-11-25.md),
+[DECISIONS-2026-11-25 §6](reports/DECISIONS-2026-11-25.md#6-sc117s-abliterated-inkling-on-basalt-level-with-stock-the-default-stays-stock)).
+**Max made it the RTX 5090 default the same day** (§7 there: the
+uncensored-preferred policy; the stock pack the rollback). **Applied on the
 rig 2026-11-25 (~09:45-09:50 PST)** in `~/Documents/openbeast/openbeast.conf`
 (`engine.sh use default` + `AGENT_PROFILE=inkling-best`; Basalt v0.5.7 +
 #632, profile `inkling2-mini-stock`), verified through the gate over
@@ -161,21 +160,24 @@ copies `openbeast.conf` to `.engines/conf-backups/` (0600).
 
 **Prerequisites, once:** the NVIDIA Container Toolkit (`docker run --gpus`
 works), `scripts/engine.sh install basalt` (or `install basalt --from DIR`
-offline), `scripts/fetch-weight.sh Inkling-2-Mini-NVFP4-MX8.basalt` and
-`scripts/verify-weights.sh --file Inkling-2-Mini-NVFP4-MX8.basalt` (sha256,
-~1 min per 20 GB); nothing else may hold the GPU (an eval arm, a bench).
+offline), the default pack built by `scripts/engines/inkling-sc117-pack.sh`
+into `WEIGHTS_DIR` ([INSTALL.md](INSTALL.md#rtx-5090-the-default-model-inkling-2-mini-sc117-abliterated-on-basalt))
+and `scripts/verify-weights.sh --file Inkling-2-Mini-SC117-abliterated-NVFP4-MX8.basalt`
+(sha256, ~1 min per 20 GB); for the stock rollback also
+`scripts/fetch-weight.sh Inkling-2-Mini-NVFP4-MX8.basalt`; nothing else may
+hold the GPU (an eval arm, a bench).
 
-**Switch to Inkling 2 Mini (Basalt):**
+**Switch to Inkling 2 Mini SC117 (Basalt), the default:**
 
 ```bash
 cd ~/Documents/openbeast                       # the rig's main checkout, on main (git pull --ff-only)
 sed -i 's/^AGENT_PROFILE=.*/AGENT_PROFILE=inkling-best/' openbeast.conf
                                                # was qwen38-best: the same switch table, the name
                                                # records which measured row the rig runs
-scripts/engine.sh use basalt --dry-run         # read the conf diff and the docker command
-scripts/engine.sh use basalt                   # = `use default` on a 5090: stops the stack, writes
+scripts/engine.sh use default --dry-run       # read the conf diff and the docker command
+scripts/engine.sh use default                  # on a 5090: stops the stack, writes
                                                #   INFERENCE_BACKEND=basalt INFERENCE_URL=http://127.0.0.1:8080
-                                               #   INFERENCE_MANAGED=true ENGINE_PROFILE=inkling2-mini-stock
+                                               #   INFERENCE_MANAGED=true ENGINE_PROFILE=inkling2-mini-sc117
                                                #   INFERENCE_MODEL="inkling-2-mini" INFERENCE_SLOTS=1,
                                                #   then starts it (the tool server reads AGENT_PROFILE then)
 ```
@@ -200,6 +202,19 @@ probe: no DNS, no TCP out`; `docker inspect openbeast-engine-basalt-<8hex>`
 lists `inkling-2-mini` and a chat answers; the dashboard's slot card shows
 one slot; `docker logs` of the container shows `api-key=on` when
 `LLAMA_API_KEY` is set.
+
+`use default` writes the shipped profile even over a conf that names
+`inkling2-mini-stock` (a rig switched on 2026-11-24); `use basalt` keeps the
+conf's profile.
+
+**Roll back to the stock pack (the 2026-11-24 default), offline and
+immediate once the pack is on disk:**
+
+```bash
+cd ~/Documents/openbeast
+scripts/verify-weights.sh --file Inkling-2-Mini-NVFP4-MX8.basalt   # or scripts/fetch-weight.sh it first
+scripts/engine.sh use basalt --profile inkling2-mini-stock          # AGENT_PROFILE stays inkling-best
+```
 
 **Roll back to Qwen3.8 (llama.cpp), offline and immediate:**
 

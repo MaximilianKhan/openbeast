@@ -608,8 +608,8 @@ No other manual config needed — the mounted file handles the rest.
 
 ## 5. Start the stack
 
-**On an RTX 5090 the default model is Inkling 2 Mini (stock) on Basalt**
-since 2026-11-24: a second step after this one, [below](#rtx-5090-the-default-model-inkling-2-mini-on-basalt).
+**On an RTX 5090 the default model is Inkling 2 Mini with SC117's
+abliteration, on Basalt** since 2026-11-25 (the stock pack from 2026-11-24, now the rollback): a second step after this one, [below](#rtx-5090-the-default-model-inkling-2-mini-sc117-abliterated-on-basalt).
 `./start.sh` with an unset conf always serves llama.cpp, so a fresh box has
 a working model before Basalt is built.
 
@@ -679,23 +679,37 @@ To stop everything:
 ./stop.sh
 ```
 
-### RTX 5090: the default model, Inkling 2 Mini on Basalt
+### RTX 5090: the default model, Inkling 2 Mini (SC117 abliterated) on Basalt
 
-The RTX 5090's shipped default since 2026-11-24 (Max;
-[DECISIONS-2026-11-24 §10](reports/DECISIONS-2026-11-24.md#10-stock-inkling-2-mini-on-basalt-is-the-rtx-5090-default))
-is Inkling 2 Mini, Basalt's stock NVFP4-MX8 pack
-(`jesdga/Inkling-2-Mini-Basalt` @ `c2afac3a`, sha256 `28ec7072…1b99`,
+The RTX 5090's shipped default since 2026-11-25 (Max;
+[DECISIONS-2026-11-25 §7](reports/DECISIONS-2026-11-25.md#7-sc117s-abliterated-inkling-2-mini-is-the-rtx-5090-default))
+is Inkling 2 Mini with SC117's abliteration, as a Basalt NVFP4-MX8 pack
+(`Inkling-2-Mini-SC117-abliterated-NVFP4-MX8.basalt`, sha256 `6eaa50d3…9b`,
 19.6 GB), served by Basalt v0.5.7 (`400b411c`) through
-`scripts/engines/basalt.sh` (profile `inkling2-mini-stock`) with
+`scripts/engines/basalt.sh` (profile `inkling2-mini-sc117`) with
 `AGENT_PROFILE=inkling-best`: the serve args and agent setup of board row
-`INK-T2-STOCK` (53/71 scored, SCORE 78.2, single seed), on a build of the
-pin **plus** the PR #632 patch (`scripts/engines/patches/`, DECISIONS §11),
-which that row ran without: no board row has measured this exact build yet
-([ENGINES.md](ENGINES.md#basalt-the-rtx-5090-default)). Any other GPU keeps
+`INK-T2-SC117` (51/71 scored, SCORE 75.3, single seed; the stock pack's
+INK-T2-STOCK 53/71, within noise), on a build of the pin **plus** the PR #632
+patch (`scripts/engines/patches/`, DECISIONS-2026-11-24 §11), which that row
+ran without ([ENGINES.md](ENGINES.md#basalt-the-rtx-5090-default)). From
+2026-11-24 to 2026-11-25 the default was Basalt's stock pack (profile
+`inkling2-mini-stock`, `jesdga/Inkling-2-Mini-Basalt` @ `c2afac3a`, sha256
+`28ec7072…1b99`): still a profile, the rollback below. Any other GPU keeps
 llama.cpp. What you need beyond §1-§5: the NVIDIA Container Toolkit
 ([above](#gpu-in-docker-the-nvidia-container-toolkit); Basalt runs in a
-container with `--gpus`), ~20 GB more disk for the pack and ~4 GB for the
+container with `--gpus`), ~60 GB of free disk while the pack is built (the
+release, a patched copy of it and the pack; ~20 GB after) and ~4 GB for the
 env image.
+
+**The default pack is built, not downloaded.** No Hub repo has it: it is
+Thinking Machines' release with SC117's 20 edited attention-output matrices
+written in (read as bytes from SC117's Strata pack), converted by Basalt's own
+converter. [`scripts/engines/inkling-sc117-pack.sh`](../scripts/engines/inkling-sc117-pack.sh)
+does it offline from three pinned downloads, checks every input and output
+hash, and prints `OK` with the pinned sum
+([report §2](reports/V5_INKLING2_MINI_SC117-2026-11-25.md#2-how-the-pack-was-made)).
+It needs `zstd` and docker (the converter runs in the Basalt env image,
+`--network none`).
 
 **Connected rig** (the build pulls the CUDA base image by digest and the
 Ubuntu packages from one archive snapshot; the compile itself runs with no
@@ -703,8 +717,17 @@ network):
 
 ```bash
 ./scripts/engine.sh install basalt                          # source @ 400b411c, env image, offline compile; pins ENGINE_PIN_BASALT
-./scripts/fetch-weight.sh Inkling-2-Mini-NVFP4-MX8.basalt   # 19.6 GB, size + sha256 against scripts/weights.registry
-./scripts/engine.sh use default --dry-run                   # on a 5090: basalt, profile inkling2-mini-stock, loopback :8080
+# the three inputs of the default pack (about 59 GB of downloads; keep them for a rebuild or delete them after)
+hf download thinkingmachines/Inkling-2-Mini --revision b85c3cfa615fc413cc9af3379f491b963f3b586a --local-dir /data/ink/release
+hf download strata-engine/Inkling-2-Mini-Strata Inkling-2-Mini-SQ-20.strata \
+  --revision 04996a1e2c45009b6a04f2af126cb6bdb2ba3587 --local-dir /data/ink/strata-official
+hf download SC117/Inkling-2-Mini-abliterated-Strata Inkling-2-Mini-SQ-20-abliterated.strata \
+  --revision ae324ac3676b97a3f67b475ffc2534c7521ff7c4 --local-dir /data/ink/sc117
+# the transplant and the conversion, offline (BASALT_TREE: a git checkout of basalt at 400b411c)
+./scripts/engines/inkling-sc117-pack.sh /data/ink/release /data/ink/strata-official/Inkling-2-Mini-SQ-20.strata \
+  /data/ink/sc117/Inkling-2-Mini-SQ-20-abliterated.strata BASALT_TREE /data/ink/work "$WEIGHTS_DIR"
+./scripts/verify-weights.sh --file Inkling-2-Mini-SC117-abliterated-NVFP4-MX8.basalt   # sha256 6eaa50d3… against scripts/weights.registry
+./scripts/engine.sh use default --dry-run                   # on a 5090: basalt, profile inkling2-mini-sc117, loopback :8080
 ./scripts/engine.sh use default                             # writes openbeast.conf (backup kept), restarts a running stack
 # then one line in openbeast.conf, and a restart:
 #   AGENT_PROFILE=inkling-best
@@ -712,18 +735,29 @@ network):
 ./scripts/backends/conformance.sh --url http://127.0.0.1:8080 --model inkling-2-mini   # key: LLAMA_API_KEY in the env
 ```
 
+`use default` writes the profile this tree ships even when `openbeast.conf`
+names an older one (`ENGINE_PROFILE=inkling2-mini-stock` on a rig switched on
+2026-11-24); `use basalt` keeps the conf's profile; `--profile` wins over both.
+
 **Closed rig (offline)**, per [the offline rule](#9-offline--air-gapped-install):
 
 ```bash
 # on a connected x86_64 box with docker and this checkout
 ./scripts/engine.sh stage basalt --version v0.5.7 /media/usb/basalt      # bare repo of 400b411c + the env image (docker save) + MANIFEST (sha256, image id)
-hf download jesdga/Inkling-2-Mini-Basalt Inkling-2-Mini-NVFP4-MX8.basalt \
-  --revision c2afac3adb772e14d77b2ea2ac7068ad4460e932 --local-dir /media/usb/weights
+# the three hf downloads above into /media/usb/ink/ (or build the pack there with the script and carry only the 19.6 GB pack)
 # on the rig
 OFFLINE=true ./scripts/engine.sh install basalt --from /media/usb/basalt  # commit vs the pin, Dockerfile hash vs this checkout, tarball sha256 + image id vs MANIFEST; compile with --network none
-cp /media/usb/weights/Inkling-2-Mini-NVFP4-MX8.basalt "$WEIGHTS_DIR"/ && ./scripts/verify-weights.sh --file Inkling-2-Mini-NVFP4-MX8.basalt
+./scripts/engines/inkling-sc117-pack.sh /media/usb/ink/release … "$WEIGHTS_DIR"   # as above; or copy a built pack:
+cp /media/usb/Inkling-2-Mini-SC117-abliterated-NVFP4-MX8.basalt "$WEIGHTS_DIR"/ && ./scripts/verify-weights.sh --file Inkling-2-Mini-SC117-abliterated-NVFP4-MX8.basalt
 ./scripts/engine.sh use default        # then AGENT_PROFILE=inkling-best, ./stop.sh && ./start.sh -d, as above
 ```
+
+**Back to the stock pack** (the 2026-11-24 default; the rollback):
+`./scripts/fetch-weight.sh Inkling-2-Mini-NVFP4-MX8.basalt` (19.6 GB, or the
+`hf download jesdga/Inkling-2-Mini-Basalt Inkling-2-Mini-NVFP4-MX8.basalt
+--revision c2afac3adb772e14d77b2ea2ac7068ad4460e932` copy offline), then
+`./scripts/engine.sh use basalt --profile inkling2-mini-stock` (the agent
+setup stays `inkling-best`).
 
 beast-ark also carries the Basalt source at the pin and the CUDA base image by
 digest (`agents/ark/catalog.toml` entry `basalt`; [BEAST_ARK.md](BEAST_ARK.md)).

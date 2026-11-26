@@ -365,7 +365,8 @@
 # scripts/engine.sh writes these; you rarely set them by hand.
 #
 # The engine `engine.sh use default` picks. Unset = by host class: an RTX
-# 5090 rig → basalt (with its default profile, inkling2-mini-stock), any
+# 5090 rig → basalt (with its default profile, inkling2-mini-sc117 since
+# 2026-11-25; inkling2-mini-stock is the rollback), any
 # other rig → llama, DGX Spark (GB10) → tensorfold. It never changes what an
 # unset conf launches (llama). Env: $OPENBEAST_ENGINE_DEFAULT.
 #ENGINE_DEFAULT=llama

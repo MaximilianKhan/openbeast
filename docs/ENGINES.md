@@ -296,8 +296,10 @@ functions out of `start.sh` verbatim and still passes, and
 ## Basalt, the RTX 5090 default
 
 **Basalt** (`github.com/jesdga95/basalt`, MIT; v0.5.7 = `400b411c58031d064812ea21a259b2381acdaa3e`)
-serves the RTX 5090's default model since 2026-11-24, Inkling 2 Mini on
-Basalt's stock NVFP4-MX8 pack (Max's decision,
+serves the RTX 5090's default model: since 2026-11-25 Inkling 2 Mini with
+SC117's abliteration (profile `inkling2-mini-sc117`, row `INK-T2-SC117`, Max,
+DECISIONS-2026-11-25 §7; the uncensored-preferred policy); from 2026-11-24
+the stock Inkling 2 Mini on Basalt's NVFP4-MX8 pack, now the rollback (Max's decision,
 [DECISIONS-2026-11-24 §10](reports/DECISIONS-2026-11-24.md#10-stock-inkling-2-mini-on-basalt-is-the-rtx-5090-default);
 serve args and agent setup of board row `INK-T2-STOCK`, 53/71 scored, SCORE
 78.2, single seed). **The default build is not that row's build:** it is the
@@ -315,10 +317,17 @@ prose with the Derisked pack, 376 / 307 stock, against vLLM 269 / 161 and
 Strata 201 / 131) and prefill (18-19K tok/s)
 ([report §11](reports/STRATA_INKLING_5090-2026-11-23.md#11-pending-native-sq-packs-and-other-engines),
 security review [§15](reports/STRATA_INKLING_5090-2026-11-23.md#15-basalt-security-and-supply-chain-review)).
-The adapter is `scripts/engines/basalt.sh`; the profile
-`scripts/engines/basalt/profiles/inkling2-mini-stock.env`; switch and
-rollback: [MODELS.md](MODELS.md#switching-the-rtx-5090-to-its-default-and-back);
-a fresh install: [INSTALL.md](INSTALL.md#rtx-5090-the-default-model-inkling-2-mini-on-basalt).
+The adapter is `scripts/engines/basalt.sh`; the default profile since
+2026-11-25 `scripts/engines/basalt/profiles/inkling2-mini-sc117.env` (SC117's
+abliterated pack, built offline by `scripts/engines/inkling-sc117-pack.sh`;
+row `INK-T2-SC117`, 51/71; Max, [DECISIONS-2026-11-25 §7](reports/DECISIONS-2026-11-25.md#7-sc117s-abliterated-inkling-2-mini-is-the-rtx-5090-default));
+the stock profile `scripts/engines/basalt/profiles/inkling2-mini-stock.env`
+(row `INK-T2-STOCK`, the default 2026-11-24 to 2026-11-25) is the rollback.
+Both carry the same serve args, agent setup and build decision (pin + #632,
+which neither row ran). `engine.sh use default` writes the shipped profile
+even over a conf that names the stock one; `use basalt` keeps the conf's.
+Switch and rollback: [MODELS.md](MODELS.md#switching-the-rtx-5090-to-its-default-and-back);
+a fresh install: [INSTALL.md](INSTALL.md#rtx-5090-the-default-model-inkling-2-mini-sc117-abliterated-on-basalt).
 
 **The review's "before default" items (§15.8) and how the adapter closes them.**
 "Tested" means `tests/test_engine_basalt.py` (a fake docker records every
