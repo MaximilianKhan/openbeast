@@ -305,8 +305,10 @@ about as much memory with no architecture change.
 - [ ] spark-1 headless (Max, sudo), then the WebUI decision; then the 1M
   re-test and, if it holds, `CONTEXT=1048576 KV_SHARD=1` in production.
 - [ ] Prefill cut-in (`TF_FILL_CHUNKS=1 TF_FILL_FIRST=1 TF_FILL_CUT_IN=8192`,
-  the recipe's example): measure loaded TTFT during a long cold prompt, and
-  the long prompt's own TTFT, against `PREFILL_INTERLEAVE_MS=250`.
+  the recipe's example): **live since 2026-11-25, with spill v2**
+  ([serving opt report](DEEPSEEK_SERVING_OPT-2026-11-25.md)). Still to measure on
+  an idle pair: loaded TTFT during a long cold prompt, and the long prompt's own
+  TTFT, against `PREFILL_INTERLEAVE_MS=250`.
 - [ ] Thinking-on numbers at 6 and 8 streams. This session measured thinking
   off, like the pack bench and the GLM window. The drafts may behave
   differently with reasoning text.

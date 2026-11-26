@@ -42,6 +42,15 @@ if [[ "$(grep -cx "$B" "$T/two")" == 1 && "$(grep -c '^MODEL_ID=' "$T/two")" == 
   pass "render: second swap replaces the block in place"
 else fail "render replace: $(cat "$T/two")"; fi
 
+# --- the serving settings outside the block (docs/reports/DEEPSEEK_SERVING_OPT-2026-11-25.md) survive a swap
+printf 'WORKER=spark-2\nCONTEXT=524288\nPARALLEL=8\nSPILL_GIB=64\nexport TF_FILL_CHUNKS=1 TF_FILL_FIRST=1 TF_FILL_CUT_IN=8192\n' > "$T/serving.sh"
+"$RUNB" "$SDP" _render_local "$T/serving.sh" org/a 1111111111111111111111111111111111111111 /hf/w-11111111 /src/a > "$T/s1" 2>&1
+"$RUNB" "$SDP" _render_local "$T/s1" org/b 2222222222222222222222222222222222222222 /hf/w-22222222 /src/b > "$T/s2" 2>&1
+if out=$(bash -c "set -u; source '$T/s2'; echo \"\$PARALLEL \$SPILL_GIB \$TF_FILL_CHUNKS \$TF_FILL_FIRST \$TF_FILL_CUT_IN \$MODEL_ID\"; env | grep -c '^TF_FILL_'" 2>&1) \
+   && [[ "$out" == $'8 64 1 1 8192 org/b\n3' ]]; then
+  pass "render: PARALLEL, SPILL_GIB and the exported TF_FILL_* lines survive two swaps"
+else fail "render serving lines: $out"; fi
+
 # --- the result is valid bash that sets exactly the four variables
 if out=$(bash -c "set -u; source '$T/two'; echo \"\$MODEL_ID \$MODEL_REVISION \$WORKER_CACHE_DIR \$MODEL_SRC\"" 2>&1) \
    && [[ "$out" == "org/b 2222222222222222222222222222222222222222 /hf/worker-rank-cache-22222222 /src/b" ]]; then
