@@ -244,7 +244,11 @@ history chart:
   measure it per slot from `/slots` (each slot's `n_decoded` between two
   samples). TensorFold decodes in batched rounds, so every decoding stream
   advances once per round, and the aggregate over `/health`'s
-  `streams.decoding` is each stream's rate. vLLM has no per-stream gauge,
+  `streams.decoding` is each stream's rate. GLM's recipe reports that
+  count. DeepSeek's native engine answers `/health` with only
+  `{"status": "ok"}`, so on DeepSeek the per-stream figure is the estimate
+  below. Verified live on spark-1 after the deploy: 16.9 tok/s aggregate,
+  4.2 per stream, 4 active. vLLM has no per-stream gauge,
   so it shows the aggregate over the running requests, labelled as a lower
   bound. With no stream decoding, it falls back to the finished requests'
   decode rate over 5 minutes, labelled as such.
