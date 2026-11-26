@@ -184,7 +184,8 @@ The `dashboard` slot API established the sanctioned pattern. Follow it:
   the median decoding stream: measured per slot from `/slots` on llama.cpp
   and Basalt; on TensorFold, the aggregate over `/health`'s
   `streams.decoding`, because batched decode advances every decoding stream
-  once per round; on vLLM, the aggregate over the running requests (a lower
+  once per round (GLM's recipe reports it; DeepSeek's native engine answers
+  only `{"status": "ok"}`, so it gets the vLLM estimate); on vLLM, the aggregate over the running requests (a lower
   bound, since prefilling requests count too); with nothing decoding, the
   finished requests' 5-min decode rate, labelled as such. `/api/status`
   `serving.streams` and `/api/serving` `now.streams` carry
