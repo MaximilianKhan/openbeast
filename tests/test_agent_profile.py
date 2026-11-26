@@ -87,6 +87,14 @@ def hermetic(tmp_path, monkeypatch):
 #: profile name -> (campaign arm it reproduces, board row that arm earned).
 PROFILES = {"deepseek-best": ("T2", "DS-T2"), "qwen38-best": ("Q_T2", "Q38U-T2"),
             "inkling-best": ("I_T2_stock", "INK-T2-STOCK")}
+#: Other board rows run with a profile's exact agent setup on different weights
+#: (one-variable pack arms): INK-T2-SC117 is I_T2_stock on SC117's pack, the
+#: RTX 5090 default since 2026-11-25 (DECISIONS-2026-11-25 §7).
+SAME_SETUP_ROWS = {"inkling-best": {"INK-T2-SC117"}}
+
+
+def _profile_rows(profile):
+    return {PROFILES[profile][1]} | SAME_SETUP_ROWS.get(profile, set())
 
 
 @pytest.mark.parametrize("profile", sorted(PROFILES))
@@ -137,9 +145,9 @@ def test_the_rig_default_preset_is_the_board_default():
     import json
     board = json.load(open(os.path.join(EVALS, "boards", "v5", "board.json")))
     for d in board["defaults"]:
-        assert d["agent_profile"] in PROFILES and PROFILES[d["agent_profile"]][1] == d["run"], d
+        assert d["agent_profile"] in PROFILES and d["run"] in _profile_rows(d["agent_profile"]), d
         for p in d.get("previous", []):
-            assert PROFILES[p["agent_profile"]][1] == p["run"], p
+            assert p["run"] in _profile_rows(p["agent_profile"]), p
 
 
 def test_every_profile_cites_a_board_row():
