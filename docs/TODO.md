@@ -1490,6 +1490,24 @@ escalation unresolved, all within churn); GLM's D and F only on Max's word.
 
 ## 🟩 DGX SPARK INFERENCE — LIVE 2026-11-13 as spark-hydra
 
+- [ ] **spark-2: apply the `mstflint_access` blacklist (Max, sudo, no reboot).** spark-1 has it
+  since its 2026-11-25 17:16 reboot. The command and the post-reboot check are in
+  [SPARK_HYDRA.md G9](SPARK_HYDRA.md#g9-mstflint_access-is-blacklisted-on-both-sparks); the cause is in
+  [SPARK1_SLOWDOWN-2026-11-25](reports/SPARK1_SLOWDOWN-2026-11-25.md) (NVIDIA's hourly OTA check oopsed in the
+  module and left 1,640 `mstflint` in D state). `spark-root-setup.sh` step 5/5 does the same on a fresh install.
+- [ ] **spark-1 available memory slides ~45 MiB/h, mostly Open WebUI's anon growth** (0 → 682 MB in 15 h,
+  2026-11-25). At ~2.6 GiB, spark-1 was 0.1 GiB from memguard's floor. The dashboard's new `memtrend` alert
+  watches for it. Next: confirm with a per-process RssAnon log over a day (is it the WebUI alone?), then
+  either a nightly WebUI restart between jobs or the WebUI move off the head node
+  ([DEEPSEEK_TUNING](reports/DEEPSEEK_TUNING-2026-11-23.md#moving-the-open-webui-off-the-head-node)).
+- [ ] **TensorFold's prompt-cache `failed` counter** rose with almost every request from 14:24 on
+  2026-11-25 (8 → 275, with the 512 MiB cache full and 848 evicted) while Max's no-shared-prefix job ran.
+  It is not a cause of the slowdown, but what `failed` counts is undocumented: ask at the next TensorFold
+  review (a state the cache could not keep?).
+- [ ] **Dashboard follow-ups from the 2026-11-25 incident:** fan RPM (`/sys/class/hwmon/hwmon{0,1}/fan1_input`
+  on the Sparks) and the ACPI zone maximum next to the GPU temperature; a GLM stream baseline for the
+  `slow` alert (built in only for DeepSeek-V4.1-Flash and Hy4; `DASHBOARD_STREAM_BASELINE` overrides).
+
 - [ ] **Two full-run-only test failures (2026-11-24 review, not fixed by raising waits).**
   `tests/test_hardening.py::test_stop_agent_falls_back_to_the_ledger` ("force-killed after
   timeout": the SIGTERMed `sleep` still counts alive after `_stop_ledger_agent`'s 10 s) and

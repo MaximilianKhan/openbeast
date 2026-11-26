@@ -540,7 +540,7 @@ def status():
                       "interval_s": live.get("interval_s", SERVE_SAMPLE_S),
                       # v3, additive
                       "ctx_fill_pct": live.get("ctx_fill_pct"), "stalled_s": live.get("stalled_s"),
-                      "detail": live.get("detail"),
+                      "detail": live.get("detail"), "streams": live.get("streams"),
                       "lifetime_gen_tokens": live.get("lifetime_gen_tokens")}
     out["gate"] = gate
     out["auth"] = slot.get("auth")
@@ -947,6 +947,10 @@ def _tf_health(body):
     smax = num(streams.get("max"), 1)
     if isinstance(smax, int):
         out["streams"] = smax
+    for k in ("decoding", "prefilling"):
+        v = num(streams.get(k))
+        if isinstance(v, int):
+            out[k] = v
     pool, free = num(h.get("pool_tokens"), 1), num(h.get("pool_free_tokens"))
     if isinstance(pool, int):
         out["pool"] = pool
@@ -1173,6 +1177,9 @@ def node_script(disk_path):
         "  done",
         "done",
         "[ -r /proc/loadavg ] && echo \"load|$(cat /proc/loadavg)\"",
+        "[ -r /proc/sys/kernel/tainted ] && echo \"taint|$(cat /proc/sys/kernel/tainted)\"",
+        "echo \"dstate|$(ps -eo stat=,comm= 2>/dev/null | awk '$1 ~ /^D/ {n++; c[$2]++} "
+        "END {m=\"\"; b=0; for (k in c) if (c[k] > b) {b=c[k]; m=k}; print n+0 \"|\" b+0 \"|\" m}')\"",
         "echo \"ncpu|$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null)\"",
         "[ -r /proc/stat ] && head -1 /proc/stat | sed 's/^/stat|/'",
         "[ -r /proc/meminfo ] && grep -E '^(MemTotal|MemAvailable):' /proc/meminfo | sed 's/^/mem|/'",
@@ -1285,6 +1292,13 @@ def parse_node(out):
                 raw["load"] = [_num(x) for x in p[:3]]
         elif kind == "ncpu":
             raw["ncpu"] = _num(rest, int)
+        elif kind == "taint":
+            raw["taint"] = _num(rest, int)
+        elif kind == "dstate":
+            p = rest.split("|")
+            if len(p) >= 2 and _num(p[0], int) is not None:
+                raw["dstate"] = (_num(p[0], int), _num(p[1], int) or 0,
+                                 re.sub(r"[^\w.:/+-]", "", p[2])[:32] if len(p) > 2 else "")
         elif kind == "stat":
             p = rest.split()
             if len(p) > 4 and p[0] == "cpu":
@@ -1374,6 +1388,13 @@ def node_view(raw, prev=None, dt=None):
     out = {"hostname": raw.get("hostname"), "gpu": gpu, "cpu": cpu, "ram": ram,
            "disk": disk, "uptime_s": raw.get("uptime"), "fabric": fabric,
            "power": power_now(gpu, raw.get("rails") or {})}
+    if raw.get("dstate"):
+        n, top_n, top = raw["dstate"]
+        out["procs"] = {"d_state": n, "d_top": top or None, "d_top_n": top_n if top else None}
+    if raw.get("taint") is not None and raw["taint"] >= 0:
+        # Taint bit 7 (D): the kernel died recently (an oops or BUG) and
+        # stays set until reboot; bit 9 (W): a kernel warning.
+        out["kernel"] = {"tainted": raw["taint"], "oops": bool(raw["taint"] & 128), "warn": bool(raw["taint"] & 512)}
     if gpu is None and raw.get("gpu_error") is not None:
         out["gpu_error"] = raw["gpu_error"]
     return out
@@ -2326,7 +2347,8 @@ def record_node(store, name, view, wall):
     for k, v in (("gpu_util", g.get("util_pct")), ("gpu_mem", g.get("mem_pct")), ("gpu_temp", g.get("temp_c")),
                  ("gpu_power", gpu_w), ("power", pw.get("total_w")), ("sm_clock", g.get("sm_clock_mhz")),
                  ("cpu", (view.get("cpu") or {}).get("util_pct")), ("ram", ram.get("pct")),
-                 ("disk", disk.get("pct"))):
+                 ("disk", disk.get("pct")), ("dstate", (view.get("procs") or {}).get("d_state")),
+                 ("mem_avail", ram["total_mib"] - ram["used_mib"] if ram.get("total_mib") else None)):
         if v is not None:
             store.add(p + k, v, wall)
     ports = [f for f in view.get("fabric") or [] if str(f.get("state") or "").upper() == "ACTIVE"
@@ -2958,8 +2980,28 @@ ALERT_SETTINGS = (
     ("KV_PCT", 98.0, 1, 100, "KV cache use with requests waiting, percent"),
     ("KV_S", 60.0, 0, 86400, "...for this long"),
     ("SERVICE_S", 30.0, 0, 86400, "a service down this long"),
+    ("SLOW_STREAM_PCT", 35.0, 1, 100, "per-stream decode below this percent of the model's baseline at that stream count"),
+    ("SLOW_STREAM_S", 120.0, 0, 86400, "...for this long"),
+    ("DSTATE_N", 20.0, 1, 1e7, "processes stuck in uninterruptible sleep (D state) at least this many"),
+    ("DSTATE_CRIT_N", 200.0, 1, 1e7, "...this many: critical"),
+    ("DSTATE_S", 60.0, 0, 86400, "...for this long"),
+    ("LOAD_PER_CPU", 8.0, 0.5, 1e4, "1-min load average above this many per CPU (a load anomaly)"),
+    ("MEM_TREND_MIB_H", 25.0, 1, 1e6, "MemAvailable falling faster than this (MiB/h, least squares over 6 h)"),
+    ("MEM_TREND_H", 72.0, 1, 1e5, "...and on course to reach the memguard floor within this many hours"),
 )
-ALERT_RULES = ("peer", "engine", "stall", "temp", "mem", "throttle", "disk", "gate", "kv", "service")
+ALERT_RULES = ("peer", "engine", "stall", "temp", "mem", "throttle", "disk", "gate", "kv", "service",
+               "slow", "dstate", "load", "kernel", "memtrend")
+# Per-stream decode tok/s by concurrent streams, measured through the gate
+# with short prompts (so a long-context workload sits below them by design:
+# the slow-stream alert fires only far below). The first entry whose name
+# is in the served model id wins; DASHBOARD_STREAM_BASELINE="1:68,4:31,8:20"
+# in openbeast.conf overrides for whatever model serves.
+STREAM_BASELINES = (
+    # docs/reports/DEEPSEEK_TUNING-2026-11-23.md, configuration F (PARALLEL=8)
+    ("DeepSeek-V4.1-Flash", ((1, 67.9), (4, 30.9), (6, 24.1), (8, 19.9))),
+    # recipes/hy4-flash-exl3-tensorfold-tp2/recipe.env BASELINE_TOKS_1 / _4 (aggregate 77.8 / 4)
+    ("Hy4", ((1, 31.4), (4, 19.4))),
+)
 ALERT_CLEAR_S = 10.0         # a condition must be gone this long to clear
 
 
@@ -2974,7 +3016,63 @@ def alert_thresholds(conf=None):
         th["MEM_FLOOR_GIB"] = v if v is not None and 0 < v <= 4096 else 2.5
     off = (_setting("DASHBOARD_ALERTS_OFF", conf) or "").lower()
     th["off"] = sorted({r for r in re.split(r"[,\s]+", off) if r in ALERT_RULES})
+    th["STREAM_BASELINE"] = parse_stream_baseline(_setting("DASHBOARD_STREAM_BASELINE", conf))
     return th
+
+
+def parse_stream_baseline(text):
+    """"1:68,4:31,8:20" -> ((1, 68.0), (4, 31.0), (8, 20.0)), or None."""
+    pts = {}
+    for part in re.split(r"[,\s]+", str(text or "").strip()):
+        n, _, v = part.partition(":")
+        n, v = _num(n, int), _num(v)
+        if n is not None and 0 < n <= 4096 and v is not None and 0 < v < 1e5:
+            pts[n] = v
+    return tuple(sorted(pts.items())) or None
+
+
+def stream_baseline(model_id, n, override=None):
+    """The baseline per-stream decode tok/s at `n` streams for the served
+    model (linear between measured stream counts; past the last one the
+    aggregate is taken as saturated, so per stream scales as last * N / n),
+    or None when the model has no baseline."""
+    curve = override
+    if curve is None:
+        mid = str(model_id or "")
+        curve = next((c for name, c in STREAM_BASELINES if name.lower() in mid.lower()), None)
+    if not curve or not isinstance(n, (int, float)) or n < 1:
+        return None
+    if n <= curve[0][0]:
+        return curve[0][1]
+    for (n0, v0), (n1, v1) in zip(curve, curve[1:]):
+        if n0 <= n <= n1:
+            return v0 + (v1 - v0) * (n - n0) / (n1 - n0)
+    nl, vl = curve[-1]
+    return vl * nl / n
+
+
+def mem_trend(series, floor_gib=None):
+    """Least-squares slope of a MemAvailable series ({t0, step, values} in
+    MiB) -> {mib_per_h, hours_to_floor, span_h, now_gib}, or None with under
+    3 h of readings."""
+    if not series or not series.get("values"):
+        return None
+    pts = [(series["t0"] + i * series["step"], v) for i, v in enumerate(series["values"]) if v is not None]
+    if len(pts) < 3 or pts[-1][0] - pts[0][0] < 3 * 3600:
+        return None
+    n = len(pts)
+    mt = sum(t for t, _ in pts) / n
+    mv = sum(v for _, v in pts) / n
+    var = sum((t - mt) ** 2 for t, _ in pts)
+    if var <= 0:
+        return None
+    slope = sum((t - mt) * (v - mv) for t, v in pts) / var * 3600.0     # MiB/h
+    now_mib = mv + slope / 3600.0 * (pts[-1][0] - mt)
+    out = {"mib_per_h": round(slope, 1), "span_h": round((pts[-1][0] - pts[0][0]) / 3600, 1),
+           "now_gib": round(now_mib / 1024, 2), "hours_to_floor": None}
+    if floor_gib is not None and slope < 0:
+        out["hours_to_floor"] = round(max(0.0, (now_mib - floor_gib * 1024) / -slope), 1)
+    return out
 
 
 def alert_conditions(th, nodes, serve, services, now):
@@ -3015,6 +3113,28 @@ def alert_conditions(th, nodes, serve, services, now):
                 put("mem", f"mem:{name}", "crit" if avail < floor else "warn",
                     f"Memory near the memguard floor on {name}",
                     f"{avail:.1f} GiB available (floor {floor:g} GiB, warn below {floor + th['MEM_MARGIN_GIB']:g})", 10.0)
+        mt = n.get("mem_trend") or {}
+        if (isinstance(mt.get("mib_per_h"), (int, float)) and mt["mib_per_h"] <= -th["MEM_TREND_MIB_H"]
+                and isinstance(mt.get("hours_to_floor"), (int, float)) and mt["hours_to_floor"] <= th["MEM_TREND_H"]):
+            put("memtrend", f"memtrend:{name}", "warn", f"Available memory falling on {name}",
+                f"{-mt['mib_per_h']:.0f} MiB/h over {mt.get('span_h')} h, {mt.get('now_gib')} GiB now, "
+                f"floor in ~{mt['hours_to_floor']:.0f} h (a leak? check D-state processes, slab)", 60.0)
+        pr = n.get("procs") or {}
+        dn = pr.get("d_state")
+        if isinstance(dn, int) and dn >= th["DSTATE_N"]:
+            top = f" ({pr.get('d_top_n')} are {pr.get('d_top')})" if pr.get("d_top") else ""
+            put("dstate", f"dstate:{name}", "crit" if dn >= th["DSTATE_CRIT_N"] else "warn",
+                f"Processes stuck in D state on {name}",
+                f"{dn} uninterruptible{top}: unkillable, a reboot clears them", th["DSTATE_S"])
+        cpu = n.get("cpu") or {}
+        ld, nc = (cpu.get("load") or [None])[0], cpu.get("ncpu")
+        if isinstance(ld, (int, float)) and isinstance(nc, int) and nc > 0 and ld > th["LOAD_PER_CPU"] * nc:
+            put("load", f"load:{name}", "warn", f"Load anomaly on {name}",
+                f"load {ld:.0f} on {nc} CPUs (D-state processes count in the load)", 60.0)
+        kern = n.get("kernel") or {}
+        if kern.get("oops"):
+            put("kernel", f"kernel:{name}", "crit", f"Kernel oops on {name}",
+                f"kernel tainted {kern.get('tainted')} (D: oops/BUG since boot): read journalctl -k -b, plan a reboot", 0.0)
         disk = n.get("disk") or {}
         if disk.get("total_b") and disk.get("free_b") is not None:
             free = 100 * disk["free_b"] / disk["total_b"]
@@ -3029,6 +3149,15 @@ def alert_conditions(th, nodes, serve, services, now):
         if serve.get("healthy") and isinstance(stall, (int, float)) and stall >= th["STALL_S"]:
             put("stall", "engine:stalled", "crit", "Engine stalled",
                 f"{serve.get('running') or 0} request(s) running, no token for {stall:.0f} s", 0.0)
+        stv = serve.get("streams") or {}
+        per, ns = stv.get("per_stream_tok_s"), stv.get("decoding") or stv.get("active")
+        base = stream_baseline(serve.get("model_id"), ns, th.get("STREAM_BASELINE")) if ns else None
+        if (serve.get("healthy") and isinstance(per, (int, float)) and base and stv.get("per_stream_source") != "finished"
+                and per < base * th["SLOW_STREAM_PCT"] / 100.0):
+            put("slow", "serve:slow", "warn", "Streams far below baseline speed",
+                f"{per:.1f} tok/s per stream at {ns} stream(s), baseline {base:.1f} "
+                f"({100 * per / base:.0f}%); aggregate {stv.get('aggregate_tok_s')} tok/s, "
+                f"{stv.get('prefilling') or 0} prefilling", th["SLOW_STREAM_S"])
         kv, waiting = serve.get("kv_pct"), serve.get("waiting")
         if isinstance(kv, (int, float)) and kv >= th["KV_PCT"] and (waiting or 0) > 0:
             put("kv", "kv:full", "warn", "KV cache full, requests waiting",
@@ -3174,6 +3303,9 @@ class AlertLoop:
     def tick(self, now=None):
         now = time.time() if now is None else now
         nodes = [n.snapshot() for n in ([_head] if _head else []) + _peers]
+        for n in nodes:
+            n["mem_trend"] = mem_trend(_store.series(f"node:{n['name']}:mem_avail", 21600, now),
+                                       _alerts.th.get("MEM_FLOOR_GIB"))
         sv = _serve.snapshot() if _serve else {}
         watch = _serve.watch.get() if _serve else {}
         _alerts.evaluate(alert_conditions(_alerts.th, nodes, sv, watch, now), now)
@@ -3502,6 +3634,86 @@ def llama_inflight_prompt(status, body):
     return live
 
 
+def llama_slot_decoded(status, body):
+    """{(slot id, task id): tokens decoded} for every busy llama.cpp slot
+    that has started decoding (/slots), or None when /slots is not
+    readable. The task id makes a new request on the same slot a new
+    stream (its count starts again)."""
+    if status != 200:
+        return None
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return None
+    if not isinstance(data, list):
+        return None
+    out = {}
+    for i, s in enumerate(data):
+        if not isinstance(s, dict) or not (s.get("is_processing") or s.get("state", 0) != 0):
+            continue
+        nt = s.get("next_token")
+        nt = nt[0] if isinstance(nt, list) and nt else nt
+        dec = (nt.get("n_decoded") if isinstance(nt, dict) else None) or s.get("n_decoded") or 0
+        if isinstance(dec, (int, float)) and not isinstance(dec, bool) and dec > 0:
+            sid = s.get("id", i)
+            out[(sid if isinstance(sid, int) else i, s.get("id_task") if isinstance(s.get("id_task"), int) else None)] = int(dec)
+    return out
+
+
+def slot_rates(prev, cur, dt):
+    """Each stream's decode rate (tok/s) between two llama_slot_decoded
+    readings `dt` s apart: only streams in both, whose count did not go back."""
+    if not prev or not cur or not dt or dt <= 0:
+        return []
+    return [(cur[k] - prev[k]) / dt for k in cur if k in prev and cur[k] >= prev[k]]
+
+
+def _median(xs):
+    xs = sorted(x for x in xs if isinstance(x, (int, float)))
+    if not xs:
+        return None
+    m = len(xs) // 2
+    return xs[m] if len(xs) % 2 else (xs[m - 1] + xs[m]) / 2
+
+
+def streams_view(backend, agg_tok_s, running, decoding=None, prefilling=None, slot_tok_s=None,
+                 finished_decode_tok_s=None, agg_60s=None):
+    """Single-stream vs multi-stream throughput, the same shape for every
+    engine (Basalt and llama.cpp through the llama API, TensorFold, vLLM):
+
+    - aggregate_tok_s: tokens generated per second over ALL streams (the
+      engine's live counter); aggregate_60s_tok_s the same over 60 s.
+    - per_stream_tok_s: the median decoding stream's rate. llama.cpp /
+      Basalt: measured per slot from /slots (source "slots"). TensorFold:
+      batched decode advances every decoding stream once per round, so the
+      aggregate over the decoding streams IS each stream's rate (source
+      "batch"). vLLM (and TensorFold without a decoding count): the
+      aggregate over the running requests, which counts prefilling ones
+      too, so a lower bound (source "estimate"). With no live stream, the
+      finished requests' decode rate of the last 5 min (source "finished").
+    - active / decoding / prefilling: the streams now."""
+    def r(v):
+        return round(v, 1) if isinstance(v, (int, float)) else None
+    per, src = None, None
+    dec = decoding
+    if slot_tok_s:
+        per, src = _median(slot_tok_s), "slots"
+        dec = len(slot_tok_s) if dec is None else dec
+    elif backend == "tensorfold" and isinstance(decoding, int) and decoding > 0 and agg_tok_s is not None:
+        per, src = agg_tok_s / decoding, "batch"
+    elif (decoding is None and isinstance(running, (int, float)) and running > 0 and agg_tok_s is not None
+          and backend != "llama"):
+        per, src = agg_tok_s / running, "estimate"
+    if per is None and finished_decode_tok_s is not None:
+        per, src = finished_decode_tok_s, "finished"
+    return {"aggregate_tok_s": r(agg_tok_s), "aggregate_60s_tok_s": r(agg_60s),
+            "per_stream_tok_s": r(per), "per_stream_source": src,
+            "per_stream_min_tok_s": r(min(slot_tok_s)) if slot_tok_s else None,
+            "active": int(running) if isinstance(running, (int, float)) else None,
+            "decoding": int(dec) if isinstance(dec, (int, float)) else None,
+            "prefilling": int(prefilling) if isinstance(prefilling, (int, float)) else None}
+
+
 def _rate(ring, key, now, window=10.0):
     """Per-second rate of a counter over about `window` s of ring samples;
     None across a reset or with too little history."""
@@ -3612,6 +3824,7 @@ class ServeSampler:
         self.watch = ServiceWatch()
         self.model_id = None
         self._tools_prev = None
+        self._slots_prev = None       # (t, llama_slot_decoded) for per-stream rates
 
     def _counter_delta(self, i, v):
         p = self._prev_counts[i] if self._prev_counts else None
@@ -3631,9 +3844,16 @@ class ServeSampler:
             gen, prm = engine_counters(_BACKEND, mbody, health if st == 200 else "")
         det = engine_detail(_BACKEND, mbody)
         fill = None
+        slot_tok_s, decoding, prefilling = None, None, None
         if _BACKEND == "llama":
             sst, sbody = _get(f"{_INFER}/slots", auth=True)
             fill = llama_ctx_fill(sst, sbody)
+            dec_now = llama_slot_decoded(sst, sbody)
+            if dec_now is not None:
+                if self._slots_prev:
+                    slot_tok_s = slot_rates(self._slots_prev[1], dec_now, now - self._slots_prev[0])
+                self._slots_prev = (now, dec_now)
+                decoding = len(dec_now)
             if gen is not None:
                 gen_done = gen
                 live = llama_inflight_tokens(sst, sbody)
@@ -3656,6 +3876,7 @@ class ServeSampler:
                 prm_done, prm_src = prm, "engine-completed"   # no live prefill counter
             tf = _tf_health(health) if st == 200 else {}
             running = tf.get("busy", running)
+            decoding, prefilling = tf.get("decoding"), tf.get("prefilling")
             # KV pressure only from the pool (/health pool_free_tokens); the
             # per-stream ratio is a stream's context fill (a lane wait with one
             # long conversation is not a full KV cache).
@@ -3785,6 +4006,14 @@ class ServeSampler:
                     S.add(f"serve:{key}_{q}", v, now)
         if (win.get("spec") or {}).get("accept_pct") is not None:
             S.add("serve:spec_accept_pct", win["spec"]["accept_pct"], now)
+        if _BACKEND == "llama" and decoding is not None and running is not None:
+            prefilling = max(0, int(running) - decoding)
+        streams = streams_view(_BACKEND, tok_s, running, decoding, prefilling, slot_tok_s,
+                               (win.get("per_request") or {}).get("decode_tok_s"),
+                               _rate(self.ring, "gen", now, window=60.0))
+        for k, v in (("serve:per_stream_tok_s", streams["per_stream_tok_s"]), ("serve:streams", streams["active"])):
+            if v is not None and (k != "serve:per_stream_tok_s" or (streams["active"] or 0) > 0):
+                S.add(k, v, now)
         if win.get("prefix_hit_pct") is not None:
             S.add("serve:prefix_hit_pct", win["prefix_hit_pct"], now)
         gwin = self._gate_window(now, 300) if _EDGE_GATE else {}
@@ -3804,6 +4033,7 @@ class ServeSampler:
                          "healthy": healthy, "running": int(running) if running is not None else None,
                          "waiting": int(waiting) if waiting is not None else None, "kv_pct": kv_pct,
                          "ctx_fill_pct": fill_pct, "stalled_s": stalled_s, "detail": win,
+                         "streams": streams,
                          "model_id": self.model_id, "engine": ENGINE_LABEL.get(_BACKEND, _BACKEND),
                          "lifetime_gen_tokens": int(gen_done if gen_done is not None else gen) if gen is not None else None,
                          "lifetime_prompt_tokens": int(prm_c) if prm_c is not None else None,
@@ -4141,11 +4371,12 @@ def _term_handler(nodes, exit_=os._exit):
 # node is reported as unknown, nothing from a query reaches a probe.
 
 DEFAULT_WINDOW = "1h"
-SERVE_SERIES = ("serve:tok_s", "serve:prompt_tok_s", "serve:running", "serve:waiting", "serve:kv_pct",
+SERVE_SERIES = ("serve:tok_s", "serve:per_stream_tok_s", "serve:streams", "serve:prompt_tok_s", "serve:running", "serve:waiting", "serve:kv_pct",
                 "serve:ctx_fill_pct", "serve:ttft_p50", "serve:ttft_p95", "serve:e2e_p50", "serve:e2e_p95",
                 "serve:itl_p50", "serve:queue_p95", "serve:spec_accept_pct", "serve:prefix_hit_pct", "serve:up",
                 "serve:gen_tokens", "serve:requests")
-NODE_SERIES = ("gpu_util", "gpu_mem", "gpu_temp", "gpu_power", "power", "sm_clock", "cpu", "ram", "disk", "up")
+NODE_SERIES = ("gpu_util", "gpu_mem", "gpu_temp", "gpu_power", "power", "sm_clock", "cpu", "ram", "disk", "up",
+               "mem_avail", "dstate")
 HISTORY_MAX_METRICS = 8
 
 
@@ -4201,7 +4432,7 @@ def serving_status(window):
     doc.update({"generated_at": round(now), "engine": ENGINE_LABEL.get(_BACKEND, _BACKEND), "backend": _BACKEND,
                 "model_id": live.get("model_id"), "unit": live.get("unit"),
                 "now": {k: live.get(k) for k in ("tok_s", "tok_s_source", "prompt_tok_s", "running", "waiting",
-                                                 "kv_pct", "ctx_fill_pct", "stalled_s", "healthy")},
+                                                 "kv_pct", "ctx_fill_pct", "stalled_s", "healthy", "streams")},
                 "detail": live.get("detail"),
                 "tokens": {"hourly": [{"t": a[0], "gen": a[1], "prompt": b[1]} for a, b in zip(gen_h, prm_h)],
                            "daily": days, "last_24h": summary_24h(now),

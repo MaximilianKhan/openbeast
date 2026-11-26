@@ -1078,6 +1078,11 @@ things and nothing else:
    nothing, and the script prints a warning that says so. `--guard` then runs
    `spark-guard.sh` ([B3](#b3-firewall-spark-guard)), which is
    what actually closes the engine ports.
+5. **The `mstflint_access` blacklist** (since 2026-11-25): it writes
+   `/etc/modprobe.d/openbeast-blacklist-mstflint.conf` and unloads the
+   module if nothing holds it. NVIDIA's hourly OTA check oopsed in it on
+   spark-1 ([G9](#g9-mstflint_access-is-blacklisted-on-both-sparks)).
+   Re-running the script on a built pair applies it too.
 
 Other flags:
 
@@ -1096,22 +1101,26 @@ for the next reboot and still leaves NVIDIA Sync's file alone.
 messages, not a captured transcript:
 
 ```
-==> 1/4 libnccl2 2.28.9-1+cuda13.0
+==> 1/5 libnccl2 2.28.9-1+cuda13.0
 already installed                                   # or apt's install log, then the hold
 libnccl.so.2 visible to the loader
 
-==> 2/4 linger for max
+==> 2/5 linger for max
 
-==> 3/4 Tailscale as 'spark-1'
+==> 3/5 Tailscale as 'spark-1'
   Tailscale repo key verified (2596A99EAAB33821893C0A79458CA832957F5868)
 tailnet IPv4: 100.66.191.118
 
-==> 4/4 ufw (fabric allow rules) and exposure
+==> 4/5 ufw (fabric allow rules) and exposure
   ufw fabric rules on 2 link(s)
 
   !! ufw is inactive — the ufw rules above are recorded but FILTER NOTHING.
   ...
   !!   sudo …/spark-guard.sh            (or re-run this with --guard)
+
+==> 5/5 mstflint_access blacklist
+  wrote /etc/modprobe.d/openbeast-blacklist-mstflint.conf
+  unloaded mstflint_access                          # or: not loaded / in use: reboot (G9)
 
 ==> spark-guard
 == spark-guard installed: /etc/openbeast/spark-guard.nft, openbeast-spark-guard.service (enabled; loads before the network at boot)
@@ -3298,6 +3307,7 @@ Every row below was hit on the way to the live pair.
 | a container engine on an offline worker tries to pull | `*_IMAGE_DIGEST` pin; `docker save/load` drops the RepoDigest | pin `*_IMAGE_ID` instead (`sync-image` prints the line) ([H4](#h4-container-images)) |
 | `TENSORFOLD_ENGINE=container` fails offline | it pip-installs TensorFold from GitHub and deps from PyPI at every start | use the native engine (default) or the recipe; or, on a connected box, build an image with TensorFold at `TENSORFOLD_REF` and its locked deps installed, carry it with `spark-cluster.sh sync-image` / `save-image`, pin `TENSORFOLD_IMAGE_ID` and set `TENSORFOLD_IMAGE_PREBUILT=true` |
 | box freezes / ssh hangs under load | unified memory exhausted (it freezes rather than OOMs) | keep `KV_POOL_GIB` / `MEMORY_RESERVE_GIB` as in D1; watch `Unified memory` in healthcheck ([G4](#g4-memory-headroom-and-the-gb10-stack-cap)) |
+| load average in the hundreds or thousands, hundreds of `mstflint -d 0000:01:00.0 q` in D state (`ps -eo stat,comm \| awk '$1 ~ /^D/' \| sort \| uniq -c`), `journalctl -k -b` shows an oops in `mst_ioctl [mstflint_access]`, `/proc/sys/kernel/tainted` has bit 128 set; the dashboard raises `kernel`, `dstate` and `load` | NVIDIA's hourly OTA check (`dgx-dashboard-admin` → `/opt/nvidia/spark-ota-check/check_ota_status.py` → `mstflint q`, 13 times an hour) hit a kernel oops in `mstflint_access`. The dead ioctl holds the device lock, so every later `mstflint` sleeps in D state (40 an hour, unkillable). They use no CPU and about 180 KB of kernel memory each ([report](reports/SPARK1_SLOWDOWN-2026-11-25.md)) | [G9](#g9-mstflint_access-is-blacklisted-on-both-sparks): blacklist the module (sudo, two lines), then reboot that Spark (only a reboot frees D-state processes; the shutdown can take ~8 min). Run the G9 post-reboot check |
 | pair stops answering mid-stream, `/health` still `ok` | a stalled collective | `TF_GLM_MULTI_WATCHDOG_EXIT=1` makes the rank exit so the unit restarts both; healthcheck's liveness check flags it |
 | `:443` not published after `setup-tailscale.sh` | the running WebUI still had auth off | `systemctl --user restart openbeast`, then re-run `setup-tailscale.sh` ([E5](#e5-webui-auth-and-the-admin-account-before-publishing)) |
 | `:8443` answers 401 | no device key, or a revoked one | `clients.sh list`; give the client its key |
@@ -3310,6 +3320,61 @@ Every row below was hit on the way to the live pair.
 | opencode on spark-2 cannot reach the model | the `opencode-model-link` tunnel is down (spark-1 rebooting, fabric down) | `systemctl --user status opencode-model-link` on spark-2; it retries every 10 s by itself |
 | `bootstrap.sh` offline asks for `bundle.sh build` "on a connected box" | the bundle must be built for the **target's** platform | build it on an online Spark (aarch64, same overlay2 store) ([H6](#h6-the-command-center-wheels-and-compose-images)) |
 | web tools stall instead of refusing in a spawned agent | `agents/tools.py` (era-hashed) has no island guard; only `mcp_server.py` does | expected (BEAST_ISLAND "Known limits"); web_search is bounded at 15 s, fetch at 45 s |
+
+### G9. `mstflint_access` is blacklisted on both Sparks
+
+Since 2026-11-25, `/etc/modprobe.d/openbeast-blacklist-mstflint.conf`
+holds the two lines below. Spark-1 has it (verified after its 17:16
+reboot). Spark-2 is pending Max's sudo, and the
+[TODO](TODO.md#-dgx-spark-inference--live-2026-11-13-as-spark-hydra)
+tracks it. A fresh install adds it to both.
+
+```
+blacklist mstflint_access
+install mstflint_access /bin/false
+```
+
+Why: the module (from the kernel package `linux-modules-7.0.0-1025-nvidia`,
+loaded at boot by `nvidia-mstflint-loader`'s
+`/etc/modules-load.d/nvidia-mstflint.conf`) oopsed on spark-1 on 2026-11-24
+00:10. NVIDIA's DGX Dashboard admin service runs an OTA check every hour
+(at :09 after its start), and that check calls `mstflint -d 0000:01:00.0 q`
+13 times. After the oops, each call left one process stuck in D state: 1,640
+of them by the next day, with the load average at about 1,642
+([report](reports/SPARK1_SLOWDOWN-2026-11-25.md)). Spark-2 runs the same
+module and the same check.
+
+What still works: everything OpenBeast does (nothing in the repo uses
+`mstflint`), RoCE, mlx5 and NCCL (none depends on the module), and NVIDIA's
+OTA check (it skips the ConnectX row when `mstflint` reads nothing). Without
+the module, `mstflint` falls back to sysfs config space, and Secure Boot's
+lockdown (`integrity`) refuses that at once, so nothing hangs. What does
+not work: flashing ConnectX-7 firmware (`nvidia-spark-mlnx-firmware-manager`,
+or an OTA that updates the CX-7). Undo the blacklist for that update only.
+
+```sh
+# apply (spark-2 needs no reboot while lsmod shows the module unused; avoid :09-:12 past the hour)
+printf "blacklist mstflint_access\ninstall mstflint_access /bin/false\n" | sudo tee /etc/modprobe.d/openbeast-blacklist-mstflint.conf >/dev/null
+sudo modprobe -r mstflint_access          # or reboot, if processes are stuck on it (then only a reboot works)
+# undo, for a CX-7 firmware update only, then apply again
+sudo rm /etc/modprobe.d/openbeast-blacklist-mstflint.conf && sudo modprobe mstflint_access
+```
+
+The check after any reboot, on each Spark:
+
+```sh
+lsmod | grep -c mstflint_access          # 0
+pgrep -c mstflint                        # 0
+cat /proc/loadavg                        # single digits
+cat /proc/sys/kernel/tainted             # 4096 (O: the out-of-tree nvidia modules); +128 = an oops since boot
+grep SUnreclaim /proc/meminfo            # ~1.1-1.3 GB on spark-1 after boot
+systemctl is-failed systemd-modules-load # not "failed": the blacklisted module is skipped quietly
+sed 's/\x1b\[[0-9;]*m//g' /var/log/dgx-dashboard-admin.log | grep refreshUpdatesCache | tail -2   # starting -> completed within ~2 min
+```
+
+The dashboard watches for this: the `kernel` alert (taint bit 128), `dstate`
+(processes in D state, naming the most common command), `load` (load above
+8 per CPU) and `memtrend` (MemAvailable falling over 6 h).
 
 ---
 
