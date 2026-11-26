@@ -11,6 +11,7 @@
 #   ./scripts/clients.sh list [--json]
 #   ./scripts/clients.sh show <id> [--json]
 #   ./scripts/clients.sh scope <id> add|remove <name>
+#   ./scripts/clients.sh max-tokens <id> N|0|default   # this device's default max_tokens
 #   ./scripts/clients.sh revoke <id>
 #   ./scripts/clients.sh unrevoke <id>
 #   ./scripts/clients.sh rotate <id>            # = enroll <id> --force
@@ -25,7 +26,8 @@
 # Registry schema (version 1) — the shared contract with agents/edge.py:
 #   {"version":1,"devices":[{"id","label","key_sha256","enrolled_at",
 #                            "revoked_at","slot","rate_limit_per_min",
-#                            "last_seen","scopes","enroll_nonce"}]}
+#                            "last_seen","scopes","enroll_nonce",
+#                            "max_tokens_default"}]}
 # enroll_nonce: random, written once per enrollment (kept on rotate) so two
 # enrollments of one id inside the same second still get distinct device_uids.
 # Unknown/future fields are round-tripped untouched, so a newer edge.py can add
@@ -48,6 +50,14 @@
 #            the key into a page's Manage sheet. See docs/BEAST_ARTIFACT.md.
 # A device with no `scopes` field, or an empty one, has no scopes — absence is
 # never a grant.
+#
+# max_tokens_default: the max_tokens beast-gate gives this device's chat and
+# completions requests that set neither max_tokens nor max_completion_tokens.
+# Absent / null = the gate's GATE_DEFAULT_MAX_TOKENS (8192 on the Spark pair
+# under AGENT_PROFILE=deepseek-best, off elsewhere); N = N; 0 = never inject
+# for this device. A request that sets its own cap is never changed. Set it
+# with `max-tokens` (no key rotation; the gate hot-reloads it on the next
+# request). docs/SPARK_HYDRA.md, "beast-gate's default max_tokens".
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -353,7 +363,7 @@ def redact(dev):
     return out
 
 # --- commands -----------------------------------------------------------
-if CMD in ("enroll", "scope", "revoke", "unrevoke", "remove"):
+if CMD in ("enroll", "scope", "revoke", "unrevoke", "remove", "max-tokens"):
     _lock_fd = lock()
 
 if CMD == "enroll":
@@ -447,8 +457,9 @@ elif CMD == "show":
         sys.exit(0)
     pub = redact(dev)
     prefix = pub.pop("key_sha256_prefix", None)
-    order = ["id", "label", "status", "slot", "rate_limit_per_min", "scopes",
-             "enrolled_at", "revoked_at", "last_seen"]
+    order = ["id", "label", "status", "slot", "rate_limit_per_min",
+             "max_tokens_default", "scopes", "enrolled_at", "revoked_at",
+             "last_seen"]
     # `scopes` is printed even when the row predates the field. An operator
     # reading this to answer "may this device act on my rig?" must see the
     # answer, not the absence of a line they have to know to look for.
@@ -488,6 +499,25 @@ elif CMD == "scope":
     print("")
     print("Takes effect on the device's NEXT request — the consumer hot-reloads")
     print("this file, so no restart and no re-enrollment.")
+
+elif CMD == "max-tokens":
+    dev_id = os.environ["OB_ID"]
+    raw = os.environ["OB_MAXTOK"]
+    doc = load()
+    dev = need(doc, dev_id)
+    if raw == "default":
+        dev.pop("max_tokens_default", None)
+        what = "the gate's default (GATE_DEFAULT_MAX_TOKENS)"
+    else:
+        dev["max_tokens_default"] = int(raw)
+        what = ("none: the gate never adds max_tokens for this device"
+                if int(raw) == 0 else "max_tokens=%d" % int(raw))
+    save(doc)
+    print("'%s': requests that set no max_tokens / max_completion_tokens get %s."
+          % (dev_id, what))
+    print("")
+    print("Takes effect on the device's NEXT request (the gate hot-reloads this")
+    print("file): no restart, no key rotation. A request's own cap always wins.")
 
 elif CMD in ("revoke", "unrevoke"):
     dev_id = os.environ["OB_ID"]
@@ -697,6 +727,17 @@ print(int(any(d.get("id") == os.environ["OB_ID"]
     _valid_scope "$scope_name" || _die "invalid scope '$scope_name' — use [a-z0-9][a-z0-9_-]{0,30} (e.g. chat)"
     if [[ ! -f "$REGISTRY" ]]; then _no_registry; exit 1; fi
     OB_CMD=scope OB_ID="$dev_id" OB_ACTION="$action" OB_SCOPE="$scope_name" _registry_op
+    ;;
+
+  max-tokens)
+    dev_id="${1:-}"
+    val="${2:-}"
+    [[ -n "$dev_id" && -n "$val" ]] || _die "usage: clients.sh max-tokens <id> N|0|default"
+    shift 2
+    [[ $# -eq 0 ]] || _die "unknown option for max-tokens: $1"
+    [[ "$val" == default ]] || _int_or_die "$val" max-tokens 0
+    if [[ ! -f "$REGISTRY" ]]; then _no_registry; exit 1; fi
+    OB_CMD=max-tokens OB_ID="$dev_id" OB_MAXTOK="$val" _registry_op
     ;;
 
   revoke|unrevoke)

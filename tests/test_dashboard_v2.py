@@ -469,8 +469,11 @@ def test_gate_counts_never_carry_device_names(monkeypatch, tmp_path):
                'openbeast_edge_requests_total{device="max-laptop",path="/v1/chat/completions",outcome="rate_limited"} 4\n'
                'openbeast_edge_requests_total{device="max-laptop",path="/v1/chat/completions",outcome="client_disconnect"} 1\n'
                'openbeast_edge_denied_total{reason="no_key"} 3\n'
-               'openbeast_edge_completion_tokens_total{device="max-laptop"} 900\n')
-    gate = {"/gate/health": (200, '{"status":"ok","auth":"devices","devices":2,"upstream":"x"}'),
+               'openbeast_edge_completion_tokens_total{device="max-laptop"} 900\n'
+               'openbeast_edge_max_tokens_defaulted_total{device="max-laptop"} 12\n'
+               'openbeast_edge_max_tokens_defaulted_total{device="old-phone"} 3\n')
+    gate = {"/gate/health": (200, '{"status":"ok","auth":"devices","devices":2,"upstream":"x",'
+                                  '"max_tokens_default":8192}'),
             "/gate/metrics": (200, metrics)}
     d._gate_get = lambda path: gate[path]
     d._get = _canned({"/health": (200, '{"status":"ok"}'), "/slots": (200, "[]"),
@@ -485,6 +488,7 @@ def test_gate_counts_never_carry_device_names(monkeypatch, tmp_path):
     snap = s.snapshot()
     g = snap["gate"]
     assert g == {"enabled": True, "up": True, "auth": "devices", "devices": 2, "active_devices": 1,
+                 "max_tokens_default": 8192, "max_tokens_defaulted": 15,
                  "denied_total": 3, "denied_identity": 3, "denied_by_reason": {"no_key": 3},
                  "requests_total": 77, "errors_total": 2, "req_per_min": 180.0}
     assert snap["tok_s"] == 60.0 and snap["prompt_tok_s"] == 10.0 and snap["tok_s_source"] == "engine"

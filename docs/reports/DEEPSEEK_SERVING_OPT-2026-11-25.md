@@ -28,7 +28,9 @@ numbers below come from his live job. They are early evidence, not a controlled 
    290,816 tokens restored from disk in 5 restores, and 0 failed lookups against 88. Mean TTFT was 93 s
    against ~155 s, and decode while generating 22.8 tok/s per request against ~11. Memguard never fired, and
    spark-1 stayed at 5.5-6.7 GiB available.
-4. **Deferred (TODO):** the clean before/after bench (the script is ready), `KV_SHARD=1` (it doubles the pool
+4. **Follow-up:** beast-gate's default `max_tokens` (8192) for requests that send none, merged
+   2026-11-25 and pending deploy ([SPARK_HYDRA.md E7a](../SPARK_HYDRA.md#e7a-beast-gates-default-max_tokens)).
+5. **Deferred (TODO):** the clean before/after bench (the script is ready), `KV_SHARD=1` (it doubles the pool
    to 1,052,672 positions at about the same memory per Spark), and a longer live sample.
 
 ## Update at 18:45: the gain did not hold (read this first)
@@ -162,6 +164,11 @@ measured 1-4% decode for it.
 2. **Send `max_tokens`** close to what the job needs: its replies average 1,100-1,400 tokens, so 4,096 is
    ample with thinking. Without it, every request holds 32,768 extra positions in the pool. At about 60K
    prompts that is a third of each reservation: it caps the job at 4 running, and it stales kept prefixes.
+   **Follow-up (2026-11-25, Max approved):** beast-gate now gives any request that names no cap
+   `max_tokens: 8192` (`GATE_DEFAULT_MAX_TOKENS`, from `AGENT_PROFILE=deepseek-best`), so a client that
+   omits it reserves 8,192 instead of 32,768. A request that sets its own cap is never changed. Merged,
+   deployed at Max's next break ([SPARK_HYDRA.md E7a](../SPARK_HYDRA.md#e7a-beast-gates-default-max_tokens);
+   steps in [TODO](../TODO.md)).
 3. **5-6 in flight is enough.** Prompt passes run one at a time, so more streams only queue. With prefix hits,
    each request needs only its tail prefilled, and that is where the throughput comes from.
 4. **Read the cache's effect** in `/metrics`: `prompt_tokens_cached_total / prompt_tokens_total`,

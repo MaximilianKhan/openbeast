@@ -524,6 +524,11 @@ itself listens on spark-1's loopback only.
    # while GLM (the alternative) is selected: "model": "GLM-5.3-Flash-EXL3"
    ```
 
+   A request that sends no `max_tokens` gets 8192 from the gate
+   ([E7a](#e7a-beast-gates-default-max_tokens)). `finish_reason: "length"` means
+   the cap cut the reply (reasoning counts toward it). Send your own `max_tokens`
+   for longer single replies, or continue with a follow-up request.
+
 **(c) First build from bare boxes (the GLM recipe first, then DeepSeek, the default, on top).** Follow
 [Install everything, fresh](#install-everything-fresh): 22 ordered steps,
 each with its host, the online command, the offline variant and a link to the
@@ -2072,6 +2077,7 @@ leaves these lines alone, adjust them by hand after `beastglm` or `beastds`.
 | `BEAST_ASSIST`, `BEAST_ESCALATE` | `0` | ditto |
 | `INFERENCE_THINKING` | `on` | thinking on by default for every client that does not choose: beast-gate, the WebUI filter, this host's agents. The best v5 arm (C, 51/71 vs 36/71 off). Since 2026-11-17 ([E2a](#e2a-recommended-serving-configuration-from-v5)) |
 | `AGENT_MAX_TOKENS` | `16384` | per-turn cap for this host's own agents: arm C's cap. `REASONING_BUDGET` is a llama.cpp flag ([E2a](#e2a-recommended-serving-configuration-from-v5)) |
+| `GATE_DEFAULT_MAX_TOKENS` | unset: `AGENT_PROFILE=deepseek-best` gives `8192` (since 2026-11-25, live after the next gate restart) | beast-gate's `max_tokens` for a request that names no cap, so TensorFold does not reserve 32,768 reply positions per request in the shared pool ([E7a](#e7a-beast-gates-default-max_tokens)) |
 
 Not set, so the defaults apply:
 
@@ -2504,6 +2510,85 @@ hash-only design. They are readable by `max`, the uid the admin-tier `bash` /
 device key. Once each device holds its key, delete the copies:
 `shred -u ~/.config/openbeast/gate-keys/*.key`. If one is lost, re-enroll to
 recover it.
+
+### E7a. beast-gate's default max_tokens
+
+**Max's decision, 2026-11-25:** beast-gate gives every `/v1/chat/completions`
+and `/v1/completions` request that names no reply cap `max_tokens: 8192`.
+Status: on `main`; **not yet live on spark-1** until the gate restarts
+(pending in [docs/TODO.md](TODO.md), "deploy at Max's next break").
+
+**Why.** TensorFold on this pair reserves each request's whole reply budget in
+the shared 524,288-position KV pool at admission: prompt + `max_tokens` + 18.
+A request with no `max_tokens` reserves the server's `--max-tokens`, 32,768.
+Max's job sends 47-92K-token prompts with no cap, so four requests held
+370-600K positions: concurrency stopped near 4 of the 8 slots (`PARALLEL=8`),
+and the pool reclaimed every cached prefix before the next request sharing it
+arrived. His replies average 1.1-1.4K tokens. At a ~60K prompt the default cut
+each reservation from ~92.8K to ~68.2K positions, so about 7 fit where 5 did.
+8192 is the DeepSeek best config's own per-turn cap (T2, `AGENT_MAX_TOKENS=8192`,
+[E2b](#e2b-deepseek-best-configuration-v5-t2)). Evidence:
+[DEEPSEEK_SERVING_OPT-2026-11-25](reports/DEEPSEEK_SERVING_OPT-2026-11-25.md).
+
+**The rule** (`agents/edge.py`, `_apply_max_tokens_default`):
+
+- A body with none of `max_tokens`, `max_completion_tokens` or llama.cpp's
+  `n_predict` (or with one of them `null`) gets `max_tokens` = the default.
+  Streaming bodies too.
+- A body that sets any of them is forwarded with it as sent: never clamped
+  down, never raised.
+- Only the two generation endpoints. `/v1/embeddings` is never touched.
+- A request with `X-OpenBeast-Gate-Defaults: off` (every eval request the
+  runner sends) gets no default, like the thinking default. Eval rows are
+  unaffected.
+- A body the gate cannot parse is refused (400) exactly as before; nothing is
+  injected into it.
+- The thinking default, the `id_slot` strip and `stream_options.include_usage`
+  apply as before, in the same rewrite.
+
+**Where the 8192 comes from.** The conf key `GATE_DEFAULT_MAX_TOKENS`
+(env `OPENBEAST_GATE_DEFAULT_MAX_TOKENS`), with the usual precedence: env >
+its own `openbeast.conf` line > `AGENT_PROFILE`. Only `deepseek-best` supplies
+it (8192), and it does so as a serving default tied to the profile *name*,
+not to the T2 switch table. `inkling-best` and `qwen38-best` (the RTX 5090
+rig) leave it unset, so the rig's gate injects nothing and behaves as before.
+The rig serves one stream on llama.cpp or Basalt, whose context is per slot,
+so there is no shared pool for a missing cap to crowd. Its agents already send
+their own `AGENT_MAX_TOKENS`. `0` or unset turns injection off. spark-1 already has
+`AGENT_PROFILE=deepseek-best` ([E2b](#e2b-deepseek-best-configuration-v5-t2)), so
+the deploy needs no conf edit. During a GLM window, with the profile line removed,
+the default is off. Add `GATE_DEFAULT_MAX_TOKENS=8192` there if GLM needs
+it too: GLM's TensorFold reserves the same way.
+
+**Per device.** A device's registry row can carry its own
+`max_tokens_default`, which wins over the gate's. It is hot-reloaded and needs
+no restart or key rotation:
+
+```bash
+cd ~/openbeast
+./scripts/clients.sh max-tokens macbook 4096     # this device: 4096 when it names no cap
+./scripts/clients.sh max-tokens eval-host 0      # never inject for this device
+./scripts/clients.sh max-tokens macbook default  # back to GATE_DEFAULT_MAX_TOKENS
+./scripts/clients.sh show macbook                # max_tokens_default: 4096
+```
+
+**Observing it.** The counter is
+`openbeast_edge_max_tokens_defaulted_total{device=...}` in `/gate/metrics`. It
+holds a count per device and nothing of the request. The local `/gate/health`
+reports `max_tokens_default` (0 = off), and the gate's start line in
+`.run/stack.log` reads `default max_tokens=8192`. The dashboard's Gate page
+shows both in the "default max_tokens" tile.
+
+**For clients.** `max_tokens` caps **one call**. With thinking on (the
+default here), the reasoning counts against it too. A reply that hits the cap
+ends with `finish_reason: "length"`. That is the signal the reply was cut,
+not that it was finished. Continue a long output with a follow-up request:
+send the conversation back with the partial reply as the last assistant
+message, or ask it to continue. The OpenBeast runner already does this: a
+turn capped mid-thought keeps its reasoning tail and is told to act. A client
+that needs longer single replies (a long file in one go) should send its own
+`max_tokens`, which the gate never changes. One that wants none sent at all
+can be opted out with `clients.sh max-tokens <id> 0`.
 
 ---
 

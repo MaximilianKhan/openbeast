@@ -3897,6 +3897,10 @@ class ServeSampler:
             h = h if isinstance(h, dict) else {}
             gate["auth"] = h.get("auth") if isinstance(h.get("auth"), str) else None
             gate["devices"] = h.get("devices") if isinstance(h.get("devices"), int) else None
+            # GATE_DEFAULT_MAX_TOKENS (0 = off); a gate older than it says nothing.
+            mtd = h.get("max_tokens_default")
+            if isinstance(mtd, int) and not isinstance(mtd, bool):
+                gate["max_tokens_default"] = mtd
             gate["active_devices"] = _active_devices()   # wall clock: the file is
             mst, gbody = _gate_get("/gate/metrics")
             if mst == 200:
@@ -3914,6 +3918,10 @@ class ServeSampler:
                 gate["denied_total"] = int(sum(by_reason.values()))
                 gate["denied_identity"] = int(sum(v for k, v in by_reason.items() if k in _IDENTITY_REASONS))
                 gate["denied_by_reason"] = {k[:32]: int(v) for k, v in sorted(by_reason.items())[:16]}
+                # Requests the gate gave its default max_tokens (a count only).
+                mtc = _prom_sum(gbody, "openbeast_edge_max_tokens_defaulted_total")
+                if mtc is not None:
+                    gate["max_tokens_defaulted"] = int(mtc)
             gate["requests_total"] = int(g_req) if g_req is not None else None
             gate["errors_total"] = int(g_err) if g_err is not None else None
         self.ring.add({"gen": gen, "prompt": prm, "greq": g_req, "gcomp": g_comp, "gerr": g_err}, now)
