@@ -858,10 +858,8 @@ DeepSeek's UP on the same harness
   (`engine.sh use default` writes it, also over a conf naming the stock
   profile), board `defaults` → `INK-T2-SC117`, INSTALL/MODELS/ENGINES; the
   stock profile is the rollback.
-- [ ] **Switch the rig to the SC117 default** (after the PR merges): build or
-  hard-link the pack into `WEIGHTS_DIR`, `verify-weights.sh --deep`,
-  `engine.sh use default` (conf backup), then the checks of MODELS.md
-  "Switching the RTX 5090"; evidence here.
+- [x] **DONE: the rig serves the SC117 default.** 2026-11-25 17:03 PST, from a plain ssh shell in `~/Documents/openbeast` at `97363559`: the pack hard-linked into `weights/` (`verify-weights.sh --file Inkling-2-Mini-SC117-abliterated-NVFP4-MX8.basalt`: 1 verified, 0 failures), conf backed up (`~/openbeast-runs/openbeast.conf.before-sc117-20261125-1702`, and `use`'s own `.engines/conf-backups/openbeast.conf.20261125T170301.2136450`), `engine.sh use default --dry-run` showed `ENGINE_PROFILE=inkling2-mini-sc117` and the SC117 pack mount, then `engine.sh use default`: `engine.sh status` basalt v0.5.7 + #632, profile `inkling2-mini-sc117`, ready, serving `inkling-2-mini`; `docker inspect` mounts `weights/Inkling-2-Mini-SC117-abliterated-NVFP4-MX8.basalt` read-only, `ReadonlyRootfs true`, `CapDrop [ALL]`, `Dns [127.0.0.1]`, `PidsLimit 256`, `Memory 32 GiB`, port `127.0.0.1:8080` only (`ss`: loopback listener only); the launch log's sandbox probe: 9 of 9 checks FAIL (no DNS, no TCP out, no raw DNS answer); conformance PASS (reasoning in `reasoning_content`, tools, parallel calls); through beast-gate over Tailscale (`https://beast…:8443`) `/v1/models` 200 and a chat with thinking on answered (416 characters of reasoning); the dashboard's `/api/slot` shows `inkling-2-mini`, 1 slot, backend basalt; `AGENT_PROFILE=inkling-best` unchanged. Log: `~/openbeast-runs/sc117-basalt.log`. Rollback:
+  `scripts/engine.sh use basalt --profile inkling2-mini-stock` (the stock pack is still in `weights/`).
 - [ ] **SC117 path A (optional, not planned):** a bounded Strata v0.2.21 speed
   and thinking check after a delta review
   ([SC117 report §5.1](reports/SC117_INKLING_STRATA-2026-11-25.md#51-path-a-strata-v0221-bounded-speed-and-thinking-check-no-v5-arm)).
