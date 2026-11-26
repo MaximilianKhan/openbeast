@@ -24,12 +24,35 @@ numbers below come from his live job. They are early evidence, not a controlled 
    (`TF_FILL_CHUNKS=1 TF_FILL_FIRST=1 TF_FILL_CUT_IN=8192`).** Spill writes kept states to each Spark's NVMe.
    When the pool stales a state, the engine restores it from disk instead of prefilling it again. Cut-in lets
    a prompt of at most 8,192 new tokens run between the 2,048-token pieces of a long prompt pass. In the first
-   10 minutes on Max's job: **18.2% of prompt tokens came from the cache, against 0.7% before**. That is
+   10 minutes on Max's job: **18.2% of prompt tokens came from the cache, against 0.7% before** (it fell to 9.0% by 18 requests, see the update below). That is
    290,816 tokens restored from disk in 5 restores, and 0 failed lookups against 88. Mean TTFT was 93 s
    against ~155 s, and decode while generating 22.8 tok/s per request against ~11. Memguard never fired, and
    spark-1 stayed at 5.5-6.7 GiB available.
 4. **Deferred (TODO):** the clean before/after bench (the script is ready), `KV_SHARD=1` (it doubles the pool
    to 1,052,672 positions at about the same memory per Spark), and a longer live sample.
+
+## Update at 18:45: the gain did not hold (read this first)
+
+At 18 finished requests (18:45, when Max's client paused and the engine went idle), the cached share had
+**fallen to 9.0%**: 96,256 of 1,071,893 prompt tokens, with no hit since the first 9 requests. The other
+counters:
+
+- `prompt_cache_failed` stayed at **0**.
+- `prompt_cache_restores_begun` was 10 and `prompt_cache_restored_tokens` 565,248, with 0 restores failed.
+  But those restored tokens are **not** in `prompt_tokens_cached_total`. The latest cache lines read
+  `resumed at 0, kept 0`.
+- Mean TTFT was 96.1 s, TPOT 0.039 s (25.7 tok/s), and mean prefill 33.2 s per request.
+
+So spill does stop the `failed` lookups, and it reads states back from disk. Whether those restores shorten
+the prompt passes is **not established**. Possible explanations: the restore finishes after the request has
+already been admitted from 0, a restored state is staled again before use, or the counter simply does not
+count disk resumes. The ~18% figure below is from the first 10 minutes only. The TTFT/TPOT changes are
+confounded by how many long prefills overlapped. **The clean bench (c) decides this**: S9's `cached` after the
+load, and TTFT with and without spill. Until it runs, treat spill + cut-in as *harmless and live* (no memory
+cost seen, memguard quiet, spark-1 5.6-6.7 GiB, 0 errors), not as a proven win. If the bench shows no gain,
+roll back with `local.sh.bak-20261125-serving`, or keep only cut-in (`local.sh.cand-fill`). `KV_SHARD=1`
+(more pool room, so fewer stale states in the first place) is then the next lever, along with Max's
+`max_tokens` and system-message advice below, which needs no server change.
 
 ## Root cause in the code (TensorFold `fbbc971` + the recipe's patches)
 

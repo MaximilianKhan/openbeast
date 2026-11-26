@@ -1504,8 +1504,8 @@ escalation unresolved, all within churn); GLM's D and F only on Max's word.
   it counts lookups that matched a kept prefix whose KV rows the full 524K pool had already given to newer
   requests (stale), not a bug and not the 512 MiB budget. Max's prompts do share ~40K-token prefixes. Fixed
   by spill v2 (`SPILL_GIB=64`, kept states restored from NVMe), live since 2026-11-25 18:29 with prefill
-  cut-in (`TF_FILL_CHUNKS=1 TF_FILL_FIRST=1 TF_FILL_CUT_IN=8192`): cached prompt tokens 0.7% → 18.2%,
-  failed 88 → 0 on Max's job (first 10 min).
+  cut-in (`TF_FILL_CHUNKS=1 TF_FILL_FIRST=1 TF_FILL_CUT_IN=8192`): failed 88 → 0 and cached prompt tokens 0.7% → 18.2% in the first 10 min, but 9.0% at 18 requests: whether the
+  disk restores (565K tokens) shorten prefills is unproven until the clean bench below.
 - [ ] **DeepSeek serving: the clean bench** (deferred 2026-11-25, Max's client never paused). With the engine
   idle, run `scripts/backends/deepseek-serving-bench.py` on `local.sh.bak-20261125-serving` (baseline), the
   live config and `local.sh.cand-all` (+ `KV_SHARD=1`, pool 1,052,672 at about the same memory); keep
