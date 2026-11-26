@@ -373,7 +373,7 @@ def test_committed_board_numbers():
         "Q38U-L0": (15413787, 3452557, 0), "Q38U-T2": (57838480, 4697822, 0), "GLM-UP": (17278440, 2144728, 0),
         "INK-T2": (70883493, 5367401, 0), "INK-T2-S1": (64747685, 4959068, 0),
         "INK-T2-STOCK": (64862866, 4900235, 0), "INK-UP8K": (73541527, 5300048, 0),
-            "INK-T3": (203079166, 8478549, 0), "OPUS-REF": (0, 0, 71)}
+            "INK-T3": (203079166, 8478549, 0), "INK-T2-SC117": (62001879, 4367930, 0), "OPUS-REF": (0, 0, 71)}
     assert runs["DS-T2"]["tokens"]["per_pass"] == 473490 and runs["DS-T2"]["tokens"]["total"] == 30776845
     assert runs["HY4-T2"]["tokens"]["per_pass"] == 825452 and runs["HY4-T2"]["tokens"]["total"] == 49527117
     assert runs["HY4-C"]["tokens"]["per_pass"] == 674753 and runs["HY4-C"]["tokens"]["total"] == 37111438
