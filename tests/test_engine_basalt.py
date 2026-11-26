@@ -210,14 +210,14 @@ def test_launch_runs_the_probe_then_a_hardened_server(rig):
     for v in vols:
         src = v.split(":")[0]
         assert src != home and not (home + "/").startswith(src.rstrip("/") + "/"), v
-    assert any(v.endswith(f":/models/{PACK}:ro") for v in vols)
+    assert any(v.endswith(f":/models/{SC117_PACK}:ro") for v in vols)    # the default profile's pack
     assert f"{rig['build'].resolve()}:/opt/basalt:ro" in vols         # the resolved build, not the link
     # The image is the build's recorded env image, by id.
     assert IMAGE in srv and IMAGE in probe
     # The serve line is the measured one.
     tail = srv[srv.index(IMAGE) + 1:]
     assert tail[:2] == ["/opt/basalt/bin/basalt", "serve"]
-    for flag, value in (("--model", f"/models/{PACK}"), ("--alias", "inkling-2-mini"), ("--parallel", "1"),
+    for flag, value in (("--model", f"/models/{SC117_PACK}"), ("--alias", "inkling-2-mini"), ("--parallel", "1"),
                         ("--max-context", "262144"), ("--kv", "fp8"), ("--answer-room", "auto"),
                         ("--api-key-file", "/run/basalt.key")):
         assert _opt(tail, flag) == [value], flag
@@ -290,9 +290,15 @@ def test_limits_cannot_be_switched_off(rig, key, value):
 
 
 def test_a_wrong_size_pack_or_gpu_refuses(rig):
-    with open(rig["weights"] / PACK, "wb") as f:
-        f.truncate(PACK_BYTES - 1)
+    with open(rig["weights"] / SC117_PACK, "wb") as f:          # the default profile's pack
+        f.truncate(SC117_BYTES - 1)
     r = _sh(rig, "ob_engine_call basalt launch")
+    assert r.returncode != 0 and "pinned size" in r.stderr
+    with open(rig["weights"] / SC117_PACK, "wb") as f:
+        f.truncate(SC117_BYTES)
+    with open(rig["weights"] / PACK, "wb") as f:                # the stock profile checks its own pack
+        f.truncate(PACK_BYTES - 1)
+    r = _sh(rig, "ob_engine_call basalt launch", OPENBEAST_ENGINE_PROFILE="inkling2-mini-stock")
     assert r.returncode != 0 and "pinned size" in r.stderr
     with open(rig["weights"] / PACK, "wb") as f:
         f.truncate(PACK_BYTES)
@@ -666,6 +672,9 @@ def test_an_unpatched_build_is_refused_under_the_patched_profile(rig):
 
 def test_the_banner_says_the_build_is_patched(rig):
     r = _sh(rig, "ob_engine_call basalt launch")
+    assert r.returncode == 0, r.stderr
+    assert f"row INK-T2-SC117's serve; build + {SHIPPED_PATCH.name}" in r.stdout
+    r = _sh(rig, "ob_engine_call basalt launch", OPENBEAST_ENGINE_PROFILE="inkling2-mini-stock")
     assert r.returncode == 0, r.stderr
     assert f"row INK-T2-STOCK's serve; build + {SHIPPED_PATCH.name}" in r.stdout
 
