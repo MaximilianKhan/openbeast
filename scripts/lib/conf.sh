@@ -476,8 +476,11 @@ fi
 #         2026-11-23 to 2026-11-24 (docs/MODELS.md; report
 #         docs/reports/V5_QWEN38_RTX5090-2026-11-22.md §6). The fallback
 #         and rollback path since 2026-11-24.
-#       inkling-best  = T2 on Inkling 2 Mini (stock, Basalt NVFP4-MX8), the
-#         RTX 5090 default since 2026-11-24 (Max; DECISIONS-2026-11-24 §10),
+#       inkling-best  = T2 on Inkling 2 Mini (Basalt NVFP4-MX8), the RTX 5090
+#         default's setup: since 2026-11-25 on SC117's abliterated pack
+#         (profile inkling2-mini-sc117, row INK-T2-SC117, 51/71; Max,
+#         DECISIONS-2026-11-25 §7), before it on the stock pack (2026-11-24,
+#         DECISIONS-2026-11-24 §10),
 #         one stream (campaign arm I_T2_stock): 53/71 scored, SCORE 78.2,
 #         board row INK-T2-STOCK, 2026-11-24, single seed; level with
 #         qwen38-best's Q38U-T2 on the 65 units both measured cleanly (−2,

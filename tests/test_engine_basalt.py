@@ -41,6 +41,11 @@ BOARD = ROOT / "evals" / "boards" / "v5" / "board.json"
 BASH = "/bin/bash" if os.path.exists("/bin/bash") else shutil.which("bash")
 COMMIT = "400b411c58031d064812ea21a259b2381acdaa3e"
 PACK = "Inkling-2-Mini-NVFP4-MX8.basalt"
+# The RTX 5090 default since 2026-11-25 (DECISIONS-2026-11-25 §7): SC117's abliterated pack; the stock profile above
+# stays (the rollback) and most launch tests below pin it with OPENBEAST_ENGINE_PROFILE or use it by name.
+SC117_PROFILE = ROOT / "scripts" / "engines" / "basalt" / "profiles" / "inkling2-mini-sc117.env"
+SC117_PACK = "Inkling-2-Mini-SC117-abliterated-NVFP4-MX8.basalt"
+SC117_BYTES = 19606374187
 PACK_BYTES = 19606374189
 IMAGE = "sha256:" + "ab" * 32
 KEY = "s3cret-key-value"
@@ -81,6 +86,8 @@ def rig(tmp_path):
     w.mkdir()
     with open(w / PACK, "wb") as f:
         f.truncate(PACK_BYTES)            # sparse: the size check, not the bytes
+    with open(w / SC117_PACK, "wb") as f:
+        f.truncate(SC117_BYTES)
     b = tmp_path / "bin"
     b.mkdir()
     (b / "nvidia-smi").write_text("#!/bin/sh\necho 12.0\n")
@@ -490,7 +497,43 @@ def test_profile_rejects_unknown_keys_and_unpinned_packs(rig, tmp_path):
 
 def test_the_default_profile_is_the_shipped_one(rig):
     r = _sh(rig, "ob_engine_call basalt default_profile")
-    assert r.stdout.strip() == PROFILE.stem
+    assert r.stdout.strip() == SC117_PROFILE.stem == "inkling2-mini-sc117"
+
+
+def _pf_sc117():
+    return dict(line.split("=", 1) for line in SC117_PROFILE.read_text().splitlines()
+                if line and not line.startswith("#"))
+
+
+def test_sc117_profile_is_the_stock_serve_on_the_sc117_pack():
+    """The default profile: the stock profile's serve args, setup and build decision, only the pack and row differ."""
+    a, b = _pf(), _pf_sc117()
+    assert {k: v for k, v in a.items() if k not in ("PACK", "MEASURED_ROW")} == \
+        {k: v for k, v in b.items() if k not in ("PACK", "MEASURED_ROW")}
+    assert b["PACK"] == SC117_PACK and b["MEASURED_ROW"] == "INK-T2-SC117" and b["PATCHES"] == SHIPPED_PATCH.name
+    w = json.load(open(WEIGHTS))["weights"]["inkling2-mini-sc117-abliterated-basalt-nvfp4-mx8"]
+    assert w["file"] == SC117_PACK and w["file_bytes"] == SC117_BYTES
+    run = next(r for r in json.load(open(BOARD))["runs"] if r["id"] == "INK-T2-SC117")
+    assert run["weights_id"] == "inkling2-mini-sc117-abliterated-basalt-nvfp4-mx8"
+    text = SC117_PROFILE.read_text()
+    assert "NOT exactly that row" in text and "inkling-sc117-pack.sh" in text
+
+
+def test_the_sc117_pack_is_registry_pinned_as_derived():
+    w = json.load(open(WEIGHTS))["weights"]["inkling2-mini-sc117-abliterated-basalt-nvfp4-mx8"]
+    rows = [line.split("\t") for line in REGISTRY.read_text().splitlines()
+            if line and not line.startswith("#") and line.split("\t")[2:3] == [SC117_PACK]]
+    assert len(rows) == 1
+    sha, size, _name, repo, remote = rows[0]
+    assert sha == w["file_sha256"] and int(size) == SC117_BYTES
+    assert repo == "derived" and remote == "scripts/engines/inkling-sc117-pack.sh"
+
+
+def test_sc117_profile_loads_and_locates(rig):
+    r = _sh(rig, 'ob_engine_load basalt; eng_basalt_profile_locate inkling2-mini-sc117; '
+                 'echo "rc=$SP_LOCATE_RC sha=$PF_PACK_SHA256 bytes=$PF_PACK_BYTES row=$PF_MEASURED_ROW"')
+    assert "rc=0" in r.stdout and f"bytes={SC117_BYTES}" in r.stdout and "row=INK-T2-SC117" in r.stdout
+    assert "sha=6eaa50d3620a8f39" in r.stdout
 
 
 # --- the default rule -------------------------------------------------------------------
@@ -506,9 +549,10 @@ def test_the_rig_default_engine_follows_the_gpu(rig, gpu, want):
 
 def test_board_default_names_this_profile_and_preset():
     d = {x["platform"]: x for x in json.load(open(BOARD))["defaults"]}
-    assert d["rtx5090"]["run"] == _pf()["MEASURED_ROW"]
-    assert d["rtx5090"]["agent_profile"] == _pf()["AGENT_PROFILE"]
-    assert [p["run"] for p in d["rtx5090"]["previous"]] == ["Q38U-T2"]
+    assert d["rtx5090"]["run"] == _pf_sc117()["MEASURED_ROW"] == "INK-T2-SC117"
+    assert d["rtx5090"]["agent_profile"] == _pf_sc117()["AGENT_PROFILE"]
+    # the stock pack, the default 2026-11-24 to 2026-11-25, is the rollback; Qwen3.8 the fallback before it
+    assert [p["run"] for p in d["rtx5090"]["previous"]] == [_pf()["MEASURED_ROW"], "Q38U-T2"]
 
 
 def test_shellcheck_clean():
@@ -526,13 +570,33 @@ def test_use_default_on_a_5090_is_the_switch(rig):
                        capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL, timeout=60)
     assert r.returncode == 0, r.stderr
     for kv in ("INFERENCE_BACKEND=basalt", "INFERENCE_URL=http://127.0.0.1:8080", "INFERENCE_MANAGED=true",
-               "ENGINE_PROFILE=inkling2-mini-stock", 'INFERENCE_MODEL="inkling-2-mini"', "INFERENCE_SLOTS=1"):
+               "ENGINE_PROFILE=inkling2-mini-sc117", 'INFERENCE_MODEL="inkling-2-mini"', "INFERENCE_SLOTS=1"):
         assert f"set   {kv}" in r.stdout, kv
     assert "dry run" in r.stdout
     env["OB_ENGINE_GPU_NAME"] = "NVIDIA GeForce RTX 4090"
     r = subprocess.run([BASH, str(ROOT / "scripts" / "engine.sh"), "use", "default", "--dry-run"],
                        capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL, timeout=60)
     assert "engine.sh use llama" in r.stdout
+
+
+def test_use_default_moves_an_older_conf_to_the_shipped_profile(rig, tmp_path):
+    """A conf from before 2026-11-25 names the stock profile: `use default` means what this tree ships (SC117);
+    `use basalt` keeps the conf's profile; --profile wins over both (the rollback)."""
+    env = dict(rig["env"], OB_ENGINE_GPU_NAME="NVIDIA GeForce RTX 5090")
+    conf = tmp_path / "openbeast.conf"
+    conf.write_text('INFERENCE_BACKEND=basalt\nINFERENCE_URL=http://127.0.0.1:8080\nINFERENCE_MANAGED=true\n'
+                    'ENGINE_PROFILE=inkling2-mini-stock\nINFERENCE_MODEL="inkling-2-mini"\nINFERENCE_SLOTS=1\n')
+    env["OB_ENGINE_CONF"] = str(conf)
+
+    def dry(*args):
+        r = subprocess.run([BASH, str(ROOT / "scripts" / "engine.sh"), "use", *args, "--dry-run"],
+                           capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL, timeout=60)
+        assert r.returncode == 0, r.stderr
+        return r.stdout
+    assert "set   ENGINE_PROFILE=inkling2-mini-sc117" in dry("default")
+    out = dry("basalt")
+    assert "ENGINE_PROFILE=inkling2-mini-sc117" not in out and "inkling2-mini-stock" in out
+    assert "set   ENGINE_PROFILE=inkling2-mini-stock" in dry("default", "--profile", "inkling2-mini-stock")
 
 
 # --- the sandbox probe: raw DNS and the gateway (review finding security-02) -------------

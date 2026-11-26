@@ -345,12 +345,20 @@
     {
       "platform": "rtx5090",
       "label": "1× RTX 5090",
-      "run": "INK-T2-STOCK",
+      "run": "INK-T2-SC117",
       "agent_profile": "inkling-best",
-      "since": "2026-11-24",
-      "decision": "docs/reports/DECISIONS-2026-11-24.md#10-stock-inkling-2-mini-on-basalt-is-the-rtx-5090-default",
-      "note": "Max, 2026-11-24: the stock Inkling 2 Mini (Basalt NVFP4-MX8 pack) on Basalt v0.5.7, scripts/engines/basalt.sh, profile inkling2-mini-stock; the default of what main ships from this date; the reference rig switches when its GPU frees up (docs/TODO.md)",
+      "since": "2026-11-25",
+      "decision": "docs/reports/DECISIONS-2026-11-25.md#7-sc117s-abliterated-inkling-2-mini-is-the-rtx-5090-default",
+      "note": "Max, 2026-11-25: SC117's abliterated Inkling 2 Mini (Basalt NVFP4-MX8 pack built from the release + SC117's 20 edited attention-output matrices, scripts/engines/inkling-sc117-pack.sh) on Basalt v0.5.7 + #632, scripts/engines/basalt.sh, profile inkling2-mini-sc117; the uncensored-preferred policy: 51/71 against the stock pack's 53/71, within noise (1 gained, 3 lost, p 0.63); the default of what main ships from this date",
       "previous": [
+        {
+          "run": "INK-T2-STOCK",
+          "agent_profile": "inkling-best",
+          "from": "2026-11-24",
+          "until": "2026-11-25",
+          "role": "rollback",
+          "note": "Inkling 2 Mini (stock, Basalt NVFP4-MX8 pack) on Basalt v0.5.7 + #632, profile inkling2-mini-stock, the RTX 5090 default 2026-11-24 to 2026-11-25 (Max, DECISIONS-2026-11-24 §10); the rollback: scripts/engine.sh use basalt --profile inkling2-mini-stock"
+        },
         {
           "run": "Q38U-T2",
           "agent_profile": "qwen38-best",

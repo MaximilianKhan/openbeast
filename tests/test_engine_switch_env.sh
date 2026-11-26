@@ -125,7 +125,7 @@ llama_conf; rm -f "$T/probe.log"
 _o="$(env -i "${BASE_ENV[@]}" "${STUBS[@]}" OB_TEST_CALLER_MARK=session bash "$SB/scripts/engine.sh" use default --force 2>&1 || true)"
 _p="$(cat "$T/probe.log" 2>/dev/null || true)"
 check "use default (basalt on the rig) wrote the basalt conf" \
-  'grep -q "^INFERENCE_BACKEND=basalt" "$SB/openbeast.conf" && grep -q "^ENGINE_PROFILE=inkling2-mini-stock" "$SB/openbeast.conf"' "$_o"
+  'grep -q "^INFERENCE_BACKEND=basalt" "$SB/openbeast.conf" && grep -q "^ENGINE_PROFILE=inkling2-mini-sc117" "$SB/openbeast.conf"' "$_o"
 check "…and restarted start.sh -d" '[[ "$_p" == *"argv=-d"* ]]' "$_o"
 check "…which inherits no OPENBEAST_INFERENCE_BACKEND from the old conf" \
   '[[ "$_p" == *$'"'"'\nenv_backend=\n'"'"'* ]]' "$_p"

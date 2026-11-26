@@ -23,7 +23,7 @@
 # measured 1.5x over llama.cpp: scripts/engine-gate.sh), basalt (Inkling 2
 # Mini on an RTX 5090) — one adapter each in scripts/engines/; a new adapter
 # file is a new engine. Defaults per host class: rig → basalt on an RTX 5090
-# (profile inkling2-mini-stock), llama on any other rig GPU (llama is the
+# (profile inkling2-mini-sc117 since 2026-11-25; inkling2-mini-stock the rollback), llama on any other rig GPU (llama is the
 # 5090's fallback); spark (GB10) → tensorfold; ENGINE_DEFAULT overrides.
 # Every install has an offline path (stage on a connected box, --from DIR on
 # the closed one). Nothing here touches a server this stack does not manage.
@@ -40,7 +40,7 @@ case "$CMD" in
   *) echo "Unknown command '$CMD' (see --help)" >&2; exit 2 ;;
 esac
 
-ENGINE="" VERSION="" DIGEST="" FROM="" PROFILE="" SERVE="" URL="" PORT="" PLATFORM=""
+USE_DEFAULT=0 ENGINE="" VERSION="" DIGEST="" FROM="" PROFILE="" SERVE="" URL="" PORT="" PLATFORM=""
 DRY=0 NORESTART=0 FORCE=0 UNMANAGED=0 DIR="" SPARK_ENV=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -89,7 +89,7 @@ source "$SCRIPT_DIR/lib/proc.sh"
 die() { echo "Error: $*" >&2; exit 1; }
 need_engine() {
   [[ -n "$ENGINE" ]] || die "which engine? one of: $(ob_engines)"
-  [[ "$ENGINE" == default ]] && ENGINE="$(ob_engine_default)"
+  [[ "$ENGINE" == default ]] && { USE_DEFAULT=1; ENGINE="$(ob_engine_default)"; }
   [[ "$ENGINE" == llama.cpp || "$ENGINE" == llamacpp ]] && ENGINE=llama
   ob_engine_valid "$ENGINE" || die "no engine '$ENGINE' (have: $(ob_engines); adapters live in scripts/engines/)"
   ob_engine_load "$ENGINE"
@@ -242,9 +242,16 @@ cmd_use() {
     fi
   else
     [[ -z "$SERVE" ]] || die "--serve-script is a llama.cpp launcher; $ENGINE takes --profile NAME"
+    # `use default` means what this tree ships: the adapter's default profile,
+    # not a profile an older conf names (the 2026-11-25 switch of the 5090
+    # default from inkling2-mini-stock to inkling2-mini-sc117). `use basalt`
+    # keeps the conf's ENGINE_PROFILE; --profile always wins.
+    if [[ $USE_DEFAULT -eq 1 && -z "$PROFILE" ]] && ob_engine_has "$ENGINE" default_profile; then
+      PROFILE="$(ob_engine_call "$ENGINE" default_profile)"
+    fi
     PROFILE="${PROFILE:-$(ob_engine_conf_get ENGINE_PROFILE)}"
     # An adapter may name the profile it ships by default (basalt: the RTX
-    # 5090's inkling2-mini-stock), so `use default` is one command.
+    # 5090's inkling2-mini-sc117), so `use default` is one command.
     if [[ -z "$PROFILE" ]] && ob_engine_has "$ENGINE" default_profile; then
       PROFILE="$(ob_engine_call "$ENGINE" default_profile)"
     fi

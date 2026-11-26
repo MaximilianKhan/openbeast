@@ -1454,7 +1454,7 @@ for _doc in README.md docs/MODELS.md docs/FEATURES.md; do
     || DOC_BAD="$DOC_BAD $_doc(5090-default)"
 done
 _board_5090="$(python3 -c 'import json,sys; print(next(d["run"] for d in json.load(open(sys.argv[1]))["defaults"] if d["platform"] == "rtx5090"))' "$REPO_DIR/evals/boards/v5/board.json" 2>/dev/null)"
-_prof_row="$(sed -n 's/^MEASURED_ROW=//p' "$REPO_DIR/scripts/engines/basalt/profiles/inkling2-mini-stock.env")"
+_prof_row="$(sed -n 's/^MEASURED_ROW=//p' "$REPO_DIR/scripts/engines/basalt/profiles/inkling2-mini-sc117.env")"
 [[ -n "$_board_5090" && "$_board_5090" == "$_prof_row" ]] || DOC_BAD="$DOC_BAD board-default($_board_5090)!=profile($_prof_row)"
 if [[ -z "$DOC_BAD" ]]; then
   pass "README/MODELS/FEATURES name the llama.cpp default and the RTX 5090 default; board and profile agree"

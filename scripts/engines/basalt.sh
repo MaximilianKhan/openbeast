@@ -6,11 +6,14 @@
 # and what was reviewed: docs/reports/STRATA_INKLING_5090-2026-11-23.md §11
 # and §15. Sourced by lib/engine.sh; functions only.
 #
-# THE RTX 5090 DEFAULT since 2026-11-24 (Max; DECISIONS-2026-11-24 §10): the
-# stock Inkling 2 Mini pack, profile inkling2-mini-stock. Its serve args and
-# agent setup are board row INK-T2-STOCK's; its build is the pin PLUS the
-# PR #632 patch (DECISIONS §11), which INK-T2-STOCK ran without: no board row
-# has measured that exact combination yet (the profile's PATCHES key says
+# THE RTX 5090 DEFAULT since 2026-11-25 (Max; DECISIONS-2026-11-25 §7): SC117's
+# abliterated Inkling 2 Mini pack (built offline by
+# scripts/engines/inkling-sc117-pack.sh), profile inkling2-mini-sc117; before
+# that (2026-11-24, DECISIONS-2026-11-24 §10) the stock pack, profile
+# inkling2-mini-stock, now the rollback. Their serve args and agent setup are
+# board rows INK-T2-SC117's and INK-T2-STOCK's; the build is the pin PLUS the
+# PR #632 patch (DECISIONS-2026-11-24 §11), which both rows ran without: no
+# board row has measured that exact combination yet (the profile's PATCHES key says
 # which build it serves, and the launch refuses any other). The runtime
 # fallback of an unset conf stays llama.cpp (conf.sh); `engine.sh use
 # default` on an RTX 5090 picks this engine (lib/engine.sh
@@ -477,13 +480,15 @@ eng_basalt_stage() {
     "$_BV" "$_BC" "$t" "$(ob_engine_sha256 "$dir/$t")" "$_BI" "$(ob_engine_sha256 "$(_eng_basalt_dockerfile)")" "$(ob_engine_arch)" \
     > "$dir/MANIFEST"
   echo "staged Basalt $_BV (${_BC:0:12}) and its env image in $dir — on the closed box: scripts/engine.sh install basalt --from $dir"
-  echo "  the weights travel separately: scripts/fetch-weight.sh Inkling-2-Mini-NVFP4-MX8.basalt (or copy it, then verify-weights.sh --file … --deep)"
+  echo "  the weights travel separately: the default pack is built, not fetched (scripts/engines/inkling-sc117-pack.sh, docs/INSTALL.md); the stock pack: scripts/fetch-weight.sh Inkling-2-Mini-NVFP4-MX8.basalt (or copy either, then verify-weights.sh --file … --deep)"
 }
 
 # ── profiles: scripts/engines/basalt/profiles/<name>.env (KEY=VALUE, parsed,
 # never sourced). PACK names a file in WEIGHTS_DIR pinned in
 # scripts/weights.registry (scripts/verify-weights.sh checks it). ─────────────
-_ENG_BASALT_PROFILE_DEFAULT=inkling2-mini-stock
+# The RTX 5090 default since 2026-11-25 (Max, DECISIONS-2026-11-25 §7): SC117's abliterated pack. The stock
+# pack stays a profile (inkling2-mini-stock): the rollback.
+_ENG_BASALT_PROFILE_DEFAULT=inkling2-mini-sc117
 eng_basalt_default_profile() { printf '%s\n' "$_ENG_BASALT_PROFILE_DEFAULT"; }
 
 _eng_basalt_profile_path() {
