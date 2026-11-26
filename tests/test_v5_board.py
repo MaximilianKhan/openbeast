@@ -249,7 +249,7 @@ def test_committed_board_numbers():
     assert {k: runs[k]["passed"] for k in runs} == {
         "GLM-L0": 26, "GLM-A": 31, "GLM-B": 36, "GLM-C": 51, "GLM-E": 50, "DS-T": 61, "DS-T2": 65, "DS-Ts1": 61, "DS-T3": 65,
         "DS-U": 59, "DS-UP": 62, "DS-UPA": 59, "DS-U8k": 63, "DS-UP8k": 65, "DS-UPA8k": 62, "HY4-T2": 60, "HY4-C": 55, "Q38U-L0": 39, "Q38U-T2": 51,
-        "GLM-UP": 56, "INK-T2": 49, "INK-T2-S1": 51, "INK-T2-STOCK": 53, "INK-UP8K": 49, "INK-T3": 52, "OPUS-REF": 71}
+        "GLM-UP": 56, "INK-T2": 49, "INK-T2-S1": 51, "INK-T2-STOCK": 53, "INK-UP8K": 49, "INK-T3": 52, "INK-T2-SC117": 51, "OPUS-REF": 71}
     assert runs["GLM-C"]["passed_raw"] == 54  # 122 b/d/e excluded: contaminated (G25 scan)
     assert runs["GLM-E"]["passed_raw"] == 50  # scan clean; 122_c is a noted validator false FAIL
     assert runs["DS-T"]["passed_raw"] == 61  # scan clean (2026-11-18); first run under review 1118
@@ -260,6 +260,9 @@ def test_committed_board_numbers():
     assert runs["Q38U-L0"]["passed_raw"] == 40  # 126 (a pass), 163_e, 192 excluded: the shell reached the network
     assert sorted(runs["Q38U-L0"]["excluded"]) == ["126_hmac_scratch", "163_bigint_divmod_e", "192_pike_regex"]
     assert runs["Q38U-T2"]["passed_raw"] == 54  # main file (71) + the r1 rerun of 7 lost units, harness9
+    sc = runs["INK-T2-SC117"]  # SC117's abliterated pack, INK-T2-STOCK's arm exactly (2026-11-25)
+    assert (sc["passed_raw"], round(sc["score"], 1), sc["lost"], sc["excluded"]) == (51, 75.3, {}, {})
+    assert sc["weights_id"] == "inkling2-mini-sc117-abliterated-basalt-nvfp4-mx8"
     # 124 and 126 (passes) and 122_d (r1) excluded: the shell reached the network (scan 2026-11-23);
     # 123_nbody_b (a pass) and 168_c: package installs, found by the review-1124 rescan (2026-11-25)
     assert sorted(runs["Q38U-T2"]["excluded"]) == ["122_gemm_blocked_d", "123_nbody_b", "124_rkf45",
@@ -308,11 +311,12 @@ def test_committed_board_numbers():
     assert best == {"GLM-5.3-Flash": "GLM-UP", "DeepSeek-V4.1-Flash (Mia EXL3)": "DS-T2", "Claude Opus 5.5": "OPUS-REF",
                     "Hy4-flash (NVFP4)": "HY4-T2", "Qwen3.8 27B Uncensored MTP": "Q38U-T2",
                     "Inkling 2 Mini Derisked (Basalt NVFP4-MX8)": "INK-T2",
-                    "Inkling 2 Mini (Basalt NVFP4-MX8)": "INK-T2-STOCK"}
+                    "Inkling 2 Mini (Basalt NVFP4-MX8)": "INK-T2-STOCK",
+                    "Inkling 2 Mini SC117 abliterated (Basalt NVFP4-MX8)": "INK-T2-SC117"}
     # the ranking, by SCORE; the reference last and unranked
     assert [(r["id"], round(r["score"], 1)) for r in b["best"]] == [
-        ("DS-T2", 94.9), ("HY4-T2", 83.4), ("GLM-UP", 81.9), ("INK-T2-STOCK", 78.2), ("INK-T2", 76.5), ("Q38U-T2", 75.0),
-        ("OPUS-REF", 100.0)]
+        ("DS-T2", 94.9), ("HY4-T2", 83.4), ("GLM-UP", 81.9), ("INK-T2-STOCK", 78.2), ("INK-T2", 76.5),
+        ("INK-T2-SC117", 75.3), ("Q38U-T2", 75.0), ("OPUS-REF", 100.0)]
     # INK-T2-S1 scores above INK-T2 (78.3) and still is not the Derisked row: a replicate never ranks
     assert "INK-T2-S1" not in [r["id"] for r in b["best"]]
     assert b["not_yet_run"] == ["Qwen3.6 27B (v4 #1)"]
@@ -320,12 +324,17 @@ def test_committed_board_numbers():
     ds, glm = "dsv41f-mia-exl3-2.9bpw-eaq1.1-v2", "glm53f-mia-exl3-4bpw-tf-ablit"
     hy4, q38 = "hy4-flash-nvfp4-atakans", "qwen38-27b-uncensored-mtp-q5km"
     ink, inks = "inkling2-mini-blackfrost-derisked-basalt-nvfp4-mx8", "inkling2-mini-basalt-nvfp4-mx8-stock"
+    insc = "inkling2-mini-sc117-abliterated-basalt-nvfp4-mx8"
     assert {k: runs[k]["weights_id"] for k in runs} == {
         **{k: ds for k in runs if k.startswith("DS-")}, **{k: glm for k in runs if k.startswith("GLM-")},
         "HY4-T2": hy4, "HY4-C": hy4, "Q38U-L0": q38, "Q38U-T2": q38, "INK-T2": ink, "INK-T2-S1": ink,
-        "INK-T2-STOCK": inks, "INK-UP8K": ink, "INK-T3": inks,
+        "INK-T2-STOCK": inks, "INK-UP8K": ink, "INK-T3": inks, "INK-T2-SC117": insc,
         "OPUS-REF": "anthropic-api-claude-opus-5-5"}
-    assert [r["weights_id"] for r in b["best"]] == [ds, hy4, glm, inks, ink, q38, "anthropic-api-claude-opus-5-5"]
+    assert [r["weights_id"] for r in b["best"]] == [ds, hy4, glm, inks, ink, insc, q38, "anthropic-api-claude-opus-5-5"]
+    sc = b["weights"][insc]   # built here: no Hub repo, pinned by file sha256, derived from SC117's pack + the release
+    assert (sc["repo"], sc["revision_kind"], sc["abliterated"], sc["file_sha256"][:8], sc["derived_from"]["repo"]) == (
+        None, "file-sha256", True, "6eaa50d3", "SC117/Inkling-2-Mini-abliterated-Strata")
+    assert sc["base_model"]["revision"] == b["weights"][inks]["derived_from"]["revision"] == "b85c3cfa615fc413cc9af3379f491b963f3b586a"
     w = b["weights"][ds]
     assert (w["format"], w["bpw"], w["abliterated"], w["revision_kind"]) == ("EXL3", 2.9, False, "local")
     assert w["revision"] == "04c13f12b83d57487912d87d0f1677b076810954" and w["repo"] is None
@@ -347,7 +356,9 @@ def test_committed_board_numbers():
     assert (st["revision_kind"], st["repo"], st["revision"], st["file_sha256"], st["abliterated"]) == (
         "file-sha256", "jesdga/Inkling-2-Mini-Basalt", "c2afac3adb772e14d77b2ea2ac7068ad4460e932",
         "28ec70723feaa037942a02f55b9d5e898276f3e62a3b1fa083745f932a041b99", False)
-    assert st["base_model"]["revision"] == "unverified" and "400b411c58031d064812ea21a259b2381acdaa3e" in st["engine_version"]
+    # the release revision, verified 2026-11-25: named in the pack's meta and rebuilt byte for byte from it
+    assert st["base_model"]["revision"] == "b85c3cfa615fc413cc9af3379f491b963f3b586a" \
+        and "400b411c58031d064812ea21a259b2381acdaa3e" in st["engine_version"]
     assert st["hub_url"] == ("https://huggingface.co/jesdga/Inkling-2-Mini-Basalt/blob/"
                              "c2afac3adb772e14d77b2ea2ac7068ad4460e932/Inkling-2-Mini-NVFP4-MX8.basalt")
     # token usage (prompt, completion, units without usage), exact
@@ -362,7 +373,7 @@ def test_committed_board_numbers():
         "Q38U-L0": (15413787, 3452557, 0), "Q38U-T2": (57838480, 4697822, 0), "GLM-UP": (17278440, 2144728, 0),
         "INK-T2": (70883493, 5367401, 0), "INK-T2-S1": (64747685, 4959068, 0),
         "INK-T2-STOCK": (64862866, 4900235, 0), "INK-UP8K": (73541527, 5300048, 0),
-            "INK-T3": (203079166, 8478549, 0), "OPUS-REF": (0, 0, 71)}
+            "INK-T3": (203079166, 8478549, 0), "INK-T2-SC117": (62001879, 4367930, 0), "OPUS-REF": (0, 0, 71)}
     assert runs["DS-T2"]["tokens"]["per_pass"] == 473490 and runs["DS-T2"]["tokens"]["total"] == 30776845
     assert runs["HY4-T2"]["tokens"]["per_pass"] == 825452 and runs["HY4-T2"]["tokens"]["total"] == 49527117
     assert runs["HY4-C"]["tokens"]["per_pass"] == 674753 and runs["HY4-C"]["tokens"]["total"] == 37111438

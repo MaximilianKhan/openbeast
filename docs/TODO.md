@@ -841,11 +841,26 @@ DeepSeek's UP on the same harness
   `reasoning_content` is returned (serve default `low`; `HAS_THINKING` is
   stale launcher metadata). Unmeasured by us; #7084 (uncapped second thinking
   block) open ([SC117 report §1](reports/SC117_INKLING_STRATA-2026-11-25.md#1-thinking-on-strata-maxs-gate)).
-- [ ] **SC117 abliterated Inkling, Phase 2** (needs Max's go, GPU after the
-  Basalt switch): path B, the SC117 edit transplanted into a Basalt pack, then
-  arm `I_T2_sc117` (INK-T2-STOCK with only the weights changed); path A,
-  optional, a bounded Strata v0.2.21 speed and thinking check after a delta
-  review ([SC117 report §5](reports/SC117_INKLING_STRATA-2026-11-25.md#5-phase-2-plan-after-maxs-basalt-switch-needs-maxs-go-for-gpu-time)).
+- [x] **DONE 2026-11-25: SC117 abliterated Inkling, Phase 2, path B** (Max's
+  go 2026-11-25). The SC117 edit transplanted into the release and converted
+  by Basalt (`Inkling-2-Mini-SC117-abliterated-NVFP4-MX8.basalt`, `6eaa50d3…`;
+  the converter rebuilds the stock pack `28ec7072…` byte for byte from
+  `thinkingmachines/Inkling-2-Mini @ b85c3cfa`; offline recipe
+  `scripts/engines/inkling-sc117-pack.sh`, registry row `derived`), then arm
+  `I_T2_sc117` (INK-T2-STOCK with only the weights changed): **51/71, SCORE
+  75.3, row INK-T2-SC117**; level with stock (1 in, 3 out, p 0.63) and with
+  Derisked (3 in, 1 out, p 0.63); same speed; KLD 0.0354 (stock 0.0128). The
+  default stays stock ([report](reports/V5_INKLING2_MINI_SC117-2026-11-25.md),
+  [DECISIONS-2026-11-25 §6](reports/DECISIONS-2026-11-25.md#6-sc117s-abliterated-inkling-on-basalt-level-with-stock-the-default-stays-stock)).
+- [ ] **For Max: an abliterated Inkling on the 5090?** If wanted (the
+  uncensored-preferred policy), the recommendation is SC117's pack over
+  Derisked, served as the default is (Basalt + #632, `inkling-best`): it
+  needs a `scripts/engines/basalt` profile for the derived pack (the pack is
+  built locally, not fetched). Not started without Max's word.
+- [ ] **SC117 path A (optional, not planned):** a bounded Strata v0.2.21 speed
+  and thinking check after a delta review
+  ([SC117 report §5.1](reports/SC117_INKLING_STRATA-2026-11-25.md#51-path-a-strata-v0221-bounded-speed-and-thinking-check-no-v5-arm)).
+  Low value now: path B answered the weights question on the faster engine.
 - [x] **Project Maya for Inkling 2 Mini** evaluated 2026-11-24 01:38-01:56
   (v1.1.76 `8c618a59`, built offline, the stock unsloth Old_Support
   UD-Q4_K_XL): **not adopted**. Single stream 329 / 204 tok/s code / prose
