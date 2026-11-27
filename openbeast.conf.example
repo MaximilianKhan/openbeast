@@ -12,6 +12,12 @@
 # followed by a "# comment" (KEY="value"   # note); the quotes and the comment
 # are both dropped. Unquoted, most keys take the rest of the line as written
 # (the keys that do not are marked "No trailing comment" below).
+#
+# The one-word keys (BIND_HOST, SERVE_SCRIPT, REASONING, WEIGHT_ENFORCE,
+# FILES_SHARDING) are read by their first word, so a trailing comment does
+# not change the value, but conf.sh still warns about it: other readers of the
+# line (doctor rows, your own grep) see the whole thing. Put comments on
+# their own line.
 
 # Where your .gguf model weights live. Weights are large and are NOT stored in
 # the repo — put them wherever you have space (NVMe, USB, NAS mount, etc.) and
@@ -221,6 +227,12 @@
 # watchdog, stop.sh — launches, restarts or kills it.
 # Env: $OPENBEAST_INFERENCE_MANAGED.
 #INFERENCE_MANAGED=true
+
+# Seconds a model may take to load before start.sh and the watchdog give up
+# on it (a managed server is stopped and counts as failed; an unmanaged one
+# gets a warning). Raise it for a very large model on slow storage.
+# Env: $OPENBEAST_LLAMA_LOAD_GRACE (wins over this line).
+#LLAMA_LOAD_GRACE=900
 
 # Concurrency /api/slot advertises when the server does not report one:
 # vLLM's --max-num-seqs, TensorFold's --parallel. Env: $OPENBEAST_INFERENCE_SLOTS.
@@ -582,6 +594,10 @@
 # link matches the certificate), and uses http://localhost:<ARTIFACT_PORT>
 # when nothing is published. Set it only if you front the viewer yourself.
 #ARTIFACT_BASE_URL=https://artifacts.example.internal
+# The beast-chat console URL the viewer's "made by session …" link points to.
+# Unset: https://<name>:8445 when `tailscale serve` publishes :8445, else no
+# link. off/none disables the link. Env: $OPENBEAST_CHAT_BASE_URL.
+#CHAT_BASE_URL=
 
 # Tailnet logins allowed to READ the gallery and its pages, comma-separated
 # (the same values Tailscale shows as "Tailscale-User-Login", e.g. an email).
@@ -835,6 +851,10 @@
 #CHAT_NOTIFY_URL=http://127.0.0.1:3005/openbeast-<long-random-topic>
 #CHAT_NOTIFY_ON=failed,lost,done
 #CHAT_NOTIFY_TOKEN_FILE=~/.config/openbeast/ntfy.token
+# The console URL a notification's link opens. Unset: the name `tailscale
+# serve` publishes :8445 under, else http://localhost:<CHAT_PORT>.
+# Env: $OPENBEAST_CHAT_PUBLIC_URL.
+#CHAT_PUBLIC_URL=
 # The ntfy extension's own port (loopback; --publish-ntfy mounts it at :8447)
 # and, for iOS instant delivery only, its public base URL + upstream relay —
 # see the iOS caveat in extensions/ntfy/README.md before setting either.

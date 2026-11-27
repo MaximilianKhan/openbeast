@@ -905,7 +905,11 @@ as `--status`), `stop`, `restart` (`stop.sh`, then a `-d` start), `doctor`
 and `help`. Any other word that is not a serve script is refused with exit 2
 and the nearest command ("did you mean: ./start.sh status"). `./stop.sh
 --help` prints usage and touches nothing; an unknown option to it exits 2.
-Neither script runs as root.
+Arguments after `stop` or `doctor` are passed to that script
+(`./start.sh stop --help`). `stop.sh` waits up to `OPENBEAST_STOP_WAIT`
+seconds (default 30) for every llama-server it signalled to exit, then
+sends SIGKILL. None of `start.sh`, `stop.sh`, `scripts/update.sh` or
+`scripts/ext.sh` runs as root.
 
 Before launching anything `start.sh` checks that its ports are free (the
 model port, 3001, 3000, 8888, plus the router's and the gate's when they are

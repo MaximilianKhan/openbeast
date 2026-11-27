@@ -22,7 +22,7 @@ You write test cases (pressure scenarios with subagents), watch them fail (basel
 
 Four facts about this repo change how the advice below applies:
 
-- **The loader reads one line.** `description` must be a single `description: text` line; a multi-line YAML block is read as empty. `skill(name)` returns only the `SKILL.md` body, so a supporting file is reached with `read_file("skills/<name>/<file>")` and the body must say so.
+- **The loader reads one line.** `description` must be a single `description: text` line; a YAML block scalar (`description: >`) is read as the bare `>`, with the next line as a junk key, and `tests/test_scripts.sh` rejects it. `skill(name)` returns only the `SKILL.md` body, with a header naming the skill's directory, so a supporting file is reached with `read_file("<skill dir>/<file>")` and the body must say so. A relative `skills/...` path resolves against your working directory, so it works only when that is the OpenBeast checkout — not from Open WebUI, an OpenCode client in another project, or a sub-agent with its own workdir.
 - **Our frontmatter has more fields.** `allowed_tools`, `recommends_subagent` and `prompt_index` (see `skills/README.md`). `tests/test_scripts.sh` is the validator.
 - **The always-on menu is paid for on every local-model turn.** A skill is on it unless it sets `prompt_index: false`; adding one rewrites `system-prompt-tools.md` and rolls the eval era. That is the "loads into EVERY conversation" case in Token Efficiency below.
 - **Local models do not reach for skills unprompted** (0 of 197 task agents called one in our 2026-05 smoke test). A skill is used when `AGENTS.md`, the menu or the harness puts it in front of the model, so test discovery through those, not through description wording alone.

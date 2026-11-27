@@ -63,8 +63,10 @@ sudo usermod -aG docker "$USER" && newgrp docker
 # Clone the repo
 git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
 
-# Build llama.cpp with CUDA (set CMAKE_CUDA_ARCHITECTURES for your GPU)
+# Build llama.cpp with CUDA (set CMAKE_CUDA_ARCHITECTURES for your GPU),
+# at the commit pinned in scripts/llama.cpp.ref — not upstream HEAD
 git clone https://github.com/ggml-org/llama.cpp.git
+git -C llama.cpp checkout "$(sed -n 's/^LLAMA_CPP_REF=//p' scripts/llama.cpp.ref)"
 export PATH=/opt/cuda/bin:$PATH
 (cd llama.cpp && cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120 \
                  && cmake --build build --config Release -j$(nproc))
@@ -79,7 +81,8 @@ export PATH="$HOME/.local/bin:$PATH"   # add to your shell rc to persist
 hf download JonathanColetti/Qwen3.8-27B-Uncensored-GGUF \
    Qwen3.8-27B-Uncensored-Q5_K_M.gguf --local-dir weights/
 
-# Frontends
+# Frontends (Open WebUI and SearXNG need no pull: compose fetches the
+# digest-pinned images in docker-compose.yml when the stack first starts)
 curl -fsSL https://opencode.ai/install | bash
 # The exact digests docker-compose.yml pins (Open WebUI v0.13.3 today), not
 # whatever the moving :main / :latest tags point at this minute.
@@ -123,7 +126,7 @@ toolchains need to be available:
 | C (gcc) | variant `c` | (already required for llama.cpp) |
 | C++ (g++) | variant `d` | (already required for llama.cpp) |
 | Rust (rustc) | variant `e` | `sudo pacman -S rust` |
-| Zig | variant `f` | `mise use -g zig@latest` (no sudo needed) |
+| Zig | variant `f` | `mise use -g zig@0.16` (no sudo needed; pin it, see below) |
 
 If you skip a toolchain, the variant tasks for that language will fail at
 the build step — their pass/fail entries in the leaderboard will record
@@ -148,7 +151,7 @@ sudo pacman -S cuda cmake docker gcc
 
 # Toolchains (skip any you already have)
 sudo pacman -S go rust         # if installing system-wide
-mise install zig@latest && mise use -g zig@latest    # via mise (no sudo)
+mise install zig@0.16 && mise use -g zig@0.16    # via mise (no sudo); pinned, not latest
 
 # Daemons
 sudo systemctl enable --now docker
@@ -226,10 +229,12 @@ their `.sig`) to the ark drive before cleaning the cache. Rollback:
 
 ## 1. Build llama.cpp
 
-Clone and build llama.cpp with CUDA support from the repo root:
+Clone llama.cpp at the pinned commit (`scripts/llama.cpp.ref`, the same one
+`bootstrap.sh` checks out) and build it with CUDA support, from the repo root:
 
 ```bash
 git clone https://github.com/ggml-org/llama.cpp.git
+git -C llama.cpp checkout "$(sed -n 's/^LLAMA_CPP_REF=//p' scripts/llama.cpp.ref)"
 cd llama.cpp
 export PATH=/opt/cuda/bin:$PATH
 cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120

@@ -284,7 +284,7 @@ if command -v docker >/dev/null 2>&1; then
     keep "docker volume $v — not labelled as this compose project's; never removed here"
     [[ "$v" == models_open-webui-data ]] && say "         (the pre-rename OpenBeast project was \`models\` — if this is yours: docker volume rm $v)"
   done
-  say "  (container images are left for docker to prune: docker image prune -a)"
+  say "  (container images are kept — step 9 names them and the command that removes only them)"
 else
   say "  docker not installed — skipping"
 fi
@@ -391,8 +391,20 @@ if [[ -d "$HOME/.openbeast-client" || -f "$HOME/.openbeast-client.env" ]]; then
   _left "client mode on this machine (~/.openbeast-client)" \
         "remove: \"$REPO_DIR/scripts/setup-client.sh\" --uninstall"
 fi
+# OpenBeast's OWN images, as its compose files pin them. This used to say
+# `docker image prune -a`, which deletes every image on the machine that no
+# container uses — other projects' included — under a header promising that
+# shared things are only listed.
 if command -v docker >/dev/null 2>&1; then
-  _left "container images (Open WebUI, SearXNG, extensions)" "remove: docker image prune -a"
+  _imgs="$(cat "$REPO_DIR/docker-compose.yml" "$REPO_DIR"/extensions/*/compose.yaml 2>/dev/null \
+            | sed -nE "s/^[[:space:]]*image:[[:space:]]*[\"']?([^\"' #]+).*/\1/p" | sort -u | tr '\n' ' ' || true)"
+  _imgs="${_imgs% }"
+  if [[ -n "$_imgs" ]]; then
+    _repos="$(tr ' ' '\n' <<< "$_imgs" | sed -E 's/@.*//; s/:[^/]*$//' | sort -u | tr '\n' ' ')"
+    _left "container images (Open WebUI, SearXNG, extensions)" \
+          "remove: docker image rm $_imgs" \
+          "older versions of the same images: docker images <name> for each of: ${_repos% }"
+  fi
 fi
 if command -v tailscale >/dev/null 2>&1; then
   _left "tailscale itself, and this machine's place in your tailnet" \

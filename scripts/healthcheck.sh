@@ -27,7 +27,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # compose needs that secret, so it keeps the normal behaviour.
 [[ "${1:-}" == "--restart" ]] || export OB_CONF_READONLY=1
 source "$SCRIPT_DIR/lib/conf.sh"
-source "$SCRIPT_DIR/lib/proc.sh"      # _ob_ere, ob_pid_matches, ob_pid_age
+source "$SCRIPT_DIR/lib/proc.sh"      # ob_py_ere/ob_bin_ere, ob_pid_matches, ob_pid_age
 source "$SCRIPT_DIR/lib/net.sh"       # ob_probe_host, ob_llama_ready
 source "$SCRIPT_DIR/lib/backend.sh"   # ob_backend_ready, ob_inference_managed
 source "$SCRIPT_DIR/lib/curl_auth.sh" # ob_curl_bearer: keys never on argv
@@ -251,7 +251,7 @@ echo ""
 # itself is public in llama-server but /slots below is not, and sending the
 # key to a keyless server is harmless.
 # (Sent through ob_curl_bearer — off argv, see check() above.)
-LLAMA_BIN_ERE="$(_ob_ere "$REPO_DIR/llama.cpp/build/bin/llama-server")"
+LLAMA_BIN_ERE="$(ob_bin_ere "$REPO_DIR/llama.cpp/build/bin/llama-server")"
 
 # Is llama-server still LOADING? Then it is not down, and killing it is the
 # outage. /health answers 503 {"error":{"message":"Loading model"...}} for the
@@ -261,7 +261,7 @@ LLAMA_BIN_ERE="$(_ob_ere "$REPO_DIR/llama.cpp/build/bin/llama-server")"
 # load-time-in-300 chance of being shot mid-load: launch_and_wait then fails
 # and start.sh tears the WHOLE stack down. The few seconds before the port is
 # bound are covered by the recorded pid's age instead of the body.
-_LLAMA_ARGV0='(^|/)llama-server( |$)'   # argv[0], not "mentions llama-server"
+_LLAMA_ARGV0='^([^ ]*/)?llama-server( |$)'   # argv[0] — `gdb …/llama-server` is not it
 _llama_loading() {
   local body pid age=""
   pid="$(cat "$REPO_DIR/.run/llama.pid" 2>/dev/null || true)"
@@ -272,13 +272,15 @@ _llama_loading() {
     # says "Loading model" forever, and nothing else in the stack bounds a
     # load either — so past the grace a recorded server that is STILL loading
     # is down. With no recorded pid there is no age to judge by: leave it.
-    [[ -z "$age" || "$age" -lt "${OPENBEAST_LLAMA_LOAD_GRACE:-900}" ]]
+    # (LLAMA_LOAD_GRACE: lib/conf.sh — the conf key, so this unit, which has
+    # no environment of its own, uses the grace start.sh used.)
+    [[ -z "$age" || "$age" -lt "${LLAMA_LOAD_GRACE:-900}" ]]
     return
   fi
   # Answering at all (healthy OR some other error) is not "loading": only a
   # server that has not bound its port yet gets the benefit of its age.
   [[ -n "$body" ]] && return 1
-  [[ -n "$age" && "$age" -lt "${OPENBEAST_LLAMA_LOAD_GRACE:-900}" ]]
+  [[ -n "$age" && "$age" -lt "${LLAMA_LOAD_GRACE:-900}" ]]
 }
 
 # Kill THIS stack's llama-server and nothing else: the recorded pid when it
@@ -461,6 +463,7 @@ elif ! check "llama.cpp server" "$LLAMA_URL/health" "ok" "${LLAMA_API_KEY:-}"; t
       done
     else
       echo "       → no supervisor: restarting llama.cpp directly..."
+      SERVE_SCRIPT_NAME=""
       if ! _wd_budget_take; then
         echo "       → NOT relaunching: ${WD_MAX_RELAUNCHES} watchdog relaunches in the last $((WD_WINDOW / 60)) min —"
         echo "         the model is crash-looping. Marking the stack stopped; see .run/stack.log,"
@@ -484,6 +487,10 @@ elif ! check "llama.cpp server" "$LLAMA_URL/health" "ok" "${LLAMA_API_KEY:-}"; t
             SERVE_SCRIPT_NAME="$_recorded"
           fi
         fi
+        # The kill above slept: a ./stop.sh may have landed since.
+        _may_restart || SERVE_SCRIPT_NAME=""
+      fi
+      if [[ -n "${SERVE_SCRIPT_NAME:-}" ]]; then
         echo "       → launching $SERVE_SCRIPT_NAME"
         "$SCRIPT_DIR/$SERVE_SCRIPT_NAME" &
         _NEW_LLAMA=$!
@@ -526,7 +533,7 @@ if ! check "Tool server" "$MCPO_URL/health" "ok"; then
     if ob_pid_matches "$_mc_pid" "$(_ob_ere "$REPO_DIR/agents/openapi_tools.py")"; then
       kill "$_mc_pid" 2>/dev/null || true
     else
-      pkill -f "$(_ob_ere "$REPO_DIR/agents/openapi_tools.py")" 2>/dev/null || true
+      pkill -f "$(ob_py_ere "$REPO_DIR/agents/openapi_tools.py")" 2>/dev/null || true
     fi
     sleep 1
     # Mirror start.sh: the chat model's file workspace must exist and be
@@ -662,7 +669,7 @@ if [[ "${HYDRA:-false}" == "true" ]]; then
       if ob_pid_matches "$_hy_pid" "$(_ob_ere "$REPO_DIR/agents/hydra.py")"; then
         kill "$_hy_pid" 2>/dev/null || true
       else
-        pkill -f "$(_ob_ere "$REPO_DIR/agents/hydra.py")" 2>/dev/null || true
+        pkill -f "$(ob_py_ere "$REPO_DIR/agents/hydra.py")" 2>/dev/null || true
       fi
       sleep 1
       mkdir -p "$REPO_DIR/.run"
@@ -763,7 +770,7 @@ if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
       if ob_pid_matches "$_rt_pid" "$(_ob_ere "$REPO_DIR/agents/router.py")"; then
         kill "$_rt_pid" 2>/dev/null || true
       else
-        pkill -f "$(_ob_ere "$REPO_DIR/agents/router.py")" 2>/dev/null || true
+        pkill -f "$(ob_py_ere "$REPO_DIR/agents/router.py")" 2>/dev/null || true
       fi
       sleep 1
       # The environment start.sh gives it, piece for piece (start.sh "Agent-
@@ -846,7 +853,7 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
       if ob_pid_matches "$_edge_pid" "$(_ob_ere "$REPO_DIR/agents/edge.py")"; then
         kill "$_edge_pid" 2>/dev/null || true
       else
-        pkill -f "$(_ob_ere "$REPO_DIR/agents/edge.py")" 2>/dev/null || true
+        pkill -f "$(ob_py_ere "$REPO_DIR/agents/edge.py")" 2>/dev/null || true
       fi
       sleep 1
       # Record the pid like the llama/mcpo relaunch paths do — without it
@@ -905,7 +912,7 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
       if ob_pid_matches "$_chat_pid" "$(_ob_ere "$REPO_DIR/agents/chat_server.py")"; then
         kill "$_chat_pid" 2>/dev/null || true
       else
-        pkill -f "$(_ob_ere "$REPO_DIR/agents/chat_server.py")" 2>/dev/null || true
+        pkill -f "$(ob_py_ere "$REPO_DIR/agents/chat_server.py")" 2>/dev/null || true
       fi
       sleep 1
       _chat_log="$(_restart_log beast-chat)"
@@ -971,7 +978,7 @@ if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
         # actually forbids the bare form of: "$REPO_DIR/agents/..." cannot
         # match a sibling worktree's server, because its path differs. Same
         # form stop.sh uses for every service it reaps.
-        pkill -f "$(_ob_ere "$REPO_DIR/agents/artifact_server.py")" 2>/dev/null || true
+        pkill -f "$(ob_py_ere "$REPO_DIR/agents/artifact_server.py")" 2>/dev/null || true
         sleep 1
       fi
       _art_log="$(_restart_log beast-artifact)"

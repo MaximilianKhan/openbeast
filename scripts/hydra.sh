@@ -306,6 +306,10 @@ cmd_conformance() {
   [[ -n "$dep" ]] || die "conformance <deployment> [--heavy]"
   shift
   local cfg="${OPENBEAST_HYDRA_CONFIG:-${HYDRA_CONFIG:-$REPO_DIR/hydra.toml}}" fields
+  # A relative key_file is printed repo-relative, exactly as validation and
+  # hydra read it; conformance.py would otherwise resolve it against the
+  # caller's CWD. (No comment inside the heredoc: an apostrophe there breaks
+  # bash 3.2's $(...) parser.)
   fields="$(HC_CFG="$cfg" HC_DEP="$dep" "$PY" - "$REPO_DIR" <<'PYEOF'
 import os, sys
 sys.path.insert(0, os.path.join(sys.argv[1], "agents"))
@@ -321,7 +325,11 @@ if d is None:
     sys.exit(f"hydra.sh conformance: no deployment {os.environ['HC_DEP']!r} in {cfg.source}")
 n = cfg.nodes[d.node]
 backend = {"openai": "vllm"}.get(n.engine, n.engine)
-print("\x1f".join([n.url, backend, d.upstream, n.key_env or "", n.key_file or ""]))
+kf = ""
+if n.key_file:
+    q = Path(os.path.expanduser(n.key_file))
+    kf = str(q if q.is_absolute() else core.REPO / q)
+print("\x1f".join([n.url, backend, d.upstream, n.key_env or "", kf]))
 PYEOF
 )" || exit 1
   local url backend model key_env key_file

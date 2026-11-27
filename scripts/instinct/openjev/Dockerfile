@@ -18,9 +18,15 @@
 # host arch (aarch64 on a Spark) and runs on its GPU (sm_121 GB10 / sm_120
 # 5090); then freeze the resolved set WITH hashes (pip-compile
 # --generate-hashes requirements.txt) and switch the install below to
-# --require-hashes. Pin BASE_IMAGE by digest the same way.
+# --require-hashes.
+#
+# BASE_IMAGE is pinned by the multi-arch INDEX digest (linux/amd64 and
+# linux/arm64/v8 both inside), so one pin serves the 5090 host and a Spark.
+# Read 2026-10-27 with `docker buildx imagetools inspect python:3.12-slim`
+# (no pull): python 3.12.16-slim-trixie, built 2026-10-26. To move it, re-run
+# that command and replace the digest; a bare tag is never used.
 
-ARG BASE_IMAGE=python:3.12-slim
+ARG BASE_IMAGE=python:3.12-slim@sha256:12316debbfb86890f6b2d825820612741ba527ad5a44e3902759141d572bfe8f
 FROM ${BASE_IMAGE}
 
 # Open-Jev loader, pinned: github.com/Zefan-Cai/Open-Jev (MIT).

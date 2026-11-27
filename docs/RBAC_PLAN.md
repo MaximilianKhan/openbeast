@@ -124,7 +124,10 @@ manage. Assign in Admin Panel → Users → role dropdown (or the API).
 > to act as every other one. Real separation needs one of two things:
 > Sandlock default-on for tool execution, extended beyond Phase 2 item 2
 > below (which wraps only guest-profile execution) to cover admin-profile
-> execution and deny reads of `openbeast.conf`; or running the tool server
+> execution and deny reads of `openbeast.conf` — which also needs the file
+> tools confined: today Sandlock wraps only `bash`/`grep`, and `read_file`
+> runs in the tool server's own process, so it reads `openbeast.conf`
+> whatever the profile says; or running the tool server
 > as a separate uid that cannot read `openbeast.conf`. Both
 > are architecture decisions for Max and are still open.
 

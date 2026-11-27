@@ -162,6 +162,9 @@ cwd set to the agent workdir, so -w "$PWD" grants exactly that directory):
 
 To verify it is active, ask the agent to run:  ls ~/.ssh
   -> confined:  "No such file or directory" (Landlock hides it)
+Scope: this confines shell commands (bash, grep) only. The file tools
+(read_file, write_file, edit_file, list_files) run in process and are NOT
+confined: read_file ~/.ssh/... still succeeds.
 
 Full policy, threat model, and validation matrix: docs/SANDBOXING.md
 EOF

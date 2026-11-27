@@ -29,13 +29,15 @@ _ob_expand_tilde() {
   esac
 }
 
-# Read the WEIGHTS_DIR value from openbeast.conf, if present. Ignores comments
-# and surrounding whitespace/quotes; last assignment wins.
-_ob_read_conf() {
-  local conf="$REPO_DIR/openbeast.conf"
+# Read KEY's value from openbeast.conf, if present, WITHOUT sourcing
+# lib/conf.sh (which mints and appends a SearXNG secret on first use).
+# Ignores comments and surrounding whitespace/quotes; last assignment wins.
+# Named apart from conf.sh's _ob_conf_value so sourcing both never shadows it.
+_ob_weights_conf_key() {
+  local key="$1" conf="$REPO_DIR/openbeast.conf"
   [[ -f "$conf" ]] || return 1
   local line
-  line="$(grep -E '^[[:space:]]*WEIGHTS_DIR[[:space:]]*=' "$conf" | tail -n1)" || return 1
+  line="$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$conf" | tail -n1)" || return 1
   [[ -n "$line" ]] || return 1
   # strip key, leading/trailing space, and matching quotes
   line="${line#*=}"
@@ -46,6 +48,8 @@ _ob_read_conf() {
   [[ -n "$line" ]] || return 1
   printf '%s\n' "$line"
 }
+
+_ob_read_conf() { _ob_weights_conf_key WEIGHTS_DIR; }
 
 _ob_resolve_weights_dir() {
   local dir=""

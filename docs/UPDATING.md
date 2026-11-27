@@ -243,7 +243,9 @@ lock is stale") and stays red. Two pieces close that:
   PR numbers it takes only the open Dependabot PRs that touch
   `agents/requirements.txt` — a github-actions or docker bump never triggers
   the relock, so it is skipped (and counted in the output) rather than waited
-  on; name such a PR explicitly to land it. Checks that have not appeared
+  on; name such a PR explicitly to land it — for a PR that does not touch
+  `agents/requirements.txt` the script waits for the rebase only, not for a
+  relock that will never come. Checks that have not appeared
   are waited on for up to 10 minutes, then the run stops without merging.
   The chain:
   `@dependabot rebase` (main moved when the previous PR merged, and branch

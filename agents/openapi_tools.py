@@ -669,7 +669,16 @@ def create_app() -> FastAPI:
             # caller's shard: mcp_server resolves a RELATIVE workdir against
             # the server process CWD (the repo!), which the ContextVar can't
             # reach across the subprocess boundary. Anchor it here instead.
-            shard = shard_for(user, chat)
+            try:
+                shard = shard_for(user, chat)
+            except OSError as e:
+                # A shard that cannot be created (FILES_DIR is a file, full
+                # or read-only disk) is an audited 500, not a bare traceback
+                # with no row in the trail.
+                raise refuse_admitted(
+                    name, profile, (user, role, chat), 500,
+                    f"could not create the caller's workspace: "
+                    f"{e.strerror or e}")
             if (shard and name in ("start_agent", "start_skill_agent")
                     and not os.path.isabs(kwargs.get("workdir", "."))):
                 # normpath collapses "..", so verify the anchored path is

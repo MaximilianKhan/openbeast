@@ -17,8 +17,8 @@ Create MCP (Model Context Protocol) servers that enable LLMs to interact with ex
 - **Tool count: this guide and our measurements disagree.** Below it says to prioritise comprehensive API coverage. Our arsenal research found large tool surfaces hostile to Qwen-class local models, which is why the stack ships 18 tools and prefers a CLI behind `bash` to another MCP server. For a server a local model will drive, prefer a few workflow tools; for one a frontier model will drive, the guide's advice stands.
 - **Tool names.** The guide prefixes every tool with its service (`github_create_issue`). Ours are unprefixed (`read_file`, `bash`) because they are the model's base tools. A new server for an external service should use the prefix.
 - **Fetching docs.** Where the guide says WebFetch, use `fetch`; where it says web search, `web_search`. Neither works with `OFFLINE=true`.
-- **Reference files.** `skill("mcp-builder")` returns this file only. Read the others with `read_file("skills/mcp-builder/reference/<file>")`.
-- **Evaluation harness not imported.** Upstream's `scripts/evaluation.py` sends the questions to Anthropic's hosted API. Write the question file as described in Phase 4, then run it against the rig's own model (OpenCode or `agents/runner.py` with the server attached) and compare answers by string.
+- **Reference files.** `skill("mcp-builder")` returns this file only; its header names this skill's directory. Read the others by that absolute path: `read_file("<skill dir>/reference/<file>")`. A relative `skills/...` path resolves against your working directory, so it works only when that is the OpenBeast checkout — not from Open WebUI, an OpenCode client in another project, or a sub-agent with its own workdir.
+- **Evaluation harness not imported.** Upstream's `scripts/evaluation.py` sends the questions to Anthropic's hosted API. Write the question file as described in Phase 4, then run it against the rig's own model through OpenCode, with the new server added under `mcp` in a project-local `opencode.json` (`agents/runner.py` cannot attach an external MCP server), and compare answers by string.
 
 ---
 

@@ -26,7 +26,9 @@ concurrency:
 #
 # CI=true (set by the runner) turns a suite's "SKIP … exit 0" into a failure:
 # everything a suite needs is installed here, so a skip means it stopped
-# running. Every pytest call carries --timeout (pytest-timeout), so a hang
+# running. pytest has no such rule: the main pytest calls carry -rs, so the log
+# at least names every skip and its reason instead of a bare "8 skipped".
+# Every pytest call carries --timeout (pytest-timeout), so a hang
 # fails on a named test instead of ending as a cancelled job.
 jobs:
   pytest:
@@ -80,7 +82,7 @@ jobs:
           # No outbound network assumptions in CI (httpbin flakiness);
           # SearXNG/llama-server are likewise not required by these tests.
           OPENBEAST_SKIP_NETWORK_TESTS: "1"
-        run: python -m pytest --timeout=300 tests/test_tools.py -q
+        run: python -m pytest --timeout=300 tests/test_tools.py -q -rs
 
       # beast-apps (scripts/apps.sh, agents/apps/): catalog validation, probes
       # against stub toolchains, opencode v1/v2 merge + backup + disable,
@@ -98,7 +100,7 @@ jobs:
         env:
           OPENBEAST_SKIP_NETWORK_TESTS: "1"
         run: >-
-          python -m pytest --timeout=300 tests/ -q
+          python -m pytest --timeout=300 tests/ -q -rs
           --ignore=tests/test_model_profiles.py --ignore=tests/test_model_inspect.py
           --ignore=tests/test_model_fetch.py --ignore=tests/test_conformance.py
           --ignore=tests/test_use_model.py
@@ -155,13 +157,13 @@ jobs:
       # resume, lock), conformance against stub vLLM / TensorFold / broken
       # servers, use-model. Loopback stubs only; no network.
       - name: Spark model onboarding tests (profiles, inspect, fetch, conformance)
-        run: python -m pytest --timeout=300 tests/test_model_profiles.py tests/test_model_inspect.py tests/test_model_fetch.py tests/test_conformance.py tests/test_use_model.py -q
+        run: python -m pytest --timeout=300 tests/test_model_profiles.py tests/test_model_inspect.py tests/test_model_fetch.py tests/test_conformance.py tests/test_use_model.py -q -rs
 
       # beast-hydra (proxy, routing core) and beast-instinct (decision math,
       # engines, service, contract, router hook). Named here so a failure is
       # attributable; the full run (the pytest job) skips these files.
       - name: beast-hydra / beast-instinct tests
-        run: python -m pytest --timeout=300 tests/test_hydra_core.py tests/test_hydra_proxy.py tests/test_instinct_*.py tests/test_router_instinct.py -q
+        run: python -m pytest --timeout=300 tests/test_hydra_core.py tests/test_hydra_proxy.py tests/test_instinct_*.py tests/test_router_instinct.py -q -rs
 
       # beast-docs (docs/BEAST_DOCS.md): the DocC / HTML / markdown adapters
       # by golden file, incremental sync (304 = no rewrite), robots refusal,
@@ -274,6 +276,17 @@ jobs:
       # Stubbed pip / pydeps / gh; nothing is installed or approved.
       - name: Supply-chain tests
         run: bash tests/test_supply_chain.sh
+
+      # The 2026-10-27 review's land-dependabot fixes: the red-check and
+      # no-relock paths. Stub gh (answered through jq); nothing is merged.
+      - name: Review 2026-10-27 script tests
+        run: bash tests/test_review1027_ci.sh
+
+      # The same review's install fixes: fetch-weight's OFFLINE / PENDING /
+      # strict paths and doctor's zig-vs-pack and tailscale-version rows.
+      # Stub hf/curl/zig/tailscale; nothing is downloaded.
+      - name: Review 2026-10-27 install tests
+        run: bash tests/test_review1027_install.sh
 
       # The 2026-09-29 review's other hermetic suites (tests/run_tests.sh
       # runs the same files). Stub binaries only; test_conf_secrets.sh's

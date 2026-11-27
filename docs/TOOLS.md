@@ -28,7 +28,10 @@ it). RBAC **deliberately does not apply on this path**: the identity server
 (`:3001`) is rig-local and never published, and a client is a single-user
 device, so there is no role to enforce. `OPENBEAST_MCP_TOOLS` (a registration
 allowlist read by `agents/mcp_server.py`) is the only scoping lever if a shared
-client ever needs one. See `docs/BEAST_SLOT.md`.
+client ever needs one. It decides which tools *register* on that MCP server
+and nothing else: it is not a security boundary, and the `:3001` identity
+server ignores it (its guest boundary is `GUEST_TOOLS` in
+`agents/openapi_tools.py`). See `docs/BEAST_SLOT.md`.
 
 **The tool guidance the model reads.** Open WebUI gets `system-prompt.md` +
 `system-prompt-tools.md` as its system prompt (`scripts/configure-webui.sh`).
@@ -120,7 +123,10 @@ the artifact server; `:3004` exists to *serve* the pages, and
 locality token, on write verbs only). Two consequences: the tool path writes
 no `.run/artifact-audit.jsonl` row, and it checks `BEAST_ARTIFACT` itself
 rather than discovering the service is off by failing to connect. Opt-in via
-`BEAST_ARTIFACT=true`. Neither tool is in `GUEST_TOOLS` (guest → 404) and
+`BEAST_ARTIFACT=true`. `publish_artifact` only publishes a page from inside
+the caller's workspace, and refuses a file whose name starts with
+`openbeast.conf` wherever it is: the workspace can be a checkout (OpenCode
+launched from the repo), and that file holds the stack's keys. Neither tool is in `GUEST_TOOLS` (guest → 404) and
 neither is in the autonomous runner's registry — background agents publish
 through `scripts/artifact.sh` with `bash`. Authoring rules, the sandbox/CSP
 posture, versions and visibility: [`docs/BEAST_ARTIFACT.md`](BEAST_ARTIFACT.md).
@@ -274,6 +280,11 @@ and reports `COMPACTIONS: n` next to the `TOKENS:` line.
 | **OpenCode** | Its *own* native tool suite (its `bash`, `edit`, `view`, …) alongside our 19 via MCP stdio | OpenCode's built-ins are upstream's code and are documented upstream |
 | **MCP Python SDK** | The protocol plumbing `mcp_server.py` is written against | — |
 
+**`mcp_server.py --transport http` is a debug transport.** WebUI does not use
+it (WebUI talks to `:3001`). It checks no keys, so it binds loopback by
+default on port 3009, and on a non-loopback `OPENBEAST_BIND` it exits 2
+unless given `--allow-open` or `OPENBEAST_ALLOW_OPEN_TOOLS=true`.
+
 ## RBAC visibility (who sees what)
 
 Two WebUI connections to the one identity server are configured by `scripts/configure-webui.sh`
@@ -334,7 +345,7 @@ tool every turn, unattended, with nobody to correct it. `publish_artifact`,
 and are deliberately **not** in `agents/runner.py`'s 10-tool registry, so the
 runner's selection pressure is byte-for-byte what it was before — a background
 agent that wants a URL shells out to `scripts/artifact.sh` through `bash`, and
-one that wants language notes gets them pushed (`BEAST_PACKS`) rather than
+one that wants language notes gets them pushed (`LANG_PACK_CONTEXT`) rather than
 asking. (The same split is what keeps `agents/tools.py` unchanged, so the eval
 cache era doesn't roll; `evals/cache.py`.) On the MCP/WebUI side a human is in
 the loop and "publish this as a page" is an unambiguous ask.

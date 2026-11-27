@@ -849,7 +849,8 @@ for m in json.load(sys.stdin).get('data', []):
 done
 
 if [[ -z "$MODELS" ]]; then
-  echo "  No models detected yet. Re-run ./configure-webui.sh after first chat."
+  echo "  No models detected yet (is the model still loading?). Re-run"
+  echo "  ./scripts/configure-webui.sh once the model server lists one."
 else
   # Write system prompt to a temp file for the DB update script to read
   PROMPT_FILE=""

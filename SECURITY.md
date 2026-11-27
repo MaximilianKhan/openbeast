@@ -106,14 +106,16 @@ inference path had **no identity at all** — every user, laptop, and spawned
 agent collapsed into one anonymous caller, because llama.cpp itself has no
 concept of a user.
 
-**Stated plainly, because it is the most common misreading:** publishing
-`:8443` without the gate (`EDGE_GATE=false`, the default) exposes
-llama-server's *entire* route table to the tailnet — not just chat. That is a
-deliberate, documented default for a tailnet you fully own, and the tailnet
-is the perimeter (`tailscale funnel` is never used, anywhere). It is **not**
-a suitable posture for a tailnet containing devices or people you don't
-control; that is what `EDGE_GATE=true` plus per-device enrollment is for. See
-[`docs/BEAST_SLOT.md`](docs/BEAST_SLOT.md).
+**Stated plainly, because it is the most common misreading:** by default
+(`EDGE_GATE=false`, no `LLAMA_API_KEY`) `setup-tailscale.sh` does not publish
+`:8443` at all, and doctor FAILs a keyless raw mount. Publishing it without
+the gate — behind a shared `LLAMA_API_KEY`, or keyless with
+`--i-accept-open-inference` — exposes llama-server's *entire* route table to
+the tailnet, not just chat. That is an explicit choice for a tailnet you
+fully own, and the tailnet is the perimeter (`tailscale funnel` is never
+used, anywhere). It is **not** a suitable posture for a tailnet containing
+devices or people you don't control; that is what `EDGE_GATE=true` plus
+per-device enrollment is for. See [`docs/BEAST_SLOT.md`](docs/BEAST_SLOT.md).
 
 **Remote clients run their own tool stack.** An OpenBeast client executes
 files, shell, and agents on the *client's* machine; the rig only generates
@@ -140,8 +142,11 @@ under CSP. Details: [`docs/BEAST_CHAT.md`](docs/BEAST_CHAT.md),
 [`docs/BEAST_ARTIFACT.md`](docs/BEAST_ARTIFACT.md).
 
 **Supply chain, and what a hash does not prove.** Container images are
-digest-pinned, every model weight is sha256-pinned in `scripts/weights.registry`,
-and the Python closure is hash-pinned in `agents/requirements.lock`
+digest-pinned, every model weight is sha256-pinned in `scripts/weights.registry`
+except rows still marked `PENDING` (no hash yet; today one vision projector,
+`mmproj-Qwen3.8-Flash-Next-Uncensored-F16.gguf`), which `fetch-weight.sh`
+downloads from the repo's moving `main` and installs unverified unless
+`WEIGHT_ENFORCE=strict`, and the Python closure is hash-pinned in `agents/requirements.lock`
 (installed with `--require-hashes`; bootstrap never falls back to the
 unpinned file on a hash mismatch). The offline bundle (`scripts/bundle.sh`)
 carries all of that across an air gap with every file's sha256 in

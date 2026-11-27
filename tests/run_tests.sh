@@ -195,6 +195,8 @@ for _suite in \
   "test_chat_unix_login.sh|beast-chat unix-socket login (CHAT_LOGIN_FROM, :8445 mount)" \
   "test_tailscale_hostname.sh|Tailnet machine name from TS_HOSTNAME (setup-tailscale.sh)" \
   "test_operator_scripts.sh|Operator scripts (2026-10-09 review fixes)" \
+  "test_review1027_ci.sh|Review 2026-10-27 land-dependabot fixes (red checks, PRs with no relock)" \
+  "test_review1027_install.sh|Review 2026-10-27 install fixes (fetch-weight, doctor zig/tailscale rows)" \
   "test_ark.sh|beast-ark (scripts/ark.sh, the drive's bare-box ./ark)"; do
   _file="${_suite%%|*}"; _label="${_suite#*|}"
   echo "--- $_label tests (tests/$_file) ---"
