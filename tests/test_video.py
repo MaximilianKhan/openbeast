@@ -295,3 +295,18 @@ def test_the_page_is_served_with_a_policy_and_no_outside_hosts(svc):
     assert "http://" not in r.text and "https://" not in r.text      # works offline, on the tailnet
     cfg = client.get("/api/config").json()
     assert cfg["default_model"] == "s3_w4a8.safetensors" and cfg["limits"]["fps"] == 24
+
+
+def test_the_browser_never_blocks_generate_by_itself():
+    """The Advanced fields sit in a closed <details>. A number field there that
+    fails the browser's own step check (12 with min 0.01, step 0.5) blocked
+    the submit with nothing shown: no request, no message (seen 2026-11-27).
+    The page validates in script and the server validates again."""
+    import re
+    page = (REPO / "agents" / "video" / "page.html").read_text()
+    assert '<form id="form" novalidate>' in page
+    for tag in re.findall(r'<input type="number"[^>]*>', page):
+        m = {k: v for k, v in re.findall(r'(\w+)="([^"]*)"', tag)}
+        if "value" in m and m.get("step", "any") != "any":
+            lo, step, val = float(m.get("min", 0)), float(m["step"]), float(m["value"])
+            assert abs((val - lo) / step - round((val - lo) / step)) < 1e-9, tag
