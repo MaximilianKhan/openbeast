@@ -363,9 +363,10 @@ which has to come from the internet:
 
 1. **Checkout.** Run `scripts/setup-client.sh` from INSIDE a checkout (a
    copied clone, or `git clone /media/usb/openbeast.bundle openbeast` from a
-   bundle made on a connected machine). It then installs in place and never
-   clones; outside a checkout it clones from GitHub, and says what to do when
-   that fails.
+   bundle made on a connected machine). The client's own copy
+   (`~/.openbeast-client/repo`) is then made from that checkout's commit and
+   nothing is cloned; outside a checkout it clones from GitHub, and says what
+   to do when that fails.
 2. **Python deps.** On a connected machine with the same OS, CPU and Python
    minor version: `scripts/pydeps.sh wheelhouse /media/usb/wheels` (it prints
    the lock's sha256). On the client:
@@ -373,9 +374,11 @@ which has to come from the internet:
    (or `OPENBEAST_WHEELHOUSE=…`). `pydeps.sh install --from` checks every
    wheel against the lock committed in the checkout (or
    `OPENBEAST_LOCK_SHA256`) and contacts no index.
-3. **Updates.** Update the checkout from a new bundle
-   (`git pull /media/usb/openbeast.bundle main`), then
-   `openbeast-client update --no-pull --wheelhouse /media/usb/wheels`.
+3. **Updates.** Update the client's copy from a new bundle
+   (`git -C ~/.openbeast-client/repo pull /media/usb/openbeast.bundle main`),
+   then `openbeast-client update --no-pull --wheelhouse /media/usb/wheels`.
+   Or update your checkout from the bundle and re-run `scripts/setup-client.sh`
+   from inside it: the copy moves to the checkout's commit.
 
 The rig itself is reached over the tailnet, not the internet, so an islanded
 client keeps working once installed (BEAST_ISLAND.md).

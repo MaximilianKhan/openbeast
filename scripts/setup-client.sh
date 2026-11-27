@@ -3,7 +3,8 @@
 # (docs/BEAST_SLOT.md; macOS + Linux. Windows/WSL2 untested.)
 #
 #   ./scripts/setup-client.sh [--host <rig-fqdn>] [--api-key <key>] [--name <rig>]
-#                             [--no-search | --local-search] [--uninstall]
+#                             [--no-search | --local-search] [--in-place]
+#                             [--uninstall]
 #
 # What you get: OpenCode on THIS machine with the full OpenBeast tool
 # arsenal running LOCALLY (bash/edit_file act on this machine's files, via a
@@ -39,6 +40,13 @@
 #   --no-search      skip search wiring (web_search disabled on the client)
 #   --local-search   run SearXNG locally via Docker (bridge network — works on
 #                    Docker Desktop) instead of using the rig's :8889
+#   --in-place       run the client straight from THIS checkout instead of
+#                    from its own copy (below). For developing OpenBeast
+#                    itself: opencode then runs your working tree, uncommitted
+#                    edits included. On macOS a checkout under ~/Documents,
+#                    ~/Desktop, ~/Downloads, iCloud Drive or an external volume
+#                    cannot be used this way: background processes are denied
+#                    those folders, and the tool server is started by one
 #   --uninstall      remove ~/.openbeast-client, the env file, the local
 #                    SearXNG container, and our opencode.json entries
 #   --purge-logs     with --uninstall: ALSO delete agent transcripts from an
@@ -50,12 +58,20 @@
 #                    from inside it, no clone), that is the OFFLINE install;
 #                    docs/BEAST_APPS.md § Offline client.
 #
-# After install, the client CLI lives at scripts/client.sh in the checkout and
+# WHERE THE CLIENT RUNS FROM: always its own copy, ~/.openbeast-client/repo
+# (a sparse git checkout: agents/ skills/ scripts/ searxng/). Run from inside
+# a clone, this script seeds that copy from the clone's checked-out commit,
+# with no network; run on its own, it clones the copy from GitHub. Either way
+# the checkout you ran it from is never what opencode executes, so it can
+# live anywhere (see scripts/lib/client_copy.sh for why that matters on
+# macOS), be moved, or be deleted. `openbeast-client update` updates the copy.
+#
+# After install, the client CLI lives at scripts/client.sh in that copy and
 # is symlinked to ~/.local/bin/openbeast-client (created if needed). If that
 # dir is not on your PATH — the macOS default — the installer prints the exact
 # line to add, and the full path always works:
 #   openbeast-client status|rigs|use|rig|agent|search|update|uninstall
-#   <checkout>/scripts/client.sh status
+#   ~/.openbeast-client/repo/scripts/client.sh status
 #
 # Bash 3.2-compatible on purpose (stock macOS ships it): avoids all
 # bash-4-only builtins; tests/test_scripts.sh §13 enforces this.
@@ -68,6 +84,7 @@ OC_CONFIG="$OC_CONFIG_DIR/opencode.json"
 REPO_URL="https://github.com/MaximilianKhan/openbeast"
 
 HOST_FQDN=""; RIG_NAME=""; NO_SEARCH=0; LOCAL_SEARCH=0; UNINSTALL=0; PURGE_LOGS=0
+IN_PLACE=0
 WHEELHOUSE="${OPENBEAST_WHEELHOUSE:-}"
 API_KEY="${OPENBEAST_API_KEY:-}"
 # Re-running without --api-key must not silently de-key a keyed install:
@@ -121,11 +138,12 @@ while [ $# -gt 0 ]; do
     --name)         RIG_NAME="${2:?--name needs a value}"; shift ;;
     --no-search)    NO_SEARCH=1 ;;
     --local-search) LOCAL_SEARCH=1 ;;
+    --in-place)     IN_PLACE=1 ;;
     --uninstall)    UNINSTALL=1 ;;
     --purge-logs)   PURGE_LOGS=1 ;;
     --wheelhouse)   [ $# -ge 2 ] && [ -n "$2" ] || { echo "--wheelhouse needs a directory" >&2; exit 2; }
                     WHEELHOUSE="$2"; shift ;;
-    -h|--help)      sed -n '2,58p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)      sed -n '2,74p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     status|agent|search|update|rigs|use|rig)
       # Two scripts, confusingly similar names: setup-client.sh INSTALLS
       # (flags), client.sh OPERATES (subcommands). Sending someone who typed
@@ -627,13 +645,64 @@ if [ $NO_SEARCH -eq 0 ] && [ $LOCAL_SEARCH -eq 0 ]; then
   fi
 fi
 
-# ---- 2. slim checkout (or use the clone we're inside) -----------------------
+# ---- 2. the client's own copy of the code ------------------------------------
+# The client always runs from $CLIENT_DIR/repo, never from the checkout this
+# script was started in (scripts/lib/client_copy.sh says why). Inside a clone
+# the copy is seeded from that clone's HEAD commit, offline; with no clone
+# around it is cloned from GitHub. --in-place is the developer's opt-out.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+_use_in_place() {   # $1 = why
+  CLIENT_REPO="$SRC_REPO"
+  echo "  ✓ $1 — using it in place: $CLIENT_REPO"
+  if ob_copy_protected "$(ob_copy_phys "$CLIENT_REPO")"; then
+    echo "  ! $CLIENT_REPO is in a folder macOS keeps from background processes."
+    echo "    opencode starts the tool server from one, so its tools will fail with"
+    echo "    'Operation not permitted'. Move the checkout out of Documents / Desktop /"
+    echo "    Downloads / iCloud, or install without --in-place."
+  fi
+}
 if [ -f "$SCRIPT_DIR/../agents/tools.py" ]; then
-  CLIENT_REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
-  echo "  ✓ running inside a full clone — using it in place: $CLIENT_REPO"
+  SRC_REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
+  if [ -f "$SCRIPT_DIR/lib/client_copy.sh" ]; then
+    # shellcheck source=lib/client_copy.sh
+    . "$SCRIPT_DIR/lib/client_copy.sh"
+  else
+    # a partial checkout without the helper: behave as before it existed
+    ob_copy_phys() { (cd "$1" 2>/dev/null && pwd -P) || true; }
+    ob_copy_protected() { return 1; }
+    ob_copy_is_checkout() { return 1; }
+  fi
+  mkdir -p "$CLIENT_DIR"
+  if [ "$(ob_copy_phys "$SRC_REPO")" = "$(ob_copy_phys "$CLIENT_DIR/repo")" ]; then
+    # Re-run from the copy itself (what `openbeast-client update` and the
+    # printed paths lead to): it IS the install.
+    CLIENT_REPO="$CLIENT_DIR/repo"
+    rm -f "$CLIENT_DIR/in-place"
+    echo "  ✓ running from the client copy: $CLIENT_REPO"
+  elif [ $IN_PLACE -eq 1 ]; then
+    _use_in_place "--in-place"
+    printf '%s\n' "$SRC_REPO" > "$CLIENT_DIR/in-place"
+  elif ! ob_copy_is_checkout "$SRC_REPO"; then
+    # No git history to seed a copy from (an unpacked archive, or no git).
+    _use_in_place "not a git checkout"
+  elif ob_copy_seed "$SRC_REPO" "$CLIENT_DIR/repo"; then
+    CLIENT_REPO="$CLIENT_DIR/repo"
+    rm -f "$CLIENT_DIR/in-place"
+    _dirty="$(ob_copy_dirty "$SRC_REPO" | sed -n '1,5p')"
+    if [ -n "$_dirty" ]; then
+      echo "  ! uncommitted changes in $SRC_REPO are NOT in the copy:"
+      printf '%s\n' "$_dirty" | sed 's/^/      /'
+      echo "    (commit them and re-run, or install with --in-place to run the working tree)"
+    fi
+  else
+    echo "  ! could not make the client copy in $CLIENT_DIR/repo (reason above)."
+    _use_in_place "falling back to this checkout"
+  fi
 else
   CLIENT_REPO="$CLIENT_DIR/repo"
+  if [ $IN_PLACE -eq 1 ]; then
+    echo "  ✗ --in-place needs a checkout to run from: run scripts/setup-client.sh from inside one"; exit 1
+  fi
   command -v git >/dev/null 2>&1 || { echo "  ✗ git required for the slim checkout"; exit 1; }
   if [ -d "$CLIENT_REPO/.git" ]; then
     git -C "$CLIENT_REPO" sparse-checkout set agents skills scripts searxng >/dev/null 2>&1 || true
@@ -645,8 +714,8 @@ else
       echo "  ✗ cannot clone $REPO_URL (offline, or GitHub unreachable)."
       echo "    Offline: copy a checkout to this machine (a clone, or one made from an"
       echo "    openbeast.bundle on a USB stick) and run scripts/setup-client.sh from"
-      echo "    INSIDE it: it then installs in place and never clones. Add --wheelhouse <dir>"
-      echo "    for the python deps (docs/BEAST_APPS.md § Offline client)."
+      echo "    INSIDE it: the client copy is then made from it and nothing is cloned."
+      echo "    Add --wheelhouse <dir> for the python deps (docs/BEAST_APPS.md § Offline client)."
       exit 1
     }
     # scripts/ + searxng/ ride along for client.sh, the local-search compose
@@ -655,6 +724,7 @@ else
     git -C "$CLIENT_REPO" sparse-checkout set agents skills scripts searxng >/dev/null 2>&1
     echo "  ✓ slim checkout created (agents/ skills/ scripts/ searxng/ → $CLIENT_REPO)"
   fi
+  rm -f "$CLIENT_DIR/in-place"
 fi
 
 # ---- 3. isolated venv with the pinned deps ----------------------------------
@@ -998,4 +1068,4 @@ echo "  • quitting OpenCode reaps the tool subprocess — nothing keeps runnin
 echo "  • more rigs: openbeast-client rig add <name> --host <fqdn> --api-key-stdin,"
 echo "    then openbeast-client use <name>; openbeast-client rigs lists them"
 echo ""
-echo "Uninstall any time:  $0 --uninstall"
+echo "Uninstall any time:  $CLIENT_REPO/scripts/setup-client.sh --uninstall"

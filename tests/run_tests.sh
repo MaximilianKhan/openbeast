@@ -189,6 +189,7 @@ for _suite in \
   "test_hydra_sim.sh|beast-hydra simulated fleet + scripts/hydra.sh" \
   "test_hydra_instinct_wiring.sh|beast-hydra / beast-instinct stack wiring (conf, start, stop, healthcheck)" \
   "test_setup_client.sh|Client installer (scripts/setup-client.sh)" \
+  "test_client_copy.sh|Client runs from its own copy (client_copy.sh, relocate, update)" \
   "test_publish_slot.sh|beast-slot :8444 mount (setup-tailscale.sh --publish-slot)" \
   "test_tailscale_raw_inference.sh|Raw :8443 target follows INFERENCE_URL (setup-tailscale.sh)" \
   "test_chat_unix_login.sh|beast-chat unix-socket login (CHAT_LOGIN_FROM, :8445 mount)" \

@@ -1042,13 +1042,22 @@ slim checkout. Flags:
 | `--name <rig>` | the name this rig gets in the client's rig registry (default: the key file's name minus `-gate`, else the host's first label) |
 | `--no-search` | skip search wiring entirely |
 | `--local-search` | run SearXNG in a container on the client instead of using the rig's `:8889` (needs Docker Desktop/Engine with the compose plugin) |
+| `--in-place` | run the client straight from this checkout instead of from its own copy: for developing OpenBeast itself (opencode then runs your working tree). Not usable on macOS from `~/Documents`, `~/Desktop`, `~/Downloads`, iCloud Drive or an external volume |
 | `--uninstall` | remove everything below |
 
 What lands on the client:
 
-- `~/.openbeast-client/` — a slim checkout (`agents/ skills/ scripts/ searxng/`)
-  and an isolated venv with the pinned deps. (Run from a full clone and it uses
-  that clone in place.)
+- `~/.openbeast-client/` — the client's own copy of the code
+  (`~/.openbeast-client/repo`: a slim checkout of `agents/ skills/ scripts/
+  searxng/`) and an isolated venv with the pinned deps. Run from a full clone,
+  the installer makes that copy from the clone's checked-out commit, with no
+  network; the clone itself is never what opencode runs, so it can live
+  anywhere, be moved or be deleted. Uncommitted changes are not copied
+  (`--in-place` runs the working tree instead). Why a copy: on macOS a
+  background process, which is what starts the tool server, is denied
+  `~/Documents` and similar folders, so a client run from a clone there loses
+  its tools with "Operation not permitted". A client installed before this
+  (2026-11-27) moves to the copy at its next `openbeast-client update`.
 - `~/.openbeast-client.env` (mode 0600) — the rig URLs and, if keyed, the bearer.
 - A **non-clobbering merge** into `~/.config/opencode/opencode.json`: the
   `openbeast-rig` provider pointed at `https://<rig>:8443/v1`, the full model
@@ -1116,7 +1125,7 @@ walkthrough — is in **[BEAST_SLOT.md](BEAST_SLOT.md)**.
 `~/.local/bin` is not on `PATH` by default on macOS. The full path always works:
 
 ```bash
-<checkout>/scripts/client.sh status
+~/.openbeast-client/repo/scripts/client.sh status
 ```
 
 To get the short command, add the directory (the installer prints the exact
