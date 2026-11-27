@@ -4,8 +4,8 @@
 # 2026-09-11 (table below); MTP + vision untested.
 #
 # What this model is: 177B-total / 10-of-512-experts MoE, arch `qwen4_exp`
-# (Gated DeltaNet + Qwen Sparse Attention hybrid).  Our llama.cpp b10865 has
-# LLM_ARCH_QWEN4EXP, so no rebuild is needed.
+# (Gated DeltaNet + Qwen Sparse Attention hybrid).  llama.cpp has had
+# LLM_ARCH_QWEN4EXP since b10865 (the pin until 2026-11-15; v1.0.0 now).
 #
 # Why three files: ONE model, split into GGUF shards (-00001-of-00003 …).
 # llama.cpp opens the FIRST shard and follows the split metadata to the other
@@ -50,6 +50,15 @@
 #   mmproj-Qwen3.8-Flash-Next-Uncensored-F16.gguf (0.9 GB) → vision:
 #     add  --mmproj <that file>
 #
+# --cache-ram 2048 (2026-11-15): ~72 GiB of weights sit in host RAM here, in
+# the same 75% memory scope (~91.5 GiB) as the prompt cache. Without a value
+# the cache size was left to serve.sh's auto rule, so pin it: 2 GiB of parked
+# conversations is plenty for one slot, and the scope keeps its margin.
+#
+# The un-shelved form of this model, with llama.cpp v1.0.0's MoE expert
+# cache, is serve-qwen38-flash-next-unc-iq4xs-moecache.sh. This script stays
+# as its measured static baseline (docs/WEIGHT_STREAMING.md).
+#
 # Do NOT start this while an eval chain holds the GPU (port 8080 + VRAM).
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -61,5 +70,6 @@ exec "$SCRIPT_DIR/serve.sh" \
   -np 1 \
   --n-cpu-moe 35 \
   --load-mode none \
+  --cache-ram 2048 \
   --reasoning-budget 20480 \
   "$@"

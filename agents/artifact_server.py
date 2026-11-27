@@ -44,11 +44,7 @@ Auth (plan §5, as amended by the security model — IDENTITY IS REQUIRED):
           from this box, so with BIND_HOST on a LAN address its source IS
           that address; security-1). A LAN caller that forges it is
           ANONYMOUS, not the login it named. The reserved rig names ("rig",
-          "local") are never accepted from a header. Opt-in hardening
-          (review R2-5, beast-chat's recipe): OPENBEAST_ARTIFACT_SOCKET adds
-          a 0600 Unix listener, and OPENBEAST_ARTIFACT_LOGIN_FROM=unix makes
-          it the ONLY place the header counts — host-network containers on
-          TCP loopback can then no longer claim a login.
+          "local") are never accepted from a header.
   admin   the locality token, and the logins in ARTIFACT_ADMINS (else the
           FIRST valid operator-allowlist entry) — see artifact.admins(). An
           admin views and manages every page and may hand one to another
@@ -113,6 +109,10 @@ Env:
   OPENBEAST_ARTIFACT_RETAIN_DAYS  opt-in retention sweep; 0/unset = off
   OPENBEAST_FILES_DIR           workspace root — the store lives under it
   OPENBEAST_RUN_DIR             where the token + audit log go (default .run)
+  OPENBEAST_ARTIFACT_SOCKET     also listen on this Unix socket (0600)
+  OPENBEAST_ARTIFACT_LOGIN_FROM loopback (default) | unix — where a
+                                Tailscale-User-Login counts (unix: only on
+                                the socket above; agents/loginsock.py)
 """
 from __future__ import annotations
 
@@ -151,6 +151,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import artifact as store  # noqa: E402
+import loginsock  # noqa: E402
 from hostpolicy import trusted_hosts  # noqa: E402
 
 REPO_DIR = os.path.dirname(_HERE)
@@ -242,6 +243,13 @@ DENY_OTHER = "other"
 # count and the REASON, because the reason is a metric label below.
 DENY_AUDIT_ROWS = 1000
 DENY_AUDIT_WINDOW_S = 300.0
+
+
+def _audit_clock() -> float:
+    """The clock the audit budgets run on (time.monotonic). A module-level
+    seam so tests drive the window deterministically instead of racing a
+    real 50 ms window on a loaded runner (review 2026-11-16)."""
+    return time.monotonic()
 
 # storage-04: the same bound for IDENTIFIED callers. Every request from a
 # tailnet login appended an uncapped ~330-byte row, so one buggy client
@@ -361,6 +369,18 @@ RAW_FILE_HEADERS = dict(RAW_HEADERS, **{
 # of a sandbox is a network error against a COOP response.
 COOP_HEADER = ("Cross-Origin-Opener-Policy", "same-origin")
 
+# The same XS-Leak, through `fetch(url, {mode: "no-cors"})` or `<script src>`
+# instead of `window.open`: CORP same-origin turns a cross-site load of a 200
+# into a network error, so CORP on the 200s alone (shell, gallery, /raw) and
+# not on the flat 404 or the API JSON made "rejects vs resolves" an existence
+# oracle. Every answer outside the capability tree carries the same set, put
+# on by the gate middleware (review, spark-scale: beast-artifact).
+UNIFORM_HEADERS = (
+    COOP_HEADER,
+    ("Cross-Origin-Resource-Policy", "same-origin"),
+    ("X-Content-Type-Options", "nosniff"),
+)
+
 SHELL_HEADERS = {
     "Content-Security-Policy": SHELL_CSP,
     "X-Content-Type-Options": "nosniff",
@@ -399,64 +419,6 @@ def _configured_host() -> str:
     return os.environ.get("OPENBEAST_BIND", "").strip() or "127.0.0.1"
 
 
-def login_source() -> str:
-    """OPENBEAST_ARTIFACT_LOGIN_FROM: 'loopback' (default) or 'unix'.
-
-    beast-chat's OPENBEAST_CHAT_LOGIN_FROM, ported (review R2-5). Under
-    `loopback` any process on this host — Open WebUI, SearXNG and ntfy run
-    `network_mode: host` — can send `Tailscale-User-Login: <owner>` to
-    127.0.0.1:3004 and read that owner's private pages. Under `unix` the
-    header counts ONLY on a connection that arrived on
-    OPENBEAST_ARTIFACT_SOCKET, the 0600 socket `tailscale serve` (root)
-    proxies to; TCP callers then need the locality token.
-    """
-    v = (os.environ.get("OPENBEAST_ARTIFACT_LOGIN_FROM")
-         or "loopback").strip().lower()
-    return "unix" if v == "unix" else "loopback"
-
-
-def _unix_listener(path: str):
-    """Bind the login-bearing Unix socket: 0600 in a 0700 directory.
-
-    Same contract as chat_server._unix_listener (kept local: this server
-    must not import beast-chat). tailscaled runs as root, so 0600 costs it
-    nothing; every other local user and every container is kept out. A
-    stale socket is replaced; anything else at the path is left alone.
-    """
-    import stat as _st
-    parent = os.path.dirname(os.path.abspath(path))
-    os.makedirs(parent, mode=0o700, exist_ok=True)
-    try:
-        st = os.lstat(path)
-        if _st.S_ISSOCK(st.st_mode):
-            os.unlink(path)
-        else:
-            raise SystemExit(f"ERROR: {path} exists and is not a socket — "
-                             f"refusing to replace it")
-    except FileNotFoundError:
-        pass
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    old = os.umask(0o177)
-    try:
-        sock.bind(path)
-    finally:
-        os.umask(old)
-    os.chmod(path, 0o600)
-    sock.listen(128)
-    return sock
-
-
-def _login_header_trusted(request, login_from: str) -> bool:
-    """May this connection assert an identity by `Tailscale-User-Login`?
-
-    `loopback` (default): _peer_is_loopback. `unix`: only a connection with
-    no peer address — one accepted on OPENBEAST_ARTIFACT_SOCKET.
-    """
-    if login_from == "unix":
-        return getattr(request, "client", None) is None
-    return _peer_is_loopback(request)
-
-
 def _peer_is_loopback(request) -> bool:
     """May this connection's peer assert an identity by HEADER?
 
@@ -471,13 +433,19 @@ def _peer_is_loopback(request) -> bool:
     peer (or a Unix socket, which has no address and is on this box by
     construction); from anywhere else the caller is ANONYMOUS.
 
+    "A Unix socket" means OUR socket, identified from the listener
+    (scope["server"]). A missing peer address proves nothing: uvicorn
+    reports none for a TCP connection reset before connection_made, and the
+    request it queued is still served (agents/loginsock.py).
+
     The converse is NOT claimed: a loopback peer proves nothing about who is
     behind the proxy (edge.py:412), which is why writes need the locality
-    token and still do. Fail closed on anything that is not an IP literal.
+    token or a device key — and why a key bound to a login answers only for
+    it (_remote_write_refusal). Fail closed on anything not an IP literal.
     """
     client = getattr(request, "client", None)
     if client is None:
-        return True
+        return loginsock.arrived_on(request, _login_socket())
     try:
         addr = _unmap(ipaddress.ip_address((client.host or "").split("%", 1)[0]))
     except ValueError:
@@ -501,6 +469,34 @@ def _peer_is_loopback(request) -> bool:
     except ValueError:
         return False
     return (not local.is_unspecified) and addr == local
+
+
+def _login_socket() -> str:
+    """OPENBEAST_ARTIFACT_SOCKET as configured ('' when there is none)."""
+    return (os.environ.get("OPENBEAST_ARTIFACT_SOCKET") or "").strip()
+
+
+def login_source() -> str:
+    """OPENBEAST_ARTIFACT_LOGIN_FROM: 'loopback' (default) or 'unix'.
+
+    `loopback` honours Tailscale-User-Login from any peer on this host —
+    which includes code in every network_mode: host container (Open WebUI
+    Functions, SearXNG, a third-party inference image). `unix` honours it
+    ONLY on OPENBEAST_ARTIFACT_SOCKET, the 0600 socket `tailscale serve`
+    (root) proxies :8446 to; TCP readers then need the locality token or an
+    artifact-scoped device key. The same design as beast-chat's
+    CHAT_LOGIN_FROM (docs/BEAST_CHAT.md).
+    """
+    v = (os.environ.get("OPENBEAST_ARTIFACT_LOGIN_FROM") or "loopback"
+         ).strip().lower()
+    return "unix" if v == "unix" else "loopback"
+
+
+def _login_header_trusted(request, login_from: str, sock_path: str) -> bool:
+    """May this connection assert an identity by Tailscale-User-Login?"""
+    if login_from == "unix":
+        return loginsock.arrived_on(request, sock_path)
+    return _peer_is_loopback(request)
 
 
 def _unmap(addr):
@@ -892,9 +888,9 @@ def create_app(local_token: str | None = None) -> FastAPI:
     otherwise mint).
     """
     operators = _operators()          # ordered; [0] owns CLI publishes
-    operator_set = set(operators)
-    # Where a Tailscale-User-Login header may come from (review R2-5).
     login_from = login_source()
+    login_socket = _login_socket()
+    operator_set = set(operators)
     if local_token is None:
         local_token = _ensure_local_token()
     audit_path = os.path.join(_run_dir(), "artifact-audit.jsonl")
@@ -939,7 +935,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
     def _flat_404() -> JSONResponse:
         """The single refusal (D9). Same status, same body, same length."""
         return JSONResponse(NOT_FOUND_BODY, status_code=404,
-                            headers=dict([COOP_HEADER]))
+                            headers=dict(UNIFORM_HEADERS))
 
     # D27/R5. An UNIDENTIFIED caller can mint audit rows two ways — a refusal,
     # and a hit on the one route exempt from the anonymity gate
@@ -958,7 +954,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
     # Keyed by reason, so exhausting the cheap one (an anonymous GET) cannot
     # blind the expensive one (two identity headers on the same request).
     deny_audit: dict = defaultdict(
-        lambda: {"written": 0, "suppressed": 0, "since": time.monotonic()})
+        lambda: {"written": 0, "suppressed": 0, "since": _audit_clock()})
 
     def audit(entry: dict) -> None:
         try:
@@ -1002,7 +998,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
                 return key
             logins = [k for k in deny_audit if k.startswith("login:")]
             if len(logins) >= LOGIN_AUDIT_BUCKETS:
-                now = time.monotonic()
+                now = _audit_clock()
                 for k in logins:
                     if now - deny_audit[k]["since"] >= DENY_AUDIT_WINDOW_S:
                         del deny_audit[k]
@@ -1012,7 +1008,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
         return key
 
     def _budgeted_audit(entry: dict, key: str, limit: int) -> None:
-        now = time.monotonic()
+        now = _audit_clock()
         with metrics_lock:
             budget = deny_audit[key]
             if now - budget["since"] >= DENY_AUDIT_WINDOW_S:
@@ -1072,7 +1068,9 @@ def create_app(local_token: str | None = None) -> FastAPI:
             # reading like the named user's own device misbehaving.
             entry["claimed_login"] = claimed
             client = getattr(request, "client", None)
-            entry["peer"] = (getattr(client, "host", None) or "")[:64] or None
+            entry["peer"] = ("unix" if loginsock.arrived_on(request, login_socket)
+                             else (getattr(client, "host", None) or "")[:64]
+                             or None)
         entry.update(extra or getattr(request.state, "extra", {}) or {})
         reason = _deny_label(entry.get("denied"))
         # The budget has to cover every row an UNIDENTIFIED caller can mint,
@@ -1159,7 +1157,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
             _record(request, 429, t0, {"denied": deny})
             return JSONResponse({"detail": "too many changes — wait a minute"},
                                 status_code=429,
-                                headers=dict([COOP_HEADER]))
+                                headers=dict(UNIFORM_HEADERS))
         if deny:
             _record(request, 404, t0, {"denied": deny})
             return _flat_404()
@@ -1188,7 +1186,8 @@ def create_app(local_token: str | None = None) -> FastAPI:
             store.reset_owner_override(owner_token)
         _record(request, response.status_code, t0)
         if _coop_applies(request.url.path):
-            response.headers[COOP_HEADER[0]] = COOP_HEADER[1]
+            for name, value in UNIFORM_HEADERS:
+                response.headers[name] = value
         return response
 
     # Host pinning, added LAST so it is OUTERMOST (Starlette's add_middleware
@@ -1254,6 +1253,16 @@ def create_app(local_token: str | None = None) -> FastAPI:
         dev = registry.lookup(_device_key(request), DEVICE_SCOPE)
         if dev is None:
             return "not-local"
+        # The key proves a DEVICE, the header names a LOGIN — and a process
+        # on the rig can set the header to anyone (review, spark-scale:
+        # beast-artifact). A key bound to a login (`clients.sh enroll …
+        # --login <login>`, the record's `login` field) answers only for that
+        # login, and only a bound key carries the login's ADMIN power: an
+        # unbound key plus a forged admin header used to buy chown, rollback
+        # and delete on every page.
+        bound = str(dev.get("login") or "").strip().lower()
+        if bound and bound != principal.login:
+            return "not-local"
         raw_len = request.headers.get("content-length")
         if raw_len is None and request.headers.get("transfer-encoding"):
             return "oversize"          # no length, no streaming
@@ -1273,7 +1282,8 @@ def create_app(local_token: str | None = None) -> FastAPI:
             remote_hits[dev_id] = q
         request.state.principal = Principal(
             login=principal.login, local=False, operator=principal.operator,
-            admin=principal.admin, device=dev_id)
+            admin=principal.admin and bound == principal.login,
+            device=dev_id)
         return ""
 
     def _ambiguous_identity(request: Request) -> bool:
@@ -1316,8 +1326,10 @@ def create_app(local_token: str | None = None) -> FastAPI:
         local = is_local(request)
         # A login header from an off-box peer is not an identity at all (see
         # _peer_is_loopback): the caller is who the TOKEN says, or nobody.
+        # With ARTIFACT_LOGIN_FROM=unix, only the 0600 socket counts.
         raw = ((request.headers.get(_HDR_LOGIN) or "").strip().lower()
-               if _login_header_trusted(request, login_from) else "")
+               if _login_header_trusted(request, login_from, login_socket)
+               else "")
         # The rig's own names are never an identity a HEADER can carry. The
         # rig principal owns every CLI/campaign publish, so accepting it from
         # a header would make it a read password — the defect class R6
@@ -1796,9 +1808,26 @@ def create_app(local_token: str | None = None) -> FastAPI:
         # raw_page so both get wrap_skeleton.
         if path.strip().strip("/") in ("", "index.html"):
             return raw_page(request, artifact_id, n)
+        mid = _meta_id(meta, artifact_id)
         try:
-            data, ctype = store.read_file(_meta_id(meta, artifact_id),
-                                          version, path)
+            # A Range reads ONLY its bytes: slicing a whole-file read cost a
+            # full 15 MB read per media range request (review, spark-scale).
+            size = store.file_size(mid, version, path)
+            rng = _parse_range(request.headers.get("range"), size)
+            if isinstance(rng, tuple):
+                data, ctype = store.read_file(mid, version, path, span=rng)
+                headers = dict(RAW_HEADERS, **{
+                    "Accept-Ranges": "bytes",
+                    "Content-Range": f"bytes {rng[0]}-{rng[1]}/{size}"})
+                request.state.extra = {"bytes": len(data)}
+                return Response(content=data, status_code=206,
+                                media_type=ctype, headers=headers)
+            if rng == "unsatisfiable":
+                headers = dict(RAW_HEADERS, **{
+                    "Accept-Ranges": "bytes",
+                    "Content-Range": f"bytes */{size}"})
+                return Response(status_code=416, headers=headers)
+            data, ctype = store.read_file(mid, version, path)
         except store.ArtifactError:
             raise HTTPException(status_code=404, detail="Not Found")
         request.state.extra = {"bytes": len(data)}
@@ -1829,6 +1858,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
             return {"status": "error", "detail": str(e)}
         return {"status": "ok" if ok else "error", "artifacts": count,
                 "auth": "allowlist" if operators else "identified",
+                "login_from": login_from,
                 "admins": len(store.admins()),
                 "retain_days": store.retain_days(),
                 "store": root}
@@ -1916,13 +1946,35 @@ def create_app(local_token: str | None = None) -> FastAPI:
                                "bytes": result.get("bytes")}
         return result
 
+    def _managed_meta(request: Request, artifact_id: str) -> dict:
+        """The page's meta when the caller may manage it, else the flat 404.
+
+        A non-admin (a keyed tailnet operator: every other writer is the
+        rig) must be the page's RECORDED owner. The store's "no recorded
+        owner is open to everyone" and "an unparseable record is deletable"
+        were recovery paths for the rig, written when only the rig could
+        write; F-A2 handed them to every keyed operator, who could delete
+        another operator's damaged page or share an owner-less legacy one
+        (review, spark-scale: beast-artifact). Rig and admins keep both.
+        """
+        try:
+            meta = store.get_meta(artifact_id)
+        except store.ArtifactError:
+            meta = None          # corrupt: only an admin may act on it
+        if is_admin(request):
+            return meta
+        if not meta or not store._owner_of(meta):
+            raise HTTPException(status_code=404, detail="Not Found")
+        try:
+            store._require_owner(meta, owner_for(request))
+        except store.ArtifactError:
+            raise HTTPException(status_code=404, detail="Not Found")
+        return meta
+
     @app.patch("/api/artifacts/{artifact_id}")
     def api_patch(request: Request, artifact_id: str, body: PatchBody,
                   _w: None = Depends(require_manager)):
-        try:
-            current_meta = store.get_meta(artifact_id)
-        except store.ArtifactError:
-            current_meta = None
+        current_meta = _managed_meta(request, artifact_id)
         if not current_meta:
             raise HTTPException(status_code=404, detail="Not Found")
         admin = is_admin(request)
@@ -2039,6 +2091,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
     @app.delete("/api/artifacts/{artifact_id}")
     def api_delete(request: Request, artifact_id: str,
                    _w: None = Depends(require_manager)):
+        _managed_meta(request, artifact_id)
         try:
             # R2, and the loudest of the four: DELETE is irreversible.
             gone = store.remove(artifact_id, owner=owner_for(request),
@@ -2058,10 +2111,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
         # store runs (as api_patch does): the store's "no such artifact" went
         # out as a 400 to a keyed tailnet caller while someone else's page
         # was a 404 — an existence oracle for guessable custom ids (D9/D29).
-        try:
-            current_meta = store.get_meta(artifact_id)
-        except store.ArtifactError:
-            current_meta = None
+        current_meta = _managed_meta(request, artifact_id)
         if not current_meta:
             raise HTTPException(status_code=404, detail="Not Found")
         admin = is_admin(request)
@@ -2253,6 +2303,22 @@ def _uvicorn_config(app, host: str, port: int):
                           proxy_headers=False, forwarded_allow_ips="")
 
 
+def _harden_process() -> bool:
+    """Make beast-artifact non-dumpable (tools.harden_process,
+    PR_SET_DUMPABLE=0), as beast-chat already is.
+
+    start.sh hands this process the OPENBEAST_* configuration, secrets
+    among it. A dumpable process lets any same-uid process (a spawned
+    agent's model-authored bash) read them from /proc/<pid>/environ; the
+    chat server, tool server, mcp_server and runner already close that.
+    """
+    try:
+        from tools import harden_process
+    except Exception:          # never let hardening stop the server starting
+        return False
+    return harden_process()
+
+
 def main() -> None:
     """Bind the port FIRST, then mint the token (D18).
 
@@ -2264,6 +2330,7 @@ def main() -> None:
     token file.
     """
     import uvicorn
+    _harden_process()
     host = _configured_host()
     port = _configured_port()
     infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
@@ -2282,10 +2349,10 @@ def main() -> None:
               file=sys.stderr)
         raise SystemExit(1)
     sockets = [sock]
-    unix_path = (os.environ.get("OPENBEAST_ARTIFACT_SOCKET") or "").strip()
+    unix_path = _login_socket()
     if unix_path:
         try:
-            sockets.append(_unix_listener(unix_path))
+            sockets.append(loginsock.unix_listener(unix_path, "artifact_server"))
         except OSError as e:
             sock.close()
             print(f"ERROR: cannot bind the login socket {unix_path} ({e})",
@@ -2294,8 +2361,8 @@ def main() -> None:
     if login_source() == "unix" and not unix_path:
         print("WARNING: OPENBEAST_ARTIFACT_LOGIN_FROM=unix but "
               "OPENBEAST_ARTIFACT_SOCKET is unset — no connection can present "
-              "a tailnet login; only the locality token will work.",
-              file=sys.stderr)
+              "a tailnet login; only device keys and the locality token will "
+              "work.", file=sys.stderr)
     app = create_app(local_token=_mint_local_token())
     _start_retention_thread(app)
     print(f"OpenBeast artifact server on {host}:{port} "

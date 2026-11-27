@@ -74,7 +74,8 @@ manifest_write() {            # manifest_write <dir> <url> <file> <license> <des
   local dir="$1" url="$2" file="$3" license="$4" describes="$5"
   local sha size
   sha="$(sha256sum "$file" | cut -d' ' -f1)"
-  size="$(stat -c%s "$file")"
+  # wc, not `stat -c%s`: GNU-only, so on macOS no manifest was ever written.
+  size="$(wc -c < "$file" | tr -d " ")"
   python3 - "$dir/manifest.json" "$url" "$(basename "$file")" "$sha" "$size" \
            "$license" "$describes" <<'PY'
 import json, os, subprocess, sys

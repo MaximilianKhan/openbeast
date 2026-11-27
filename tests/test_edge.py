@@ -1303,5 +1303,24 @@ class TestMutationSurvivors1009:
         assert oct(p.stat().st_mode)[-3:] == "600"
 
 
+def test_max_inflight_defaults_to_the_servers_slots(edge, monkeypatch):
+    """Review 2026-11-16: the Spark pair serves 4 streams (INFERENCE_SLOTS=4)
+    but the gate admitted 2 per device, so a Mac running 3-4 agents got 429s
+    while streams sat idle. With EDGE_MAX_INFLIGHT unset the cap follows
+    INFERENCE_SLOTS; an explicit EDGE_MAX_INFLIGHT still wins."""
+    assert edge.default_max_inflight({}) == 2
+    assert edge.default_max_inflight({"OPENBEAST_INFERENCE_SLOTS": "4"}) == 4
+    assert edge.default_max_inflight({"OPENBEAST_INFERENCE_SLOTS": "0"}) == 2
+    assert edge.default_max_inflight({"OPENBEAST_INFERENCE_SLOTS": "x"}) == 2
+    assert edge.default_max_inflight({"OPENBEAST_INFERENCE_SLOTS": "4",
+                                      "OPENBEAST_EDGE_MAX_INFLIGHT": "1"}) == 1
+    monkeypatch.delenv("OPENBEAST_EDGE_MAX_INFLIGHT")
+    monkeypatch.setenv("OPENBEAST_INFERENCE_SLOTS", "4")
+    importlib.reload(edge)
+    assert edge.MAX_INFLIGHT == 4
+    b = edge.Bucket(1000, edge.MAX_INFLIGHT)
+    assert [b.reserve() for _ in range(5)] == [None, None, None, None, "max_inflight"]
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

@@ -40,9 +40,15 @@ RUN_DIR="$SCRIPT_DIR/.run"
 REPO_DIR="$SCRIPT_DIR"
 # An unreadable conf (conf.sh says why and how to fix it) must not stop the
 # stop: the kills below need no config, and compose down falls back to a
-# warning without its secret.
-source "$SCRIPT_DIR/scripts/lib/conf.sh" \
-  || echo "Warning: continuing WITHOUT openbeast.conf — stopping by pidfile and path only." >&2
+# warning without its secret. Which engine serves is then unknown, so only
+# the llama.cpp path runs (a managed vLLM / TensorFold is not reached).
+if [[ -e "$SCRIPT_DIR/openbeast.conf" && ! -r "$SCRIPT_DIR/openbeast.conf" ]]; then
+  source "$SCRIPT_DIR/scripts/lib/conf.sh" || true    # prints the diagnosis
+  echo "Warning: continuing WITHOUT openbeast.conf — stopping by pidfile and path only." >&2
+  INFERENCE_BACKEND="${INFERENCE_BACKEND:-llama}"; INFERENCE_URL="${INFERENCE_URL:-}"
+else
+  source "$SCRIPT_DIR/scripts/lib/conf.sh"
+fi
 source "$SCRIPT_DIR/scripts/lib/extensions.sh"
 source "$SCRIPT_DIR/scripts/lib/proc.sh"   # ob_py_ere, ob_bin_ere, ob_pid_matches
 source "$SCRIPT_DIR/scripts/lib/backend.sh" # ob_inference_managed, ob_backend_label
@@ -134,6 +140,20 @@ pkill -f "$(ob_py_ere "$SCRIPT_DIR/agents/router.py")" 2>/dev/null && echo "agen
 
 echo "Stopping beast-gate..."
 pkill -f "$(ob_py_ere "$SCRIPT_DIR/agents/edge.py")" 2>/dev/null && echo "beast-gate stopped." || echo "beast-gate was not running."
+# beast-island: the watcher, then its state file — a stopped stack must not
+# leave web tools refusing (OpenCode's MCP server reads the same file).
+# Quiet when there was none: ISLAND=off and older stacks never had one.
+# Wait (bounded) for it to exit before removing the file: a tick that was
+# mid-probe would otherwise write it back.
+if pkill -f "$(_ob_ere "$SCRIPT_DIR/agents/island.py") watch" 2>/dev/null; then
+  for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    pgrep -f "$(_ob_ere "$SCRIPT_DIR/agents/island.py") watch" >/dev/null 2>&1 || break
+    sleep 0.2
+  done
+  echo "beast-island watcher stopped."
+fi
+rm -f "${OPENBEAST_RUN_DIR:-$RUN_DIR}/island.json" "$RUN_DIR/island.json" \
+      "$RUN_DIR/island.pid" "$RUN_DIR/island.start" 2>/dev/null || true
 
 # beast-instinct, then its CPU scorer (the reverse of the start order), then
 # beast-hydra. Only when they are on, or left a pidfile behind (a stack
@@ -205,9 +225,9 @@ _stop_recorded "chat server" "$RUN_DIR/chat.pid" \
 
 echo "Stopping tool server..."
 pkill -f "$(ob_py_ere "$SCRIPT_DIR/agents/openapi_tools.py")" 2>/dev/null && echo "Tool server stopped." || echo "Tool server was not running."
-# (No more `pkill -f "mcpo --port"`: mcpo was replaced on 2026-07-09, and that
-# pattern named no path, so every stop killed ANY mcpo on the box — another
-# project's, another worktree's.)
+# (No `pkill -f "mcpo --port"` any more: nothing here has launched mcpo since
+# 2026-07-09, so that unanchored pattern could only reach ANOTHER project's
+# mcpo proxy — against this file's own rule above.)
 
 if ! ob_inference_managed; then
   # INFERENCE_MANAGED=false (always for vLLM / TensorFold): the inference
@@ -216,6 +236,14 @@ if ! ob_inference_managed; then
   # sweep below has nothing of ours to find.
   echo "Leaving the inference server alone: $(ob_backend_label) at $INFERENCE_URL is not managed by this stack."
   echo "  (stop it where it runs — docs/DGX_SPARK_PLAN.md)"
+# >>> engine-plane hook (docs/ENGINES.md) — a MANAGED vLLM / TensorFold of
+# this checkout: its adapter stops it (the container by its per-checkout
+# name, a native server by its recorded pid). Never the llama path below.
+elif [[ "$INFERENCE_BACKEND" != "llama" ]]; then
+  source "$SCRIPT_DIR/scripts/lib/engine.sh"
+  echo "Stopping $(ob_backend_label) (managed by this stack)..."
+  ob_engine_stop_managed
+# <<< engine-plane hook
 else
 echo "Stopping llama.cpp server..."
 # The supervisor's own llama-server is already gone by now (its trap stopped

@@ -1,0 +1,9 @@
+{
+  "expect": {
+    "wrong_noclamp.py": "File \"<validator>\", line 1, in <module>\\s*\\nAssertionError\\s*$",
+    "wrong_clampt.py": "File \"<validator>\", line 1, in <module>\\s*\\nAssertionError\\s*$",
+    "wrong_k4coef.py": "File \"<validator>\", line 1, in <module>\\s*\\nAssertionError\\s*$"
+  },
+  "timed": false,
+  "note": "v4 validator kept unchanged. Its two asserts (final t == t_end, final y == e^-1 within 1e-6) carry no message and share one source line, so the failure class can only be 'a bare AssertionError raised in the validator frame' (not in the solution, not an import/syntax error); it cannot say which of the two fired. Wrongs: no h clamp (overshoots t_end), clamping t instead of h (last point labelled t_end with y at t+h), k4-stage tableau typo 7296/2179. Known gaps (plausible wrongs that PASS): never rejecting a step (advance even when err >= tol), accepting y4 instead of y5. A 5th-order weight typo (1408/2565 for 6656/12825) makes err never fall under tol and hangs to the harness timeout, so it is not used."
+}

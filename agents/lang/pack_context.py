@@ -28,6 +28,13 @@ and its immediate subdirectories, e.g. src/main.zig). The scan is bounded
 (SCAN_MAX_ENTRIES) and skips VCS/dependency/cache directories, so an agent
 started in $HOME costs a few hundred stat()s, not a crawl.
 
+THE VARIANT. LANG_PACK_VARIANT = v1 (default, PACK_FILES) | v3 (the zig
+pack DeepSeek-V4.1-Flash (Mia EXL3)'s best arm T2 measured; set by
+AGENT_PROFILE=deepseek-best or qwen38-best, which share one switch table in
+scripts/lib/conf.sh). Env OPENBEAST_LANG_PACK_VARIANT beats the conf.
+Only pinned bytes are served (PRODUCTION_VARIANT_SHA256); anything else
+serves no pack.
+
 THE SWITCH. LANG_PACK_CONTEXT = auto (default) | off. Env
 OPENBEAST_LANG_PACK_CONTEXT beats openbeast.conf, parsed the way
 scripts/lib/conf.sh's _ob_bool parses: first token, trailing #comment and
@@ -70,6 +77,25 @@ PACKS_DIR = os.path.join(_AGENTS, "packs")
 #: (evals/run_eval.py PACK_FILES), so the two cannot name different files.
 PACK_FILES = {"zig": "zig-0.16.md"}
 
+#: Pack VARIANTS the eval harness may measure instead of PACK_FILES, chosen
+#: per run with OPENBEAST_PACK_VARIANT (evals/run_eval.py packs_flag).
+#: "v1" is PACK_FILES itself: the measured bytes production serves. "v2" is
+#: the 2026-11-16 pack (GLM-5.3-Flash v5 taxonomy, docs/LANG_AWARENESS_PLAN.md
+#: §5.1), an unmeasured treatment. "v3" is v2 plus the 2026-11-17 thinking-arm
+#: claims (posix.write, @clz shift width, no erf, the toolchain's own main.zig;
+#: docs/HARNESS_NOTES.md "Language-specific residue under thinking"): a new
+#: file, not an edit of v2, because v2 was mid-measurement in a campaign arm
+#: and a variant name must keep naming one set of bytes. Production reads
+#: this map only for a variant the operator chose (LANG_PACK_VARIANT) that
+#: has a measured pin in PRODUCTION_VARIANT_SHA256 below; when a variant wins
+#: its A/B outright, it becomes PACK_FILES and MEASURED_SHA256 moves.
+PACK_VARIANTS = {
+    "v1": dict(PACK_FILES),
+    "v2": {"zig": "zig-0.16-v2.md"},
+    "v3": {"zig": "zig-0.16-v3.md"},
+}
+DEFAULT_PACK_VARIANT = "v1"
+
 #: sha256 of the pack bytes that the Tier-3 A/B measured (verdict line
 #: `pack: {'zig': '5cdf4b64'}`). Production serves only these bytes. After an
 #: edit to the pack, re-run the Tier-3 A/B and move this pin — until then the
@@ -78,6 +104,50 @@ PACK_FILES = {"zig": "zig-0.16.md"}
 MEASURED_SHA256 = {
     "zig": "5cdf4b6417160751b95c3fd1e8a730193774a7061ce1be4f57435d591ae98127",
 }
+
+#: Pack VARIANTS production may serve besides v1, when the operator opts in
+#: with LANG_PACK_VARIANT (env OPENBEAST_LANG_PACK_VARIANT; AGENT_PROFILE=
+#: deepseek-best or qwen38-best in openbeast.conf sets v3; this module never
+#: reads AGENT_PROFILE itself, conf.sh exports the variant). Same rule as MEASURED_SHA256:
+#: only bytes a measurement used. v3 = agents/packs/zig-0.16-v3.md as
+#: v5-thinking-first arms T and T2 measured it (DeepSeek-V4.1-Flash (Mia EXL3),
+#: T2 65/71 on 2026-11-19, board row DS-T2; the results header records
+#: packs.zig = cfdab8fa). An edit to the file is an unmeasured treatment and is
+#: not served until the pin moves with a new measurement. The HOST pack those
+#: arms also carried (agents/lang/host_pack.py) stays eval-only.
+PRODUCTION_VARIANT_SHA256 = {
+    "v3": {"zig": "cfdab8fa9f194e8a3a346cbb12567c625ac93f557b40ee572d601db3c8ff8297"},
+}
+#: The language-independent ALGORITHMIC PROCEDURE pack (harness10, arm UPA of
+#: v5-thinking-first; 2026-11-19). Procedure only, no noun from any v5 unit
+#: (tests/test_eval_arms_u.py checks the unit ids): bound before code, split
+#: into parts that never interact, test doubtful simplifications against a
+#: brute force, memoised search on the minimal state, standard reductions,
+#: two-stage verification, redesign on a >5x miss. Evidence: DeepSeek-V4.1-
+#: Flash (Mia EXL3) failed 168_linearizability_kv by choosing a global
+#: memoised search and rejecting the per-part split by argument. Eval only:
+#: run_eval hands it to EVERY unit with OPENBEAST_ALGO_PACK=1 (packs_flag),
+#: after the language and host packs. The bytes are FROZEN: the sha below is
+#: pinned by a test and checked at run start (algo_pack_problem), and an
+#: edited pack is a new file (algo-v2.md) with a new pin, never a re-tune of
+#: this one.
+ALGO_PACK_FILE = "algo-v1.md"
+ALGO_PACK_SHA256 = "6c5324007750c44091a03c98cfef813cac0f3e576f982beb8908c0732e2ac09d"
+
+
+def algo_pack_problem(data: bytes) -> str | None:
+    """Why `data` is not the frozen algorithmic pack, or None."""
+    got = hashlib.sha256(data).hexdigest()
+    if got != ALGO_PACK_SHA256:
+        return (f"agents/packs/{ALGO_PACK_FILE}: sha256 {got[:16]} is not the frozen "
+                f"{ALGO_PACK_SHA256[:16]} (agents/lang/pack_context.py ALGO_PACK_SHA256). "
+                f"The pack is frozen: put an edited procedure in a new file with a new pin")
+    return None
+
+
+#: Every value LANG_PACK_VARIANT accepts. scripts/lib/conf.sh holds the same
+#: list (_OB_PACK_VARIANTS); tests/test_agent_profile.py pins the two.
+PRODUCTION_VARIANTS = (DEFAULT_PACK_VARIANT,) + tuple(sorted(PRODUCTION_VARIANT_SHA256))
 
 SCAN_MAX_ENTRIES = 500
 SCAN_SKIP_DIRS = frozenset({
@@ -131,6 +201,26 @@ def setting() -> tuple[str, str]:
     return "off", raw
 
 
+def pack_variant() -> tuple[str | None, str]:
+    """(variant, raw value): which pack bytes production serves.
+    OPENBEAST_LANG_PACK_VARIANT beats openbeast.conf's LANG_PACK_VARIANT; empty
+    is the default (v1, PACK_FILES). A value outside PRODUCTION_VARIANTS is
+    None: no pack at all, logged once (a typo must not silently pick a
+    treatment, and v2 was never measured as a whole run)."""
+    raw = os.environ.get("OPENBEAST_LANG_PACK_VARIANT")
+    if raw is None:
+        raw = _conf_value("LANG_PACK_VARIANT") or ""
+    tok = (raw.split() or [""])[0].split("#", 1)[0]
+    tok = tok.replace('"', "").replace("'", "").lower()
+    if not tok:
+        return DEFAULT_PACK_VARIANT, raw
+    if tok in PRODUCTION_VARIANTS:
+        return tok, raw
+    _log_once(f"variant:{raw}", f"LANG_PACK_VARIANT={raw!r} is not one of "
+              f"{', '.join(PRODUCTION_VARIANTS)} — serving no pack")
+    return None, raw
+
+
 def _eval_marker() -> str | None:
     for k in _EVAL_ENV:
         if os.environ.get(k):
@@ -139,7 +229,9 @@ def _eval_marker() -> str | None:
 
 
 def _lang_allowed(lang: str) -> bool:
-    """LANG_PACKS is the operator's language allow list for beast-lang."""
+    """LANG_PACKS is the operator's language allow list for beast-lang.
+    `auto` admits the language here; served_pack() then refuses it when its
+    toolchain is absent, which is where packs.allow_list('auto') drops it."""
     try:
         from lang import packs as P                    # noqa: PLC0415
         raw = P.allow_list_raw()
@@ -158,8 +250,15 @@ def _lang_allowed(lang: str) -> bool:
 # --------------------------------------------------------------------------
 
 _PACK_HEADER_RE = re.compile(
-    r"^\(2\) GENERATED signature digest — zig (\S+) std, (\d+) lines, sha256\(digest\)=([0-9a-f]{16})",
+    r"^\(2\) GENERATED signature digest — (\S+) (\S+) std, (\d+) lines, sha256\(digest\)=([0-9a-f]{16})",
     re.MULTILINE)
+
+#: Languages whose pack MUST carry a generated section (its absence means the
+#: generator never ran). Any other language's pack may be curated only: no
+#: header means nothing generated can drift, never a reason to abort the eval
+#: run that loads it (run_eval's packs_flag calls pack_problem for EVERY entry
+#: of PACK_FILES, and used to demand the zig header from all of them).
+GENERATED_SECTION_REQUIRED = frozenset({"zig"})
 
 _ZIG_VERSION: dict = {}
 
@@ -189,9 +288,14 @@ def pack_problem(lang: str, path: str, data: bytes) -> str | None:
     text = data.decode("utf-8", errors="replace")
     m = _PACK_HEADER_RE.search(text)
     if not m:
+        if lang not in GENERATED_SECTION_REQUIRED:
+            return None          # curated only: nothing generated to drift
         return (f"pack {path}: no generated-section header — regenerate with "
                 f"agents/packs/gen_zig_pack.py")
-    version, _n, stamped = m.group(1), m.group(2), m.group(3)
+    hdr_lang, version, _n, stamped = m.group(1), m.group(2), m.group(3), m.group(4)
+    if hdr_lang != lang:
+        return (f"pack {path}: its generated section is for {hdr_lang}, but "
+                f"PACK_FILES files it under {lang}")
     digest = text[m.end():].split("\n", 1)[1] if "\n" in text[m.end():] else ""
     actual = hashlib.sha256(digest.encode()).hexdigest()[:16]
     if actual != stamped:
@@ -200,56 +304,9 @@ def pack_problem(lang: str, path: str, data: bytes) -> str | None:
     if lang == "zig":
         installed = _installed_zig()
         if installed and installed != version:
-            # Pin, don't regenerate: a regenerated pack is new bytes, i.e. an
-            # unmeasured treatment that MEASURED_SHA256 refuses anyway.
             return (f"pack {path}: generated for zig {version} but zig {installed} is "
-                    f"installed — {_ZIG_PIN_HINT.format(v=version)}")
+                    f"installed — regenerate with agents/packs/gen_zig_pack.py")
     return None
-
-
-_ZIG_PIN_HINT = ("pin the toolchain back (mise use -g zig@{v}); regenerating the pack "
-                 "makes an unmeasured treatment that needs a new Tier-3 A/B")
-
-
-def toolchain_mismatch(lang: str = "zig") -> str | None:
-    """A LOUD reason when the installed compiler is not the one `lang`'s pack
-    (and its escalation index) were built and measured on, else None.
-
-    Both refuse to serve on a mismatch, by design (the drift guard) — but the
-    refusal alone is a quiet stderr line on the next spawn, and on 2026-10-27
-    a `mise` upgrade to zig 0.17 switched both off on the rig with nothing
-    saying so. doctor (and anyone else) can ask this. None also when the
-    compiler is absent: that is "no zig", not a mismatch. Never raises."""
-    try:
-        fn = PACK_FILES.get(lang)
-        if lang != "zig" or not fn:
-            return None
-        installed = _installed_zig()
-        if not installed:
-            return None
-        with open(os.path.join(PACKS_DIR, fn), "rb") as fh:
-            m = _PACK_HEADER_RE.search(fh.read().decode("utf-8", errors="replace"))
-        want = m.group(1) if m else None
-        off = []
-        if want and want != installed:
-            off.append(f"the {lang} pack ({fn}, measured on {lang} {want})")
-        try:
-            from lang import escalate as E                 # noqa: PLC0415
-            entry = (E.load_index().get("langs") or {}).get(lang)
-            if isinstance(entry, dict):
-                g = E.index_gate(lang, entry)
-                if g.get("installed") and g.get("toolchain") != g.get("installed"):
-                    off.append(f"the {lang} escalation index (built on {lang} {g.get('toolchain')})")
-                    want = want or g.get("toolchain")
-        except Exception:                                  # noqa: BLE001
-            pass
-        if not off:
-            return None
-        return (f"{lang} toolchain mismatch: {lang} {installed} is installed, so "
-                f"{' and '.join(off)} {'is' if len(off) == 1 else 'are'} NOT SERVED — "
-                + _ZIG_PIN_HINT.format(v=want))
-    except Exception:                                      # noqa: BLE001
-        return None
 
 
 class ServedPack:
@@ -264,10 +321,19 @@ class ServedPack:
         return f"{self.lang}@{self.sha8}"
 
 
-def served_pack(lang: str) -> tuple[ServedPack | None, str]:
+def served_pack(lang: str, variant: str | None = "") -> tuple[ServedPack | None, str]:
     """(pack, "") when production would serve `lang`'s pack, else (None, why).
-    Checks everything except the task: file present, measured bytes, drift."""
-    fn = PACK_FILES.get(lang)
+    Checks everything except the task: file present, measured bytes, drift.
+    `variant` "" = the configured one (pack_variant); v1 is PACK_FILES."""
+    if variant == "":
+        variant = pack_variant()[0]
+    if variant is None:
+        return None, (f"LANG_PACK_VARIANT is not one of {', '.join(PRODUCTION_VARIANTS)}")
+    if variant == DEFAULT_PACK_VARIANT:
+        files, pins = PACK_FILES, MEASURED_SHA256
+    else:
+        files, pins = PACK_VARIANTS.get(variant, {}), PRODUCTION_VARIANT_SHA256.get(variant, {})
+    fn = files.get(lang)
     if not fn:
         return None, f"no {lang} pack"
     path = os.path.join(PACKS_DIR, fn)
@@ -280,7 +346,15 @@ def served_pack(lang: str) -> tuple[ServedPack | None, str]:
     problem = pack_problem(lang, path, data)
     if problem:
         return None, problem
-    want = MEASURED_SHA256.get(lang)
+    if lang == "zig" and not _installed_zig():
+        # pack_problem skips the version match when there is no zig (the
+        # eval harness's drift check shares it, and decides that for
+        # itself). Production does not: the pack says "The installed
+        # compiler is zig 0.16.0", and with no compiler that is false —
+        # unverifiable is never a pass (the escalation gate's rule too).
+        return None, ("zig is not installed here, so the pack cannot be "
+                      "confirmed to match it")
+    want = pins.get(lang)
     got = hashlib.sha256(data).hexdigest()
     if want != got:
         return None, (f"pack {path} is @{got[:8]}, but the measured pack is "
@@ -527,13 +601,13 @@ def status_line() -> str:
         return "zig pack: off (LANG_PACK_CONTEXT=off)"
     if not _lang_allowed("zig"):
         return "zig pack: off (zig not in LANG_PACKS)"
-    p, why = served_pack("zig")
+    variant, _raw = pack_variant()
+    p, why = served_pack("zig", variant)
     if p is None:
-        # A toolchain mismatch also switches the escalation index off; say
-        # both, in the one line doctor shows.
-        return f"zig pack: NOT SERVED — {toolchain_mismatch('zig') or why}"
+        return f"zig pack: NOT SERVED — {why}"
     rel = os.path.relpath(p.path, os.path.dirname(_AGENTS))
-    return f"zig pack: auto (agents on zig tasks get {rel} @{p.sha8})"
+    tail = "" if variant == DEFAULT_PACK_VARIANT else f", LANG_PACK_VARIANT={variant}"
+    return f"zig pack: auto (agents on zig tasks get {rel} @{p.sha8}{tail})"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -542,11 +616,6 @@ def main(argv: list[str] | None = None) -> int:
     if cmd == "status":
         print(status_line())
         return 0
-    if cmd == "toolchain":
-        # exit 1 + the reason on a mismatch, exit 0 + "ok" otherwise: doctor's hook
-        why = toolchain_mismatch("zig")
-        print(why or "zig toolchain: ok (matches the pack, or zig is not installed)")
-        return 1 if why else 0
     if cmd == "argv":
         rest = argv[1:]
         if rest[:1] == ["--"]:
@@ -555,7 +624,7 @@ def main(argv: list[str] | None = None) -> int:
         announce(info, "agent")
         sys.stdout.write("".join(a + "\0" for a in out))
         return 0
-    print("usage: pack_context.py status | toolchain | argv -- <runner args...>", file=sys.stderr)
+    print("usage: pack_context.py status | argv -- <runner args...>", file=sys.stderr)
     return 2
 
 

@@ -1,9 +1,18 @@
 # Agent Instructions for this Repository
 
-You're working in **OpenBeast**, a fully local AI workstation — llama.cpp
-serving Qwen and Gemma models, MCP-based tool server, OpenCode + Open WebUI as frontends,
-a 137-task eval suite (v4 — 291 effective units with multi-language variants,
-across 12 categories), and 15 curated skills for specialized work.
+You're working in **OpenBeast**, a fully local AI workstation: llama.cpp
+serving Qwen and Gemma models on the RTX 5090 rig (`beast`), TensorFold
+serving DeepSeek-V4.1-Flash (Mia EXL3, the default) or GLM-5.3-Flash across two DGX Sparks
+(`spark-hydra`, command center on spark-1), an MCP-based tool server,
+OpenCode + Open WebUI as frontends, the v5 eval suite (71 scored units over
+34 base tasks, drawn from a 151-task / 320-unit library), and 27 curated
+skills for specialized work (18 written here, 9 imported through the gate).
+
+**If you are the local model on a Spark, possibly with no internet:** read
+[`docs/SELF_DEVELOPMENT.md`](docs/SELF_DEVELOPMENT.md) first, then
+[`docs/COMMANDS.md`](docs/COMMANDS.md). The map of every doc is
+[`docs/README.md`](docs/README.md). Never edit `~/openbeast` on spark-1: it
+is the live command center. Work in a clone.
 
 This file is auto-loaded as project-wide instructions. Read it once at the
 start of a session.
@@ -13,7 +22,7 @@ start of a session.
 OpenBeast is **not** a single-box stack any more. Full picture:
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (topology + project layout) and
 [`docs/BEAST_SLOT.md`](docs/BEAST_SLOT.md) (the client/server contract). The
-four facts that change how you edit code here:
+five facts that change how you edit code here:
 
 - **Rig + clients.** The rig ("command center") runs everything: llama-server
   `:8080`, the identity tool server `:3001`, Open WebUI `:3000`, SearXNG
@@ -31,9 +40,23 @@ four facts that change how you edit code here:
   rate + in-flight caps, inference audit. It is the one place on the inference
   path where identity exists (llama-server has no users). Devices are enrolled
   with `scripts/clients.sh`.
+- **beast-island** (`agents/island.py`, `ISLAND=auto` default) is the runtime
+  offline mode: when the internet drops, the web tools refuse at once via a
+  guard in `agents/mcp_server.py`. It is deliberately **not** in
+  `agents/tools.py`, which is part of the eval era hash
+  ([`docs/BEAST_ISLAND.md`](docs/BEAST_ISLAND.md)).
 - **Two identity layers, deliberately separate.** `:3001` authenticates the
   *human* (WebUI user → RBAC tier → file shard); beast-gate authenticates the
   *device*. Don't conflate them.
+
+**Choosing the engine.** llama.cpp (rig default), vLLM and TensorFold (Spark
+default) are swapped, updated, pinned and rolled back with one command,
+`scripts/engine.sh` (`list | status | use | install | update | stage |
+rollback`). An engine is one adapter file in `scripts/engines/`. The
+matrix of engines × host classes × weights formats is in
+[`docs/ENGINES.md`](docs/ENGINES.md). Whether a given model can be served on the Sparks at all, with which
+engine and at how many Sparks, is `scripts/beast-recipe.sh plan`
+([`docs/BEAST_RECIPE.md`](docs/BEAST_RECIPE.md)).
 
 **Unified KV, one shared pool.** `serve.sh` passes `--kv-unified`
 unconditionally: with `-np N`, every slot advertises the full `-c` context
@@ -42,7 +65,7 @@ arithmetic is wrong, and `/api/slot`'s `capacity.ctx_*` exists because of it.
 
 ## Use skills first
 
-You have access to **15 curated skills** via two MCP tools:
+You have access to **27 curated skills** (18 in-house, 9 imported) via two MCP tools:
 
 - `skill()` — see all available skills (one line each; rescans disk every call)
 - `skill(name)` — read the full skill body inline
@@ -60,6 +83,7 @@ lists them; `skills/README.md` ("Imported") says what each is for.
 
 | Situation | Skill |
 |---|---|
+| Connecting to OpenBeast or DeepSeek over Tailscale, choosing a rig and device credential, or restoring LAN access offline | `tailscale` |
 | Working in this repo (or any unfamiliar codebase) for the first time this session | `codebase-onboarding` |
 | User request is vague / open-ended | `spec-extraction` |
 | About to commit, push, or open a PR | `git-discipline` |
@@ -74,7 +98,10 @@ lists them; `skills/README.md` ("Imported") says what each is for.
 | Intractable problem, exhausted obvious paths, "consult the council" | `deep-counsel` |
 | User wants to add a new eval task to the suite | `eval-task-author` |
 | User wants multi-language variants (Py/Go/C/C++/Rust/Zig) on an existing task | `eval-variant-porter` |
+| Writing Swift / SwiftUI / UIKit / Kotlin / Compose / Gradle against a platform API, or asked whether one exists / is deprecated | `platform-docs` |
 | Touching `agents/lang/`, packs, claims or the escalation index — or about to write zig 0.16 / C++ / Python here and unsure an API still exists | `beast-lang` |
+| Task needs an external app (iOS/Xcode or Android/Gradle build, emulator, Blender, Figma, 3D printer, ROS) — check `scripts/apps.sh check <capability> --json` before improvising | `app-control` |
+| You are the local model on spark-hydra working on this repo, especially with the network off | read `docs/SELF_DEVELOPMENT.md` first, then `codebase-onboarding` |
 
 When multiple skills could apply, pick the one most-specific to the task.
 You can also chain — e.g., `codebase-onboarding` → `spec-extraction` →
@@ -106,19 +133,27 @@ Each is one arg away, e.g. `./start.sh serve-qwen-27b-q5.sh`. Board:
 | What | Where |
 |---|---|
 | Source: model serving, agents, MCP tools | `agents/`, `scripts/`, `start.sh`, `stop.sh` |
-| Eval suite (137 tasks across 12 categories) | `evals/` — see `evals/README.md` |
+| Serving recipes for the Sparks: any HF model + a Spark count to a verdict, the plan, the recipe and its apply steps | `scripts/beast-recipe.sh` (`init`, `plan`, `engine`, `stage`, `up`, `check`, `adopt`, `rollback`, `list`, `show`; dry-run unless `--run`), recipes in `recipes/`, the engine/family matrix in `scripts/backends/data/recipe-engines.json` — see `docs/BEAST_RECIPE.md` |
+| Eval suite (v5: `evals/suites/v5.json`; library of 151 tasks across 12 categories) | `evals/` — see `evals/README.md` |
 | Skills (this system) | `skills/` — see `skills/README.md` |
 | Tests | `tests/run_tests.sh` (runs all) + `python3 -m pytest tests/ -q`. Full list is `ls tests/`; the load-bearing ones: `test_tools.py`, `test_scripts.sh`, `test_smoke.sh` (needs a live stack), `test_cache.py`, `test_proc_hygiene.py`, `test_edge.py` (beast-gate), `test_clients.sh` (enrollment CLI), `test_beast_slot.py` (`/api/slot` contract), `test_identity_server.py` (RBAC/sharding/audit), `test_fetch_guards.py` (SSRF) |
-| Documentation (technical) | **Live** (start here): `docs/ARCHITECTURE.md`, `docs/BEAST_SLOT.md`, `docs/INSTALL.md`, `docs/REFERENCE.md`, `docs/TOOLS.md`, `docs/RESULTS.md`, `docs/MODELS.md`, `docs/UPDATING.md`, `docs/TODO.md` — `ls docs/` for the rest (plans, SANDBOXING, RBAC_PLAN, HARDWARE_PROFILES…). **Do not cite as current:** anything under `docs/archive/` (historical, v3-era), and `docs/MAC_CLIENT_PLAN.md`, superseded by `docs/BEAST_SLOT.md` |
+| Documentation (technical) | **The map:** `docs/README.md` (which doc for what). **Commands:** `docs/COMMANDS.md`. **Live** (start here): `docs/ARCHITECTURE.md`, `docs/BEAST_SLOT.md`, `docs/BEAST_ISLAND.md`, `docs/BEAST_APPS.md` (external apps through MCP servers: `scripts/apps.sh`), `docs/SPARK_HYDRA.md` (the DGX Spark launch runbook: bare boxes to a serving pair, day-2 operations, troubleshooting, fully offline), `docs/SELF_DEVELOPMENT.md` (the local model developing OpenBeast itself, network off: setup, a file-area → test map, the era rule, worked sessions), `docs/ENGINES.md` (llama.cpp / vLLM / TensorFold / opt-in Project Maya through `scripts/engine.sh`), `docs/MODEL_CAMPAIGN.md` (a new model on the Sparks to its final report: the L0 profile, the failure audit, the reference ceiling, the chained harness arms of `evals/campaign.py`), `docs/WEIGHT_STREAMING.md` (MoE experts streamed from RAM on the 5090: the llama.cpp v1.0.0 expert cache, Flash-Next, opt-in big mode, the per-profile memory scope, the 1.5x engine gate; the bring-up runbook), `docs/BEAST_DOCS.md` (beast-docs: the offline mirror of current Apple / Android / other platform docs), `docs/BEAST_ARK.md` (beast-ark: 112 open-source packages, pinned and verifiable, for a cold-storage drive: `scripts/ark.sh` fetch / verify / restore / serve, offline), `docs/INSTALL.md`, `docs/REFERENCE.md`, `docs/TOOLS.md`, `docs/RESULTS.md`, `docs/MODELS.md`, `docs/UPDATING.md`, `docs/TODO.md` — `ls docs/` for the rest (plans, SANDBOXING, RBAC_PLAN, HARDWARE_PROFILES…). **Do not cite as current:** anything under `docs/archive/` (historical, v3-era), and `docs/MAC_CLIENT_PLAN.md`, superseded by `docs/BEAST_SLOT.md` |
 | Documentation (overview / persona / tools) | `README.md`, `system-prompt.md`, `system-prompt-tools.md` |
 
 ### Eval suite
 
-- 137 base tasks (v4); 31 of them have multi-language variants (291
-  effective test units across Python / Go / C / C++ / Rust / Zig)
-- Run a single model: `python3 evals/benchmark_all.py --models <slug>`
+- **v5 is current** (`evals/SUITE_VERSION`; the harness version is the last
+  line of `evals/HARNESS_VERSION`): 71 scored
+  units over 34 base tasks, in the manifest `evals/suites/v5.json`. A v5
+  profile of one model: `python3 evals/profile.py --model <slug> --budget-h 4 --jobs 4`
+  (size `--budget-h` to the host: docs/MODEL_CAMPAIGN.md §2).
+  Model campaigns: `evals/campaign.py` (`docs/MODEL_CAMPAIGN.md`)
+- The task library (v4's 137 tasks plus v5's new ones) is 151 base tasks /
+  320 effective units; v4 is frozen and stays runnable for history
+- Run a single model on the v4 board: `python3 evals/benchmark_all.py --models <slug>`
 - Full sweep: bare `python3 evals/benchmark_all.py` runs **every** configured
-  model — 20 today (`--list` to see them), several days of GPU on the 5090.
+  model — 21 today (`--list` to see them: 20 on the 5090 plus GLM-5.3-Flash
+  on the Spark pair), several days of GPU on the 5090.
   Pass `--models <slug>` unless you mean it
 - Score: `python3 evals/scoring.py --show` (ranked by SCORE = capability)
 - Distribution + methodology: `evals/README.md`
@@ -149,12 +184,12 @@ are overhead. Use them when the task involves design choices, multi-step
 reasoning, or domain-specific discipline. The bar: would loading the skill
 prevent a real failure mode? If yes, load it. If no, just do the task.
 
-## Tool surface (18 MCP tools)
+## Tool surface (19 MCP tools)
 
 Beyond skills (`skill`, `start_skill_agent`), you have:
 - File / code: `read_file`, `write_file`, `edit_file`, `list_files`, `grep`
 - Shell: `bash`
-- Web: `fetch`, `web_search` (via local SearXNG)
+- Web: `fetch`, `web_search` (via local SearXNG); on the WebUI tool server only, `weather` (place resolved near the caller — docs/TOOLS.md)
 - Long-running agents: `start_agent`, `check_agent`, `tail_agent`,
   `list_agents`, `stop_agent`
 - Language: `language_reference` — the installed toolchain's verified claims
@@ -162,12 +197,32 @@ Beyond skills (`skill`, `start_skill_agent`), you have:
   C++ / Python API still exists
 - Artifacts: `publish_artifact`, `list_artifacts` — publish a self-contained
   HTML page to a tailnet URL (they refuse unless `BEAST_ARTIFACT=true`)
+- Platform docs: `platform_docs` — current Apple / Android / other developer
+  documentation from the offline beast-docs mirror (URL + fetched date on
+  every answer); `scripts/docs.sh` is the same thing for bash
 
-The last three are on the MCP/WebUI surface only, not in the autonomous
+The last four are on the MCP/WebUI surface only, not in the autonomous
 runner's registry. Details: [`docs/TOOLS.md`](docs/TOOLS.md).
 
 Prefer `edit_file` over `write_file` for existing files. Prefer running code
 over reasoning about what it should do.
+
+## Downloading model weights
+
+To download a model from a Hugging Face URL, on any machine, use one command:
+
+```bash
+scripts/weights-download.sh https://huggingface.co/ORG/REPO [DEST]
+```
+
+- Without DEST, the model goes to `~/Documents/weights/ORG/REPO`.
+- The last stdout line is the folder.
+- Every file is verified against the Hub's hash.
+- Re-running the same command resumes or re-verifies.
+- Use `--dry-run` first to see the size, and `--include GLOB` to pick one quantization.
+
+Do not use `hf download`, `git clone` or `wget` for weights. The guide is
+`docs/WEIGHTS_DOWNLOAD.md`.
 
 ## Don't reinvent
 

@@ -110,7 +110,12 @@ class Engine:
         self.binding = binding
         self.id = binding.name
         self.ctx = ctx
-        self.latencies: deque = deque(maxlen=200)
+        self.latencies: deque = deque(maxlen=200)          # real decide() calls
+        # Conformance-probe calls ("Is water wet?", ~40 tokens) are kept apart:
+        # they arrive every probe_interval_s while hinted turns are rare, and
+        # mixed into one window they made p95 probe-sized, so the deadline
+        # skip never fired for a real (system + 1,400-token) prompt.
+        self.probe_latencies: deque = deque(maxlen=50)
 
     @property
     def exec(self) -> str | None:
@@ -131,8 +136,15 @@ class Engine:
     async def aclose(self) -> None:
         return None
 
-    def record_latency(self, ms: float) -> None:
-        self.latencies.append(ms)
+    def record_latency(self, ms: float, *, probe: bool = False) -> None:
+        (self.probe_latencies if probe else self.latencies).append(ms)
+
+    def _latency_samples(self) -> list[float]:
+        """Real calls once there are 5 of them; until then probe samples seed
+        the estimate so a fresh engine is measured, not assumed."""
+        if len(self.latencies) >= 5:
+            return list(self.latencies)
+        return list(self.latencies) + list(self.probe_latencies)
 
     def p95_ms(self) -> float:
         """Rolling p95 once 20 samples exist. Before that: the worst observed
@@ -145,19 +157,18 @@ class Engine:
         timeout would skip the engine on every call until the next probe."""
         if not self.caps.needs_render:
             return 0.0
-        n = len(self.latencies)
+        xs = sorted(self._latency_samples())
+        n = len(xs)
         if n < 20:
             if n < 5:
                 return float(self.binding.timeout_ms)
-            xs = sorted(self.latencies)
             return xs[-2] if n >= 10 else xs[-1]
-        xs = sorted(self.latencies)
         return xs[min(len(xs) - 1, int(math.ceil(0.95 * len(xs))) - 1)]
 
     def p50_ms(self) -> float | None:
-        if not self.latencies:
+        xs = sorted(self._latency_samples())
+        if not xs:
             return None
-        xs = sorted(self.latencies)
         return xs[len(xs) // 2]
 
 

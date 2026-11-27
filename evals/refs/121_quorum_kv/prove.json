@@ -1,0 +1,9 @@
+{
+  "expect": {
+    "wrong_no_read_repair.py": "AssertionError: read repair failed on replica 0",
+    "wrong_partial_write.py": "AssertionError: failed quorum must not write",
+    "wrong_tie_smaller_node.py": "AssertionError: timestamp-tie must break toward lexicographically larger node"
+  },
+  "timed": false,
+  "note": "v4 validator kept as is. Ref copied from evals/refs/qkv.py."
+}

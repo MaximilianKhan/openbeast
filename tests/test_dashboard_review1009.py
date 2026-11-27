@@ -12,8 +12,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import re
-import shutil
 import subprocess
 import threading
 import time
@@ -26,7 +24,8 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _PATH = os.path.join(REPO, "extensions", "dashboard", "dashboard.py")
 _ENV = ("OPENBEAST_PROBE_HOST", "OPENBEAST_INFERENCE_URL", "OPENBEAST_INFERENCE_BACKEND",
         "OPENBEAST_INFERENCE_SLOTS", "OPENBEAST_API_KEY", "EDGE_GATE",
-        "OPENBEAST_EDGE_ALLOW_ANON", "OPENBEAST_INSTINCT", "OPENBEAST_INSTINCT_PORT")
+        "OPENBEAST_EDGE_ALLOW_ANON", "OPENBEAST_INSTINCT", "OPENBEAST_INSTINCT_PORT",
+        "DASHBOARD_ALLOWED_HOSTS", "OPENBEAST_DASHBOARD_ALLOWED_HOSTS")
 
 
 def load(monkeypatch, **env):
@@ -155,6 +154,145 @@ def test_api_slot_is_served_from_the_cache(monkeypatch):
         live.close()
 
 
+def _raw(live, path, host):
+    """GET with an explicit Host header (urllib would derive it from the URL)."""
+    import http.client
+    port = int(live.url.rsplit(":", 1)[1])
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        c.request("GET", path, headers={"Host": host})
+        r = c.getresponse()
+        return r.status, r.read()
+    finally:
+        c.close()
+
+
+def test_a_rebinding_host_is_refused(monkeypatch):
+    # A hostile name re-pointed at 127.0.0.1 makes its page same-origin with
+    # the dashboard; Host is the one thing that page cannot forge.
+    d = load(monkeypatch)
+    d._get = recorder([])
+    d.gpu_status = lambda: None
+    live = Live(d)
+    try:
+        # (/api/slot is the tailnet contract and deliberately unpinned —
+        # test_api_slot_answers_any_host)
+        for path in ("/api/status", "/"):
+            st, body = _raw(live, path, "evil.example:3002")
+            assert st == 400 and b"DASHBOARD_ALLOWED_HOSTS" in body, (path, st)
+        # controls: loopback, the tailnet name tailscale serve forwards, an IP
+        # literal (a LAN/tailnet OPENBEAST_BIND dialled by address)
+        for host in ("127.0.0.1:3002", "localhost", "[::1]:3002", "rig.tail1.ts.net",
+                     "192.168.1.50:3002", "100.101.102.103"):
+            assert _raw(live, "/api/status", host)[0] == 200, host
+    finally:
+        live.close()
+
+
+def test_dashboard_allowed_hosts_adds_a_name(monkeypatch):
+    d = load(monkeypatch, DASHBOARD_ALLOWED_HOSTS="beast.lan")
+    d._get = recorder([])
+    live = Live(d)
+    try:
+        assert _raw(live, "/api/status", "beast.lan:3002")[0] == 200
+        assert _raw(live, "/api/status", "other.lan:3002")[0] == 400
+    finally:
+        live.close()
+
+
+def test_trickling_clients_cannot_hold_every_handler(monkeypatch):
+    # SOCKET_TIMEOUT_S bounds one recv, not the request: a byte every few
+    # seconds used to keep a handler forever, and MAX_HANDLERS of them made
+    # every real caller's /api/slot a 503.
+    import socket
+    d = load(monkeypatch)
+    d._get = recorder([])
+    monkeypatch.setattr(d.Handler, "header_deadline", 0.6)
+    monkeypatch.setattr(d.Handler, "timeout", 5)
+    live = Live(d, max_handlers=2)
+    port = int(live.url.rsplit(":", 1)[1])
+    stop = threading.Event()
+    socks = []
+
+    def trickle(s):
+        try:
+            s.sendall(b"GET /api/slot HTTP/1.1\r\n")
+            while not stop.wait(0.2):
+                s.sendall(b"X")
+        except OSError:
+            pass                     # cut off: exactly what should happen
+    try:
+        for _ in range(2):
+            s = socket.create_connection(("127.0.0.1", port))
+            socks.append(s)
+            threading.Thread(target=trickle, args=(s,), daemon=True).start()
+        time.sleep(0.3)
+        assert live.get("/api/slot")[0] == 503      # both handlers held right now
+        deadline = time.time() + 5
+        while (st := live.get("/api/slot")[0]) != 200 and time.time() < deadline:
+            time.sleep(0.1)
+        assert st == 200, "a trickling client kept its handler past the header deadline"
+        assert time.time() < deadline
+    finally:
+        stop.set()
+        for s in socks:
+            s.close()
+        live.close()
+
+
+def test_a_hung_upstream_is_bounded_not_summed(monkeypatch):
+    # A llama-server that accepts and never answers: five sequential 2 s
+    # probes used to make one /api/slot take 10 s+, past the client's 5 s.
+    d = load(monkeypatch)
+    monkeypatch.setattr(d, "GATHER_DEADLINE_S", 0.5)
+    base = recorder([])
+
+    def get(url, timeout=2, auth=False):
+        if ":8080/" in url:
+            time.sleep(1.5)          # well past the deadline, each
+            return 200, "{}"
+        return base(url, timeout, auth)
+    d._get = get
+    t0 = time.monotonic()
+    out = d.slot_status()
+    took = time.monotonic() - t0
+    assert took < 1.5, f"slot_status took {took:.1f}s"
+    assert out["healthy"] is False and out["services"]["model"] is False
+    assert out["services"]["webui"] is True          # the healthy upstreams still report
+    # /api/status too (nvidia-smi stubbed out)
+    d.gpu_status = lambda: None
+    t0 = time.monotonic()
+    st = d.status()
+    assert time.monotonic() - t0 < 1.5 and st["model"]["healthy"] is False
+
+
+def test_a_straggling_probe_is_not_stacked(monkeypatch):
+    # The deadline must not turn a hung upstream into one leaked thread per
+    # gather: while a probe of a URL is still out, that URL is not re-asked.
+    d = load(monkeypatch)
+    monkeypatch.setattr(d, "GATHER_DEADLINE_S", 0.2)
+    release = threading.Event()
+    calls = []
+
+    def get(url, timeout=2, auth=False):
+        if url.endswith(":8080/health"):
+            calls.append(url)
+            release.wait(5)
+        return None, ""
+    d._get = get
+    try:
+        for _ in range(4):
+            assert d.slot_status()["healthy"] is False
+        assert len(calls) == 1, calls
+    finally:
+        release.set()
+    deadline = time.time() + 5
+    while d._inflight and time.time() < deadline:
+        time.sleep(0.02)
+    d.slot_status()
+    assert len(calls) == 2, "once it came back, the URL is probed again"
+
+
 def test_handler_threads_are_capped_and_given_back(monkeypatch):
     d = load(monkeypatch)
     gate, entered = threading.Event(), threading.Event()
@@ -191,6 +329,64 @@ def test_handler_threads_are_capped_and_given_back(monkeypatch):
     finally:
         gate.set()
         live.close()
+
+
+# ───────── extensions-ntfy review: DNS rebinding vs the rig-local routes ─────────
+
+def _raw_hosts(live, path, hosts):
+    """GET with exactly these Host headers (none, one, or two)."""
+    import http.client
+    port = live.srv.server_address[1]
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    c.putrequest("GET", path, skip_host=True)
+    for h in hosts:
+        c.putheader("Host", h)
+    c.endheaders()
+    r = c.getresponse()
+    body = r.read()
+    c.close()
+    return r.status, body
+
+
+@pytest.mark.parametrize("path", ["/", "/index.html", "/api/status"])
+def test_rig_local_routes_refuse_a_rebound_name(monkeypatch, path):
+    d = load(monkeypatch)
+    d._get = recorder([])
+    d.gpu_status = lambda: None
+    live = Live(d)
+    try:
+        port = live.srv.server_address[1]
+        st, body = _raw_hosts(live, path, [f"attacker.example:{port}"])
+        assert st == 400 and b"OPENBEAST_DASHBOARD_ALLOWED_HOSTS" in body
+        assert _raw_hosts(live, path, [])[0] == 400, "no Host is not a trusted Host"
+        assert _raw_hosts(live, path, [f"127.0.0.1:{port}", "attacker.example"])[0] == 400
+        # controls: every name the operator legitimately opens it by
+        for ok in (f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}",
+                   f"192.168.1.50:{port}", "spark-1.tail4109f9.ts.net:8444"):
+            assert _raw_hosts(live, path, [ok])[0] == 200, ok
+    finally:
+        live.close()
+
+
+def test_api_slot_answers_any_host(monkeypatch):
+    # The tailnet discovery contract: a client reads it by whatever name it
+    # dials, so it is deliberately not pinned (and holds nothing rig-local).
+    d = load(monkeypatch)
+    d._get = recorder([])
+    live = Live(d)
+    try:
+        st, body = _raw_hosts(live, "/api/slot", ["rig.lan:3002"])
+        assert st == 200 and json.loads(body)["beast_slot"] == d.SLOT_CONTRACT
+    finally:
+        live.close()
+
+
+def test_extra_allowed_hosts_come_from_env(monkeypatch):
+    d = load(monkeypatch, OPENBEAST_DASHBOARD_ALLOWED_HOSTS="rig.lan, beast.home")
+    assert d.host_ok(["rig.lan:3002"]) and d.host_ok(["BEAST.home"])
+    assert not d.host_ok(["evil.lan"])
+    d = load(monkeypatch)
+    assert not d.host_ok(["rig.lan:3002"])
 
 
 # ───────────────────────── F6: probes follow OPENBEAST_PROBE_HOST ─────────────────────────
@@ -247,6 +443,23 @@ def test_two_gpus_are_one_gpu_object_not_none(monkeypatch):
     assert d.gpu_status()["name"] == "RTX 5090 + RTX 3090"
 
 
+def test_gb10_unified_memory_still_reports_a_gpu(monkeypatch):
+    # DGX Spark (GB10): memory.used/total are "[N/A]" — the row used to be
+    # thrown away whole and the page said "no GPU detected".
+    # (host RAM unreadable here, so the unified pool is unknown: null)
+    d = load(monkeypatch)
+    _smi(monkeypatch, d, "NVIDIA GB10, [N/A], [N/A], 0, 44\n")
+    monkeypatch.setattr(d, "_meminfo_mib", lambda path="/proc/meminfo": None)
+    assert d.gpu_status() == {"name": "NVIDIA GB10", "used_mib": None, "total_mib": None,
+                              "free_mib": None, "util_pct": 0, "temp_c": 44, "used_pct": None,
+                              "unified": True}
+    # one card short a field makes the fold unknown, never a partial sum
+    _smi(monkeypatch, d, "A, 10, 100, 5, 40\nB, [N/A], [N/A], 7, [Not Supported]\n")
+    g = d.gpu_status()
+    assert g["total_mib"] is None and g["used_pct"] is None and g["util_pct"] == 7 and g["temp_c"] is None
+    assert "unified" not in g, "one card's VRAM is not a host-RAM pool"
+
+
 @pytest.mark.parametrize("out", ["", "\n", "garbage\n", "a, b, c, d, e\n"])
 def test_unparseable_nvidia_smi_is_still_no_gpu(monkeypatch, out):
     d = load(monkeypatch)
@@ -254,57 +467,149 @@ def test_unparseable_nvidia_smi_is_still_no_gpu(monkeypatch, out):
     assert d.gpu_status() is None
 
 
+# ───────── extensions-ntfy review: a unified-memory GPU (DGX Spark GB10) ─────────
+
+_GB10 = "NVIDIA GB10, [N/A], [N/A], 0, 43\n"
+
+
+def test_gb10_na_memory_is_still_a_gpu(monkeypatch):
+    # Live spark-1 output. It used to hit int('[N/A]') and come back as None
+    # ("no GPU detected") with name, util and temp all readable.
+    d = load(monkeypatch)
+    _smi(monkeypatch, d, _GB10)
+    monkeypatch.setattr(d, "_meminfo_mib", lambda path="/proc/meminfo": (40000, 121000))
+    assert d.gpu_status() == {"name": "NVIDIA GB10", "used_mib": 40000, "total_mib": 121000,
+                              "free_mib": 81000, "util_pct": 0, "temp_c": 43, "used_pct": 33,
+                              "unified": True}
+
+
+def test_gb10_without_meminfo_reports_memory_unknown(monkeypatch):
+    d = load(monkeypatch)
+    _smi(monkeypatch, d, _GB10)
+    monkeypatch.setattr(d, "_meminfo_mib", lambda path="/proc/meminfo": None)
+    g = d.gpu_status()
+    assert g["name"] == "NVIDIA GB10" and g["util_pct"] == 0 and g["temp_c"] == 43
+    assert g["used_mib"] is g["total_mib"] is g["free_mib"] is g["used_pct"] is None
+
+
+def test_one_na_field_drops_only_that_field(monkeypatch):
+    d = load(monkeypatch)
+    _smi(monkeypatch, d, "RTX 5090, 1000, 32000, [N/A], 50\n")
+    g = d.gpu_status()
+    assert g["util_pct"] is None and g["temp_c"] == 50 and g["total_mib"] == 32000
+    assert "unified" not in g, "discrete VRAM was reported: not unified"
+
+
+def test_meminfo_sizes_unified_memory(tmp_path, monkeypatch):
+    d = load(monkeypatch)
+    mi = tmp_path / "meminfo"
+    mi.write_text("MemTotal:       123904000 kB\nMemFree: 1 kB\nMemAvailable:   82000000 kB\n")
+    assert d._meminfo_mib(str(mi)) == (123904000 // 1024 - 82000000 // 1024, 123904000 // 1024)
+    assert d._meminfo_mib(str(tmp_path / "nope")) is None
+
+
+@pytest.mark.parametrize("url,want", [("http://127.0.0.1:8000", "127.0.0.1:8000"),
+                                      ("http://10.0.0.5:8080/", "10.0.0.5:8080"),
+                                      ("https://u:p@spark-1.ts.net", "spark-1.ts.net:443"),
+                                      ("http://[::1]:8080", "[::1]:8080"),
+                                      ("http://[::1]", "[::1]:80")])
+def test_endpoint_label(monkeypatch, url, want):
+    d = load(monkeypatch)
+    assert d._endpoint(url) == want
+
+
+def test_model_status_names_the_real_inference_endpoint(monkeypatch):
+    # Was: the page printed a literal ":8080 healthy" while probing TensorFold
+    # on :8000 (spark-1).
+    d = load(monkeypatch, OPENBEAST_INFERENCE_BACKEND="tensorfold",
+             OPENBEAST_INFERENCE_URL="http://127.0.0.1:8000")
+    d._get = recorder([])
+    m = d.model_status()
+    assert m["endpoint"] == "127.0.0.1:8000" and m["backend"] == "tensorfold"
+    assert ":8080" not in d.PAGE and "localhost:3001" not in d.PAGE
+
+
 # ───────────────────────── S13: upstream strings never reach innerHTML raw ─────────────────────────
 
-def _script(d):
-    return re.search(r"<script>(.*)</script>", d.PAGE, re.S).group(1)
+# The v2 page (static/app.js) writes every server value with textContent and
+# never touches innerHTML: pinned, with a hostile model id rendered through a
+# fake DOM, in tests/test_dashboard_v2.py (test_page_never_writes_html,
+# test_hostile_strings_render_as_text, test_node_fields_*).
 
 
-def test_every_interpolation_is_escaped_or_local(monkeypatch):
-    """Static pin: an interpolation is either wrapped in esc()/num(), a
-    two-literal ternary, or one of the fragments built just above it."""
-    d = load(monkeypatch)
-    exprs = re.findall(r"\$\{([^}]*)\}", _script(d))
-    assert len(exprs) >= 15
-    ok = re.compile(r"""^(?:esc\(.*\)|num\([\w.]+\)|\(num\([\w.]+\)/1024\)\.toFixed\(\d\)
-                         |[\w.]+\?'[^'<]*':'[^'<]*'|gpu|svc)$""", re.X)
-    bad = [e for e in exprs if not ok.match(e)]
-    assert not bad, bad
-    # the control: the pre-fix spellings are exactly what this refuses
-    for raw in ("m.alias||m.serve_script||'—'", "g.name", "k", "g.used_pct"):
-        assert not ok.match(raw)
+# ───────────── review 2026-11-16: overlapping gathers, redirected probes ─────────────
+
+def test_overlapping_slot_and_status_gathers_share_probes(monkeypatch):
+    # /api/slot and /api/status gather under separate locks and ask the same
+    # keys. The second used to find them in flight and read them as "no
+    # answer": a healthy model reported DOWN, cached for CACHE_S.
+    d = load(monkeypatch, OPENBEAST_INFERENCE_BACKEND="tensorfold",
+             OPENBEAST_INFERENCE_URL="http://10.9.9.9:8000", OPENBEAST_INFERENCE_SLOTS="4")
+    d.gpu_status = lambda: None
+    seen = []
+    base = recorder(seen)
+
+    def slow(url, timeout=2, auth=False):
+        time.sleep(0.3)
+        return base(url, timeout, auth)
+    d._get = slow
+    fns = {"slot": d.slot_status, "status": d.status}
+    for first, second in (("status", "slot"), ("slot", "status")):
+        res = {}
+        t1 = threading.Thread(target=lambda n=first, res=res: res.update({n: fns[n]()}))
+        t2 = threading.Thread(target=lambda n=second, res=res: res.update({n: fns[n]()}))
+        t1.start()
+        time.sleep(0.05)
+        t2.start()
+        t1.join(5)
+        t2.join(5)
+        assert res["slot"]["healthy"] is True and res["slot"]["model"]["id"] == "m", (first, res["slot"])
+        assert res["slot"]["services"]["model"] is True
+        assert res["status"]["model"]["healthy"] is True, (first, res["status"]["model"])
+    # shared, not doubled: the overlapped /health was asked once per round
+    assert seen.count("http://10.9.9.9:8000/health") == 2, seen
 
 
-_XSS = "<img src=x onerror=alert(1)>"
-_HARNESS = r"""
-const els = {grid: {innerHTML: ''}, ts: {textContent: ''}};
-globalThis.document = {getElementById: id => els[id]};
-globalThis.setInterval = () => 0;
-globalThis.fetch = async () => ({json: async () => JSON.parse(process.env.STATUS)});
-%s
-setTimeout(() => process.stdout.write(els.grid.innerHTML), 50);
-"""
+def test_a_keyed_probe_never_follows_a_redirect(monkeypatch):
+    # urllib copies add_header() headers onto a cross-host redirect, so a
+    # keyed probe answered with 302 handed LLAMA_API_KEY to the Location.
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    saw = []
 
+    class Target(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
 
-@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
-def test_a_hostile_model_id_renders_as_text(monkeypatch, tmp_path):
-    d = load(monkeypatch)
-    status = {"gpu": {"name": _XSS, "used_mib": 1024, "total_mib": 2048, "free_mib": 1024,
-                      "util_pct": _XSS, "temp_c": 50, "used_pct": "1 onmouseover=alert(1)"},
-              "model": {"healthy": True, "alias": _XSS, "serve_script": _XSS},
-              "services": {_XSS: True, "tools": False},
-              "metrics": {"tool_calls": _XSS, "tool_errors": 0}}
-    js = tmp_path / "page.js"
-    js.write_text(_HARNESS % _script(d))
-    r = subprocess.run(["node", str(js)], capture_output=True, text=True, timeout=30,
-                       env={"PATH": os.environ["PATH"], "STATUS": json.dumps(status)})
-    assert r.returncode == 0, r.stderr
-    html = r.stdout
-    assert "<h2>Model</h2>" in html, html                 # the page did render
-    assert "<img" not in html and "onmouseover" not in html, html
-    assert "&#60;img src=x onerror=alert(1)&#62;" in html
-    # the control: honest values still show
-    status["model"]["alias"] = "qwen38-27b"
-    r = subprocess.run(["node", str(js)], capture_output=True, text=True, timeout=30,
-                       env={"PATH": os.environ["PATH"], "STATUS": json.dumps(status)})
-    assert ">qwen38-27b</div>" in r.stdout
+        def do_GET(self):
+            saw.append(self.headers.get("Authorization"))
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+    tgt = ThreadingHTTPServer(("127.0.0.1", 0), Target)
+    tport = tgt.server_address[1]
+
+    class Redir(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            self.send_response(302)
+            self.send_header("Location", f"http://localhost:{tport}/x")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    src = ThreadingHTTPServer(("127.0.0.1", 0), Redir)
+    for s in (tgt, src):
+        threading.Thread(target=s.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
+    try:
+        d = load(monkeypatch, OPENBEAST_API_KEY="FAKE-TEST-KEY",
+                 OPENBEAST_INFERENCE_URL=f"http://127.0.0.1:{src.server_address[1]}")
+        st, _ = d._get(f"{d._INFER}/v1/models", auth=True)
+        assert st is None, "a redirect must read as no answer"
+        assert saw == [], f"the redirect target was contacted: {saw}"
+    finally:
+        for s in (tgt, src):
+            s.shutdown()
+            s.server_close()

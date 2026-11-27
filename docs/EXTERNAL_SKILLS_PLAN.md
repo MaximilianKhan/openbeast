@@ -1,5 +1,11 @@
 # External skills: what to take from the ecosystem, and the gate it comes through
 
+> **Status (2026-11-19 review): PARTLY IMPLEMENTED.** The gate is built (#127)
+> and nine skills were imported through it (#128). Steps 2, 4 and 5 are open,
+> as are a human read of the nine agent-read rows and Humanizer. The ledger is
+> `skills/REMOTE_PROVENANCE.md`, and the open items are in
+> [TODO.md](TODO.md#-external-skills--gate-built-2026-10-01-9-skills-imported-2026-10-02-agent-read).
+
 **Status (2026-10-02):** steps 1 and 3 of 5 are done. The import gate
 (`scripts/skill-import.sh`) exists and is tested, and **nine external skills
 came through it** (§4a): five from obra/superpowers, four from
@@ -206,7 +212,7 @@ verify            every row's SHA-256 and tree SHA-256 still match the disk
 
 **Interface.** `scripts/skill-import.sh` with `install-scanner`, `scanner`,
 `fetch`, `scan`, `diff`, `promote`, `attest`, `verify`. Exit 0 pass, 1 could
-not judge, 3 the gate said no.
+not judge, 3 the gate said no (`diff` exits 0 whether or not the copies differ).
 
 **Policy: accept by rule id.** A finding is open until the reviewer names its
 rule id (`--accept TM1,PE3`), and the accepted ids are written into the ledger
@@ -246,7 +252,8 @@ every file; `verify` checks both.
 refused, as is one over 2000 files or 50 MiB.
 
 **No config side effects.** The script does not source `lib/conf.sh` (that
-appends a generated secret to `openbeast.conf`); it reads `OFFLINE` directly.
+appends a generated secret to `openbeast.conf`); it reads `OFFLINE` directly,
+by conf.sh's rules: `OPENBEAST_OFFLINE` first, and true/yes/1/on all mean offline.
 
 **Scanner install.** `install-scanner` puts SkillSpector, pinned to the v2.12.0
 commit, in its own venv under `~/.local/share/openbeast/skillspector`.
@@ -320,8 +327,9 @@ Three conclusions shaped the policy:
   command. The gate makes the review visible and recorded, not mandatory in
   spirit. The ledger row shows what was accepted.
 - **Scanner upgrades change the report.** The gate refuses a report missing its
-  fields and warns on a version other than 2.12.0. Bump `SCANNER_REV` and
-  `SCANNER_VERSION` together after reading a real report.
+  fields, and refuses (exit 1) a report from any version other than the pinned
+  2.12.0 — a clean report from another scanner never promotes. Bump
+  `SCANNER_REV` and `SCANNER_VERSION` together after reading a real report.
 - **Not in CI.** CI runs the stubbed tests and the ledger hash check. It does
   not run SkillSpector over `skills/`, because that would mean installing an
   unlocked dependency closure in CI. A baseline file plus a locked install

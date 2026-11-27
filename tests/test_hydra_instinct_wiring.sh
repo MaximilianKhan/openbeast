@@ -48,6 +48,13 @@ else
   echo "SKIP: the side-by-side byte-identity diff (set WIRING_BASELINE_REF=<a pre-wiring ref>)"
 fi
 
+# The suite targets Linux (CI runs it on ubuntu): some rows extract start.sh
+# functions with GNU sed and read /proc. On anything else those rows FAIL
+# visibly; say why up front instead of leaving an unexplained red run.
+if [[ "$(uname -s)" != "Linux" ]]; then
+  echo "NOTE: $(uname -s) — rows that need GNU sed or /proc fail here; the gate is the Linux run (CI)."
+fi
+
 _T="$(mktemp -d "${TMPDIR:-/tmp}/obwiringXXXXXX")"
 _PIDS=""
 cleanup() {
@@ -160,7 +167,23 @@ if [[ -n "${WIRING_BASELINE_REF:-}" ]]; then
   #   OPENBEAST_CHAT_NOTIFY_ON, OPENBEAST_NTFY_PORT — beast-chat notify (#113)
   #   OB_CONF_LINTED — conf.sh's "unknown-key warnings already printed" mark
   #                    (review 2026-10-09, UX-13)
-  _BASELINE_ALLOW='^ENV OPENBEAST_(CHAT_NOTIFY_ON|NTFY_PORT)=|^ENV OB_CONF_LINTED='
+  #   OPENBEAST_WEBUI_OFFLINE — beast-island: Open WebUI's OFFLINE_MODE for
+  #                    docker-compose.yml (docs/BEAST_ISLAND.md)
+  #   DASHBOARD_PORT, OPENBEAST_DASHBOARD_PORT — the dashboard's port, resolved
+  #                    once for healthcheck and --publish-slot (extensions-ntfy)
+  #   OPENBEAST_WEBUI_CORS, OPENBEAST_WEBUI_HOSTS — Open WebUI's CORS origins
+  #                    and Host allowlist (DNS-rebinding guard, full-system
+  #                    review 2026-11-15, docs/REFERENCE.md WEBUI_ORIGINS)
+  #   OPENBEAST_WEBUI_AUTH, OB_CONF_WEBUI_AUTH_WARNED and the four lines of the
+  #                    "WEBUI_AUTH=false ignored" warning — a network bind now
+  #                    keeps WebUI login on unless ALLOW_OPEN_WEBUI=true (same
+  #                    review). Only the wildcard-bind scenario changes.
+  _BASELINE_ALLOW='^ENV OPENBEAST_(CHAT_NOTIFY_ON|NTFY_PORT|WEBUI_OFFLINE)=|^ENV OB_CONF_LINTED=|^ENV (OPENBEAST_)?DASHBOARD_PORT='
+  _BASELINE_ALLOW+='|^ENV OPENBEAST_WEBUI_(CORS|HOSTS|AUTH)=|^ENV OB_CONF_WEBUI_AUTH_WARNED='
+  # The INFERENCE_* derive records (lib/conf.sh, 2026-11-25: a re-sourcing
+  # child reads the conf, not the old exports): unrelated to hydra.
+  _BASELINE_ALLOW+='|^ENV OPENBEAST_DERIVED_INFERENCE_(BACKEND|MANAGED|URL|SLOTS|MODEL)='
+  _BASELINE_ALLOW+='|^WARNING: WEBUI_AUTH=false ignored — |^ {9}(off every visitor is the WebUI admin|the built-in admin.s password is in openbeast.conf|start\. Set ALLOW_OPEN_WEBUI=true)'
   if [[ -n "${WIRING_BASELINE_ALLOW:-}" ]]; then
     _BASELINE_ALLOW="$_BASELINE_ALLOW|$WIRING_BASELINE_ALLOW"
   fi
@@ -226,14 +249,23 @@ fi
 # A conf-FILE HYDRA_DEFAULT_MODEL must reach hydra itself, not only the
 # agents: hydra_core.implicit_raw reads OPENBEAST_HYDRA_DEFAULT_MODEL.
 _o="$(_conf "$_N" $'HYDRA=true\nHYDRA_DEFAULT_MODEL=fleet')"
+# The CALLER's python3, not whatever /usr/bin holds: under env -i
+# PATH=/usr/bin:/bin a Mac found its system 3.9, hydra_core (tomllib, 3.11+)
+# could not import, the error was swallowed, and the row FAILed on correct
+# code (review 2026-11-16). Too old a python3 is a SKIP, said out loud.
+_py3="$(command -v python3 || true)"
+if [[ -z "$_py3" ]] || ! "$_py3" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+  echo "  SKIP: HYDRA_DEFAULT_MODEL reaches hydra — needs python3 >= 3.11 on PATH (hydra_core imports tomllib); have ${_py3:-none}"
+else
 _dr="$(env -i HOME="$_N/home" PATH=/usr/bin:/bin bash -c 'set -euo pipefail; REPO_DIR="$1"
         source "$1/scripts/lib/conf.sh" 2>/dev/null
-        nice -n 19 python3 -c "import os, sys; sys.path.insert(0, sys.argv[1]); import hydra_core as c
-print(c.implicit_raw(dict(os.environ))[\"hydra\"][\"default_route\"])" "$2/agents"' _ "$_N" "$REPO_DIR" 2>/dev/null || true)"
+        nice -n 19 "$3" -c "import os, sys; sys.path.insert(0, sys.argv[1]); import hydra_core as c
+print(c.implicit_raw(dict(os.environ))[\"hydra\"][\"default_route\"])" "$2/agents"' _ "$_N" "$REPO_DIR" "$_py3" 2>/dev/null || true)"
 if [[ "$(_get ENV OPENBEAST_HYDRA_DEFAULT_MODEL "$_o")" == "fleet" && "$_dr" == "fleet" ]]; then
   pass "HYDRA_DEFAULT_MODEL from openbeast.conf reaches hydra (its implicit default_route is 'fleet')"
 else
   fail "HYDRA_DEFAULT_MODEL=fleet: exported='$(_get ENV OPENBEAST_HYDRA_DEFAULT_MODEL "$_o")' default_route='$_dr'"
+fi
 fi
 # HYDRA_READY_GRACE is read in (( )): a leading zero must not turn it octal.
 _grace() { env -i HOME="$_N/home" PATH=/usr/bin:/bin OPENBEAST_HYDRA_READY_GRACE="$1" bash -c \
@@ -257,7 +289,9 @@ fi
 # docker compose", then ./start.sh -d later): HYDRA/INSTINCT flipped off, or
 # HYDRA_PORT moved, in openbeast.conf in between. The first source's own
 # OPENBEAST_HYDRA=true export used to read back as an operator override and
-# keep hydra on. A value the operator exports himself still wins.
+# keep hydra on. A value the operator exports himself still wins. D counts
+# the derive records left besides the INFERENCE_* ones (those are kept on
+# purpose: tests/test_engine_switch_env.sh).
 _resource() { # _resource <conf-1> <conf-2> [shell run between the two sources]
   env -i HOME="$_N/home" PATH=/usr/bin:/bin bash -c 'set -euo pipefail; REPO_DIR="$1"
     printf "SEARXNG_SECRET=stub\n%s\n" "$2" > "$1/openbeast.conf"
@@ -268,7 +302,7 @@ _resource() { # _resource <conf-1> <conf-2> [shell run between the two sources]
     echo "H=$HYDRA I=$INSTINCT URL=${HYDRA_URL:-} CB=${OPENBEAST_CONSUMER_BASE-unset}" \
          "OH=${OPENBEAST_HYDRA-unset} OI=${OPENBEAST_INSTINCT-unset} OIP=${OPENBEAST_INSTINCT_PORT-unset}" \
          "IM=${OPENBEAST_INFERENCE_MODEL-unset} UP=${OPENBEAST_HYDRA_UPSTREAM_MODEL-unset}" \
-         "D=$(compgen -e | grep -c "^OPENBEAST_DERIVED_" || true)"' _ "$_N" "$1" "$2" "${3:-}"
+         "D=$(compgen -e | grep "^OPENBEAST_DERIVED_" | grep -vc "^OPENBEAST_DERIVED_INFERENCE_" || true)"' _ "$_N" "$1" "$2" "${3:-}"
 }
 _V=$'INFERENCE_BACKEND=vllm\nINFERENCE_URL=http://10.0.0.5:8000\nINFERENCE_MODEL=m1'
 _r="$(_resource $'HYDRA=true\nINSTINCT=true\n'"$_V" $'HYDRA=false\nINSTINCT=false\n'"$_V")"
@@ -455,6 +489,17 @@ P_DEAD="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0));
 _box() { # _box <dir> [git-ref]   — stop.sh, healthcheck.sh, libs, stubs
   local d="$1" ref="${2:-}" c f
   mkdir -p "$d/scripts/lib" "$d/.run" "$d/bin" "$d/home" "$d/agents"
+  # macOS has no GNU timeout in /usr/bin:/bin, which is all _run's env -i
+  # PATH holds besides the box's bin: every row run through it read as a
+  # FAIL with "env: timeout: No such file". A minimal stand-in there; a
+  # Linux box (CI) has the real one and gets nothing extra.
+  if ! PATH=/usr/bin:/bin command -v timeout >/dev/null 2>&1; then
+    printf '%s\n' '#!/usr/bin/perl' 'my $s = shift @ARGV; $s =~ s/s$//; my $p = fork();' \
+      'if ($p == 0) { exec @ARGV or exit 127 }' \
+      '$SIG{ALRM} = sub { kill "TERM", $p; sleep 1; kill "KILL", $p; exit 124 }; alarm $s;' \
+      'waitpid($p, 0); exit($? >> 8);' > "$d/bin/timeout"
+    chmod +x "$d/bin/timeout"
+  fi
   for f in start.sh stop.sh scripts/healthcheck.sh scripts/doctor.sh scripts/instinct.sh scripts/lib/conf.sh scripts/lib/net.sh \
            scripts/lib/backend.sh scripts/lib/proc.sh scripts/lib/extensions.sh scripts/lib/curl_auth.sh \
            scripts/lib/portown.sh; do
@@ -464,7 +509,12 @@ _box() { # _box <dir> [git-ref]   — stop.sh, healthcheck.sh, libs, stubs
       cp "$REPO_DIR/$f" "$d/$f"
     fi
   done
-  cp -n "$REPO_DIR"/scripts/lib/*.sh "$d/scripts/lib/"     # the libs no case changes
+  # The libs no case changes. Not `cp -n`: BSD/macOS cp -n exits 1 for every
+  # file it skips, and under set -e that ended the whole suite silently
+  # right after "stop.sh:" (review 2026-11-16).
+  for f in "$REPO_DIR"/scripts/lib/*.sh; do
+    [[ -e "$d/scripts/lib/${f##*/}" ]] || cp "$f" "$d/scripts/lib/"
+  done
   # doctor's "Remote skills" row (the import gate, 2026-10) reads the ledger
   # through skill-import.sh; a worktree box gets the real ones.
   if [[ -z "$ref" ]]; then
@@ -633,7 +683,9 @@ echo "healthcheck.sh — agent router:"
 _RB="$_T/rt"; _box "$_RB"
 P_RT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
 # This box's curl may also reach the port the stub router will bind.
-sed -i "s/\*127\.0\.0\.1:$P_DEAD\*)/*127.0.0.1:$P_DEAD*|*127.0.0.1:$P_RT*)/" "$_RB/bin/curl"
+# (`-i.bak`, attached: the one in-place form GNU and BSD sed both accept.)
+sed -i.bak "s/\*127\.0\.0\.1:$P_DEAD\*)/*127.0.0.1:$P_DEAD*|*127.0.0.1:$P_RT*)/" "$_RB/bin/curl"
+rm -f "$_RB/bin/curl.bak"
 # agents/router.py stub: records the environment it was launched with; with
 # STUB_ROUTER_SERVE it then binds its port and answers 502 — what the real
 # router says while the model is down — for a minute.
@@ -915,9 +967,13 @@ if [[ -n "${WIRING_BASELINE_REF:-}" ]]; then
   # baseline's label is mapped to the new one; its state is still compared.
   # (This comparison runs only with a baseline ref — in CI — so the rename
   # went through every local run green.)
+  # beast-island (docs/BEAST_ISLAND.md) added two `--status` rows and one
+  # healthcheck/doctor row, all about network state, none about
+  # hydra/instinct: exactly those lines are dropped.
   _norm() { sed -e "s#$1#<BOX>#g" -e 's/— [0-9-]* [0-9:]*$/— <DATE>/' -e 's/^  mcpo: /  tool server: /' \
               | grep -v -- '--restart: relaunching' \
-              | grep -vE '^(Next: |Stack is not running)'; }
+              | grep -vE '^(Next: |Stack is not running)' \
+              | grep -vE '^  (island watcher: |network: |--   Network: |ISLE Network: |- beast-island|✓ beast-island: )'; }
   RUN_ENV=()
   if diff <(_run "$_OB" "$_OB/stop.sh" | _norm "$_OB") <(_run "$_NB" "$_NB/stop.sh" | _norm "$_NB") >/dev/null; then
     pass "stop.sh: identical output"
@@ -944,18 +1000,16 @@ if [[ -n "${WIRING_BASELINE_REF:-}" ]]; then
   fi
   RUN_ENV=("${_env_hc[@]}" OPENBEAST_EDGE_GATE=true OPENBEAST_EDGE_PORT="$P_OK")
   # One section added to doctor since the pinned baseline for a reason that has
-  # nothing to do with hydra/instinct: "Remote skills" (the skill import gate).
-  # Exactly that section (header, its one passing row, the blank line) is
+  # nothing to do with hydra/instinct: "Remote skills" (the skill import gate),
+  # and likewise "Inference engine" (scripts/engine.sh, docs/ENGINES.md).
+  # Exactly those sections (header, their one row, the blank line) are
   # dropped, and with it the one extra "ok" in the summary; warnings and
   # failures are still compared, and so is every other line.
   _doc() { _norm "$1" | awk '
-      /Remote skills/ { skip = 1; next }
+      /Remote skills/ || /Inference engine/ { skip = 1; next }
       skip && /^[[:space:]]*$/ { skip = 0; next }
       skip && /✓ remote skills: / { next }
-      # Tailscale minimum-version row (review 2026-10-27, R10-11): new since
-      # the baseline and unrelated to hydra/instinct. Dropped in all three
-      # forms (pass, warn, version unknown).
-      /tailscale version unknown/ || /TS-2026-007/ || /≥ 1\.98\.9/ { next }
+      skip && /^  - host class / { next }
       { print }' | sed -E 's/^doctor: [0-9]+ ok,/doctor: <N> ok,/'; }
   # Since UX-17 doctor folds the per-service rows of a stack that is NOT
   # RUNNING into one line. This comparison is about the rows, so both boxes
@@ -969,7 +1023,9 @@ if [[ -n "${WIRING_BASELINE_REF:-}" ]]; then
           <(_run "$_NB" "$_NB/scripts/doctor.sh" | _doc "$_NB") >/dev/null; then
     pass "doctor.sh: identical output"
   else
-    fail "doctor.sh output differs from $WIRING_BASELINE_REF"
+    fail "doctor.sh output differs from $WIRING_BASELINE_REF:"
+    diff <(_run "$_OB" "$_OB/scripts/doctor.sh" | _doc "$_OB") \
+         <(_run "$_NB" "$_NB/scripts/doctor.sh" | _doc "$_NB") | head -10 | sed 's/^/        /' || true
   fi
 fi
 

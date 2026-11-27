@@ -20,10 +20,18 @@
 #   ./start.sh help                # this text (also -h, --help)
 #   ./start.sh serve-qwen-27b-q5.sh    # specific model (combines with -d);
 #                                  #   the choices: ls scripts/serve-*.sh
+#   ./start.sh -d --offline        # beast-island forced: islanded from launch
+#                                  #   (no internet assumed; web tools answer
+#                                  #   "offline"). Without it, ISLAND=auto
+#                                  #   islands by itself when the route dies.
+#                                  #   docs/BEAST_ISLAND.md
 #
 # Daemon mode runs inside a memory-capped systemd scope when available
 # (MEM_LIMIT_PCT of this machine's RAM — default 75% — plus 8G swap) so a
-# runaway process can only take down the stack — never the box. On OOM the
+# runaway process can only take down the stack — never the box. On a
+# unified-memory box (GB10) running its own model beside the stack, the cap
+# is re-sized once the model is up to MemAvailable minus MEM_RESERVE_GB: 75%
+# of a MemTotal the model already holds would protect nothing. On OOM the
 # supervisor shuts down what remains gracefully. Logs: .run/stack.log;
 # pidfiles: .run/*.pid.
 #
@@ -55,7 +63,7 @@ _unknown_command() {
       done ;;
   esac
   echo "Unknown command '$w'$hint" >&2
-  echo "  Commands: status | stop | restart | doctor | help   (flags: -d, --status, --help)" >&2
+  echo "  Commands: status | stop | restart | doctor | help   (flags: -d, --offline, --status, --help)" >&2
   echo "  A model is named by its serve script: ls scripts/serve-*.sh" >&2
   exit 2
 }
@@ -72,6 +80,10 @@ for (( _ai = 0; _ai < ${#_args[@]}; _ai++ )); do
   arg="${_args[$_ai]}"
   case "$arg" in
     -d|--daemon)   DAEMON=1 ;;
+    # beast-island forced for this launch. Exported BEFORE conf.sh is sourced
+    # (it reads OPENBEAST_ISLAND), and the -d launcher forwards OPENBEAST_*
+    # into the daemon's unit, so the supervisor sees it too.
+    --offline|offline) export OPENBEAST_ISLAND=force ;;
     --status|status) STATUS=1 ;;
     doctor|stop)   # health/consistency report | stop the stack
       HANDOFF="$arg"; HANDOFF_ARGS=("${_args[@]:$((_ai + 1))}"); break ;;
@@ -125,12 +137,13 @@ _pid_alive() { # _pid_alive <pidfile> [cmdline-pattern]
 _pid_pattern() {
   case "$1" in
     supervisor) echo 'start\.sh' ;;
-    llama)      echo 'llama-server' ;;
+    llama)      [[ "${INFERENCE_BACKEND:-llama}" == llama ]] && echo 'llama-server' || echo 'llama-server|engine-serve\.sh|tensorfold' ;;   # engine-plane hook
     mcpo)       echo 'mcpo|openapi_tools\.py' ;;   # pidfile name kept; server replaced mcpo
     router)     echo 'router\.py' ;;
     edge)       echo 'edge\.py' ;;
     chat)       echo 'chat_server\.py' ;;
     artifact)   echo 'artifact_server\.py' ;;
+    island)     echo 'island\.py' ;;
     hydra)      echo 'agents/hydra\.py' ;;
     instinct)   echo 'instinct\.server' ;;
     instinct-scorer) echo 'serve-instinct-scorer\.sh|serve\.sh|llama-server' ;;
@@ -157,9 +170,16 @@ if [[ $STATUS -eq 1 ]]; then
   [[ "${HYDRA:-false}" == "true" ]] && _st_names+=(hydra)
   [[ "${INSTINCT_SCORER:-false}" == "true" ]] && _st_names+=(instinct-scorer)
   [[ "${INSTINCT:-false}" == "true" ]] && _st_names+=(instinct)
+  # The island row also when the conf says ISLAND=off but a watcher runs: a
+  # one-off --offline launch, whose OPENBEAST_ISLAND=force this shell lacks.
+  if [[ "${ISLAND:-auto}" != "off" ]] || _pid_alive "$RUN_DIR/island.pid" "$(_pid_pattern island)"; then
+    _st_names+=(island)
+  fi
   # The row label; the tool server's pidfile kept the name of the proxy it
   # replaced (mcpo.pid), which is not something to show a user.
-  _st_label() { if [[ "$1" == mcpo ]]; then echo "tool server"; else echo "$1"; fi; }
+  _st_label() {
+    case "$1" in mcpo) echo "tool server" ;; island) echo "island watcher" ;; *) echo "$1" ;; esac
+  }
   for name in "${_st_names[@]}"; do
     if [[ $name == llama && $_st_managed -eq 0 ]]; then
       if ob_backend_ready "$INFERENCE_URL"; then
@@ -183,6 +203,14 @@ if [[ $STATUS -eq 1 ]]; then
       echo "  hydra health: up, NO routable default route — scripts/hydra.sh status"
     else
       echo "  hydra health: not answering on :${HYDRA_PORT:-8095}"
+    fi
+  fi
+  if [[ "${ISLAND:-auto}" != "off" || -f "${ISLAND_STATE_DIR:-$RUN_DIR}/island.json" ]]; then
+    _st_isl="$(OPENBEAST_RUN_DIR="${ISLAND_STATE_DIR:-$RUN_DIR}" python3 "$SCRIPT_DIR/agents/island.py" status 2>/dev/null || true)"
+    # ISLAND=off in the conf: only a LIVE watcher (a one-off --offline) gets
+    # the line, so a default ISLAND=off box reports what it always did.
+    if [[ "${ISLAND:-auto}" != "off" || ( -n "$_st_isl" && "$_st_isl" != "not watching"* ) ]]; then
+      echo "  network: ${_st_isl:-unknown (agents/island.py did not answer)}"
     fi
   fi
   echo ""
@@ -215,6 +243,7 @@ source "$SCRIPT_DIR/scripts/lib/net.sh"          # ob_probe_host, ob_llama_ready
 source "$SCRIPT_DIR/scripts/lib/backend.sh"      # ob_backend_ready, ob_inference_managed
 source "$SCRIPT_DIR/scripts/lib/curl_auth.sh"    # ob_curl_hdr: tokens never on argv
 source "$SCRIPT_DIR/scripts/lib/portown.sh"      # ob_port_listening, ob_pid_owns_port
+source "$SCRIPT_DIR/scripts/lib/hardware.sh"     # ob_detect_gpu, ob_unified_mem_budget
 SERVE_SCRIPT="${SERVE_SCRIPT:-$DEFAULT_SERVE_SCRIPT}"
 
 # _port_busy <host> <port> — 0 when something accepts a TCP connection there,
@@ -309,12 +338,61 @@ _spawn_ready() {
   return 1
 }
 
+# _ready_ours <pid> <port> — after a health probe answered: is <pid> the
+# process holding <port>? The fatal core servers (tool server, router, gate)
+# used the old shape _spawn_ready replaced: kill -0, then "something
+# answered". Their first probe runs while our child is still importing, so a
+# process that took the port during the model load was accepted as ready. It
+# then received the admin key (WebUI, router) or every device key (tailscale
+# serve -> the gate) while ours died on the bind (stack-lifecycle review).
+# With nothing to name a holder (no ss / lsof / /proc): outlive the
+# bind-failure window, then require that ours is still alive.
+_ready_ours() {
+  local own=0
+  ob_pid_owns_port "$1" "$2" || own=$?
+  if [[ $own -eq 2 ]]; then
+    sleep 1
+    kill -0 "$1" 2>/dev/null && own=0 || own=1
+  fi
+  return $own
+}
+# _lost_bind <label> <port> — our child exited during startup: say so, and
+# name a different holder of its port if there is one.
+_lost_bind() {
+  echo "Error: $1 exited during startup — see output above" >&2
+  if ob_port_listening "$2"; then
+    local holder; holder="$(_port_holder "$2")"
+    echo "  A DIFFERENT process answers on port $2${holder:+ ($holder)} — not ours, so not" >&2
+    echo "  used. It took the port after the preflight. Stop it, then ./start.sh again." >&2
+  fi
+}
+
 # INFERENCE_MANAGED=false (always, for vLLM / TensorFold): the inference
 # server belongs to someone else — a cluster on other boxes. This stack
 # launches, rolls back, supervises and kills NOTHING there; it waits for the
 # server to answer at INFERENCE_URL and brings everything else up around it.
 MANAGED=1
 ob_inference_managed || MANAGED=0
+
+# >>> engine-plane hook (docs/ENGINES.md) — a MANAGED vLLM / TensorFold (one
+# host, `scripts/engine.sh use <engine> --profile NAME`) is launched through
+# scripts/engine-serve.sh in place of a serve script, and everything below
+# supervises it like a llama-server. Never entered for INFERENCE_BACKEND=llama.
+unset _OB_READY_FN _OB_OWNS_FN _OB_ENGINE_LABEL _OB_ENGINE_URL   # never inherited
+if [[ $MANAGED -eq 1 && "$INFERENCE_BACKEND" != "llama" ]]; then
+  source "$SCRIPT_DIR/scripts/lib/engine.sh"
+  if [[ "$SERVE_SCRIPT" != "$DEFAULT_SERVE_SCRIPT" ]]; then
+    echo "Note: $SERVE_SCRIPT is a llama.cpp launcher; INFERENCE_BACKEND=$INFERENCE_BACKEND is active — ignoring it (scripts/engine.sh use llama to switch back)." >&2
+  fi
+  SERVE_SCRIPT="engine-serve.sh"
+  FAST_BOOT=false            # the bridge is a llama.cpp GGUF
+  MODEL_ROLLBACK=false       # last-good records serve scripts, not engines
+  _OB_READY_FN=ob_backend_ready          # wait_llama_health asks THIS engine's question
+  _OB_OWNS_FN=ob_engine_owns_port        # a container is not our child: ask the adapter
+  _OB_ENGINE_LABEL="$(ob_backend_label)"
+  _OB_ENGINE_URL="$INFERENCE_URL"
+fi
+# <<< engine-plane hook
 
 if [[ $MANAGED -eq 1 && ! -x "$SCRIPT_DIR/scripts/$SERVE_SCRIPT" ]]; then
   echo "Error: scripts/$SERVE_SCRIPT not found or not executable" >&2
@@ -396,6 +474,45 @@ ensure_logrotate_timer() {
 }
 [[ $DAEMONIZED -eq 1 ]] || ensure_logrotate_timer
 
+# ---- the watchdog: installed for a daemon stack, not by a manual step ----
+# openbeast-watchdog.timer runs healthcheck.sh --restart every 5 minutes —
+# the only thing that brings a crashed tool server, beast-gate, beast-chat
+# or beast-artifact back (the supervisor relaunches llama-server only, and
+# an unmanaged supervisor nothing). It was a manual install from the timer's
+# header, so spark-1 (rebuilt from the runbook) ran without one, and a dead
+# :3001 or :8090 stayed dead (ops review). Same rules as log rotation: a
+# no-op when enabled already, without a reachable user manager, or with
+# WATCHDOG_AUTOINSTALL=false; only for `-d` (a stack meant to stay up); never
+# fatal. healthcheck --restart never touches an unmanaged inference server,
+# and does nothing after ./stop.sh (.run/stopped).
+ensure_watchdog_timer() {
+  [[ "${WATCHDOG_AUTOINSTALL:-true}" == "true" ]] || return 0
+  [[ -f "$SCRIPT_DIR/scripts/openbeast-watchdog.service" ]] || return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  systemctl --user is-enabled --quiet openbeast-watchdog.timer 2>/dev/null && return 0
+  systemctl --user show-environment >/dev/null 2>&1 || return 0
+  echo "Installing the 5-minute health watchdog (openbeast-watchdog.timer; opt out: WATCHDOG_AUTOINSTALL=false)..."
+  local unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user" line pct exe
+  # systemd expands %specifiers everywhere and $VARS, \escapes and quotes in
+  # ExecStart's quoted path: escape each so the path stays literal (as
+  # scripts/logrotate.sh does for its unit).
+  pct="${SCRIPT_DIR//%/%%}"; exe="${pct//\\/\\\\}"; exe="${exe//\"/\\\"}"; exe="${exe//\$/\$\$}"
+  if mkdir -p "$unit_dir" \
+     && while IFS= read -r line || [[ -n "$line" ]]; do
+          if [[ "$line" == ExecStart=* ]]; then printf '%s\n' "${line//@REPO@/$exe}"
+          else printf '%s\n' "${line//@REPO@/$pct}"; fi
+        done < "$SCRIPT_DIR/scripts/openbeast-watchdog.service" > "$unit_dir/openbeast-watchdog.service" \
+     && cp "$SCRIPT_DIR/scripts/openbeast-watchdog.timer" "$unit_dir/openbeast-watchdog.timer" \
+     && systemctl --user daemon-reload \
+     && systemctl --user enable --now openbeast-watchdog.timer >/dev/null 2>&1; then
+    echo "  installed: openbeast-watchdog.timer (journalctl --user -u openbeast-watchdog)"
+  else
+    echo "  Warning: watchdog not installed — see the header of scripts/openbeast-watchdog.timer" >&2
+  fi
+  return 0
+}
+[[ $DAEMONIZED -eq 1 || $DAEMON -ne 1 ]] || ensure_watchdog_timer
+
 # ---- preflight: refuse BEFORE the multi-minute model load, not after it ----
 # Run by the process the operator is looking at (the foreground start, or the
 # -d launcher), once it knows no stack of ours is already up. Not by the
@@ -403,7 +520,41 @@ ensure_logrotate_timer() {
 # the launcher, and its answer would land in stack.log, not on a terminal.
 preflight() {
   _preflight_model
+  _preflight_scope
   _preflight_ports
+}
+# _preflight_scope_file — the file whose `# openbeast-scope:` line governs
+# this launch: the serve script, or a managed engine's profile (its adapter's
+# scope_file).
+_preflight_scope_file() {
+  if [[ "$SERVE_SCRIPT" == engine-serve.sh ]] && ob_engine_has "$INFERENCE_BACKEND" scope_file; then
+    ob_engine_call "$INFERENCE_BACKEND" scope_file "$(ob_engine_conf_get ENGINE_PROFILE)" 2>/dev/null || true
+  else
+    printf '%s\n' "$SCRIPT_DIR/scripts/$SERVE_SCRIPT"
+  fi
+}
+# A profile's host-class and min-mem-gib refusals (scripts/lib/memscope.sh)
+# hold for EVERY launch mode. They used to run only where the systemd scope
+# is built (start.sh -d with user systemd), so a foreground start, or -d on a
+# box without user systemd, loaded a rig-only big profile (~95 GiB of pinned
+# experts) on a Spark or a 64 GB box with no refusal and no cap. The raised
+# percent and memlock still apply only where a scope exists (the -d branch).
+_preflight_scope() {
+  [[ $MANAGED -eq 1 ]] || return 0
+  local f kb
+  source "$SCRIPT_DIR/scripts/lib/memscope.sh"
+  source "$SCRIPT_DIR/scripts/lib/engine.sh"
+  f="$(_preflight_scope_file)"
+  [[ -n "$(ob_scope_decl "$f")" ]] || return 0      # nothing declared, nothing to refuse
+  kb="$(grep -m1 MemTotal "${OB_MEMINFO:-/proc/meminfo}" 2>/dev/null | awk '{print $2}' || true)"
+  if ! ob_mem_scope "$f" "$(ob_engine_host_class)" "$kb" "${MEM_LIMIT_PCT:-75}" >/dev/null; then
+    echo "  Nothing was started." >&2
+    exit 1
+  fi
+  if [[ $DAEMON -ne 1 ]]; then
+    echo "Note: $(basename "$f") declares its memory scope ($(ob_scope_decl "$f" | xargs)); a foreground start" >&2
+    echo "      runs WITHOUT a memory cap. ./start.sh -d gives it the capped scope." >&2
+  fi
 }
 _preflight_model() {
   [[ $MANAGED -eq 1 ]] || return 0     # no local model: no card, no port, of ours
@@ -476,6 +627,15 @@ _preflight_ports() {
 _webui_line() {
   if curl -s -m 2 -o /dev/null "http://$HEALTH_HOST:3000/health" 2>/dev/null; then
     echo "  Open WebUI:    http://localhost:3000"
+    # Its DNS-rebinding Host guard fails open (scripts/webui/sitecustomize.py),
+    # so ask the running container (lib/net.sh). Loud, not fatal: the chat UI
+    # stays up, and doctor.sh FAILs the same row.
+    if [[ "$(ob_webui_host_guard "http://$HEALTH_HOST:3000")" == "open" ]]; then
+      echo "  WARNING:       Open WebUI SERVES requests for unknown Host names — its DNS-rebinding" >&2
+      echo "                 guard did not load (an image change?). With login off, a web page that" >&2
+      echo "                 rebinds its name to this box gets admin, with bash. ./scripts/doctor.sh" >&2
+      echo "                 has the fix; until then, avoid browsing untrusted sites on this machine." >&2
+    fi
   elif [[ "${1:-0}" -eq 1 ]]; then
     echo "  Open WebUI:    NOT UP — docker compose failed (the warning above has the reason)."
     echo "                 Fix docker, then: ./scripts/healthcheck.sh --restart"
@@ -485,6 +645,58 @@ _webui_line() {
   else
     echo "  Open WebUI:    http://localhost:3000 (container still starting — ./start.sh --status)"
   fi
+}
+
+# One line for the banners: what beast-island decided (agents/island.py).
+# `|| true` twice over: status exits 3 when islanded, and a banner line must
+# never abort a start under set -e.
+_island_line() {
+  [[ "${ISLAND:-auto}" == "off" ]] && return 0
+  local st; st="$(OPENBEAST_RUN_DIR="${ISLAND_STATE_DIR:-$RUN_DIR}" python3 "$SCRIPT_DIR/agents/island.py" status 2>/dev/null || true)"
+  echo "  beast-island:  ${st:-unknown}"
+  if [[ "$st" == ISLAND* ]]; then
+    echo "                 everything local works; web_search/fetch/weather answer \"offline\""
+  fi
+  return 0
+}
+
+# The stack unit's stop timeout (start.sh -d sets it on openbeast-stack): what
+# is left of the stack 30 s after its SIGTERM is SIGKILLed. Inside it: the
+# supervisor's trap waits at most 3 s for beast-island, beast-chat and the
+# uvicorn services give open connections 5 s, the dashboard's SIGTERM handler
+# exits by 8 s. The OUTER budget is openbeast.service's: its ExecStop (stop.sh)
+# waits up to 20 s for the supervisor, then up to this 30 s for the stack, then
+# brings the containers down, all within the unit's TimeoutStopSec. The
+# template (scripts/openbeast.service) sets 120 s; a unit installed before
+# that has systemd's default 90 s.
+OB_STACK_STOP_TIMEOUT_S=30
+
+# _ob_stack_settle: wait until no openbeast-stack unit is still stopping. A
+# unit in "deactivating" is a stop in progress whose processes have not all
+# exited; it ends by itself at its TimeoutStopSec (90 s for a unit started
+# before that was set). Bounded: past OB_STACK_SETTLE_S the remainder is
+# SIGKILLed — it belongs to a stack that is already down.
+_ob_stack_settle() {
+  local st i waited=0 max="${OB_STACK_SETTLE_S:-40}"
+  st="$(systemctl --user show -p ActiveState --value openbeast-stack 2>/dev/null || true)"
+  [[ "$st" == deactivating ]] || return 0
+  echo "  the previous openbeast-stack unit is still stopping: waiting up to ${max}s for it..."
+  for (( i = 0; i < max * 5; i++ )); do
+    st="$(systemctl --user show -p ActiveState --value openbeast-stack 2>/dev/null || true)"
+    [[ "$st" == deactivating ]] || break
+    sleep 0.2; waited=1
+  done
+  if [[ "$st" == deactivating ]]; then
+    echo "  still stopping after ${max}s: SIGKILL to what is left of it (systemctl --user kill -s KILL openbeast-stack)" >&2
+    systemctl --user kill -s KILL openbeast-stack 2>/dev/null || true
+    for (( i = 0; i < 25; i++ )); do
+      st="$(systemctl --user show -p ActiveState --value openbeast-stack 2>/dev/null || true)"
+      [[ "$st" == deactivating ]] || break
+      sleep 0.2
+    done
+  fi
+  (( waited )) && echo "  the previous openbeast-stack unit is down ($st)."
+  return 0
 }
 
 # ---- daemon launcher: spawn the detached supervisor, wait for readiness ----
@@ -512,10 +724,55 @@ if [[ $DAEMON -eq 1 ]]; then
       echo "Warning: MEM_LIMIT_PCT='$MEM_LIMIT_PCT' invalid (need 1-100) — using 75" >&2
       MEM_LIMIT_PCT=75
     fi
-    MEM_TOTAL_KB=$(grep -m1 MemTotal /proc/meminfo | awk '{print $2}' || true)
+    # OB_MEMINFO: the test hook lib/hardware.sh reads too.
+    MEM_TOTAL_KB=$(grep -m1 MemTotal "${OB_MEMINFO:-/proc/meminfo}" 2>/dev/null | awk '{print $2}' || true)
     MEM_TOTAL_KB="${MEM_TOTAL_KB:-33554432}"   # fallback: assume 32 GB
+    # >>> per-profile memory scope (scripts/lib/memscope.sh,
+    # docs/WEIGHT_STREAMING.md). A big-mode serve script (or an engine
+    # profile, through its adapter's scope_file) declares the scope it needs
+    # in an `# openbeast-scope:` line; only that launch on that host class
+    # gets it, every other launch keeps MEM_LIMIT_PCT. No declaration: no
+    # change at all.
+    source "$SCRIPT_DIR/scripts/lib/memscope.sh"
+    source "$SCRIPT_DIR/scripts/lib/engine.sh"
+    _scope_file="$(_preflight_scope_file)"
+    _scope_rc=0
+    _scope="$(ob_mem_scope "$_scope_file" "$(ob_engine_host_class)" "$MEM_TOTAL_KB" "$MEM_LIMIT_PCT" \
+                "$([[ -n "${OPENBEAST_MEM_LIMIT_PCT:-}" ]] && echo "$MEM_LIMIT_PCT")")" || _scope_rc=$?
+    if [[ $_scope_rc -ne 0 ]]; then
+      echo "  Nothing was started." >&2
+      exit 1
+    fi
+    read -r MEM_LIMIT_PCT _scope_memlock _scope_src <<< "$_scope"
+    _SCOPE_PROPS=()
+    _scope_note=""
+    if [[ "$_scope_src" == profile:* ]]; then
+      # The daemon re-sources conf.sh: carry the raised percent in, so its
+      # own arithmetic (serve.sh's prompt-cache budget) uses the real scope.
+      export OPENBEAST_MEM_LIMIT_PCT="$MEM_LIMIT_PCT"
+      _scope_note=", raised for ${_scope_src#profile:}"
+    fi
+    if [[ "$_scope_memlock" == infinity ]]; then
+      if [[ "$(ob_memlock_hard)" == unlimited ]]; then
+        _SCOPE_PROPS+=(-p LimitMEMLOCK=infinity)
+        _scope_note+=", memlock unlimited"
+      else
+        echo "Warning: $SERVE_SCRIPT asks for memlock=infinity, but this session's hard limit is $(ob_memlock_hard) KiB;" >&2
+        echo "         a user unit cannot exceed it, so the scope keeps it. llama.cpp's pinned host experts" >&2
+        echo "         do not need it; Maya's RAM tier may. One-time fix (root), then log out and in:" >&2
+        echo "         docs/WEIGHT_STREAMING.md \"Memlock\"." >&2
+      fi
+    fi
+    unset _scope _scope_rc _scope_file _scope_memlock
+    # <<< per-profile memory scope
     MEM_MAX_BYTES=$(( MEM_TOTAL_KB * 1024 / 100 * MEM_LIMIT_PCT ))
     MEM_MAX_GB=$(( MEM_MAX_BYTES / 1024 / 1024 / 1024 ))
+    # A previous stack unit still stopping (a child that has not exited yet)
+    # makes systemd-run refuse the name, and this start exits 1 a second
+    # later: what failed `systemctl --user restart openbeast` after a model
+    # switch on 2026-11-23. No supervisor is alive (checked above), so it is
+    # a leftover: wait for it, bounded by its own TimeoutStopSec, then KILL it.
+    _ob_stack_settle
     systemctl --user reset-failed openbeast-stack 2>/dev/null || true
     # Forward the caller's OPENBEAST_* overrides (plus WebUI admin creds) into
     # the transient unit — systemd-run starts from a CLEAN environment, so
@@ -559,11 +816,18 @@ if [[ $DAEMON -eq 1 ]]; then
     if [[ -n "${WEBUI_ADMIN_EMAIL:-}" ]]; then
       SETENV_ARGS+=(--setenv="WEBUI_ADMIN_EMAIL=${WEBUI_ADMIN_EMAIL}")
     fi
+    # TimeoutStopSec: a child that ignores SIGTERM is SIGKILLed after
+    # OB_STACK_STOP_TIMEOUT_S (30 s), not systemd's default 90 s, which equals
+    # openbeast.service's own stop timeout: stop.sh's
+    # `systemctl --user stop openbeast-stack` then used all of the outer
+    # unit's budget, and the outer stop timed out with it.
     systemd-run --user --quiet --collect --unit=openbeast-stack \
       -p MemoryMax="$MEM_MAX_BYTES" -p MemorySwapMax=8G \
+      -p TimeoutStopSec="${OB_STACK_STOP_TIMEOUT_S}s" \
+      ${_SCOPE_PROPS[@]+"${_SCOPE_PROPS[@]}"} \
       ${SETENV_ARGS[@]+"${SETENV_ARGS[@]}"} \
       "$SCRIPT_DIR/start.sh" --_daemonized "$SERVE_SCRIPT"
-    echo "  (memory-capped scope 'openbeast-stack': ${MEM_LIMIT_PCT}% of RAM = ${MEM_MAX_GB}G, swap 8G)"
+    echo "  (memory-capped scope 'openbeast-stack': ${MEM_LIMIT_PCT}% of RAM = ${MEM_MAX_GB}G, swap 8G${_scope_note})"
   else
     setsid nohup "$0" --_daemonized "$SERVE_SCRIPT" \
       >>"$RUN_DIR/stack.log" 2>&1 < /dev/null &
@@ -640,7 +904,7 @@ if [[ $DAEMON -eq 1 ]]; then
       # an unreachable docker daemon means it will not come up at all.
       _webui_line
       if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
-        echo "  Agent router:  http://localhost:${ROUTER_PORT} (frontends route through it)"
+        echo "  Agent router:  http://localhost:${ROUTER_PORT} (Open WebUI routes through it)"
       fi
       if [[ "${EDGE_GATE:-false}" == "true" ]]; then
         echo "  beast-gate:    http://localhost:${EDGE_PORT:-8090} (remote clients arrive here)"
@@ -655,6 +919,7 @@ if [[ $DAEMON -eq 1 ]]; then
       if [[ "${INSTINCT:-false}" == "true" ]]; then
         echo "  beast-instinct: http://127.0.0.1:${INSTINCT_PORT} (scripts/instinct.sh status)"
       fi
+      _island_line
       echo "  Status:        ./start.sh --status    Stop: ./stop.sh"
       exit 0
     fi
@@ -698,6 +963,15 @@ ob_pid_record "$SUP_PID_FILE" "$$"
 # stack again (stop.sh wrote .run/stopped; healthcheck.sh honours it), and
 # its relaunch budget starts fresh.
 rm -f "$RUN_DIR/stopped" "$RUN_DIR/watchdog-relaunches"
+# STARTING. Until the "Stack is running" banner, the tool server, router and
+# gate are down because they come up only after the model has loaded. A
+# watchdog tick in that window used to relaunch them itself, outside this
+# scope, onto the ports this supervisor was about to bind. Its relaunches
+# then served under a pid nothing recorded. healthcheck.sh --restart reads
+# this marker, while the supervisor it names is alive, as "report only".
+# It is removed before the banner and by cleanup().
+echo "$$" > "$RUN_DIR/starting"
+
 # The supervisor giving up on a crash-looping model is a stop too: without
 # the marker the watchdog relaunched it every five minutes, forever.
 _mark_gave_up() {
@@ -795,6 +1069,21 @@ cleanup() {
   if [[ -n "${IDLE_PID:-}" ]]; then
     kill "$IDLE_PID" 2>/dev/null || true
   fi
+  # beast-island last: web tools keep refusing until the stack is truly down,
+  # then the state file goes with it (a stale file is ignored anyway, but a
+  # stopped stack should leave nothing to explain).
+  # Wait for it (bounded): a tick mid-probe when TERM lands must finish
+  # BEFORE the file is removed, or it is written back afterwards. The watcher
+  # also skips writes once told to stop and removes its own file.
+  if [[ -n "${ISLAND_PID:-}" ]]; then
+    kill "$ISLAND_PID" 2>/dev/null || true
+    for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+      kill -0 "$ISLAND_PID" 2>/dev/null || break
+      sleep 0.2
+    done
+    _rm_own_pidfile "$RUN_DIR/island.pid" "$ISLAND_PID"
+    rm -f "${ISLAND_STATE_DIR:-$RUN_DIR}/island.json"
+  fi
   # Reap any process-kind extensions we launched — identity-checked. This
   # trap also fires on every early exit of a FRESH start, i.e. against
   # pidfiles a crashed run left behind, whose numbers may now be anyone's.
@@ -804,6 +1093,7 @@ cleanup() {
     ob_ext_reap "$_pf" "$REPO_DIR/extensions/${_n#ext-}"
   done
   rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/supervisor.start"
+  [[ "$(cat "$RUN_DIR/starting" 2>/dev/null || true)" == "$$" ]] && rm -f "$RUN_DIR/starting"
   # The tool server, router, gate and model: only while the file still names
   # the child WE spawned, like chat/artifact/hydra. healthcheck.sh --restart
   # replaces a crashed tool server (router, gate, model) and records the
@@ -842,6 +1132,60 @@ _mark_stopped() { # _mark_stopped <reason>
 trap 'STOPPING=1; _mark_stopped "Ctrl+C on a foreground ./start.sh"; cleanup; exit 143' INT
 trap 'STOPPING=1; _mark_stopped "SIGTERM to a foreground ./start.sh"; cleanup; exit 143' TERM
 
+# ---- beast-island: the launch decision, then the watcher -------------------
+# Before anything that could wait on the internet (compose, Open WebUI's
+# first-boot downloads). ISLAND=force islands now; auto probes (re-trying for
+# up to 20 s: a boot whose DHCP is still settling is not an outage) and boots
+# islanded when there is no route right now — the "power came back on the
+# UPS, router still dark" boot. Islanded at launch means, for this run only:
+# compose never pulls (ob_offline) and Open WebUI starts in OFFLINE_MODE.
+# After the traps, so cleanup() always reaps the watcher. Every failure
+# here is a warning: island mode is resilience, and a stack that refuses
+# to boot over it would defeat the point.
+ISLAND_PID=""
+ISLAND_AT_LAUNCH=0
+_island_py="$SCRIPT_DIR/agents/island.py"
+_was_offline=0; ob_offline && _was_offline=1
+# A watcher left by a supervisor that was SIGKILLed (its trap never ran) would
+# keep heartbeating next to ours and the state would flap between the two.
+# The recorded one is identity-checked; the sweep catches an unrecorded one.
+if ob_recorded_pid_ours "$RUN_DIR/island.pid" 'island\.py'; then
+  kill "$(cat "$RUN_DIR/island.pid")" 2>/dev/null || true
+fi
+pkill -f "$(_ob_ere "$_island_py") watch" 2>/dev/null || true
+rm -f "$RUN_DIR/island.pid" "$RUN_DIR/island.start"
+if [[ "${ISLAND:-auto}" != "off" ]]; then
+  # --opt=value: a probe list starting with "-" must not read as a flag.
+  _island_args=(--mode "$ISLAND" --grace "$ISLAND_GRACE")
+  [[ -n "${ISLAND_PROBES:-}" ]] && _island_args+=("--probes=$ISLAND_PROBES")
+  _irc=0
+  OPENBEAST_RUN_DIR="$ISLAND_STATE_DIR" python3 "$_island_py" init "${_island_args[@]}" || _irc=$?
+  # Forced is islanded whatever init managed: a failed init must not turn
+  # --offline into an online launch (the watcher islands itself too).
+  if [[ $_irc -eq 3 || "$ISLAND" == "force" ]]; then
+    ISLAND_AT_LAUNCH=1
+    OFFLINE=true
+    echo "beast-island: $(OPENBEAST_RUN_DIR="$ISLAND_STATE_DIR" python3 "$_island_py" status 2>/dev/null || true)"
+    echo "              (this run: no image pulls, Open WebUI in OFFLINE_MODE, web tools refuse)"
+  fi
+  if [[ $_irc -ne 0 && $_irc -ne 3 ]]; then
+    echo "Warning: beast-island could not make its launch decision (exit $_irc)$( [[ $ISLAND_AT_LAUNCH -eq 1 ]] && echo ' — islanded anyway (forced)' || echo ' — starting as online')." >&2
+  fi
+  OPENBEAST_RUN_DIR="$ISLAND_STATE_DIR" python3 "$_island_py" watch "${_island_args[@]}" "--parent=$$" &
+  ISLAND_PID=$!
+  ob_pid_record "$RUN_DIR/island.pid" "$ISLAND_PID"
+else
+  rm -f "$ISLAND_STATE_DIR/island.json"
+fi
+# docker-compose.yml reads this for Open WebUI's OFFLINE_MODE. Always set it
+# explicitly so an inherited export never decides it. A closed-network box
+# (OFFLINE=true) needs it as much as an islanded one.
+if [[ $ISLAND_AT_LAUNCH -eq 1 || $_was_offline -eq 1 ]]; then
+  export OPENBEAST_WEBUI_OFFLINE=true
+else
+  export OPENBEAST_WEBUI_OFFLINE=false
+fi
+
 # Returns 2, launching nothing, when the port is already held: our server
 # would die on the bind while the holder answered /health in its place — a
 # campaign's llama-server under a GPU lease, or one the watchdog relaunched.
@@ -851,7 +1195,7 @@ launch_llama() {
     echo "  Not launching llama-server: it could not bind." >&2
     return 2
   fi
-  echo "Starting llama.cpp server ($SERVE_SCRIPT)..."
+  echo "Starting ${_OB_ENGINE_LABEL:-llama.cpp server} ($SERVE_SCRIPT)..."   # engine-plane hook
   "$SCRIPT_DIR/scripts/$SERVE_SCRIPT" &
   LLAMA_PID=$!
   echo "$LLAMA_PID" > "$RUN_DIR/llama.pid"
@@ -862,6 +1206,13 @@ launch_llama() {
 # it for a hand-written one that does not.
 _llama_port_ours() {
   local pids rc=0 p hops
+  # engine-plane hook: a container engine's listener is no child of ours;
+  # its adapter answers (2 = "use the pid-tree check below").
+  if [[ -n "${_OB_OWNS_FN:-}" ]]; then
+    "$_OB_OWNS_FN" "$LLAMA_PID" "$LLAMA_PORT" || rc=$?
+    [[ $rc -ne 2 ]] && return $rc
+    rc=0
+  fi
   pids="$(ob_port_pids "$LLAMA_PORT")" || rc=$?
   if [[ $rc -eq 2 || -z "$pids" ]]; then
     # The holder cannot be named here (no ss / lsof / /proc). The rule
@@ -908,14 +1259,14 @@ wait_llama_health() {
   local t0=$SECONDS _i
   while true; do
     if ! kill -0 "$LLAMA_PID" 2>/dev/null; then
-      if ob_llama_ready "$LLAMA_BASE"; then
+      if ${_OB_READY_FN:-ob_llama_ready} "$LLAMA_BASE"; then   # engine-plane hook
         _i="$(_port_holder "$LLAMA_PORT")"
         echo "llama-server (pid $LLAMA_PID) exited, yet a server answers on port $LLAMA_PORT${_i:+: $_i}." >&2
         echo "  It is not the one this stack launched, so it is not reported as ready." >&2
       fi
       return 1
     fi
-    if ob_llama_ready "$LLAMA_BASE" && _llama_port_ours; then
+    if ${_OB_READY_FN:-ob_llama_ready} "$LLAMA_BASE" && _llama_port_ours; then   # engine-plane hook
       return 0
     fi
     if (( SECONDS - t0 >= LLAMA_LOAD_GRACE )); then
@@ -971,9 +1322,9 @@ launch_and_wait() {
   if [[ -n "${LLAMA_PID:-}" ]] && ! kill -0 "$LLAMA_PID" 2>/dev/null; then
     wait "$LLAMA_PID" 2>/dev/null; local _rc=$?
     if [[ $_rc -eq 3 ]]; then
-      echo "Refusing to roll back: '$failed' was rejected by the weight registry" >&2
-      echo "  (WEIGHT_ENFORCE=strict). Serving a different model would defeat the check." >&2
-      echo "  Fix the weight, re-pin it, or set WEIGHT_ENFORCE=warn in openbeast.conf." >&2
+      echo "Refusing to roll back: '$failed' was refused by serve.sh (the reason is above:" >&2
+      echo "  the weight registry under WEIGHT_ENFORCE=strict, or keyless inference on a" >&2
+      echo "  network bind). Serving a different model would defeat the check." >&2
       LLAMA_FAIL=refused
       return 1
     fi
@@ -1028,6 +1379,45 @@ _infer_ready() {
   else
     ob_backend_ready "$LLAMA_BASE"
   fi
+}
+
+# UNIFIED memory (GB10 head node): re-size the stack's cap to what is really
+# left. The launcher capped the scope at MEM_LIMIT_PCT of MemTotal, but here
+# the model (TensorFold rank 0, outside every cgroup of ours) holds most of
+# MemTotal: on spark-1 the cap was 91 GiB with 6.4 GiB available, so it could
+# never fire before the box itself ran out — and a GB10 out of memory freezes
+# or OOM-kills rank 0 instead of the runaway. Called once the model is READY
+# (at boot both start together, and a cap measured before the model loads
+# would be the same useless number), and again whenever it comes back.
+# Only for an unmanaged model (a managed llama-server runs INSIDE the scope)
+# and only inside the scope this launcher made. Never fatal.
+fit_unified_mem_cap() {
+  [[ $MANAGED -eq 0 ]] || return 0
+  grep -qs 'openbeast-stack\.service' "${OB_PROC_CGROUP:-/proc/self/cgroup}" || return 0
+  [[ -n "${OB_GPU_UNIFIED:-}" ]] || ob_detect_gpu 2>/dev/null || true
+  [[ "${OB_GPU_UNIFIED:-0}" -eq 1 ]] || return 0
+  local now_b now_mb ceil_mb out cap_mb pct avail_mb short
+  now_b="$(systemctl --user show -p MemoryCurrent --value openbeast-stack.service 2>/dev/null || true)"
+  [[ "$now_b" =~ ^[0-9]+$ ]] && now_mb=$(( now_b / 1048576 )) || now_mb=0
+  ceil_mb=$(( $(ob_meminfo_total_mb) * ${MEM_LIMIT_PCT:-75} / 100 ))
+  out="$(ob_unified_mem_budget "$now_mb" $(( ${MEM_RESERVE_GB:-3} * 1024 )) "$ceil_mb")" || return 0
+  read -r cap_mb pct avail_mb short <<< "$out"
+  if systemctl --user set-property --runtime openbeast-stack.service \
+       "MemoryMax=${cap_mb}M" >/dev/null 2>&1; then
+    echo "Unified memory: ${avail_mb} MiB available beside the model — stack cap now ${cap_mb} MiB" \
+         "(MemAvailable − MEM_RESERVE_GB=${MEM_RESERVE_GB:-3}G kept for the model; chat jobs ${pct}% of RAM)"
+  else
+    echo "Warning: could not lower the stack's memory cap to ${cap_mb} MiB (systemctl set-property failed)" >&2
+  fi
+  if [[ "$short" == "1" ]]; then
+    echo "Warning: only ${avail_mb} MiB available beside the model — the stack has no headroom past what it" >&2
+    echo "         holds (or its floor eats into the ${MEM_RESERVE_GB:-3} GiB reserve). Free memory on this box" >&2
+    echo "         (or shrink the model's pool)." >&2
+  fi
+  # The chat jobs' slice leaves the stack's cgroup (agents/chat_server.py),
+  # so it needs its own share. An operator's explicit value wins.
+  [[ -n "${OPENBEAST_CHAT_JOB_MEM_PCT:-}" ]] || export OPENBEAST_CHAT_JOB_MEM_PCT="$pct"
+  return 0
 }
 
 # beast-hydra (opt-in, HYDRA=true): the inference router every consumer now
@@ -1163,6 +1553,7 @@ if [[ $MANAGED -eq 0 ]]; then
   if wait_backend_ready; then
     INFER_UP=1
     echo "$(ob_backend_label) ready at $LLAMA_BASE"
+    fit_unified_mem_cap
   fi
 elif [[ $FAST_BOOT_ACTIVE -eq 1 ]]; then
   echo "Waiting for llama.cpp server to be ready..."
@@ -1173,7 +1564,7 @@ elif [[ $FAST_BOOT_ACTIVE -eq 1 ]]; then
     exit 1
   fi
 else
-  echo "Waiting for llama.cpp server to be ready..."
+  echo "Waiting for ${_OB_ENGINE_LABEL:-llama.cpp server} to be ready..."   # engine-plane hook
   # Real model, with load-failure rollback to the last-known-good.
   if ! launch_and_wait; then
     case "$LLAMA_FAIL" in
@@ -1189,7 +1580,7 @@ else
   fi
 fi
 if [[ $MANAGED -eq 1 ]]; then
-  echo "llama.cpp server ready on http://localhost:8080"
+  echo "${_OB_ENGINE_LABEL:-llama.cpp server} ready on ${_OB_ENGINE_URL:-http://localhost:8080}"   # engine-plane hook
   wait_hydra_routable || true
 fi
 
@@ -1237,18 +1628,26 @@ fi
 if [[ -n "${OPENBEAST_MCPO_ADMIN_KEY:-}" && -n "${OPENBEAST_MCPO_GUEST_KEY:-}" ]]; then
   echo "  (RBAC Phase 2 keys active: admin + guest profiles on :3001)"
 fi
+# The preflight checked :3001 before the model load; anything can have taken
+# it since.
+if _port_busy "$HEALTH_HOST" 3001; then
+  _port_refuse 3001 "the tool server"
+  exit 1
+fi
 python3 "$SCRIPT_DIR/agents/openapi_tools.py" &
 MCPO_PID=$!
 echo "$MCPO_PID" > "$RUN_DIR/mcpo.pid"
-# Verify it actually serves — a blind sleep once masked a dead tool server.
+# Verify it actually serves — a blind sleep once masked a dead tool server —
+# and that the one serving is OURS (_ready_ours).
 MCPO_UP=0
 _t0=$SECONDS
 while (( SECONDS - _t0 < 30 )); do
   if ! kill -0 "$MCPO_PID" 2>/dev/null; then
-    echo "Error: tool server exited during startup — see output above" >&2
+    _lost_bind "tool server" 3001
     exit 1
   fi
-  curl -s -m 2 "http://$HEALTH_HOST:3001/health" >/dev/null 2>&1 && { MCPO_UP=1; break; }
+  _h="$(curl -fsS -m 2 "http://$HEALTH_HOST:3001/health" 2>/dev/null || true)"
+  [[ "$_h" == *'"status"'* ]] && _ready_ours "$MCPO_PID" 3001 && { MCPO_UP=1; break; }
   sleep 0.2
 done
 [[ $MCPO_UP -eq 1 ]] || { echo "Error: tool server not serving after 30s" >&2; exit 1; }
@@ -1347,6 +1746,10 @@ if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
     # turn every classification (and so every spawn) into an error.
     _router_env+=(ROUTER_CLASSIFY_MODEL="$HYDRA_DEFAULT_MODEL")
   fi
+  if _port_busy 127.0.0.1 "$ROUTER_PORT"; then
+    _port_refuse "$ROUTER_PORT" "the agent router, ROUTER_PORT"
+    exit 1
+  fi
   OPENBEAST_ROUTER_PORT="$ROUTER_PORT" \
   OPENBEAST_LLAMA_UPSTREAM="$CONSUMER_BASE" \
   OPENBEAST_MCPO_URL="http://$HEALTH_HOST:3001" \
@@ -1355,15 +1758,18 @@ if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
   echo "$ROUTER_PID" > "$RUN_DIR/router.pid"
   ROUTER_UP=0
   _t0=$SECONDS
+  # ANY HTTP answer is a live router (it forwards /health upstream) — but
+  # only from the process we started (_ready_ours).
   while (( SECONDS - _t0 < 20 )); do
     if ! kill -0 "$ROUTER_PID" 2>/dev/null; then
-      echo "Error: agent router exited during startup — see output above" >&2; exit 1
+      _lost_bind "agent router" "$ROUTER_PORT"; exit 1
     fi
-    curl -s -m 2 "http://127.0.0.1:${ROUTER_PORT}/health" >/dev/null 2>&1 && { ROUTER_UP=1; break; }
+    curl -s -m 2 "http://127.0.0.1:${ROUTER_PORT}/health" >/dev/null 2>&1 \
+      && _ready_ours "$ROUTER_PID" "$ROUTER_PORT" && { ROUTER_UP=1; break; }
     sleep 0.2
   done
   [[ $ROUTER_UP -eq 1 ]] || { echo "Error: agent router not serving after 20s" >&2; exit 1; }
-  echo "Agent router ready on http://localhost:${ROUTER_PORT} (frontends route through it)"
+  echo "Agent router ready on http://localhost:${ROUTER_PORT} (Open WebUI routes through it)"
 fi
 
 # beast-gate (opt-in, EDGE_GATE=true) — the identity-aware inference edge for
@@ -1375,6 +1781,10 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
   # Upstream on the probe host for the same reason as the router's above.
   # Under HYDRA=true the gate's upstream is hydra (CONSUMER_BASE) and it
   # vouches for the device it authenticated with X-Hydra-Caller.
+  if _port_busy "$HEALTH_HOST" "$EDGE_PORT"; then
+    _port_refuse "$EDGE_PORT" "beast-gate, EDGE_PORT"
+    exit 1
+  fi
   OPENBEAST_REPO_DIR="$SCRIPT_DIR" \
   OPENBEAST_LLAMA_UPSTREAM="$CONSUMER_BASE" \
     python3 "$SCRIPT_DIR/agents/edge.py" &
@@ -1384,9 +1794,10 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
   _t0=$SECONDS
   while (( SECONDS - _t0 < 20 )); do
     if ! kill -0 "$EDGE_PID" 2>/dev/null; then
-      echo "Error: beast-gate exited during startup — see output above" >&2; exit 1
+      _lost_bind "beast-gate" "$EDGE_PORT"; exit 1
     fi
-    curl -s -m 2 "http://$HEALTH_HOST:${EDGE_PORT}/gate/health" >/dev/null 2>&1 && { EDGE_UP=1; break; }
+    _h="$(curl -sS -m 2 "http://$HEALTH_HOST:${EDGE_PORT}/gate/health" 2>/dev/null || true)"
+    [[ "$_h" == *beast-gate* ]] && _ready_ours "$EDGE_PID" "$EDGE_PORT" && { EDGE_UP=1; break; }
     sleep 0.2
   done
   [[ $EDGE_UP -eq 1 ]] || { echo "Error: beast-gate not serving after 20s" >&2; exit 1; }
@@ -1527,6 +1938,18 @@ while IFS= read -r _cf; do [[ -n "$_cf" ]] && COMPOSE_FILES+=("$_cf"); done < <(
 # store lacks the pinned digest, which on a closed network is a stall followed
 # by a confusing failure. `--pull never` turns that into an immediate, honest
 # "the image is not here".
+# Islanded at launch by a boot race? The launch probe ran seconds after boot;
+# by now (after the model wait) the watcher may have seen the route come
+# back. On spark-1 it had, 30 s later — and Open WebUI was still created in
+# OFFLINE_MODE minutes after that, for the whole 43 h run (ops review). Auto
+# mode only: forced (--offline) and OFFLINE=true stay offline.
+if [[ $ISLAND_AT_LAUNCH -eq 1 && "${ISLAND:-auto}" == "auto" && $_was_offline -eq 0 ]] \
+   && OPENBEAST_RUN_DIR="$ISLAND_STATE_DIR" python3 "$_island_py" status >/dev/null 2>&1; then
+  echo "beast-island: the internet came back before the frontends started — Open WebUI starts online."
+  ISLAND_AT_LAUNCH=0
+  OFFLINE=false
+  export OPENBEAST_WEBUI_OFFLINE=false
+fi
 COMPOSE_UP=(up -d)
 if ob_offline; then
   COMPOSE_UP+=(--pull never)
@@ -1537,7 +1960,10 @@ if ! docker compose "${COMPOSE_FILES[@]}" "${COMPOSE_UP[@]}"; then
   # Not a bare `docker compose up -d`: compose needs the environment conf.sh
   # exports (the SearXNG secret is required), which healthcheck.sh sources.
   echo "Warning: frontend containers failed to start — model API (:8080) and tools (:3001) are still up. Retry with: ./scripts/healthcheck.sh --restart" >&2
-  if ob_offline; then
+  if [[ $ISLAND_AT_LAUNCH -eq 1 ]]; then
+    echo "         beast-island: no internet at launch, so nothing was pulled — the" >&2
+    echo "         images must already be on this box (docker images)." >&2
+  elif ob_offline; then
     echo "         OFFLINE=true, so nothing was pulled. Images are the fourth of" >&2
     echo "         the four fetches a closed network cannot do. Move them with" >&2
     echo "         docker save/load from a connected box — and note the trap:" >&2
@@ -1574,6 +2000,9 @@ done < <(ob_ext_processes)
 "$SCRIPT_DIR/scripts/configure-webui.sh" &
 CONFIG_PID=$!
 
+# Every service of this start is up (or reported): from here a DOWN one is
+# the watchdog's to repair.
+rm -f "$RUN_DIR/starting"
 echo ""
 echo "Stack is running:"
 if [[ $MANAGED -eq 1 ]]; then
@@ -1585,7 +2014,15 @@ else
 fi
 echo "  Tool server:   http://localhost:3001 (OpenAPI docs at /docs)"
 _webui_line "$COMPOSE_FAILED"
-echo "  OpenCode:      run 'opencode' in any project directory"
+# opencode.json is project-local (relative MCP path) and fixed at localhost:8080:
+# it never goes through the router or hydra, and is wrong for any other URL.
+if [[ "$LLAMA_BASE" =~ ^http://(localhost|127\.0\.0\.1):8080/?$ ]]; then
+  echo "  OpenCode:      run 'opencode' from this checkout (direct to :8080, not via router/hydra)"
+else
+  echo "  OpenCode:      this checkout's opencode.json targets localhost:8080, not $LLAMA_BASE;"
+  echo "                 use the ~/.config/opencode entry scripts/backends/use-model.sh prints"
+fi
+_island_line
 if [[ "${HYDRA:-false}" == "true" ]]; then
   echo "  beast-hydra:   $HYDRA_URL (${HYDRA_CHECK_SUMMARY:-?}) — scripts/hydra.sh status"
 fi
@@ -1633,17 +2070,39 @@ if [[ $FAST_BOOT_ACTIVE -eq 1 ]]; then
   FAST_BOOT_ACTIVE=0
 fi
 
-# Unmanaged: nothing to relaunch. Stay up (the trap still owns shutdown)
+# Unmanaged: no model to relaunch. Stay up (the trap still owns shutdown)
 # and log only TRANSITIONS of the remote server's readiness, so a Spark
 # rebooting shows up in stack.log without a line every 30 seconds.
+# Every 5 minutes, run healthcheck.sh --restart for the stack's OWN services
+# (tool server, beast-gate, beast-chat, beast-artifact, WebUI, SearXNG): this
+# loop used to only log, so on spark-1 a crashed :3001 or :8090 stayed down
+# (ops review). Run from here, a relaunched service stays inside this
+# memory-capped scope; healthcheck never touches the unmanaged model, and a
+# pass the watchdog timer is already running makes this one report-only. Its
+# output reaches stack.log only when something was down.
 if [[ $MANAGED -eq 0 ]]; then
   _up="${INFER_UP:-1}"
+  _hc_tick=0
   while true; do
     sleep 30 & IDLE_PID=$!
     wait "$IDLE_PID" || true
     IDLE_PID=""
+    _hc_tick=$(( _hc_tick + 1 ))
+    if (( _hc_tick >= ${OPENBEAST_SUPERVISOR_HEAL_TICKS:-10} )) && [[ -x "$SCRIPT_DIR/scripts/healthcheck.sh" ]]; then
+      _hc_tick=0
+      "$SCRIPT_DIR/scripts/healthcheck.sh" --restart > "$RUN_DIR/supervisor-heal.log" 2>&1 & IDLE_PID=$!
+      _hc_rc=0; wait "$IDLE_PID" || _hc_rc=$?
+      IDLE_PID=""
+      if [[ $_hc_rc -ne 0 && -s "$RUN_DIR/supervisor-heal.log" ]]; then
+        echo "$(date '+%H:%M:%S') supervisor: healthcheck --restart found something down:"
+        grep -E '^  (DOWN|FOREIGN|WARN)|→' "$RUN_DIR/supervisor-heal.log" | sed 's/^/  /' || true
+      fi
+    fi
     if _infer_ready; then
-      [[ $_up -eq 0 ]] && echo "$(date '+%H:%M:%S') $(ob_backend_label) at $LLAMA_BASE is ready again."
+      if [[ $_up -eq 0 ]]; then
+        echo "$(date '+%H:%M:%S') $(ob_backend_label) at $LLAMA_BASE is ready again."
+        fit_unified_mem_cap   # a reloaded model re-sizes what is left beside it
+      fi
       _up=1
     else
       [[ $_up -eq 1 ]] && echo "$(date '+%H:%M:%S') $(ob_backend_label) at $LLAMA_BASE is NOT ready — not managed here, so nothing is restarted."

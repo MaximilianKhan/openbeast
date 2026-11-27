@@ -1,3 +1,7 @@
+> **Superseded (noted 2026-11-19):** both wins below were narrowed; [`../../FINDINGS.md`](../../FINDINGS.md) findings 2 and 10 state what held.
+> Win 1: re-rounding improves a given K-quant file at zero bytes, but a *smaller* stock rung (IQ3_XXS) beats re-rounded Q2_K at 0.8B, so "quality becomes memory saved" is not supported; and the tool needs the higher-precision source weights plus a Gram capture on a patched `llama-imatrix`, so it does not run from a GGUF alone.
+> Win 2: the allocator fix's +19.6% is the better of two sessions at 0.6B (11% in the other), with no measurable change at 27B; the fused kernels raise adapter decode by 79% at 0.6B but by 2.7% at 27B. Neither was re-measured after the rebase to b10865.
+
 # The deployable-everywhere wins (paper §1 narrative + PR-bundle pitch)
 # Saved 2026-08-04 per Max. Claims calibrated to the reviewed record.
 

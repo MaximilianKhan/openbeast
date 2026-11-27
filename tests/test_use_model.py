@@ -68,7 +68,7 @@ def test_use_model_refuses_without_a_matching_passing_report(tmp_path, monkeypat
     assert use_model.main(["--model", 'bad"id', "--conf", str(conf), "--force"]) == 1
 
 
-def test_use_model_tensorfold_snippet_has_no_key(tmp_path, monkeypatch, capsys):
+def test_use_model_tensorfold_snippet_is_keyed(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("OPENBEAST_INFERENCE_URL", "http://10.0.0.5:8000")
     monkeypatch.setenv("OPENBEAST_INFERENCE_BACKEND", "tensorfold")
     monkeypatch.setenv("LLAMA_API_KEY", "sk-x")
@@ -77,7 +77,7 @@ def test_use_model_tensorfold_snippet_has_no_key(tmp_path, monkeypatch, capsys):
                            str(tmp_path / "c.conf"), "--opencode-out", str(out_file)]) == 0
     snip = json.loads(out_file.read_text())
     opts = snip["provider"]["openbeast-inference"]["options"]
-    assert "apiKey" not in opts and opts["baseURL"] == "http://10.0.0.5:8000/v1"
+    assert "apiKey" in opts and opts["baseURL"] == "http://10.0.0.5:8000/v1"
 
 
 def test_runner_default_model_follows_env():

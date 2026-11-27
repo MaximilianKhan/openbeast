@@ -179,12 +179,21 @@ elif CMD == "show":
         print("  %-12s %s" % ("command:", command if isinstance(command, str)
                               else " ".join(str(c) for c in command)))
     log = record.get("transcript")
-    if log and os.path.exists(log):
+    if log and os.path.isfile(log):
         print("")
         print("  --- last 20 lines of %s ---" % log)
-        with open(log, "r", errors="replace") as fh:
-            for line in fh.readlines()[-20:]:
-                print("  " + line.rstrip("\n"))
+        # Bounded: seek near EOF, never read every line of a multi-day
+        # campaign log (several GB of list for 20 lines). 64 KiB holds the
+        # last 20 lines of anything readable; a longer line is clipped.
+        with open(log, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            end = fh.tell()
+            fh.seek(max(0, end - 65536))
+            tail = fh.read(65536).decode("utf-8", "replace").splitlines()
+        if end > 65536 and tail:
+            tail = tail[1:]                 # the first line is a fragment
+        for line in tail[-20:]:
+            print("  " + line)
 
 elif CMD == "stopinfo":
     record = need(ARGV[0])
@@ -194,9 +203,22 @@ elif CMD == "stopinfo":
     # chat_server holds to. A record with no start time on file used to be
     # signalled on bare-pid evidence here, i.e. whoever holds that pid now.
     proven = 1 if sessions.is_alive(record, require_start=True) else 0
-    print("%s %s %s %d" % (record.get("state") or "unknown",
-                           record.get("pid") or 0, record.get("pgid") or 0,
-                           proven))
+    # `leads` is 1 only when the session LEADS the recorded group (pgid ==
+    # pid) and the live process is still in it — the rule chat_server's
+    # _signal_session_group holds to. Membership is not enough: a runner
+    # registered with no pgid gets os.getpgid(pid), i.e. the group of the
+    # non-interactive script that exec'd it, and signalling THAT group took
+    # the whole campaign and every sibling stage down with one agent.
+    leads = 0
+    try:
+        pid_i, pgid_i = int(record.get("pid") or 0), int(record.get("pgid") or 0)
+        if pid_i > 1 and pid_i == pgid_i and os.getpgid(pid_i) == pgid_i:
+            leads = 1
+    except (OSError, TypeError, ValueError):
+        leads = 0
+    print("%s %s %s %d %d" % (record.get("state") or "unknown",
+                              record.get("pid") or 0, record.get("pgid") or 0,
+                              proven, leads))
 
 elif CMD == "rawstate":
     # The state EXACTLY as it sits on disk, with NO reconciliation.
@@ -238,6 +260,29 @@ _pid_alive() { # _pid_alive <pid>
   st="$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ')" || return 1
   [[ -n "$st" ]] || return 1
   case "$st" in Z*) return 1 ;; esac
+  return 0
+}
+
+# Sets GROUP_OTHERS to the live, non-zombie members of process group <pgid>
+# other than this shell, space-separated. A GLOBAL, not stdout: called as
+# `x="$(_group_others ...)"` the function would run in a subshell that is
+# itself a live member of the group -- and would list itself, forever. The ps
+# snapshot's own processes (ps, its subshell) are gone, and fail kill -0,
+# by the time the snapshot is walked. (No $BASHPID: bash 3.2.)
+GROUP_OTHERS=""
+_group_others() { # _group_others <pgid>
+  local snap gpid gpg gst
+  GROUP_OTHERS=""
+  snap="$(ps -A -o pid= -o pgid= -o stat= 2>/dev/null)" || return 0
+  while read -r gpid gpg gst; do
+    [[ "$gpg" == "$1" && "$gpid" != "$$" ]] || continue
+    case "$gst" in Z*) continue ;; esac
+    if kill -0 "$gpid" 2>/dev/null; then
+      GROUP_OTHERS="${GROUP_OTHERS:+$GROUP_OTHERS }$gpid"
+    fi
+  done <<EOS
+$snap
+EOS
   return 0
 }
 
@@ -292,11 +337,12 @@ _supervise() {
   # instead of being refused by finalize()'s first-verdict-wins rule.
   if [[ $stopped -eq 1 ]]; then
     # Signalled. Give the child (and its own children — they share our group)
-    # 30s to unwind, then SIGKILL just the child; the group-wide SIGKILL is
-    # `job.sh stop`'s escalation, and doing it here would kill this process
-    # before it could write the terminal state.
+    # $grace s to unwind, then SIGKILL just the child; a group-wide SIGKILL
+    # here would kill this process before it could write the terminal state.
+    local grace="${OPENBEAST_JOB_STOP_GRACE_S:-30}" others
+    [[ "$grace" =~ ^[0-9]+$ ]] || grace=30
     waited=0
-    while kill -0 "$child" 2>/dev/null && [[ $waited -lt 30 ]]; do
+    while kill -0 "$child" 2>/dev/null && [[ $waited -lt $grace ]]; do
       sleep 1
       waited=$((waited + 1))
     done
@@ -306,6 +352,26 @@ _supervise() {
     set +e
     wait "$child" 2>/dev/null
     set -e
+    # The child being gone is not the JOB being gone. A wrapper shell that
+    # dies on SIGTERM can leave a worker in our group that traps or ignores
+    # it (a server, a trainer with a graceful-shutdown handler), and once
+    # `stopped` is written neither `job.sh stop` nor the console escalates
+    # any more — the worker kept the GPU while the ledger said stopped. So
+    # drain the GROUP on the same deadline, member by member (never -$$,
+    # which is us), before writing the verdict. Only when we lead the group:
+    # otherwise its other members are not ours to touch.
+    if [[ "$pgid" == "$$" ]]; then
+      _group_others "$pgid"; others="$GROUP_OTHERS"
+      # TERM again: a pid-only stop (the group was never signalled) must
+      # still give the rest of the job a polite chance first.
+      [[ -n "$others" ]] && { kill -TERM $others 2>/dev/null || true; }
+      while [[ -n "$others" && $waited -lt $grace ]]; do
+        sleep 1
+        waited=$((waited + 1))
+        _group_others "$pgid"; others="$GROUP_OTHERS"
+      done
+      [[ -n "$others" ]] && { kill -KILL $others 2>/dev/null || true; }
+    fi
     OB_CMD=finalize OB_OVERRIDE_LOST=1 _ledger_op "$session_id" stopped "stopped by operator"
     echo "--- job $session_id STOPPED $(date '+%Y-%m-%d %H:%M:%S') ---" >> "$log"
     exit 143
@@ -453,6 +519,7 @@ case "$cmd" in
     pid="$(printf '%s\n' "$info" | awk '{print $2}')"
     pgid="$(printf '%s\n' "$info" | awk '{print $3}')"
     proven="$(printf '%s\n' "$info" | awk '{print $4}')"
+    leads="$(printf '%s\n' "$info" | awk '{print $5}')"
 
     if [[ "$state" != "running" ]]; then
       echo "Job '$session_id' is already '$state' — nothing to signal."
@@ -472,11 +539,22 @@ case "$cmd" in
     # with it. Guard hard: pgid 0/1, and our own group, are never valid
     # targets — signalling our own group would kill this CLI and its parent
     # shell, which is exactly the accident this check exists to prevent.
+    # And only a group the session LEADS (stopinfo's `leads`): a session that
+    # merely belongs to someone else's group — an agent exec'd by a campaign
+    # script — gets its pid signalled, never its host's whole group.
+    # target=0 on every refusal, so the SIGKILL escalation below never
+    # reaches a group the TERM was not allowed to (our own included).
     target="$pgid"
     [[ "$target" =~ ^[0-9]+$ ]] || target=0
+    why_pid_only="No usable process group recorded"
+    if [[ "$target" -gt 1 && "$leads" != "1" ]]; then
+      why_pid_only="Session '$session_id' does not lead process group $target"
+      target=0
+    fi
     if [[ "$target" -le 1 || "$target" == "$(_pgid_of $$)" ]]; then
+      target=0
       if [[ "$pid" =~ ^[0-9]+$ ]] && [[ "$pid" -gt 1 ]]; then
-        echo "No usable process group recorded — signalling PID $pid only." >&2
+        echo "$why_pid_only — signalling PID $pid only." >&2
         kill -TERM "$pid" 2>/dev/null || true
       else
         _die "job '$session_id' has no signalable pid/pgid on record"

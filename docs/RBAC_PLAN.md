@@ -1,15 +1,23 @@
 # RBAC Plan — multi-user OpenBeast without handing out the filesystem
 
+> **Status (2026-11-19 review): PARTLY IMPLEMENTED.** Phases 0–1, the Phase 2
+> router identity and the per-profile tool keys are live. The keys are now
+> one identity tool server, `agents/openapi_tools.py`; see item 1 below. Still
+> open: item 2 below, the Sandlock wrap of guest tool execution (Sandlock
+> exists for the agent `bash` tool only, opt-in: [SANDBOXING.md](SANDBOXING.md)),
+> and the "Agent router residual" in [TODO.md](TODO.md#-review-2026-10-09).
+
 **Status: Phase 0 + Phase 1 LIVE (2026-07-07); Phase 2 router-identity +
 guest-fetch LIVE (2026-07-08) — verified with the real Open WebUI
-access-control code.** A `user`-role account resolves `web_search` +
-`fetch` (SSRF-guarded) ONLY (bash/file/agent tools denied at the connection
-layer); an `admin` account gets all 18. Baked into `configure-webui.sh` so
-fresh installs land RBAC'd. Per-profile keys shipped: MCPO was replaced by
-the identity tool server (`agents/openapi_tools.py`), keyed per profile by
-`scripts/setup-mcpo-keys.sh`. Still open: Sandlock (below-app enforcement),
-which is opt-in and confines only shell commands (`bash`, `grep`), not the
-in-process file tools — see docs/SANDBOXING.md.
+access-control code.** A `user`-role account resolves `web_search`,
+`fetch` (SSRF-guarded) and `weather` ONLY (bash/file/agent tools denied at
+the connection layer); an `admin` account gets all 19 (the 18 MCP tools +
+the WebUI-only `weather`). Open WebUI's own per-model builtin tools are a
+separate list: `configure-webui.sh` turns the clock, knowledge-base and
+chat-search ones off once per model (`meta.builtinTools`); an admin can turn
+any back on in Admin → Models. Baked into `configure-webui.sh` so
+fresh installs land RBAC'd. Remaining Phase 2 hardening: per-profile MCPO
+keys + Sandlock (below-app enforcement).
 
 > ✅ **FIXED (2026-07-08) — the agent-spawn router is now identity-aware.**
 > Previously, with `AGENT_ROUTER=true`, `agents/router.py` classified
@@ -94,8 +102,8 @@ manage. Assign in Admin Panel → Users → role dropdown (or the API).
 
 | Tier | WebUI role | Tools they get | How |
 |---|---|---|---|
-| **Owner** | `admin` | all 18 (bash, file r/w/edit, list_files, grep, fetch, web_search, agent mgmt, skills, artifacts, language_reference) | `BYPASS_ADMIN_ACCESS_CONTROL` — automatic |
-| **Guest** (family) | `user` | **`web_search` + `fetch`** (scheme-filtered, private-network-blocked) | public grant on a filtered connection |
+| **Owner** | `admin` | all 19 (bash, file r/w/edit, list_files, grep, fetch, web_search, weather, agent mgmt, skills, artifacts, language_reference) | `BYPASS_ADMIN_ACCESS_CONTROL` — automatic |
+| **Guest** (family) | `user` | **`web_search` + `fetch` + `weather`** (fetch scheme-filtered, private-network-blocked; weather reads only the caller's own WebUI location) | public grant on a filtered connection |
 | *(pending)* | `pending` | none (no stack access) | default for new signups until approved |
 
 > ⚠️ **Admin accounts are NOT isolated from each other (review
@@ -140,15 +148,20 @@ manage. Assign in Admin Panel → Users → role dropdown (or the API).
 
 ### Two-connection wiring (implemented by `configure-webui.sh`)
 - **`local-mcp`** (privileged): `function_name_filter_list =
-  "!web_search,!fetch"` (the other 16 tools), `access_grants = []` →
-  admin-only.
+  "!web_search,!fetch,!weather"` (the other 16 tools), `access_grants = []`
+  → admin-only.
 - **`local-mcp-web`** (public): `function_name_filter_list =
-  "web_search,fetch"`, `access_grants = [{user:*}]` → everyone.
+  "web_search,fetch,weather"` (= the server's `GUEST_TOOLS`),
+  `access_grants = [{user:*}]` → everyone.
 - Every model's `meta.toolIds = ["server:<priv>","server:<web>"]`.
-  - Admin resolves both → 16 + web_search + fetch = all 18, **no duplicate**
-    (web_search and fetch live only on the public connection).
-  - Guest resolves only the public one → **web_search + fetch, nothing
-    else.**
+  - Admin resolves both → 16 + web_search + fetch + weather = all 19, **no
+    duplicate** (the three web tools live only on the public connection).
+  - Guest resolves only the public one → **web_search + fetch + weather,
+    nothing else.**
+  - Admin key ONLY (no guest profile): the keyless public connection would
+    401 on the keyed server, so configure-webui.sh drops the privileged
+    filter (admins get all 19 over the admin key) and disables the public
+    connection (non-admin accounts get no tools).
 
 Future middle tier ("trusted", e.g. an older kid): add a WebUI group, a
 third connection filtered to read-only `read_file`/`list_files`/`grep`

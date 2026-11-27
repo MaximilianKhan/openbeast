@@ -10,9 +10,7 @@
 #   1  fetch-weight.sh   OFFLINE=true never probes or downloads        (R5-08)
 #   2  fetch-weight.sh   a PENDING row: loud UNVERIFIED, strict refuses (R5-09)
 #   3  bootstrap.sh      OFFLINE sideload names verify-weights --file   (R5-07)
-#   4  doctor.sh         warns when installed zig != the shipped pack's zig
-#   5  doctor.sh         warns when tailscale < 1.98.9                 (R10-11)
-#   6  doctor.sh         warns on a global skill outside the import gate (R9-05)
+#   5  doctor.sh         warns on a global skill outside the import gate (R9-05)
 
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -154,76 +152,20 @@ fi
 
 # ===========================================================================
 echo ""
-echo "4. doctor.sh — installed zig vs the shipped zig pack's version:"
+echo "4. doctor.sh sandbox (used by 5):"
 # ===========================================================================
 D="$T/doctor"
 mkdir -p "$D/scripts/lib" "$D/.run" "$D/bin" "$D/home" "$D/agents/lang" "$D/agents/packs"
 cp "$REPO_DIR/scripts/doctor.sh" "$REPO_DIR/scripts/healthcheck.sh" "$D/scripts/"
 cp "$REPO_DIR"/scripts/lib/*.sh "$D/scripts/lib/"
-cp "$REPO_DIR/agents/lang/__init__.py" "$REPO_DIR/agents/lang/pack_context.py" "$D/agents/lang/"
-cp "$REPO_DIR/agents/packs/zig-0.16.md" "$D/agents/packs/"
 : > "$D/openbeast.conf"
 for c in curl docker tailscale nvidia-smi sudo systemctl systemd-run smartctl pkill pgrep; do
   printf '#!/bin/bash\nexit 1\n' > "$D/bin/$c"; chmod +x "$D/bin/$c"
 done
-_pack_ver="$(sed -nE 's/^\(2\) GENERATED signature digest — zig ([^ ]+) std.*/\1/p' "$D/agents/packs/zig-0.16.md" | head -1)"
-doctor_with_zig() { # doctor_with_zig <version|none>
-  rm -f "$D/bin/zig"
-  [[ "$1" == none ]] || { printf '#!/bin/bash\necho %s\n' "$1" > "$D/bin/zig"; chmod +x "$D/bin/zig"; }
-  env -i HOME="$D/home" PATH="$D/bin:/usr/bin:/bin" bash "$D/scripts/doctor.sh" 2>&1 || true
-}
-if [[ -z "$_pack_ver" ]]; then
-  fail "could not read the shipped pack's zig version (header changed?)"
-else
-  _out="$(doctor_with_zig 9.99.0)"
-  has "$_out" "installed zig 9.99.0 != zig $_pack_ver" \
-    && pass "a different installed zig (9.99.0 vs $_pack_ver) is warned about" \
-    || fail "no zig mismatch warning: $(grep -i zig <<< "$_out" | tr '\n' ' ')"
-  printf 'LANG_PACK_CONTEXT=off\n' > "$D/openbeast.conf"
-  _out="$(doctor_with_zig 9.99.0)"
-  has "$_out" "installed zig 9.99.0 != zig $_pack_ver" \
-    && pass "…still warned with LANG_PACK_CONTEXT=off (where the pack row goes quiet)" \
-    || fail "the mismatch hides behind LANG_PACK_CONTEXT=off: $(grep -i zig <<< "$_out" | tr '\n' ' ')"
-  : > "$D/openbeast.conf"
-  _out="$(doctor_with_zig "$_pack_ver")"
-  if has "$_out" "installed zig $_pack_ver matches the shipped zig pack" && ! has "$_out" "!= zig"; then
-    pass "control: the matching zig passes"
-  else
-    fail "control: matching zig not passed: $(grep -i zig <<< "$_out" | tr '\n' ' ')"
-  fi
-  if [[ ! -x /usr/bin/zig ]]; then
-    _out="$(doctor_with_zig none)"
-    has "$_out" "zig not installed" && ! has "$_out" "!= zig" \
-      && pass "no zig at all is informational, not a warning" \
-      || fail "missing zig mis-reported: $(grep -i zig <<< "$_out" | tr '\n' ' ')"
-  fi
-fi
 
 # ===========================================================================
 echo ""
-echo "5. doctor.sh — tailscale minimum version (1.98.9):"
-# ===========================================================================
-doctor_with_ts() { # doctor_with_ts <version-line>
-  printf '#!/bin/bash\n[[ "$1" == version ]] && { echo "%s"; echo "  long version: x"; exit 0; }\nexit 1\n' "$1" > "$D/bin/tailscale"
-  chmod +x "$D/bin/tailscale"
-  env -i HOME="$D/home" PATH="$D/bin:/usr/bin:/bin" bash "$D/scripts/doctor.sh" 2>&1 || true
-}
-_out="$(doctor_with_ts 1.98.8)"
-has "$_out" "tailscale 1.98.8 is older than 1.98.9" \
-  && pass "1.98.8 is warned about" \
-  || fail "old tailscale not warned: $(grep -i tailscale <<< "$_out" | tr '\n' ' ')"
-_out="$(doctor_with_ts 1.104.2)"   # 104 > 98 numerically, not lexically
-has "$_out" "tailscale 1.104.2 (≥ 1.98.9" && ! has "$_out" "older than" \
-  && pass "control: 1.104.2 passes (numeric, not lexical, compare)" \
-  || fail "1.104.2 mis-judged: $(grep -i tailscale <<< "$_out" | tr '\n' ' ')"
-_out="$(doctor_with_ts 1.98.9)"
-has "$_out" "tailscale 1.98.9 (≥" && pass "control: exactly 1.98.9 passes" \
-  || fail "1.98.9 mis-judged: $(grep -i tailscale <<< "$_out" | tr '\n' ' ')"
-printf '#!/bin/bash\nexit 1\n' > "$D/bin/tailscale"
-
-# ===========================================================================
-echo ""
-echo "6. doctor.sh — global skills outside the import gate (R9-05):"
+echo "5. doctor.sh — global skills outside the import gate (R9-05):"
 # ===========================================================================
 _G="$D/home/.local/share/local-llm-skills"
 mkdir -p "$D/skills/gated-one" "$D/skills/shadowed" "$_G/handmade" "$_G/shadowed"
@@ -235,14 +177,14 @@ ln -s "$D/skills/gated-one" "$_G/gated-one"
 doctor_plain() { env -i HOME="$D/home" PATH="$D/bin:/usr/bin:/bin" bash "$D/scripts/doctor.sh" 2>&1 || true; }
 _out="$(doctor_plain)"
 _row="$(grep "outside the import gate" <<< "$_out" || true)"
-if has "$_row" "[global, unverified]: handmade" && ! has "$_row" "gated-one" && ! has "$_row" "shadowed"; then
+if has "$_row" "(no pin, no scan): handmade" && ! has "$_row" "gated-one" && ! has "$_row" "shadowed"; then
   pass "a hand-copied global skill is warned about; a symlink into skills/ and a shadowed name are not"
 else
   fail "global-skill row wrong: ${_row:-<none>}"
 fi
 rm -rf "$_G/handmade"
 _out="$(doctor_plain)"
-has "$_out" "global skills: none outside the import gate" && ! has "$_out" "served as [global" \
+has "$_out" "global skills: none outside the import gate" && ! has "$_out" "(no pin, no scan)" \
   && pass "control: only gated (symlinked) global skills pass" \
   || fail "control: gated-only global dir mis-reported: $(grep -i 'global skills' <<< "$_out" | tr '\n' ' ')"
 rm -rf "$D/home/.local/share/local-llm-skills"

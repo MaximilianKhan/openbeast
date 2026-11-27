@@ -30,6 +30,10 @@ Language reference (beast-lang, the PULL surface):
   - language_reference: what the INSTALLED toolchain confirmed about a
     language — the pack, the cards for a compile error, or one topic
 
+Platform docs (beast-docs, mirrored offline):
+  - platform_docs: search / read current Apple, Android and other developer
+    documentation from the local mirror, or fetch one page live
+
 Skills (progressive disclosure):
   - skill: skill() returns the index of every skill; skill(name) loads one
   - start_skill_agent: spawn a background agent with a skill activated
@@ -52,10 +56,12 @@ import atexit
 import difflib
 import json
 import os
+import re
 import signal
 import stat
 import subprocess
 import sys
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -66,6 +72,7 @@ from mcp.server.mcpserver import MCPServer
 # reaping, rlimits, output capping, and protected-path write guards).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import tools as _tools
+import island as _island  # beast-island: web tools refuse at once when offline
 
 # ---------------------------------------------------------------------------
 # Server
@@ -107,7 +114,8 @@ def _tool(*args, **kwargs):
 
 @_tool()
 def bash(command: str, timeout: int = 120) -> str:
-    """Run a shell command (/bin/sh) and return its output. Use for building,
+    """Run a shell command (bash; /bin/sh where bash is absent) and return
+    its output. Use for building,
     testing, git operations, installing packages, or any system task.
 
     Facts: stdout and stderr are MERGED; each call is a FRESH shell — cd,
@@ -204,6 +212,9 @@ def fetch(url: str, max_length: int = 50_000) -> str:
         url: The URL to fetch (http or https, public hosts only).
         max_length: Maximum characters to return (default 50000).
     """
+    refusal = _island.web_refusal("fetch")
+    if refusal:
+        return refusal
     return _tools.fetch(url, max_length)
 
 
@@ -422,6 +433,32 @@ def _cleanup_agents():
 
 
 atexit.register(_cleanup_agents)
+# In-flight bash/grep commands run in their OWN sessions (run_reaped): on a
+# clean exit (stdio EOF, uvicorn shutdown of the :3001 server that imports
+# this module) nothing else would stop them once this process is gone.
+atexit.register(_tools.kill_live_children)
+
+
+def _on_stop_signal(signum, frame):
+    """SIGTERM/SIGHUP (OpenCode tearing down its MCP child, a `kill`): stop
+    the in-flight tool commands and non-detached agents, then die the way
+    the signal says. atexit never runs on a default SIGTERM death, so
+    without this the command ran on under init with no timeout."""
+    try:
+        _tools.kill_live_children(2.0)
+        _cleanup_agents()
+    finally:
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+
+def _install_stop_handlers() -> None:
+    """Hook the stop signals, except one the launcher chose to IGNORE (an
+    inherited SIG_IGN, e.g. nohup's SIGHUP, is how it survives a hangup)."""
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        if signal.getsignal(sig) is signal.SIG_IGN:
+            continue
+        signal.signal(sig, _on_stop_signal)
 
 
 def _parse_agent_log(log_path: str, max_bytes: int = 10_000_000) -> list[dict]:
@@ -833,6 +870,15 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
     return fm, body
 
 
+# A skill directory is named like a skill: the same rule `skill-import.sh`
+# (scripts/lib/skill_import.py NAME_RE) and generate-skill-index.py apply.
+# Hidden entries (skills/.cache/, which .gitignore also hides) and `_drafts`
+# are never skills, and a SKILL.md must carry its own directory's name: before
+# this, skills/.cache/SKILL.md saying `name: security-audit` sorted first, took
+# that name, and was served — verify never walked it.
+_SKILL_DIR_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+
+
 def _discover_skills(force: bool = False) -> dict:
     """Walk repo and global skill directories. Repo wins on name collision.
     Cached after first call; pass force=True to re-scan."""
@@ -846,6 +892,8 @@ def _discover_skills(force: bool = False) -> dict:
         if not os.path.isdir(base):
             continue
         for entry in sorted(os.listdir(base)):
+            if not _SKILL_DIR_RE.match(entry):
+                continue
             skill_path = os.path.join(base, entry)
             md_path = os.path.join(skill_path, "SKILL.md")
             if not os.path.isfile(md_path):
@@ -856,6 +904,10 @@ def _discover_skills(force: bool = False) -> dict:
                 continue
             fm, body = _parse_frontmatter(text)
             name = fm.get("name") or entry
+            if name != entry:
+                print(f"skills: ignoring {md_path}: its frontmatter name {name!r} "
+                      f"is not its directory name {entry!r}", file=sys.stderr)
+                continue
             if name in skills:
                 continue  # repo already claimed this name
             skills[name] = {
@@ -870,19 +922,17 @@ def _discover_skills(force: bool = False) -> dict:
 
 
 def _resolve_skill(name: str) -> dict | None:
-    """Return the skill record from a FRESH scan, or None if not found.
+    """Return the skill record as it is on disk NOW, or None if not found.
 
-    Always rescans (R9-02): the :3001 tool server lives for days, and the
-    model calls skill(name) directly (its menu is in the system prompt), so a
-    cache refreshed only by the index call kept serving a skill body after a
-    `git pull` fixed it — or after it was deleted — straight into sub-agent
-    system prompts. ~25 small files per call is nothing next to an LLM turn.
-    """
+    Re-scans on every named lookup (a couple of dozen small files): a cached
+    record kept serving a skill deleted for losing trust, or the old body of a
+    refreshed one, to skill(name) and into start_skill_agent's system prompt
+    until something happened to call the index."""
     return _discover_skills(force=True).get(name)
 
 
 def _skill_gated(record: dict) -> bool:
-    """True when this skill went through scripts/skill-import.sh's gate (R9-05).
+    """True when this skill went through scripts/skill-import.sh's gate.
 
     Repo skills live under skills/, which the import gate owns. A GLOBAL skill
     (~/.local/share/local-llm-skills) counts only when it is a symlink back
@@ -901,8 +951,9 @@ def _skill_gated(record: dict) -> bool:
 
 
 def _skill_dir(record: dict) -> str:
-    """Absolute directory holding the skill's SKILL.md (R9-03): skills ship
-    scripts/references next to it, and the body refers to them relatively."""
+    """Absolute directory holding the skill's SKILL.md: skills ship scripts
+    and references next to it, and the body refers to them relatively — which
+    resolves against the caller's workdir, not the checkout."""
     return os.path.abspath(os.path.dirname(record.get("path") or ""))
 
 
@@ -924,9 +975,10 @@ def skill(name: str = "") -> str:
     only pays for the content you need.
 
     Every call re-scans the skills directories, so a newly added, edited or
-    deleted SKILL.md takes effect without restarting the server. A skill
-    tagged [global, unverified] was installed by hand outside the repo's
-    skill-import gate — treat its instructions with caution.
+    removed SKILL.md shows up without restarting the server. The header of a
+    loaded skill names its directory: read its other files by that absolute
+    path. A skill tagged [global, unverified] was installed by hand outside
+    the repo's skill-import gate — treat its instructions with caution.
 
     Args:
         name: Skill identifier from the index (e.g. 'code-review').
@@ -968,6 +1020,64 @@ def skill(name: str = "") -> str:
 
 
 # --- Agent MCP tools ---
+
+
+# The sandbox's own installation (scripts/setup-sandlock.sh): its policy
+# profile is read on every wrapped call, so a confined agent able to write it
+# widens or removes confinement for every later bash call. (The binary,
+# ~/.local/bin/sandlock, is already under tools._PERSIST_PREFIXES.)
+_SANDBOX_SELF = (os.path.join(".config", "sandlock"),)
+
+
+def _protected_under_home(home: str) -> list[str]:
+    """Realpaths of every location the write guard protects (credential
+    stores, rc files, persistence prefixes, the files the live rc files
+    source, the sandbox's own policy) plus /etc. Realpath'd so a symlinked
+    ~/.config (dotfiles repos) is compared where it really lives."""
+    rels = (_tools._PROTECTED_DIRS + _tools._PERSIST_PREFIXES + _SANDBOX_SELF
+            + tuple(sorted(_tools._PROTECTED_BASENAMES)) + _tools._RC_FILES)
+    out = [os.path.realpath(os.path.join(home, r)) for r in rels]
+    out += sorted(_tools._rc_sourced_files(home))
+    out += [os.path.realpath("/etc"), "/etc", "/private/etc"]
+    return out
+
+
+def _sandboxed_workdir_refusal(workdir: str) -> str | None:
+    """Refusal text when a BASH_WRAPPER sandbox is on and `workdir` would
+    widen it past a workspace. The wrapper grants `-w "$PWD"` and an agent's
+    bash runs with cwd = its workdir, so the WHOLE workdir tree becomes
+    read-write to a confined model. Refused: $HOME, `/` or any ancestor of
+    $HOME; a workdir at or below a protected location (tools._guard_write_path);
+    and — the 2026-11-16 review — a workdir that merely CONTAINS one:
+    ~/.config holds systemd/user, git and the sandlock policy, ~/.local holds
+    bin/ (the sandlock binary included), ~/Library holds LaunchAgents. The
+    write guard matches by prefix, so it only ever caught the first two.
+    No wrapper: the workdir is not a boundary anyway (tools._base_dir)."""
+    if not os.environ.get("OPENBEAST_BASH_WRAPPER", "").strip():
+        return None
+    rp = os.path.realpath(workdir)
+    home = os.path.realpath(os.path.expanduser("~"))
+    if rp == home or rp == os.sep or home.startswith(rp.rstrip(os.sep) + os.sep):
+        return (f"Error: workdir {rp} would grant the bash sandbox all of "
+                f"{rp} (it contains your home directory); pick a project "
+                f"directory")
+    if _tools._guard_write_path(os.path.join(rp, "_")):
+        return (f"Error: workdir {rp} is a protected credential/persistence "
+                f"location; the bash sandbox would grant it read-write")
+    k = _tools._case_key
+    crp = k(rp)
+    for d in _SANDBOX_SELF:
+        sd = k(os.path.realpath(os.path.join(home, d)))
+        if crp == sd or crp.startswith(sd + os.sep):
+            return (f"Error: workdir {rp} holds the bash sandbox's own policy; "
+                    f"the sandbox would grant it read-write")
+    inside = crp.rstrip(os.sep) + os.sep
+    for p in _protected_under_home(home):
+        if k(p).startswith(inside):
+            return (f"Error: workdir {rp} contains the protected location {p} "
+                    f"(credential/persistence); the bash sandbox would grant "
+                    f"it read-write. Pick a project directory")
+    return None
 
 
 @_tool()
@@ -1015,6 +1125,9 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str
     workdir = os.path.abspath(os.path.expanduser(workdir))
     if not os.path.isdir(workdir):
         return f"Error: workdir does not exist: {workdir}"
+    refusal = _sandboxed_workdir_refusal(workdir)
+    if refusal:
+        return refusal
 
     agent_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
     log_path = os.path.join(_LOG_DIR, f"agent-{agent_id}.jsonl")
@@ -1190,6 +1303,22 @@ def check_agent(agent_id: str) -> str:
     return f"Error: unknown agent '{agent_id}'. Use list_agents() to see tracked agents."
 
 
+#: list_agents parses only this tail of each transcript (plus its first
+#: line): status lives in the last events and the iteration count in the
+#: last iteration event's `number`. A full 10 MB parse per row made one call
+#: up to ~1 GB of JSON work for _LEDGER_LIST_LIMIT rows.
+_LIST_TAIL_BYTES = 256 * 1024
+
+
+def _iteration_count(events: list[dict]) -> int:
+    """Iterations so far: the highest iteration `number` seen (runner.py
+    numbers them), so a tail window still reports the true count; falls
+    back to counting events for logs without numbers."""
+    iters = [e for e in events if e.get("type") == "iteration"]
+    nums = [e.get("number") for e in iters if isinstance(e.get("number"), int)]
+    return max(nums) if nums else len(iters)
+
+
 @_tool()
 def list_agents() -> str:
     """List every agent known to this rig with its current status.
@@ -1208,12 +1337,13 @@ def list_agents() -> str:
         session_id = str(ledger_record.get("id") or "")
         if not session_id:
             continue
-        events = _parse_agent_log(_ledger_transcript(ledger_record, session_id))
+        events = _parse_agent_log(_ledger_transcript(ledger_record, session_id),
+                                  _LIST_TAIL_BYTES)
         meta = ledger_record.get("meta") if isinstance(ledger_record.get("meta"), dict) else {}
         started = _parse_ts(ledger_record.get("started_at"))
         rows[session_id] = (
             _ledger_status(ledger_record, events),
-            sum(1 for e in events if e.get("type") == "iteration"),
+            _iteration_count(events),
             meta.get("max_iter") or "-",
             _format_elapsed(started) if started else "-",
             _ledger_task(ledger_record, events)[:50].replace("\n", " "),
@@ -1223,10 +1353,10 @@ def list_agents() -> str:
     # start_agent can mutate _agents mid-iteration (same guard as _cleanup_agents).
     for agent_id, record in list(_agents.items()):
         alive = record.process.poll() is None
-        events = _parse_agent_log(record.log_path)
+        events = _parse_agent_log(record.log_path, _LIST_TAIL_BYTES)
         rows[agent_id] = (
             _classify_agent_status(alive, events, record.process.returncode),
-            sum(1 for e in events if e.get("type") == "iteration"),
+            _iteration_count(events),
             record.max_iter,
             _format_elapsed(record.started_at),
             record.task[:50].replace("\n", " "),
@@ -1248,6 +1378,50 @@ def list_agents() -> str:
     return "\n".join(lines)
 
 
+def _signal_ledger_agent(rec: dict, sig: int) -> bool:
+    """Signal a ledger session's group (only when it LEADS it) or its pid,
+    and only while the recorded pid is provably still that process
+    (sessions.is_alive's pid + start-time check): a stale record's pid may
+    belong to a stranger by now."""
+    mod = _sessions()
+    if mod is None or not mod.is_alive(rec, require_start=True):
+        return False
+    try:
+        pid = int(rec.get("pid") or 0)
+        pgid = int(rec.get("pgid") or pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 1:
+        return False
+    try:
+        if pgid == pid and pgid != os.getpgrp() and os.getpgid(pid) == pgid:
+            os.killpg(pgid, sig)
+        else:
+            os.kill(pid, sig)
+        return True
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+
+
+def _stop_ledger_agent(agent_id: str, rec: dict) -> str:
+    """stop_agent for an agent this process did not spawn (a detached agent
+    after a restart of this server, or another spawn path). The runner's own
+    SIGTERM handler stops its in-flight tool command."""
+    mod = _sessions()
+    if mod is None or not mod.is_alive(rec, require_start=True):
+        return (f"Agent {agent_id} is not running (ledger state: "
+                f"{rec.get('state') or 'unknown'}). Use check_agent('{agent_id}').")
+    if not _signal_ledger_agent(rec, signal.SIGTERM):
+        return f"Error: could not signal agent {agent_id} (PID {rec.get('pid')})"
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if not mod.is_alive(rec, require_start=True):
+            return f"Agent {agent_id} stopped gracefully (PID {rec.get('pid')})."
+        time.sleep(0.1)
+    _signal_ledger_agent(rec, signal.SIGKILL)
+    return f"Agent {agent_id} force-killed after timeout (PID {rec.get('pid')})."
+
+
 @_tool()
 def stop_agent(agent_id: str) -> str:
     """Stop a running agent. Sends SIGTERM for graceful shutdown, escalates to
@@ -1258,13 +1432,17 @@ def stop_agent(agent_id: str) -> str:
     """
     record = _agents.get(agent_id)
     if not record:
-        # R1-10: list_agents/check_agent resolve agents through the ledger
-        # (a previous life of this server, agent.sh, the client CLI, the
-        # router), so stop must too — or a listed, running agent is
-        # unstoppable from WebUI/OpenCode.
         ledger_record = _ledger_get(agent_id)
-        if ledger_record:
+        # Agents only. The ledger also holds kind="job" sessions
+        # (scripts/job.sh: eval campaigns, quantization, overnight sweeps);
+        # list_agents never shows them, and an "agent" tool must not kill
+        # hours of GPU work because a model learned a job id.
+        if ledger_record and (ledger_record.get("kind") or "agent") == "agent":
             return _stop_ledger_agent(agent_id, ledger_record)
+        if ledger_record:
+            return (f"Error: '{agent_id}' is a {ledger_record.get('kind')} session, "
+                    f"not an agent; stop_agent only stops agents (jobs: "
+                    f"scripts/job.sh stop {agent_id})")
         return f"Error: unknown agent '{agent_id}'"
 
     if record.process.poll() is not None:
@@ -1291,81 +1469,6 @@ def stop_agent(agent_id: str) -> str:
             return f"Agent {agent_id} force-killed after timeout (PID {record.pid})."
         except Exception as e:
             return f"Agent {agent_id}: escalated to SIGKILL but cleanup failed: {e}"
-
-
-def _ledger_signal(mod, record: dict, sig: int) -> bool:
-    """Signal a ledger session we did not spawn — only with proof it is ours.
-
-    The pid in a ledger row is a reusable integer, so this re-proves identity
-    (pid + start time + boot, sessions.is_alive(require_start=True))
-    IMMEDIATELY before every signal, and signals the GROUP only when the
-    session LEADS it (pgid == pid) and it is not our own group — the same
-    rules as chat_server.signal_session. A session that merely belongs to a
-    group (runner.py registered from a non-interactive script inherits the
-    script's group) gets a bare-pid signal: that group is not its to lose.
-    """
-    try:
-        if not mod.is_alive(record, require_start=True):
-            return False
-        pid = int(record.get("pid") or 0)
-        pgid = int(record.get("pgid") or 0)
-    except Exception:
-        return False
-    if pid <= 1:
-        return False
-    if pgid == pid and pgid > 1 and pgid != os.getpgrp():
-        try:
-            if os.getpgid(pid) == pgid:
-                os.killpg(pgid, sig)
-                return True
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-    try:
-        os.kill(pid, sig)
-        return True
-    except (ProcessLookupError, PermissionError, OSError):
-        return False
-
-
-def _ledger_wait_gone(mod, record: dict, timeout: float) -> bool:
-    """Poll until the session's process is gone (or a zombie); True if so."""
-    import time as _time
-    deadline = _time.monotonic() + timeout
-    while True:
-        try:
-            if not mod.is_alive(record, require_start=True):
-                return True
-        except Exception:
-            return True
-        if _time.monotonic() >= deadline:
-            return False
-        _time.sleep(0.1)
-
-
-def _stop_ledger_agent(agent_id: str, record: dict) -> str:
-    """stop_agent for an agent this process never spawned (R1-10)."""
-    mod = _sessions()
-    if mod is None:
-        return f"Error: unknown agent '{agent_id}'"
-    pid = record.get("pid")
-    try:
-        alive = mod.is_alive(record, require_start=True)
-    except Exception:
-        alive = False
-    if not alive:
-        state = record.get("state") or "unknown"
-        return (f"Agent {agent_id} is not running (ledger state: {state}); "
-                f"nothing to stop. Its process is gone, or cannot be proven "
-                f"to be the one the ledger recorded, so it is not signalled.\n"
-                f"Use check_agent('{agent_id}') to see final status.")
-    if not _ledger_signal(mod, record, signal.SIGTERM):
-        return f"Error: could not signal agent {agent_id} (PID {pid})"
-    if _ledger_wait_gone(mod, record, 10):
-        return f"Agent {agent_id} stopped gracefully (PID {pid})."
-    _ledger_signal(mod, record, signal.SIGKILL)
-    if _ledger_wait_gone(mod, record, 5):
-        return f"Agent {agent_id} force-killed after timeout (PID {pid})."
-    return f"Agent {agent_id}: escalated to SIGKILL but it is still running (PID {pid})."
 
 
 @_tool()
@@ -1453,7 +1556,34 @@ def web_search(query: str, max_results: int = 10, pageno: int = 1,
         pageno: Result page, 1-based (default 1); use 2, 3, … for more results.
         time_range: Restrict to recent pages: 'day', 'month' or 'year' (default: none).
     """
+    refusal = _island.web_refusal("web_search")
+    if refusal:
+        return refusal
     return _tools.web_search(query, max_results, pageno, time_range)
+
+
+def weather(location: str = "", days: int = 3, units: str = "") -> str:
+    """Current weather and a daily forecast (1-7 days) from Open-Meteo.
+
+    Use this for any weather question instead of web_search. Leave location
+    empty for the weather where the user is right now. Name a place as
+    'City, State' (US: 'Danville, CA' means California) or 'City, Country';
+    a bare town name picks the one nearest the user. The reply names the
+    exact place it describes and lists other places with that name.
+
+    Args:
+        location: 'City, State' / 'City, Country', or empty for the user's own position.
+        days: Days of daily forecast, 1-7 (default 3).
+        units: 'metric' or 'imperial' when the user asks for one; empty = the place's
+            own country's units (the user's own country for their position).
+    """
+    # Not an MCP tool (no @_tool): it is served on the WebUI tool server,
+    # which knows who is calling and therefore where they are.
+    refusal = _island.web_refusal("weather")
+    if refusal:
+        return refusal
+    import weather as _weather
+    return _weather.weather(location, days, near=_weather.CALLER_NEAR.get(), units=units)
 
 
 # ---------------------------------------------------------------------------
@@ -1540,29 +1670,6 @@ def _is_store_path(resolved: str) -> bool:
         return False
 
 
-def _publish_base() -> str:
-    """The workspace a published page must come from (R1-04).
-
-    tools._base_dir() ends in os.getcwd(), and under OpenCode (MCP stdio,
-    the user's plain shell env, launched from the repo checkout) that cwd IS
-    the checkout holding openbeast.conf — so "inside your workspace" let
-    publish_artifact("openbeast.conf") mint a tailnet page of the stack's
-    keys. Same chain WITHOUT the cwd step: the request's shard, a spawned
-    agent's AGENT_WORKDIR, else the files dir (artifact.py's default,
-    ~/openbeast-files, when OPENBEAST_FILES_DIR is unset).
-    """
-    base = (_tools._BASE_DIR_OVERRIDE.get()
-            or os.environ.get("AGENT_WORKDIR")
-            or os.environ.get("OPENBEAST_FILES_DIR", "").strip())
-    if base:
-        return base
-    try:
-        import artifact as _artifact
-        return _artifact._files_dir()
-    except Exception:
-        return os.path.join(os.path.expanduser("~"), "openbeast-files")
-
-
 def _read_artifact_page(path: str, cap: int):
     """Read `path` as the page to publish. Returns (html, None) or (None, err).
 
@@ -1594,7 +1701,7 @@ def _read_artifact_page(path: str, cap: int):
             return None, (f"Error: refusing to read {path} — pseudo-filesystem "
                           f"paths (/proc, /sys, /dev) can be infinite or "
                           f"side-effecting")
-        base = os.path.realpath(_publish_base())
+        base = os.path.realpath(_tools._base_dir())
         rel = os.path.relpath(resolved, base)
         if rel == os.pardir or rel.startswith(os.pardir + os.sep):
             return None, (f"Error: refusing to publish {path} — it is outside "
@@ -1603,8 +1710,9 @@ def _read_artifact_page(path: str, cap: int):
                           f"first (write_file) and publish that path.")
         if os.path.basename(os.path.realpath(resolved)).startswith(
                 "openbeast.conf"):
-            # Belt to the base above: an agent whose workdir IS a checkout
-            # still must not mint a URL for the stack's secrets.
+            # The workspace can BE a checkout (OpenCode launched from the
+            # repo, or an agent whose workdir is one): that must not mint a
+            # tailnet URL for the stack's secrets.
             return None, (f"Error: refusing to publish {path} — openbeast.conf "
                           f"holds the stack's keys and passwords.")
         if _is_store_path(resolved):
@@ -1970,6 +2078,77 @@ def language_reference(language: str, topic: str = "", error: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
+# beast-docs — current platform documentation (docs/BEAST_DOCS.md)
+# ---------------------------------------------------------------------------
+# The documentation counterpart of language_reference: SwiftUI, UIKit,
+# Compose, AGP, ... as the publisher wrote them, from a local mirror
+# (scripts/docs.sh sync / unpack), every answer stamped with its URL and the
+# date it was fetched. MCP/WebUI surface only, admin profile only, NOT the
+# runner's registry — same reasons as language_reference above. In client
+# mode the mirror is the laptop's own (~/.openbeast/docs), like every tool.
+#
+# Imported lazily and called through the package's no-raise facade
+# (agents/docs/__init__.py): a missing mirror or a broken page costs one
+# answer, never the tool server.
+
+_DOCS_MAX_CHARS = 12_000
+
+
+@_tool()
+def platform_docs(query: str = "", source: str = "", doc: str = "",
+                  live: bool = False) -> str:
+    """Search CURRENT platform developer documentation — Apple (SwiftUI,
+    UIKit, Swift, Xcode, App Store Review Guidelines), Android (Jetpack
+    Compose, Kotlin, Gradle/AGP) and any other mirrored developer site — from
+    the local mirror, which works with no internet. Your training data is
+    older than these pages: use this before writing code against a platform
+    API you are not certain about, and cite the URL and date it returns.
+
+    CALL IT WHEN:
+      - you are about to use a SwiftUI / UIKit / Compose / Gradle API and
+        are unsure of its current name, signature, availability or whether it
+        is deprecated — pass `query` (e.g. "NavigationStack", "LazyColumn
+        item keys", "navigationDestination");
+      - a search result looks right and you need the whole page — pass its
+        doc id (or URL) as `doc`;
+      - the mirror copy is stale or missing and the rig is online — pass the
+        page URL (or an Apple symbol name like "NavigationStack") as `doc`
+        with `live=true`. Offline, live falls back to the mirror and says so.
+
+    Args:
+        query: Words or a symbol name to search for.
+        source: Optional source name to search in ("swiftui", "uikit",
+            "android-compose", ...); several may be comma-separated.
+        doc: A doc id from a search result ("swiftui:/documentation/...") or
+            a page URL, to read the whole page.
+        live: With `doc`: fetch the official page now instead of the mirror.
+
+    Returns:
+        Ranked results or the page as markdown, each with its source URL and
+        fetched date (and a STALE warning when the mirror is old); or a line
+        saying nothing matched / no mirror exists, which means: say you could
+        not confirm it, do not invent an API.
+    """
+    try:
+        import docs as _docs  # lazy: see the note above
+    except Exception as e:
+        return f"Error: beast-docs is unavailable on this host ({e})."
+    try:
+        query = " ".join(str(query or "").split())[:300]
+        source = str(source or "").strip()[:200]
+        doc = str(doc or "").strip()[:2000]
+        if doc and live:
+            return _docs.safe_live(doc, source, _DOCS_MAX_CHARS)
+        if doc:
+            return _docs.safe_read(doc, _DOCS_MAX_CHARS)
+        if query:
+            return _docs.safe_search(query, source)[:_DOCS_MAX_CHARS]
+        return _docs.safe_status()[:_DOCS_MAX_CHARS]
+    except Exception as e:  # the facade does not raise; this is the belt
+        return f"Error: platform_docs failed: {e}"
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -1995,7 +2174,7 @@ def _bind_is_loopback(host: str) -> bool:
 
 def http_exposure_refusal(host: str, allow_open: bool = False,
                           env=None) -> str | None:
-    """Why the unauthenticated HTTP transport must not start, or None (R1-05).
+    """Why the unauthenticated HTTP transport must not start, or None.
 
     This transport has NO authentication at all — every tool, bash included,
     answers to whoever reaches the port. On loopback that is a debug aid; on
@@ -2044,6 +2223,7 @@ if __name__ == "__main__":
     # /proc/<ancestor>/environ. run_reaped and start_agent also do this
     # lazily (the :3001 server imports this module and relies on them).
     _tools.harden_process()
+    _install_stop_handlers()
 
     if args.transport == "http":
         print(f"MCP server starting on http://{MCP_BIND}:{args.port}/mcp")

@@ -6,7 +6,7 @@
 #   scripts/backends/model-fetch.sh --profile NAME            # fetch, or verify if present
 #   scripts/backends/model-fetch.sh --profile NAME --verify   # re-hash, download nothing
 #
-# Runs on each Spark (TP 2 needs the files on both) or anywhere with room.
+# Runs on each Spark (TP N needs the files on all N; spark-cluster.sh sync-weights copies them) or anywhere with room.
 # MODELS_DIR, HF_ENDPOINT, HF_TOKEN_FILE and OFFLINE come from the
 # environment or spark.env (--env FILE); the token is never on argv.
 # Full help: --help.

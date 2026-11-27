@@ -234,6 +234,41 @@ def test_shadow_router_waits_for_the_primary_only(tmp_path):
     assert rows[0]["engine"]["id"] == "prim"
 
 
+def test_background_walk_gets_its_own_budget(tmp_path):
+    """Review finding (beast-instinct): the background half of a shadow walk
+    kept the caller's deadline, so after the 27B used it (here: timed out)
+    the 0.6B was skipped as `deadline` and never measured on that row.
+    Nobody waits on it any more: it runs on its own timeout_ms."""
+    text = GOOD.replace('chain = ["rig-27b", "rig-cpu", "linear", "rules"]',
+                        'chain = ["prim", "cpu", "rules"]')
+    async def body(purl, pstub, curl):
+        p = H.write_config(tmp_path, {"prim": H.llama_binding(purl, allow_primary=True),
+                                      "cpu": H.llama_binding(curl)},
+                           extra_decisions={DID: text})
+        inst = Instinct(load_config(p, env={"INFERENCE_URL": purl}), repo_root=tmp_path)
+        await inst.reload()
+        for n in ("prim", "cpu"):
+            inst.states[n].healthy = True
+            inst.states[n].last_probe = inst.clock()
+            inst.engines[n].latencies.extend([10.0] * 25)
+        pstub.faults["slow"] = 400          # tokenize + completion > the 600 ms deadline
+        r = await _decide(inst, "spawn a background agent to port the tests",
+                          ceiling="shadow", baseline="hint", deadline_ms=600,
+                          return_after="primary")
+        await inst.drain()
+        await inst.aclose()
+        return r
+    with H.stub_server() as (purl, pstub), H.stub_server() as (curl, _):
+        r = H.run(body(purl, pstub, curl))
+    assert r["partial"] is True
+    rows = [x for x in _ledger_rows(tmp_path) if x.get("kind") == "decide"]
+    assert len(rows) == 1
+    cas = {c["engine"]: c for c in rows[0]["cascade"]}
+    assert cas["prim"]["reason"] == "engine_timeout"
+    assert cas["cpu"]["action"] not in ("skipped", "fallback"), cas["cpu"]
+    assert "label" in cas["cpu"]
+
+
 def test_return_after_is_ignored_when_the_target_can_act(tmp_path):
     """A caller that may act on the verdict always gets the whole answer."""
     async def body(purl, curl):
@@ -241,6 +276,15 @@ def test_return_after_is_ignored_when_the_target_can_act(tmp_path):
                         repo_root=tmp_path)
         await inst.start()
         assert inst.specs[DID].policy.mode == "enforce"
+        from instinct.engines import ScoreRes, ScoreRow
+
+        async def prim_fails(req):
+            # no usable row from the 27B (mass off the labels), so the walk
+            # must go on to the fallback — synchronously, not "partial"
+            # (a 27B VERDICT would end the walk at prim by itself)
+            return ScoreRes(rows=[ScoreRow(q={"spawn": 0.9, "inline": 0.1},
+                                           label_mass=0.01)], engine_ms=5)
+        inst.engines["prim"].score = prim_fails
         r = await _decide(inst, "spawn a background agent to port the tests",
                           ceiling="enforce", baseline="hint", return_after="primary")
         await inst.aclose()
@@ -282,6 +326,131 @@ def test_no_act_row_is_credited_to_the_highest_tier(tmp_path):
     assert acted == []
     assert r["engine"]["id"] == "prim"
     assert r["answer"]["label"] == r["cascade"][0]["label"]
+
+
+def _promote_both(inst):
+    """What a promotion of BOTH tiers yields: gate + calibration records."""
+    for n in ("prim", "cpu"):
+        inst.calib[(DID, n)] = {"T": 1.0, "thresholds": {}}
+        inst.gates[(DID, n)] = True
+
+
+def test_a_27b_non_act_is_never_overridden_by_the_fallback(tmp_path):
+    """Review finding (beast-instinct): with both tiers promoted, a 27B that
+    SCORED the row `spawn` used to fall through to the 0.6B, whose
+    confident `inline` act was then enforced — the 20x-cost skip of a true
+    spawn, and the router waited on the CPU scorer every such turn. The
+    0.6B answers only when the 27B is skipped; a 27B verdict is final."""
+    from instinct.engines import ScoreRes, ScoreRow
+    cpu_calls = []
+
+    async def body(purl, curl):
+        inst = Instinct(_two_tier(tmp_path, purl, curl, mode="enforce"), repo_root=tmp_path)
+        await inst.start()
+        _promote_both(inst)
+
+        async def cpu_score(req):
+            cpu_calls.append(1)
+            return ScoreRes(rows=[ScoreRow(q={"spawn": 0.02, "inline": 0.97},
+                                           label_mass=0.99)], engine_ms=5)
+        inst.engines["cpu"].score = cpu_score
+        assert inst.lifecycle(DID, "prim", "enforce")[0] == "enforce"
+        assert inst.lifecycle(DID, "cpu", "enforce")[0] == "enforce"
+        r = await _decide(inst, "Spawn a background agent to port the whole utils/ module "
+                          "to Go and report back when it is done.",
+                          ceiling="enforce", baseline="hint", request_id="r1")
+        # control: the primary skipped (no hint) -> the 0.6B does answer
+        rc = await _decide(inst, "what is 17 times 23", ceiling="enforce",
+                           baseline="nohint", request_id="r2")
+        await inst.aclose()
+        return r, rc
+    with H.stub_server() as (purl, _), H.stub_server() as (curl, _):
+        r, rc = H.run(body(purl, curl))
+    assert r["cascade"][0]["engine"] == "prim" and r["cascade"][0]["label"] == "spawn"
+    assert r["enforce"] is False and r["engine"]["id"] == "prim"
+    assert r["answer"]["label"] == "spawn"
+    assert [c["engine"] for c in r["cascade"]] == ["prim"]     # no wait on the CPU
+    assert rc["cascade"][0]["reason"] == "primary_not_substitute"
+    assert rc["engine"]["id"] == "cpu" and rc["enforce"] is True
+    assert len(cpu_calls) == 1
+
+
+@pytest.mark.parametrize("why", ["stale_probe", "no_gate", "no_calib"])
+def test_a_27b_spawn_is_final_even_when_its_own_lifecycle_is_shadow(tmp_path, why):
+    """Verifier finding (beast-instinct, on d89199d): the 27B's non-act was
+    only terminal while ITS lifecycle reached the target. With a stale probe
+    (busy-slot deferrals), or a gate/calibration record that no longer
+    matches its hash (model swapped), the 27B still scored the row `spawn`
+    at p=0.99 — and the 0.6B's `inline` act was enforced over it. A scored
+    non-act from a full-model tier is terminal whatever its own lifecycle:
+    that can only REDUCE enforcement (the fail-safe direction)."""
+    from instinct.engines import ScoreRes, ScoreRow
+    cpu_calls = []
+
+    async def body(purl, curl):
+        inst = Instinct(_two_tier(tmp_path, purl, curl, mode="enforce"), repo_root=tmp_path)
+        await inst.start()
+        _promote_both(inst)
+
+        async def prim_score(req):
+            return ScoreRes(rows=[ScoreRow(q={"spawn": 0.99, "inline": 0.01},
+                                           label_mass=0.99)], engine_ms=5)
+
+        async def cpu_score(req):
+            cpu_calls.append(1)
+            return ScoreRes(rows=[ScoreRow(q={"spawn": 0.02, "inline": 0.97},
+                                           label_mass=0.99)], engine_ms=5)
+        inst.engines["prim"].score = prim_score
+        inst.engines["cpu"].score = cpu_score
+        if why == "stale_probe":
+            inst.states["prim"].last_probe = inst.clock() - 10**6
+        elif why == "no_gate":
+            inst.gates.pop((DID, "prim"))
+        else:
+            inst.calib.pop((DID, "prim"))
+        assert inst.lifecycle(DID, "prim", "enforce")[0] == "shadow"
+        assert inst.lifecycle(DID, "cpu", "enforce")[0] == "enforce"
+        r = await _decide(inst, "Spawn a background agent to port utils to Go.",
+                          ceiling="enforce", baseline="hint", request_id="r1")
+        await inst.aclose()
+        return r
+    with H.stub_server() as (purl, _), H.stub_server() as (curl, _):
+        r = H.run(body(purl, curl))
+    assert [c["engine"] for c in r["cascade"]] == ["prim"], r["cascade"]
+    assert r["enforce"] is False and r["engine"]["id"] == "prim"
+    assert r["answer"]["label"] == "spawn"
+    assert cpu_calls == []
+
+
+def test_a_27b_that_could_not_judge_the_row_falls_to_the_fallback(tmp_path):
+    """The other side of the rule: a 27B abstain that means the tier FAILED
+    on this row (its probability mass left the label set) is not a verdict,
+    so the 0.6B still answers."""
+    from instinct.engines import ScoreRes, ScoreRow
+
+    async def body(purl, curl):
+        inst = Instinct(_two_tier(tmp_path, purl, curl, mode="enforce"), repo_root=tmp_path)
+        await inst.start()
+        _promote_both(inst)
+
+        async def prim_score(req):
+            return ScoreRes(rows=[ScoreRow(q={"spawn": 0.99, "inline": 0.01},
+                                           label_mass=0.01)], engine_ms=5)
+
+        async def cpu_score(req):
+            return ScoreRes(rows=[ScoreRow(q={"spawn": 0.02, "inline": 0.97},
+                                           label_mass=0.99)], engine_ms=5)
+        inst.engines["prim"].score = prim_score
+        inst.engines["cpu"].score = cpu_score
+        r = await _decide(inst, "what is 17 times 23", ceiling="enforce",
+                          baseline="hint", request_id="r1")
+        await inst.aclose()
+        return r
+    with H.stub_server() as (purl, _), H.stub_server() as (curl, _):
+        r = H.run(body(purl, curl))
+    assert [c["engine"] for c in r["cascade"]][:2] == ["prim", "cpu"]
+    assert r["cascade"][0]["label_mass"] == 0.01 and r["cascade"][1]["action"] == "act"
+    assert r["engine"]["id"] == "cpu" and r["enforce"] is True
 
 
 def test_shipped_chain_credits_rig_27b_when_nobody_acts():
@@ -342,6 +511,85 @@ def test_a_deferred_probe_retries_soon_not_a_full_interval_later(tmp_path):
     assert busy == PROBE_BUSY_RETRY_S < 300
 
 
+def test_a_busy_primary_retries_only_itself(tmp_path):
+    """Review finding (beast-instinct): a deferred primary probe shortened the
+    WHOLE probe cadence to 15 s, so the CPU scorer's full conformance probe
+    (~14 completions) re-ran every 15 s exactly while it served decisions.
+    The short retry now re-probes the deferred engine only."""
+    clog, plog = tmp_path / "cpu.jsonl", tmp_path / "prim.jsonl"
+
+    def completions(log):
+        return sum(1 for c in H.read_calls(log) if c.get("path") == "/completion")
+
+    async def body(purl, pstub, curl):
+        inst = Instinct(_two_tier(tmp_path, purl, curl), repo_root=tmp_path)
+        await inst.start()
+        pstub.faults["busy"] = True
+        await inst.probe_all(due_only=True)        # nothing due yet: no probe at all
+        n_cpu = completions(clog)
+        await inst.probe_all()                     # full: prim deferred, cpu probed
+        assert inst.probe_deferred and completions(clog) > n_cpu
+        n_cpu = completions(clog)
+        pstub.faults["busy"] = False
+        n_prim = completions(plog)
+        await inst.probe_all(due_only=True)        # the 15 s retry
+        retried = completions(plog) - n_prim
+        cpu_again = completions(clog) - n_cpu
+        await inst.aclose()
+        return retried, cpu_again, inst.probe_deferred
+    with H.stub_server(call_log=str(plog)) as (purl, pstub), \
+            H.stub_server(call_log=str(clog)) as (curl, _):
+        retried, cpu_again, deferred = H.run(body(purl, pstub, curl))
+    assert retried > 0 and not deferred           # the primary was re-probed
+    assert cpu_again == 0                         # the CPU scorer was not
+
+
+def test_reload_waits_for_an_in_flight_probe(tmp_path):
+    """Review finding (beast-instinct): a SIGHUP reload ran concurrently with
+    the periodic probe_all, whose re-attach then replaced the new registry's
+    locks with the old one's. They are serialized now."""
+    import asyncio
+
+    async def body(url):
+        inst = Instinct(_primary_cfg(tmp_path, url), repo_root=tmp_path)
+        await inst.start()
+        eng = inst.engines["prim"]
+        gate = asyncio.Event()
+        real = eng.probe
+
+        async def slow_probe(specs):
+            await gate.wait()
+            return await real(specs)
+        eng.probe = slow_probe
+        p = asyncio.create_task(inst.probe_all())
+        await asyncio.sleep(0.05)
+        r = asyncio.create_task(inst.reload())
+        await asyncio.sleep(0.2)
+        reload_ran_during_probe = r.done()
+        gate.set()
+        await asyncio.gather(p, r)
+        await inst.aclose()
+        return reload_ran_during_probe
+    with H.stub_server() as (url, _):
+        assert H.run(body(url)) is False
+
+
+def test_probe_repairs_a_missing_lock(tmp_path):
+    """A decision with NO lock entry (added by a reload whose map was lost)
+    is re-attached by the next probe, not left engine_unavailable forever."""
+    async def body(url):
+        inst = Instinct(_primary_cfg(tmp_path, url), repo_root=tmp_path)
+        await inst.start()
+        inst.states["prim"].locks.pop(DID)
+        await inst.probe_all()
+        lk = inst.states["prim"].locks.get(DID)
+        await inst.aclose()
+        return lk
+    with H.stub_server() as (url, _):
+        lk = H.run(body(url))
+    assert lk is not None and lk.ok
+
+
 def test_key_env_sends_the_stack_key_and_nothing_when_unset(tmp_path, monkeypatch):
     log = tmp_path / "calls.jsonl"
     with H.stub_server(call_log=str(log)) as (url, _):
@@ -377,6 +625,7 @@ def test_probe_on_the_primary_uses_fewer_replays(tmp_path):
     assert len(completions) == 2 + 3     # known answers + REPLAY_N_PRIMARY, not 2 + 10
 
 
+@pytest.mark.linux_only(reason="GNU stat -c")
 def test_instinct_sh_hands_the_primary_key_to_the_service_env_only(tmp_path):
     """`instinct.sh up` resolves LLAMA_API_KEY like conf.sh (OPENBEAST_API_KEY
     first) and gives it to the service through its ENVIRONMENT: present in

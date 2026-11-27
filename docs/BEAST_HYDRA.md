@@ -2,8 +2,9 @@
 
 beast-hydra (`agents/hydra.py`) is an opt-in, OpenAI-compatible router on
 `127.0.0.1:8095`. It sits in front of one or more inference engines (the
-rig's llama-server, vLLM on the Sparks, anything OpenAI-compatible on the
-tailnet) and routes each request on its `model` field. This page covers
+rig's llama-server, TensorFold or vLLM on a DGX Spark, anything
+OpenAI-compatible on the tailnet; `engine = llama | vllm | tensorfold |
+openai`) and routes each request on its `model` field. This page covers
 running it. The design, the reasoning behind it and the hardware beliefs
 still to verify are in [`BEAST_HYDRA_PLAN.md`](BEAST_HYDRA_PLAN.md).
 
@@ -12,7 +13,9 @@ still to verify are in [`BEAST_HYDRA_PLAN.md`](BEAST_HYDRA_PLAN.md).
 - Built and tested against fake engines (`tests/test_hydra_*.py`,
   `tests/test_hydra_sim.sh`) and against the rig's own llama-server.
 - Not yet run against a DGX Spark or the 3090 Ti rig. The plan marks those
-  beliefs **VERIFY**.
+  beliefs **VERIFY**. The Spark pair (spark-hydra) does not run it: its
+  command center talks to the TensorFold engine on `127.0.0.1:8000`
+  directly, and nothing listens on `:8095` there (checked 2026-11-19).
 - **Off by default.** With `HYDRA` unset or false, the stack is
   byte-identical to one without hydra (`tests/test_hydra_instinct_wiring.sh`).
 
@@ -45,6 +48,55 @@ shows what hydra thinks of every node.
 - An invalid config stops `./start.sh`. Validate first with
   `scripts/hydra.sh check`.
 
+### Family policy
+
+**Decision (Max, 2026-11-19): uncensored-preferred.** In Max's words:
+"It's uncensored-preferred, as we want to enable researchers, lawyers, and professionals to get the most honest and neutral answers when weighing critical business decisions (some of these models have alignment and post-training that lead to wrong decisions)."
+
+This replaces the 2026-09-30 "uncensored only" rule (#122). That rule
+refused to route to any stock model. The Spark pair's default,
+DeepSeek-V4.1-Flash (Mia EXL3), is a **stock** pack (`ABLIT=0`), so the old
+rule would have refused it.
+
+The policy is set in `[hydra]` in `hydra.toml`:
+
+```toml
+family_policy       = "uncensored-preferred"   # | "uncensored-only" | "any"
+uncensored_families = ["qwen3.8-27b-uncensored", "glm-5.3-flash-uncensored"]
+```
+
+| `family_policy` | Effect |
+|---|---|
+| `uncensored-preferred` (default) | Every family may serve. The preference is a tie-breaker inside one priority group. First, every filter runs: health, breaker, conformance, caps, ctx, drains and rules. Then session or sticky affinity places its cache-warm deployment first. Among the candidates left with free capacity, an uncensored family goes before a stock one, ahead of least load. The same order holds in the engine-queue fallback, the failover tail and the ctx last resort (largest context first; uncensored wins a tie). Priority still wins: a stock target at priority 0 is tried before an uncensored one at priority 1. A down, drained, saturated or incapable uncensored target never blocks a stock one. |
+| `uncensored-only` | The 2026-09-30 rule, now opt-in. A hard filter on every non-strict candidate: first choice, spill, sticky affinity, failover, the ctx last resort and after a rule hop. A route target outside `uncensored_families` is a config error. A stock deployment can be reached only by its strict id (a pin), and `check` warns about it. Once the routes span more than one family, `uncensored_families` is required. The proxy re-checks the policy before every failover attempt, so a reload into strict mode stops a stale plan. |
+| `any` | Families play no part in routing. |
+
+- `uncensored_families` declares which families are uncensored. A
+  deployment's `family` is compared against it. List a family only when its
+  weights really are abliterated. **DeepSeek-V4.1-Flash (Mia EXL3) is
+  stock**, so `hydra.toml.example` gives it the family
+  `deepseek-v4.1-flash`, which is not in the list.
+- Under `uncensored-preferred`, with routes that span families and an empty
+  list, `check` warns that the preference has nothing to prefer.
+- `allowed_families`, the pre-2026-11-19 key, still loads as
+  `uncensored_families`, and `check` warns. A config that only ever routed
+  those families behaves the same under the new default. Add
+  `family_policy = "uncensored-only"` to get the old hard filter back.
+- None of the three policies changes a route's `same_family` / `family`
+  anchor. `beast` in the example stays on the uncensored 27B family in every
+  mode.
+- Strict pins (a deployment id, `/pin/<d>/v1`, `X-Hydra-Pin`) never go through
+  the policy.
+- `/hydra/status` shows `family_policy` and `uncensored_families`. A decision
+  trace notes `family_policy uncensored-preferred: uncensored first in group N`
+  whenever the preference reordered a group.
+- The example's `beast:spark` and `beast:long` routes list GLM (uncensored)
+  and DeepSeek (stock) at the same priority on the pair's node. The pair
+  serves one of them at a time, and the other is MISMATCH, so the one being
+  served answers. If both ever answered, GLM would go first.
+
+Tests: `tests/test_hydra_core.py`, the "family policy" section.
+
 ### Environment knobs (not in `openbeast.conf`)
 
 | Variable | Default | Effect |
@@ -65,13 +117,20 @@ shows what hydra thinks of every node.
 | `decisions [n]` | Recent decision traces |
 | `metrics` | Prometheus text |
 | `tail [-f] [n]` | The audit log, pretty-printed (never prompt text) |
-| `add-node <id> --url U --engine E ...` | Probe a node and print the TOML stanza to paste (never edits the file) |
+| `add-node <id> --url U --engine E ...` | Probe a node and print the TOML stanza to paste (never edits the file). Every value is written as an escaped TOML string, and a served id from the node that is not a plain model id (`[A-Za-z0-9._:/@+ -]`, at most 200) is left as `SERVED-ID` with a warning: the node is untrusted input |
 | `conformance <deployment>` | Check that a deployment behaves as its engine claims |
 | `pin-smoke [deployment\|all]` | A one-token and a streaming chat per deployment, through `/pin` |
 | `sim` | The simulated fleet (`scripts/hydra-sim.sh`) |
 
 Admin calls present the per-start local token (`.run/hydra-local.token`).
-Inference calls present `LLAMA_API_KEY`.
+Inference calls present `LLAMA_API_KEY`. With `LLAMA_API_KEY` empty (the
+`conf.sh` default) inference is open to every local process, and hydra says
+so at start when it holds keys for any node. Browser pages are refused
+either way: a request a browser marks cross-site (`Sec-Fetch-Site:
+cross-site`, or an `Origin` whose host is not on hydra's Host allowlist) gets
+a 403 `hydra_cross_site` before it reaches a node, and an engine's
+`Access-Control-*` headers are not relayed. Requests the router or the gate
+vouch for with the caller token are exempt; they do their own browser check.
 
 ## Health
 
@@ -83,7 +142,7 @@ it. `scripts/doctor.sh` prints a per-node, per-deployment and per-route table.
 ## Timeouts and the breaker
 
 Each node has a first-byte deadline and a circuit breaker
-([`hydra.toml.example`](../hydra.toml.example) has the fields). Two rules
+([`hydra.toml.example`](../hydra.toml.example) has the fields). Four rules
 are not obvious from the file:
 
 - **The implicit single-node config waits as long as the stack did without
@@ -107,6 +166,20 @@ are not obvious from the file:
   not in `hydra.sh tail`'s summary.
   A timeout on a node with free capacity, or on a route with somewhere else
   to go, counts as before.
+- **An engine's own JSON 500 about a request is not, by itself, a node
+  failure.** A 500/501 whose body is a JSON `error` object (llama.cpp's
+  answer when the chat template refuses the messages) still fails over, but
+  it is charged to the breaker only if another deployment then serves the
+  same body. When every target refuses it, the caller gets the engine's own
+  status and body (audit outcome `upstream_5xx`) and no breaker moves: one
+  caller with a malformed body cannot black out the route. A 500 with no
+  body, a cut body or a non-JSON body, and any 502/503/504, count at once.
+- **A HALF_OPEN trial lasts until the first byte, not the whole stream.**
+  After `breaker.open_s` one request at a time is let through to test the
+  deployment. Once it has its first upstream byte the next caller may become
+  a trial too, so a long generation no longer 503s everyone else. The
+  breaker still closes only on `success_threshold` completed requests, and
+  a trial stream that dies mid-way reopens it.
 
 `python3 agents/hydra.py --print-default-config` prints the implicit config,
 580 s deadlines included and `slots` omitted when `INFERENCE_SLOTS` is unset

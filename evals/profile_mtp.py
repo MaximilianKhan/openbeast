@@ -137,7 +137,8 @@ def ensure_gpu_lease(argv, exec_fn=os.execvpe):
     print(f"GPU lease is free — taking it for this profile: {label}")
     sys.stdout.flush()
     exec_fn("bash", ["bash", _ba.GPU_LEASE_SH, "run", label, "--",
-                     sys.executable, os.path.abspath(__file__), *argv], env)
+                     sys.executable, *_ba._interpreter_flags(),
+                     os.path.abspath(__file__), *argv], env)
 
 
 def wait_health(proc, timeout=300):

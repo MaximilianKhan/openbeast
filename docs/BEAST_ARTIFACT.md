@@ -1,7 +1,7 @@
 # beast-artifact — a URL for anything the model renders
 
-**Status: shipped in v1.3.0 (2026-09-14); this page describes `main` as of
-2026-09-30.** Since v1.6.0: one owner for everything the rig publishes, admins,
+**Status: shipped in v1.3.0 (2026-09-14); this page describes `main` and is
+kept current with it (last reviewed 2026-11-19).** Since v1.6.0: one owner for everything the rig publishes, admins,
 managing pages from a phone, per-version delete and opt-in retention, links
 back to the beast-chat session that made a page, and a paged, searchable
 gallery. Upgrading a rig that has operators configured? Read
@@ -285,8 +285,12 @@ python3 evals/scoring.py --html "$OUT/board.html" \
   && ./scripts/publish-verdict.sh leaderboard "$OUT/board.html"
 ```
 
-The id is `uuid5(NAMESPACE_URL, "openbeast:verdict:<slug>")`, so each rerun
-adds a version to the same page. Each version is labelled
+The id is an HMAC of `openbeast:verdict:<slug>` under the rig-local 0600 key
+`.run/verdict-id.key` (created on first use), shaped as a uuid, so each rerun
+adds a version to the same page — and nobody without the key can compute the
+id and claim the page before the rig's first publish. A publish the server
+refuses (the page is owned by another login) prints a `WARNING` naming the
+id; `--strict` makes that exit 3. Each version is labelled
 `<git short sha> era=<eval era>` unless you pass `--label`; `--title` sets the
 title. A `.txt` (or any non-HTML) file is wrapped in a page, HTML-escaped
 inside `<pre>`. Pages are always private and owned by the rig, so they open
@@ -300,7 +304,7 @@ campaign script calls either yet; hooking them in is one line each, as above.
 ## The two tools
 
 `publish_artifact` and `list_artifacts` ship on the **MCP / Open WebUI
-surface** (18 tools) and are deliberately **not** in the autonomous runner's
+surface** (19 tools) and are deliberately **not** in the autonomous runner's
 10-tool registry — see [TOOLS.md](TOOLS.md). Background agents publish through
 the CLI instead, which keeps the runner's tool-selection pressure exactly
 where it was.
@@ -420,9 +424,15 @@ rollback, delete — can also come from a phone, with two things together:
 2. a device key enrolled with the **`artifact` scope**:
 
 ```bash
-./scripts/clients.sh enroll phone --label "My phone" --scope artifact   # prints the key once
+./scripts/clients.sh enroll phone --label "My phone" --scope artifact \
+    --login you@example.com                       # prints the key once
 ./scripts/clients.sh scope phone add artifact      # or grant it to a device you already have
+./scripts/clients.sh rotate phone --login you@example.com   # bind an existing device (new key)
 ```
+
+`--login` binds the key to your tailnet login: under any other login it is
+the flat 404, and **only a bound key carries admin** (`ARTIFACT_ADMINS`)
+power — an unbound key manages only the pages its login owns.
 
 In the viewer, the **⋯** button opens the **Manage** sheet. It shows only
 when your login owns the page or is an admin. Paste the key under *Device
@@ -444,7 +454,8 @@ or `X-OpenBeast-Device-Key`. Rules:
   page it cannot manage gets the same flat 404 as a page that does not exist,
   checked *before* its request body is validated, so a bad tag on someone
   else's private page cannot confirm the page exists. Your own page gets the
-  readable 400.
+  readable 400. A page with no recorded owner (legacy) or an unparseable
+  `meta.json` is managed by the rig and admins only.
 - Missing, unknown, revoked and unscoped keys all get the same flat 404.
 - Bodies are capped at **64 KB**, and each device at **60 changes a minute**
   (429 past that).
@@ -611,23 +622,21 @@ sandbox instead — stricter on storage (there is none), identical on network.
   half-parsed artifact.
 - Content types on supporting files come from the **published** extension, and
   `nosniff` stops a browser from guessing otherwise.
-- `Tailscale-User-Login` is forgeable by a process already on the rig. That is
-  inside the existing loopback trust model, and it only ever buys *reads* —
-  writes need the locality token. "A process on the rig" includes the
-  **host-network containers**: Open WebUI, SearXNG and ntfy run
-  `network_mode: host`, so a compromise of any of them reaches
-  `127.0.0.1:3004` as loopback and can claim the owner's login to read every
-  private page. To close that — the same recipe as beast-chat's
-  (docs/BEAST_CHAT.md) — have the server also listen on a Unix socket and
-  honour the login header **only** there:
-  `OPENBEAST_ARTIFACT_SOCKET=/path/to/.run/artifact.sock` (created `0600` in a
-  `0700` directory; `tailscaled` runs as root, so it can still connect) plus
-  `OPENBEAST_ARTIFACT_LOGIN_FROM=unix`. `./scripts/setup-tailscale.sh
-  --publish-artifact` then mounts `:8446` at `unix:<that path>` when it sees
-  `OPENBEAST_ARTIFACT_SOCKET` in its environment (run it with the same
-  environment `start.sh` had). TCP loopback then needs the locality token like
-  any other caller — `scripts/artifact.sh` already sends it. The default stays
-  `loopback`; an unknown value means `loopback`.
+- `Tailscale-User-Login` is forgeable by a process already on the rig while
+  `ARTIFACT_LOGIN_FROM` is `loopback` (the default) — and "a process on the
+  rig" includes code in every host-network container (Open WebUI Functions
+  run as root in theirs; SearXNG; a third-party inference image), which
+  could name an operator or admin login and read every private page. That
+  is no longer an accepted risk: set `ARTIFACT_LOGIN_FROM=unix` (see
+  *Where the login header counts* below), and doctor warns while it is
+  `loopback` and such containers run. Even in loopback mode, alone it buys
+  only *reads*:
+  writes need the locality token, or an `artifact`-scoped device key (see
+  *Managing pages from a phone*). A key enrolled with `--login` answers only
+  for that login, and only such a bound key carries the login's admin power,
+  so a forged admin header plus somebody else's key buys nothing. An
+  unbound key (enrolled without `--login`) still manages the header login's
+  own pages — bind every phone key to close that too.
 - **The header counts only from a peer on the rig.** The server binds
   `OPENBEAST_BIND`, so `BIND_HOST=0.0.0.0` or a LAN address puts `:3004`
   off the box — and a LAN host (or a tailnet node dialling `100.x:3004`
@@ -645,7 +654,11 @@ sandbox instead — stricter on storage (there is none), identical on network.
   capability tree (`/raw/<id>/v/<n>/~<token>/…`), the flat 404 included.
   The identity rides the network, not a cookie, so without it any site the
   viewer visits could `window.open` a shell URL and count frames to learn
-  which private pages and versions exist.
+  which private pages and versions exist. The same answers all carry
+  `Cross-Origin-Resource-Policy: same-origin` and `nosniff` too — the 404,
+  the 429 and the API JSON included — because CORP on the 200s alone made a
+  cross-site `fetch(…, {mode: "no-cors"})` reject on a page that exists and
+  resolve on the 404: the same oracle through a different door.
 - **The `Host` header is pinned** (`TrustedHostMiddleware`, the outermost
   middleware, sharing the one allowlist in `agents/hostpolicy.py` with
   beast-chat). A browser cannot forge `Host`, and that is what closes DNS
@@ -673,6 +686,57 @@ sandbox instead — stricter on storage (there is none), identical on network.
   (the *widening* write) and `owner` (which changes who can read) go last: a
   mixed body that fails part-way can never leave the artifact shared while
   telling the caller the request failed.
+- **Non-dumpable.** `artifact_server` calls `tools.harden_process()`
+  (`PR_SET_DUMPABLE=0`) at start, as beast-chat does, so a same-uid process
+  (a spawned agent's bash) cannot read the `OPENBEAST_*` configuration it was
+  started with from `/proc/<pid>/environ`. No-op off Linux;
+  `OPENBEAST_KEEP_DUMPABLE=1` opts out to attach a debugger.
+
+### Where the login header counts
+
+`ARTIFACT_LOGIN_FROM` decides where `Tailscale-User-Login` is a credential —
+the same switch beast-chat has as `CHAT_LOGIN_FROM` (docs/BEAST_CHAT.md):
+
+- `loopback` (the default): from a loopback peer, or a peer on the bind
+  address itself (above). That includes every **host-network container**,
+  which could name an operator or admin login and read every private page.
+  `doctor` names the running host-network containers while the server's
+  `login_from` (in the health detail) is `loopback`.
+- `unix`: **only** on `ARTIFACT_SOCKET`, a 0600 Unix socket the server binds
+  beside its TCP port (default `<repo>/.run/artifact.sock`; its directory
+  must be yours, and group/other write is stripped from it at start).
+  `tailscaled` runs as root, so it can connect; nothing else can. TCP
+  callers — the CLI, the model's tools, a container — need the locality
+  token or an `artifact`-scoped device key, which is what they already use
+  to write; header-only reads over TCP are anonymous (404).
+
+The socket is named from the listener that accepted the connection
+(`scope["server"] == (ARTIFACT_SOCKET, None)`, `agents/loginsock.py`), never
+from a missing peer address: uvicorn also reports no peer for a TCP
+connection that reset before it was read, and that request is still served.
+Before review 2026-11-16 a peer-less request counted as "a Unix socket, on
+this box" and was trusted in loopback mode — from off the box too, when
+`BIND_HOST` is a LAN address.
+
+```bash
+# openbeast.conf
+ARTIFACT_LOGIN_FROM=unix
+#ARTIFACT_SOCKET=...     # optional; default <repo>/.run/artifact.sock (~ expanded, relative → checkout)
+
+./stop.sh && ./start.sh                         # artifact_server now also listens on the socket
+./scripts/setup-tailscale.sh --publish-artifact  # :8446 → unix:<repo>/.run/artifact.sock
+tailscale serve status                          # expect: |-- / proxy unix:/…/.run/artifact.sock
+./scripts/doctor.sh                             # beast-artifact's host-network warning is gone
+```
+
+Rolling back: drop the key (or set `loopback`), restart, re-run
+`--publish-artifact`. Every step is local — no network needed, so the
+offline path is the same commands. `doctor` FAILs while the `:8446` mount
+and the mode disagree (a `unix` server behind a TCP mount 404s every phone;
+a `loopback` server behind a stale `unix:` mount 502s every link), when the
+socket is missing, or when the server does not answer health over the
+socket. Artifact URLs do not change: they are built from the `:8446` mount
+*name*, not its target.
 
 ## Writing a page
 
@@ -775,7 +839,6 @@ identity, asking the model), a general download route for arbitrary shard
 files, and `localStorage` inside artifacts.
 
 Not built yet: a Markdown publish lane, a `publish-a-page` skill (it
-regenerates `system-prompt-tools.md`, so it rolls the eval cache era and has
-to land at a campaign boundary), remote *publish* (a device key can manage
+regenerates the WebUI skill menu in `system-prompt-tools.md`), remote *publish* (a device key can manage
 pages, not create them), a store-wide byte quota, and turning a comment on an
 artifact into a steer.

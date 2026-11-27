@@ -11,5 +11,7 @@
   "cleanup": "rm -rf /tmp/eval_uov",
   "max_iter": 40,
   "category": "Security",
-  "subcategory": "Cipher implementation"
+  "subcategory": "Cipher implementation",
+  "ref_stem": "143_uov/uov",
+  "dest": "/tmp/eval_uov/uov.py"
 }

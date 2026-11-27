@@ -9,6 +9,8 @@
 #   OB_GPU_COUNT     number of GPUs seen
 #   OB_VRAM_MB       VRAM of the largest single GPU, in MiB (0 if unknown)
 #   OB_VRAM_TOTAL_MB sum across GPUs, in MiB
+#   OB_GPU_UNIFIED   1 when the GPU has no memory of its own (GB10 / DGX
+#                    Spark): the OB_VRAM_* values are then host RAM
 #
 # Build backend selection (Phase 1, docs/HARDWARE_PROFILES.md): after
 # ob_detect_gpu, call ob_resolve_backend to map GPU_BACKEND (lib/conf.sh)
@@ -29,9 +31,65 @@
 # Overrides:
 #   OPENBEAST_ASSUME_5090=1   skip the advice block entirely (CI, headless)
 
+# Host RAM in MiB from MemTotal (0 when unreadable). OB_MEMINFO exists so
+# the tests can hand it a GB10's meminfo without being on one.
+ob_meminfo_total_mb() {
+  local kb
+  kb=$(awk '$1 == "MemTotal:" {print $2; exit}' "${OB_MEMINFO:-/proc/meminfo}" 2>/dev/null || true)
+  [[ "$kb" =~ ^[0-9]+$ ]] && echo $((kb / 1024)) || echo 0
+}
+
+# MemAvailable in MiB (0 when unreadable). On unified memory (GB10) the
+# model's GPU allocations come out of MemTotal, so this — not MemTotal — is
+# what is left for everything else on the box.
+ob_meminfo_available_mb() {
+  local kb
+  kb=$(awk '$1 == "MemAvailable:" {print $2; exit}' "${OB_MEMINFO:-/proc/meminfo}" 2>/dev/null || true)
+  [[ "$kb" =~ ^[0-9]+$ ]] && echo $((kb / 1024)) || echo 0
+}
+
+# The stack's memory budget on a UNIFIED-memory box whose model runs beside
+# it (a GB10 head node: TensorFold rank 0 + the command center). Measured
+# AFTER the model is resident, so the numbers are what is really left.
+#
+#   ob_unified_mem_budget <stack_now_mb> <reserve_mb> <ceiling_mb>
+#   -> "<stack_cap_mb> <chat_job_pct> <available_mb> <short>"
+#
+# The reserve stays free for the model (its prompt peaks, the desktop,
+# Open WebUI's container — which runs outside the stack's cgroup). Of what
+# is left, the chat jobs' slice (its own cgroup, outside the stack's) gets
+# about half as a whole percent of RAM — at least 1 — and the stack gets the
+# rest on top of what it already holds — never less than it holds (the
+# jobs' slice shrinks to what is spare instead). The stack never goes below
+# OB_STACK_FLOOR_MB (default 2048): under that it cannot even start.
+# <short>=1 says there is no headroom: the floor eats into the reserve, or
+# less than the jobs' 1% is spare beside the model. Never above <ceiling_mb> (the
+# MEM_LIMIT_PCT cap). Returns 1, printing nothing, when meminfo is unreadable.
+ob_unified_mem_budget() {
+  local now="${1:-0}" reserve="${2:-3072}" ceiling="${3:-0}"
+  local floor="${OB_STACK_FLOOR_MB:-2048}" avail total spare pct jobs cap short=0
+  avail="$(ob_meminfo_available_mb)"; total="$(ob_meminfo_total_mb)"
+  [[ "$avail" -gt 0 && "$total" -gt 0 ]] || return 1
+  [[ "$now" =~ ^[0-9]+$ ]] || now=0
+  spare=$(( avail - reserve )); (( spare < 0 )) && spare=0
+  pct=$(( spare * 50 / total )); (( pct < 1 )) && pct=1
+  jobs=$(( total * pct / 100 ))
+  # The 1% floor on pct can ask for more than is spare (1246 MiB on a GB10
+  # with 1 GiB spare, or with none at all). Taken out of what the stack
+  # already holds, that set MemoryMax BELOW MemoryCurrent: forced reclaim or
+  # a cgroup OOM kill in the stack, and no warning (review 2026-11-16). The
+  # jobs' slice only ever comes out of spare, so the cap is never under
+  # <stack_now_mb>; when spare cannot cover it, <short>=1 says so.
+  if (( jobs > spare )); then jobs=$spare; short=1; fi
+  cap=$(( now + spare - jobs ))
+  if (( cap < floor )); then cap=$floor; short=1; fi
+  (( ceiling > 0 && cap > ceiling )) && cap=$ceiling
+  echo "$cap $pct $avail $short"
+}
+
 ob_detect_gpu() {
   OB_GPU_VENDOR="none"; OB_GPU_NAME=""; OB_GPU_COUNT=0
-  OB_VRAM_MB=0; OB_VRAM_TOTAL_MB=0
+  OB_VRAM_MB=0; OB_VRAM_TOTAL_MB=0; OB_GPU_UNIFIED=0
 
   if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
     OB_GPU_VENDOR="nvidia"
@@ -40,6 +98,22 @@ ob_detect_gpu() {
     mems=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null || true)
     local m
     while read -r m; do
+      # UNIFIED MEMORY (GB10, DGX Spark): the GPU has no framebuffer of its
+      # own, so nvidia-smi answers memory.total with a literal [N/A] — and
+      # this loop skipped the card entirely, reporting "NVIDIA GB10 (0 MiB
+      # VRAM, 0x)" on a box with 128 GB the GPU can address. What the GPU can
+      # use is the host's RAM (shared with the OS), so that is the number.
+      # Counted ONCE however many such rows appear: the pool is one pool, and
+      # summing it per GPU would invent memory that does not exist.
+      if [[ "$m" == "[N/A]" ]]; then
+        OB_GPU_COUNT=$((OB_GPU_COUNT + 1))
+        if [[ $OB_GPU_UNIFIED -eq 0 ]]; then
+          OB_GPU_UNIFIED=1
+          OB_VRAM_MB=$(ob_meminfo_total_mb)
+          OB_VRAM_TOTAL_MB=$OB_VRAM_MB
+        fi
+        continue
+      fi
       [[ "$m" =~ ^[0-9]+$ ]] || continue
       OB_GPU_COUNT=$((OB_GPU_COUNT + 1))
       OB_VRAM_TOTAL_MB=$((OB_VRAM_TOTAL_MB + m))
@@ -80,7 +154,16 @@ ob_profile_advice() {
 
   case "$OB_GPU_VENDOR" in
     nvidia)
-      if [[ $OB_GPU_COUNT -gt 1 ]]; then
+      if [[ "${OB_GPU_UNIFIED:-0}" -eq 1 ]]; then
+        # Not "5090-class": the number is RAM the OS shares, and no shipped
+        # serve script was measured on it. A Spark's inference is vLLM or
+        # TensorFold (docs/DGX_SPARK_PLAN.md), with INFERENCE_MANAGED=false.
+        echo "  ${OB_GPU_NAME:-NVIDIA GPU}: unified memory — ${OB_VRAM_MB} MiB of host"
+        echo "  RAM shared by the CPU and the GPU (GB10 / DGX Spark profile)."
+        echo "  The shipped llama.cpp serve scripts are tuned for a discrete"
+        echo "  32 GB card, not this; on a Spark serve vLLM or TensorFold and set"
+        echo "  INFERENCE_BACKEND + INFERENCE_URL (docs/DGX_SPARK_PLAN.md)."
+      elif [[ $OB_GPU_COUNT -gt 1 ]]; then
         echo "  Multi-GPU detected (${OB_GPU_COUNT}x, ${OB_VRAM_TOTAL_MB} MiB total)."
         echo "  llama.cpp splits the model across the cards, and serve.sh"
         echo "  budgets the context against their summed VRAM — but every"
@@ -181,19 +264,33 @@ ob_context_vram_mb() {
 # with <mem_total_kb> of RAM: 35% of it, at most 48 GiB. Echoes 0 — "pass
 # nothing, the server's own default stands" — when that would not be MORE
 # than the default (8192 MiB), or when the RAM is unknown.
+# Optional <limit_pct> <host_weights_mib>: a launch that keeps weights in host
+# RAM (--n-cpu-moe, -ngl 0) shares start.sh's MemoryMax scope (limit_pct of
+# RAM) with them, so the cache gets at most what that scope has left after
+# the weights and OB_PROMPT_CACHE_RESERVE_MB for the rest of the stack.
+# Flash-Next (--n-cpu-moe 35 --load-mode none, ~65 GB of RAM) plus 35% of a
+# 122 GB rig came to ~107 GiB in a 91.5 GiB scope: the kernel OOM-killed
+# llama-server once the cache filled.
 # Why: with one slot, a second conversation taking it makes the server stash
 # the first one's state in host RAM. 27B agent sessions at 100K+ tokens are
 # 16–36 GiB each; 8 GiB holds none of them, so every return to a conversation
 # reprocessed its whole prompt (555 "exceeds cache size limit" lines and
 # ~20% of all GPU-busy time in this rig's log, 2026-07 to 10). 48 GiB covers
-# every state seen; 35% keeps it well inside start.sh's MEM_LIMIT_PCT scope.
+# every state seen; 35% sits inside start.sh's MEM_LIMIT_PCT scope beside ONE
+# GPU-resident server — host-resident weights are subtracted (above), and a
+# second llama-server (the instinct scorer) sizes its own cache.
 # Pure integer math, no I/O.
 OB_PROMPT_CACHE_DEFAULT_MB=8192
+OB_PROMPT_CACHE_RESERVE_MB=8192
 ob_prompt_cache_mb() {
-  local kb="${1:-}" mb
+  local kb="${1:-}" pct="${2:-}" host="${3:-0}" mb room
   [[ "$kb" =~ ^[0-9]+$ ]] || { echo 0; return 0; }
   mb=$(( kb / 1024 * 35 / 100 ))
   [[ $mb -gt 49152 ]] && mb=49152
+  if [[ "$pct" =~ ^[0-9]+$ && "$host" =~ ^[0-9]+$ && "$host" -gt 0 ]]; then
+    room=$(( kb / 1024 * pct / 100 - host - OB_PROMPT_CACHE_RESERVE_MB ))
+    [[ $room -lt $mb ]] && mb=$room
+  fi
   [[ $mb -le $OB_PROMPT_CACHE_DEFAULT_MB ]] && mb=0
   echo "$mb"
 }
@@ -335,4 +432,38 @@ ob_cmake_flags() {
       return 1
       ;;
   esac
+}
+
+# ob_llama_build_number <src> — llama.cpp's build number (the NNNN of its
+# bNNNN release tags) for the commit checked out in <src>, or empty when it
+# cannot be known. Pass it as cmake -DLLAMA_BUILD_NUMBER=N.
+#
+# llama.cpp's cmake derives it itself from `git rev-list --count HEAD`, and
+# its UI target (tools/ui/CMakeLists.txt) asks Hugging Face for the prebuilt
+# assets of version b<number>. In a SHALLOW clone the count is the depth (1),
+# so the build asked for b1, fell back to an incompatible "latest" and cmake
+# failed (the rig's v1.0.0 upgrade, 2026-11-17). In order:
+#   1. OB_LLAMA_BUILD_NUMBER — from the caller (engine.sh: a staged MANIFEST);
+#   2. the commit count, when no shallow cut-off lies in HEAD's history (a
+#      full clone, or a shallow one whose cut is on another line);
+#   3. a bNNNN tag on HEAD (upstream names every build that way; engine.sh
+#      and bootstrap.sh tag it locally when they fetch shallow).
+ob_llama_build_number() {
+  local src="$1" n="${OB_LLAMA_BUILD_NUMBER:-}" gd s cut=0
+  if [[ "$n" =~ ^[0-9]+$ ]]; then printf '%s\n' "$n"; return 0; fi
+  gd="$(git -C "$src" rev-parse --absolute-git-dir 2>/dev/null || true)"
+  [[ -d "$gd" ]] || return 0
+  if [[ -s "$gd/shallow" ]]; then
+    while read -r s; do
+      [[ -n "$s" ]] || continue
+      if git -C "$src" merge-base --is-ancestor "$s" HEAD 2>/dev/null; then cut=1; break; fi
+    done < "$gd/shallow"
+  fi
+  if [[ $cut -eq 0 ]]; then
+    n="$(git -C "$src" rev-list --count HEAD 2>/dev/null || true)"
+    if [[ "$n" =~ ^[0-9]+$ && "$n" -gt 0 ]]; then printf '%s\n' "$n"; return 0; fi
+  fi
+  n="$(git -C "$src" tag --points-at HEAD 2>/dev/null | sed -nE 's/^b([0-9]+)$/\1/p' | sort -n | tail -n1 || true)"
+  [[ -n "$n" ]] && printf '%s\n' "$n"
+  return 0
 }

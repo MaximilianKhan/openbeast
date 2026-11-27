@@ -11,6 +11,7 @@ import os
 import socket
 import subprocess
 import threading
+import time
 
 import pytest
 
@@ -84,6 +85,7 @@ def free_port() -> int:
     return p
 
 
+@pytest.mark.linux_only(reason="GNU sed")
 def test_script_parses_and_documents_the_contract(tmp_path):
     assert subprocess.run(["bash", "-n", str(SH)]).returncode == 0
     # On a box with NO weights directory: help must not need one.
@@ -95,6 +97,7 @@ def test_script_parses_and_documents_the_contract(tmp_path):
         assert needle in r.stdout, needle
 
 
+@pytest.mark.linux_only(reason="GNU sed")
 def test_dry_run_plans_a_pinned_offline_readonly_container(tmp_path):
     env = env_for(tmp_path)
     r = sh("up", "--dry-run", "--port", str(free_port()), env=env)
@@ -150,6 +153,7 @@ def _fake_llama_servers(tmp_path, environs: dict[int, bytes | None]):
     return str(proc)
 
 
+@pytest.mark.linux_only(reason="GNU sed")
 def test_refuses_a_host_running_llama_server(tmp_path):
     env = env_for(tmp_path)
     env["OPENJEV_PROC_ROOT"] = _fake_llama_servers(tmp_path, {4242: b"PATH=/usr/bin\0"})
@@ -159,6 +163,7 @@ def test_refuses_a_host_running_llama_server(tmp_path):
     assert sh("up", "--dry-run", env=env).returncode == 0
 
 
+@pytest.mark.linux_only(reason="GNU sed")
 def test_the_cpu_instinct_scorer_does_not_block_the_freed_5090(tmp_path):
     """Review minor: the rig's own CPU 0.6B scorer (CUDA_VISIBLE_DEVICES="")
     used to make the freed-5090 path need OPENJEV_ALLOW_SHARED_HOST=1.
@@ -174,6 +179,7 @@ def test_the_cpu_instinct_scorer_does_not_block_the_freed_5090(tmp_path):
     assert r.returncode == 2 and "GPU of its own" in r.stderr
 
 
+@pytest.mark.linux_only(reason="GNU sed")
 def test_stock_base_for_validation_only(tmp_path):
     r = sh("up", "--dry-run", "--base", "stock", "--validation-only", env=env_for(tmp_path))
     assert r.returncode == 0 and "Qwen/Qwen3.8-27B@1d4bf0f2" in r.stdout
@@ -241,6 +247,54 @@ def test_gate_refuses_a_readable_key_and_every_interface(tmp_path):
         openjev_gate.read_key(str(k))
     with pytest.raises(SystemExit):
         openjev_gate.serve("0.0.0.0", 0, "g" * 40, "http://127.0.0.1:1", {})
+
+
+def test_gate_cannot_be_pinned_by_a_peer_without_the_key():
+    """Review finding (beast-instinct): no handler timeout and an uncapped
+    ThreadingHTTPServer let any tailnet peer hold one thread per half-sent
+    request forever, before auth; every unauthenticated /health was also a
+    blocking upstream call. Now: idle requests are dropped, connections
+    beyond the cap get a 503 without a thread, /health is cached."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    hits = []
+
+    class Up(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            hits.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+    up = ThreadingHTTPServer(("127.0.0.1", 0), Up)
+    threading.Thread(target=up.serve_forever, daemon=True).start()
+    srv = openjev_gate.serve("127.0.0.1", 0, "g" * 40,
+                             f"http://127.0.0.1:{up.server_address[1]}", {},
+                             request_timeout=0.5, max_conns=3)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    addr = ("127.0.0.1", srv.server_address[1])
+    url = f"http://{addr[0]}:{addr[1]}"
+    try:
+        idle = []
+        for _ in range(3):
+            c = socket.create_connection(addr, timeout=5)
+            c.sendall(b"GET /hea")
+            idle.append(c)
+        time.sleep(0.2)
+        assert _get(url, "/health")[0] == 503            # over the cap: refused, not queued
+        for c in idle:                                   # the slowloris sockets are dropped
+            assert c.recv(1024) == b""
+            c.close()
+        for _ in range(10):
+            assert _get(url, "/health")[0] == 200
+        assert hits.count("/health") == 1                # cached: one upstream call
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        up.shutdown()
+        up.server_close()
 
 
 def test_openjev_binding_scores_through_the_gate(tmp_path, gate):

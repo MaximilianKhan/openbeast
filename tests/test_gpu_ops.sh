@@ -424,7 +424,8 @@ SBU="$T/repo_update"
 mkdir -p "$SBU/scripts/lib" "$SBU/.run" "$SBU/llama.cpp/.git" "$SBU/llama.cpp/build/bin" "$T/binu"
 install -m 755 "$SRC/scripts/update.sh" "$SBU/scripts/update.sh"
 install -m 755 "$SRC/scripts/gpu-lease.sh" "$SBU/scripts/gpu-lease.sh"
-install -m 644 "$SRC/scripts/lib/conf.sh" "$SRC/scripts/lib/hardware.sh" "$SBU/scripts/lib/"
+# every lib update.sh sources unconditionally (pyversions.sh: ob_py_versions)
+install -m 644 "$SRC/scripts/lib/conf.sh" "$SRC/scripts/lib/hardware.sh" "$SRC/scripts/lib/pyversions.sh" "$SBU/scripts/lib/"
 printf '#!/bin/bash\n' > "$SBU/llama.cpp/build/bin/llama-server"; chmod +x "$SBU/llama.cpp/build/bin/llama-server"
 # git: records every call; the pull succeeds and HEAD does not move, so an
 # allowed update ends at "already up to date" without a cmake anywhere.
@@ -515,6 +516,56 @@ if [[ $_rc -eq 0 && "$(cat "$SBU/llama.cpp/build/bin/libggml.so")" == new-lib \
   pass "negative control: a successful rebuild keeps the new engine and removes the snapshot"
 else
   fail "successful rebuild (rc=$_rc): $_out"
+fi
+
+# A build/ configured under ANOTHER source path (a tree built by hand
+# elsewhere — the rig, 2026-11-17) is wiped for a clean reconfigure. That
+# wipe ran BEFORE the snapshot and took bin/ with it: the failed build that
+# followed left no llama-server at all, "restored" notwithstanding.
+printf 'old-bin\n' > "$SBU/llama.cpp/build/bin/llama-server"; chmod +x "$SBU/llama.cpp/build/bin/llama-server"
+printf 'old-lib\n' > "$SBU/llama.cpp/build/bin/libggml.so"
+printf 'CMAKE_HOME_DIRECTORY:INTERNAL=/somewhere/else/llama.cpp\n' > "$SBU/llama.cpp/build/CMakeCache.txt"
+mkdir -p "$SBU/llama.cpp/build/CMakeFiles"; : > "$SBU/llama.cpp/build/CMakeFiles/stale"
+cat > "$T/binu/cmake" <<STUB
+#!/bin/bash
+echo "cmake \$*" >> "\$OB_STUB_STATE/git.log"
+if [[ " \$* " == *" --build "* ]]; then
+  mkdir -p "$SBU/llama.cpp/build/bin"; printf 'new-lib\n' > "$SBU/llama.cpp/build/bin/libggml.so"
+  exit 2
+fi
+exit 0
+STUB
+UPDB --llama --force
+if [[ $_rc -ne 0 ]] && has "$_out" "wiping for a clean reconfigure" && has "$_out" "restored to the previous llama-server" \
+   && [[ "$(cat "$SBU/llama.cpp/build/bin/llama-server" 2>&1)" == old-bin \
+         && "$(cat "$SBU/llama.cpp/build/bin/libggml.so")" == old-lib \
+         && ! -e "$SBU/llama.cpp/build/bin.pre-update" ]]; then
+  pass "a stale build/ is wiped AFTER the bin/ snapshot: the failed build restores the previous llama-server"
+else
+  fail "stale build/ + failed rebuild (rc=$_rc, bin=$(ls "$SBU/llama.cpp/build/bin" 2>&1 | paste -sd' ')): $_out"
+fi
+if [[ ! -e "$SBU/llama.cpp/build/CMakeCache.txt" && ! -e "$SBU/llama.cpp/build/CMakeFiles/stale" ]]; then
+  pass "…and the stale cache itself is gone (the wipe still happens)"
+else
+  fail "the stale CMakeCache.txt / CMakeFiles survived the wipe"
+fi
+
+# The build number: a shallow llama.cpp/ makes cmake's own count 1, and its
+# UI target then fetches the assets of "b1". update.sh passes the number.
+printf '#!/bin/bash\necho "cmake $*" >> "$OB_STUB_STATE/git.log"; exit 0\n' > "$T/binu/cmake"
+printf '#!/bin/bash\n' > "$SBU/llama.cpp/build/bin/llama-server"; chmod +x "$SBU/llama.cpp/build/bin/llama-server"
+export OB_LLAMA_BUILD_NUMBER=12359; UPDB --llama --force; unset OB_LLAMA_BUILD_NUMBER
+if [[ $_rc -eq 0 ]] && grep -q -- "-DLLAMA_BUILD_NUMBER=12359 " "$T/state/git.log"; then
+  pass "update.sh passes the known build number to cmake (-DLLAMA_BUILD_NUMBER)"
+else
+  fail "build number not passed (rc=$_rc): $(grep cmake "$T/state/git.log")"
+fi
+UPDB --llama --force
+if [[ $_rc -eq 0 ]] && grep -q -- "-ULLAMA_BUILD_NUMBER " "$T/state/git.log" && has "$_out" "build" \
+   && ! grep -q -- "-DLLAMA_BUILD_NUMBER" "$T/state/git.log"; then
+  pass "negative control: unknown (no history, no tag) → -U, so an earlier configure's cached number cannot stick"
+else
+  fail "unknown build number (rc=$_rc): $(grep cmake "$T/state/git.log")"
 fi
 
 # ===========================================================================
@@ -621,7 +672,7 @@ case "\$1" in
   pull) exit 0 ;;
   inspect)
     case "\${@: -1}" in
-      ghcr.io/open-webui/open-webui:v0.12.3) echo "ghcr.io/open-webui/open-webui@$D_OW" ;;
+      ghcr.io/open-webui/open-webui:main) echo "ghcr.io/open-webui/open-webui@$D_OW" ;;
       searxng/searxng:latest)             echo "searxng/searxng@$D_SX" ;;
     esac ;;
   compose) exit 0 ;;      # 'ps --status running' prints nothing: stack down
@@ -639,7 +690,7 @@ compose_with "sha256:$(printf '3%.0s' $(seq 1 64))" "sha256:$(printf '4%.0s' $(s
 compose_with "$ORIG_OW" "$ORIG_SX" > "$SBU/docker-compose.yml.pre-bundle"
 UPD --images
 if [[ $_rc -eq 0 ]] \
-   && grep -qx "    image: ghcr.io/open-webui/open-webui:v0.12.3@$D_OW" "$SBU/docker-compose.yml" \
+   && grep -qx "    image: ghcr.io/open-webui/open-webui:main@$D_OW" "$SBU/docker-compose.yml" \
    && grep -qx "    image: searxng/searxng:latest@$D_SX" "$SBU/docker-compose.yml" \
    && grep -qx '    # the chat UI' "$SBU/docker-compose.yml" && has "$_out" "re-pinned 'open-webui'"; then
   pass "a bundle content ID is re-pinned to the freshly pulled registry digest (by service, comments kept)"
@@ -660,7 +711,7 @@ fi
 # NEGATIVE CONTROL: an ordinary digest-pinned compose bumps as it always did.
 compose_with "$ORIG_OW" "$ORIG_SX" > "$SBU/docker-compose.yml"
 UPD --images
-if [[ $_rc -eq 0 ]] && grep -qx "    image: ghcr.io/open-webui/open-webui:v0.12.3@$D_OW" "$SBU/docker-compose.yml" \
+if [[ $_rc -eq 0 ]] && grep -qx "    image: ghcr.io/open-webui/open-webui:main@$D_OW" "$SBU/docker-compose.yml" \
    && has "$_out" "new images take effect on next" && ! has "$_out" "re-pinned"; then
   pass "negative control: a registry-pinned compose is bumped exactly as before"
 else

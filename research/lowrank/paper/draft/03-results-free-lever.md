@@ -1,3 +1,5 @@
+> **Superseded (noted 2026-11-19):** draft text, kept as the draft record. The paper is [`../final/sections/03-results-free-lever.md`](../final/sections/03-results-free-lever.md); section numbers changed in the 2026-10-09 revision. Quote the final, not this.
+
 # 3. Results I: the free lever
 
 ## 3.1 What re-rounding buys at zero bytes

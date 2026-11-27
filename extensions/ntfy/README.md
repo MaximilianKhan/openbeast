@@ -54,8 +54,8 @@ line can never resolve: point it at the loaded image's ID, the same rewrite
 
 ```bash
 # connected box
-docker pull binwiederhier/ntfy:v2.28.0@sha256:6ef4b819f722fccdc036af611c4774cfdc2de821ab74fdd48bbf4c9d6f8973da
-docker save -o ntfy.tar binwiederhier/ntfy:v2.28.0@sha256:6ef4b819f722fccdc036af611c4774cfdc2de821ab74fdd48bbf4c9d6f8973da
+docker pull binwiederhier/ntfy:v2.38.0@sha256:771309aecfce18d8fe2bfb8069994ddd6be6ca6ccdd7badace3d791a0045ff0d
+docker save -o ntfy.tar binwiederhier/ntfy:v2.38.0@sha256:771309aecfce18d8fe2bfb8069994ddd6be6ca6ccdd7badace3d791a0045ff0d
 # closed box
 docker load -i ntfy.tar          # prints "Loaded image: …" or "Loaded image ID: sha256:…"
 docker image inspect -f '{{.Id}}' <what load printed>
@@ -76,11 +76,17 @@ A new ntfy *version* is a reviewed edit to the tag in `compose.yaml`;
 
 The default access mode is `read-write` for anyone who can reach the port.
 That means loopback, plus every device on your tailnet once it is published:
-the same trust boundary as SearXNG. To require a token instead:
+the same trust boundary as SearXNG. To require a token instead, create two
+plain (`role=user`) accounts scoped to your one topic: a write-only one whose
+token beast-chat publishes with, and a read-only one for the phone.
+`<topic>` is the last path segment of `CHAT_NOTIFY_URL`.
 
 ```bash
-docker exec -it ntfy ntfy user add --role=admin me
-docker exec -it ntfy ntfy token add me            # prints tk_...
+docker exec -it ntfy ntfy user add chat           # prompts for a password
+docker exec -it ntfy ntfy access chat '<topic>' write-only
+docker exec -it ntfy ntfy token add chat          # prints tk_...
+docker exec -it ntfy ntfy user add phone
+docker exec -it ntfy ntfy access phone '<topic>' read-only
 install -m 600 /dev/null ~/.config/openbeast/ntfy.token
 printf '%s' 'tk_...' > ~/.config/openbeast/ntfy.token
 # openbeast.conf
@@ -91,7 +97,14 @@ printf '%s' 'tk_...' > ~/.config/openbeast/ntfy.token
 
 The token lives in a 0600 file that beast-chat reads. It never goes in
 `openbeast.conf`, in the environment or on a command line. Log the phone app
-in as the same user.
+in as `phone`.
+
+**Do not use `--role=admin` for either account.** An ntfy admin can read and
+write every topic and manage users and access through the API. A leaked
+token file or phone login would then control the whole server, including
+re-granting everyone access, which undoes `deny-all`. beast-chat only ever
+POSTs to one topic, and the phone only ever reads it. To check the grants:
+`docker exec ntfy ntfy access`.
 
 ## iOS caveat: instant delivery goes through ntfy.sh
 

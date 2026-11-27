@@ -291,8 +291,11 @@ class World:
                 {"id": "phone-chat", "label": "phone chat", "enrolled_at": "now",
                  "revoked_at": None, "scopes": ["chat"],
                  "key_sha256": hashlib.sha256(CHAT_KEY.encode()).hexdigest()},
+                # Bound to the operator's login (clients.sh enroll --login):
+                # since the 2026-11-15 review only a bound key carries admin
+                # on a keyed write, and test_f manages the rig's page.
                 {"id": "phone-art", "label": "phone artifact", "enrolled_at": "now",
-                 "revoked_at": None, "scopes": ["artifact"],
+                 "revoked_at": None, "scopes": ["artifact"], "login": OPERATOR,
                  "key_sha256": hashlib.sha256(ART_KEY.encode()).hexdigest()}]}, f)
         presets = os.path.join(self.run, "chat-presets.json")
         fd = os.open(presets, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

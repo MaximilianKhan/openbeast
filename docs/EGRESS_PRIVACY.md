@@ -83,16 +83,21 @@ a second full-tunnel VPN is running.
 ## What this does and does not hide
 
 **Obscured:** every outbound connection the machine makes, which for a rig means
-SearXNG's upstream queries, the SSRF-guarded `fetch` tool, model downloads and
+SearXNG's upstream queries, the SSRF-guarded `fetch` tool, the `weather` tool's
+Open-Meteo calls, beast-docs' `sync` and live lookups, model downloads and
 container pulls. Your ISP and the sites you reach see the exit node, not you.
-With `WEBUI_WEB_SEARCH=true` (off by default), Open WebUI's built-in Web
-Search also loads result pages itself, from its container and outside the
-`fetch` guard; the exit node covers that traffic too.
 
 **Not obscured, by design:** traffic *between* your own devices. Tailnet packets
 go direct (or via DERP), encrypted end to end with WireGuard, and they never
 touch the exit node. That is the point: your laptop talking to your rig should
 not detour through a third party.
+
+**One more outbound flow to know about:** beast-island's connectivity probe
+(`ISLAND=auto`, the default). Every 15 s it makes a bare TCP connect, with no
+payload, to `1.1.1.1:443`, `9.9.9.9:443` and `8.8.8.8:443`, then closes. Through an exit
+node those connects leave from the exit node, like everything else. Point
+`ISLAND_PROBES` elsewhere, or set `ISLAND=off`, if you'd rather not contact
+those resolvers ([BEAST_ISLAND.md](BEAST_ISLAND.md)).
 
 **Not changed at all:** the data-residency promise. Prompts, file contents and
 model output still never leave hardware you own. An exit node changes where your
@@ -140,8 +145,9 @@ flap cannot affect inference or remote access at all.
 
 **Work required:** our SearXNG runs `network_mode: host` (see
 `docker-compose.yml`). A sidecar means moving it to bridge networking, mapping
-its port back to loopback, and rewiring `SEARXNG_URL` in `agents/tools.py` and
-the healthcheck. Moderate, and entirely contained.
+its port back to loopback, and checking that `SEARXNG_URL` (an environment
+variable `agents/tools.py` reads; `scripts/lib/conf.sh` sets it) and the
+healthcheck still point at it. No era-hashed code changes. Moderate, and entirely contained.
 
 ### Option 3: commercial VPN upstream of a self-hosted exit node
 

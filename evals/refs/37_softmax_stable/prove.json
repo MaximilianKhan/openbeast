@@ -1,0 +1,9 @@
+{
+  "expect": {
+    "wrong_unshiftedz.py": "AssertionError: sum [\\d.e+-]+",
+    "wrong_clip.py": "AssertionError: shift invariance",
+    "wrong_round6.py": "AssertionError: values: \\["
+  },
+  "timed": false,
+  "note": "v4 validator kept unchanged. Wrongs: normaliser sums the unshifted exponentials, clipping inputs at 700 instead of the max-shift (uniform on [1000,1001,1002]), probabilities rounded to 6 decimals. The textbook no-shift softmax fails with OverflowError (not an assertion), so it is not used as a wrong. Known gap: subtracting min(x) instead of max(x) PASSES (the fixtures' range is only 2)."
+}

@@ -1,0 +1,9 @@
+# Develop UI (synthetic beast-docs fixture)
+
+Synthetic index in the shape developer.android.com serves at /develop/ui/llms.txt.
+
+## Docs
+
+- [Lists and grids](/develop/ui/compose/lists.md.txt): Display collections with lazy lists and grids.
+- [State in Compose](/develop/ui/compose/state.md.txt): Hoist state and remember values.
+- [Views interop](/develop/ui/views/interop.md.txt): Outside the compose prefix, must be skipped.

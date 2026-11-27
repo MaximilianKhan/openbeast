@@ -1,0 +1,10 @@
+{
+  "expect": {
+    "wrong_nooutlinks.py": "AssertionError: got \\[",
+    "wrong_failroot.py": "AssertionError: got \\[",
+    "wrong_resetonmatch.py": "AssertionError: got \\["
+  },
+  "slow_expect": "AssertionError: too slow: [\\d.]+s",
+  "timed": true,
+  "note": "v4 validator kept unchanged. Wrongs: suffix-link outputs not merged, failure links all to root, scan restarted after each match. Known validator gaps (plausible wrongs that PASS): unsorted output (validator sorts), dedupe of duplicate patterns, lazy/hybrid/trie-walk variants fast enough on the 2M-char benchmark."
+}

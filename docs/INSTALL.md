@@ -2,9 +2,19 @@
 
 OpenBeast runs local LLMs via llama.cpp on NVIDIA GPUs, with OpenCode (terminal
 agent), Open WebUI (browser chat), an autonomous agent runner, and an MCP tool
-server providing 18 tools for file I/O, shell, web search, agent management,
-and a skills system (24 skills loaded on demand: 15 in-house plus 9 imported;
+server providing 19 tools for file I/O, shell, web search, agent management,
+and a skills system (27 skills loaded on demand: 18 in-house plus 9 imported;
 14 are on the always-on menu).
+
+> **Installing on DGX Sparks?** This page is the rig (x86_64 + one NVIDIA GPU,
+> llama.cpp). For one to eight DGX Sparks — root setup, the firewall guard,
+> weights, the TensorFold pair, the command center on spark-1, the Mac client,
+> and a fully offline build — follow the linear runbook
+> [SPARK_HYDRA.md](SPARK_HYDRA.md). Its two checklists are the short way in:
+> [Install everything, fresh](SPARK_HYDRA.md#install-everything-fresh) and
+> [Update everything](SPARK_HYDRA.md#g6-updating), each per host, online and
+> offline. For the pair's own model maintaining OpenBeast, see
+> [SELF_DEVELOPMENT.md](SELF_DEVELOPMENT.md).
 
 The inference engine, model weights, and Docker volumes are not checked in —
 follow the steps below to set them up. Everything else (configs, scripts,
@@ -74,6 +84,10 @@ hf download JonathanColetti/Qwen3.8-27B-Uncensored-GGUF \
 # Frontends (Open WebUI and SearXNG need no pull: compose fetches the
 # digest-pinned images in docker-compose.yml when the stack first starts)
 curl -fsSL https://opencode.ai/install | bash
+# The exact digests docker-compose.yml pins (Open WebUI v0.13.3 today), not
+# whatever the moving :main / :latest tags point at this minute.
+docker pull "$(grep -oE 'ghcr.io/open-webui/open-webui[^[:space:]]+' docker-compose.yml)"
+docker pull "$(grep -oE 'searxng/searxng[^[:space:]]+' docker-compose.yml)"
 
 # Make scripts executable (in case clone didn't preserve the bit)
 chmod +x start.sh stop.sh agent.sh scripts/*.sh tests/*.sh
@@ -94,11 +108,12 @@ The detailed walkthrough below explains each step and lists alternate models.
 - `cuda` and `cmake` installed
 - `gcc`/`g++` installed
 - Docker installed (for Open WebUI + SearXNG); user in `docker` group
-- Python 3.10+ with `pip`
+- Python 3.11+ with `pip`
 
 ### Compiler toolchains for the eval suite (multi-language variants)
 
-The eval suite (v4: 137 base tasks / 291 effective test units — see
+The eval suite (v5.0: 71 scored units over 34 base tasks; the task library
+it draws on is larger, and `python3 evals/suite_stats.py` prints both — see
 [`evals/README.md`](../evals/README.md) for the current distribution)
 includes multi-language variant tasks
 (Python / Go / C / C++ / Rust / Zig). To run those variants, all six
@@ -106,7 +121,7 @@ toolchains need to be available:
 
 | Language | Used for | Install (Arch) |
 |---|---|---|
-| Python 3.10+ | always | `sudo pacman -S python` |
+| Python 3.11+ | always | `sudo pacman -S python` |
 | Go ≥1.21 | variant `b` | `mise use -g go@latest` (or `sudo pacman -S go`) |
 | C (gcc) | variant `c` | (already required for llama.cpp) |
 | C++ (g++) | variant `d` | (already required for llama.cpp) |
@@ -116,6 +131,17 @@ toolchains need to be available:
 If you skip a toolchain, the variant tasks for that language will fail at
 the build step — their pass/fail entries in the leaderboard will record
 as failures. The other variants of the same task still run normally.
+
+**The v5 harness provisions its own.** On the box that runs `evals/run_eval.py`
+/ `profile.py` / `benchmark_all.py` (the harness host), the pinned versions
+(zig 0.16.0, rustc 1.100.0 via rustup, go 1.23.3, a python 3.12 eval venv
+from `agents/requirements.lock`; `evals/toolchains.lock`) install themselves
+into `~/.local/opt/openbeast-eval`, sha256-checked, no sudo:
+`./scripts/eval-host.sh check | setup | env`, and a live run does `setup` by
+itself when something is missing (`--no-provision` turns that off). The
+table above is the v4 hand-install; gcc, g++ and git stay yours to install.
+Offline (`setup --from <ark drive or mirror>`) and the details:
+[SPARK_HYDRA.md F6](SPARK_HYDRA.md#f6-the-eval-harness-host-benchmarking-the-pair).
 
 ### Arch Linux quick install
 
@@ -136,12 +162,70 @@ sudo usermod -aG docker "$USER"   # log out/in or run `newgrp docker`
 on the user's box for Go and Node. Using mise for Zig avoids needing sudo
 and lets you switch versions easily.
 
-**Pin zig to 0.16, not `latest`.** The zig awareness pack
-(`agents/packs/zig-0.16.md`) and the zig escalation index were generated for
-zig 0.16.0, and each refuses to serve when the installed compiler is a
-different version, so `zig@latest` silently switches both off the day a new
-zig ships (0.17 also removed `@cImport`). The v4 zig rows were measured on
-0.16 too. Check with `python3 agents/lang/pack_context.py status`.
+### GPU in Docker: the NVIDIA Container Toolkit
+
+The default stack does not need it: llama-server runs on the host, and Open
+WebUI and SearXNG use no GPU. Anything that runs a model **in a container**
+does: `scripts/engine.sh use vllm` (its `docker run … --gpus all`,
+`scripts/engines/vllm.sh`) and engine benches such as
+[the Strata evaluation](reports/STRATA_INKLING_5090-2026-11-23.md). Without
+the toolkit `docker run --gpus …` fails, because Docker has only `runc`.
+
+**On the reference rig (RTX 5090, Arch, driver 615.78.08): installed
+2026-11-23** by Max. The exact commands:
+
+```bash
+sudo pacman -S --needed nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+docker run --rm --gpus all ubuntu:24.04 nvidia-smi    # the check: prints the 5090's table from inside a container
+```
+
+What the rig recorded (read back the same evening):
+
+- `/var/log/pacman.log`: `[2026-11-23T19:56:47-0800] Running 'pacman -S --needed
+  nvidia-container-toolkit'`, then `installed libnvidia-container (1.20.1-1)`
+  and `installed nvidia-container-toolkit (1.20.1-1)` at 19:56:48.
+- `nvidia-ctk runtime configure` added the runtime to `/etc/docker/daemon.json`
+  (its other keys, `bip`, `dns` and the log options, are unchanged):
+  `"runtimes": {"nvidia": {"args": [], "path": "nvidia-container-runtime"}}`.
+  The default runtime stays `runc`; `--gpus` selects the GPU per container.
+  `/var/run/cdi/nvidia.yaml` exists as well (19:56).
+- Docker restarted at 19:57:17 (`systemctl show docker -p ActiveEnterTimestamp`).
+  `docker info | grep -i runtimes` now reads `io.containerd.runc.v2 nvidia runc`.
+
+**Restarting Docker restarts the rig's containers.** Every running container
+stops: Open WebUI, SearXNG, the maps stack, and any bench or eval container.
+Those with `restart: unless-stopped` (Open WebUI and SearXNG in
+`docker-compose.yml`, the maps stack) come back by themselves; containers
+started with `--rm` or no restart policy do not. The model server is not in
+Docker, so serving and the gate carry on. On 2026-11-23 the restart cut a
+GPU bench container mid-run (`~/openbeast-runs/inkling-perf-2026-11-23/`),
+which then resumed by hand. Restart Docker only when no bench or eval
+container is running (`docker ps`), or accept re-running what it cuts.
+
+**Offline reinstall.** pacman keeps the packages it installed in its cache.
+On the rig (checked 2026-11-23):
+
+```text
+/var/cache/pacman/pkg/libnvidia-container-1.20.1-1-x86_64.pkg.tar.zst       (+ .sig)
+/var/cache/pacman/pkg/nvidia-container-toolkit-1.20.1-1-x86_64.pkg.tar.zst  (+ .sig)
+```
+
+With no network, install both from there (the toolkit depends on exactly
+`libnvidia-container=1.20.1`; the rest, `glibc libcap libelf libseccomp
+libtirpc`, are base packages already present):
+
+```bash
+sudo pacman -U /var/cache/pacman/pkg/libnvidia-container-1.20.1-1-x86_64.pkg.tar.zst \
+               /var/cache/pacman/pkg/nvidia-container-toolkit-1.20.1-1-x86_64.pkg.tar.zst
+sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
+```
+
+`paccache -r` or `pacman -Sc` would delete these files, so copy both (with
+their `.sig`) to the ark drive before cleaning the cache. Rollback:
+`sudo pacman -R nvidia-container-toolkit libnvidia-container`, remove the
+`runtimes` block from `/etc/docker/daemon.json`, restart Docker.
 
 ## 1. Build llama.cpp
 
@@ -191,6 +275,11 @@ default); substitute your chosen directory if different.
 ```bash
 mkdir -p weights
 ```
+
+**Any other model from a Hugging Face URL:**
+`scripts/weights-download.sh https://huggingface.co/ORG/REPO [DEST]`. Without
+DEST, it downloads to `~/Documents/weights/ORG/REPO`, verified and resumable.
+See [WEIGHTS_DOWNLOAD.md](WEIGHTS_DOWNLOAD.md).
 
 **Fetching a single weight, verified.** Every `hf download` below has a
 one-command equivalent that also checks the result against
@@ -471,8 +560,9 @@ the MCP command to the absolute path of `agents/mcp_server.py`.
 
 ### Open WebUI (browser chat interface)
 
-No manual pull: `docker-compose.yml` pins the image by digest and compose
-fetches it when the stack first starts.
+```bash
+docker pull "$(grep -oE 'ghcr.io/open-webui/open-webui[^[:space:]]+' docker-compose.yml)"   # the pinned digest: v0.13.3
+```
 
 Open WebUI is configured by `docker-compose.yml` (in repo root). It:
 - Runs in `network_mode: host` so it can reach `localhost:8080` (llama.cpp)
@@ -486,12 +576,24 @@ Open WebUI is configured by `docker-compose.yml` (in repo root). It:
   next turn. `WEBUI_BACKGROUND_TASKS=true` in `openbeast.conf` leaves
   WebUI's own switches alone — set it, restart, and re-enable them under
   Admin Settings → Interface
+- Has a global **random seed filter** installed by `configure-webui.sh`
+  (`agents/webui_functions/random_seed.py`, Admin Panel → Functions →
+  "Random Seed"): every chat request that names no seed gets a fresh random
+  one. Why: TensorFold (the spark-hydra server, DeepSeek or GLM) falls back to a *fixed*
+  seed when a request has none, so **Regenerate** returned the same answer
+  word for word. A seed set in the chat's Controls or the model's params
+  still wins (reproducible on purpose); on llama.cpp, which already
+  randomizes, nothing changes. Only WebUI chats pass through it — the eval
+  runner and other clients never do. `WEBUI_RANDOM_SEED=false` in
+  `openbeast.conf` switches it off at the next start
 
 Available at http://localhost:3000 once the stack is running.
 
 ### SearXNG (private web search backend)
 
-No manual pull either; the image is digest-pinned in `docker-compose.yml`.
+```bash
+docker pull "$(grep -oE 'searxng/searxng[^[:space:]]+' docker-compose.yml)"   # the pinned digest
+```
 
 Used by the `web_search` MCP tool. Our `docker-compose.yml` mounts
 `searxng/settings.yml` (committed in the repo) into the container with two
@@ -511,7 +613,12 @@ No other manual config needed — the mounted file handles the rest.
 
 ## 5. Start the stack
 
-The default model is **Qwen3.8 27B Uncensored MTP Q5_K_M** (JonathanColetti
+**On an RTX 5090 the default model is Inkling 2 Mini with SC117's
+abliteration, on Basalt** since 2026-11-25 (the stock pack from 2026-11-24, now the rollback): a second step after this one, [below](#rtx-5090-the-default-model-inkling-2-mini-sc117-abliterated-on-basalt).
+`./start.sh` with an unset conf always serves llama.cpp, so a fresh box has
+a working model before Basalt is built.
+
+The llama.cpp default model (the RTX 5090's fallback) is **Qwen3.8 27B Uncensored MTP Q5_K_M** (JonathanColetti
 abliteration) — 140 tok/s at the full native 262K context, the fastest
 uncensored config we ship and the roomiest default (4.76 GB free). It pins `-np 1` (an upstream MTP constraint: concurrent requests
 serialize), so a multi-user rig wants `serve-qwen38-27b-uncensored-q5.sh`
@@ -529,7 +636,7 @@ a 35B-A3B MoE when interactive speed matters more.
 This launches:
 1. **llama.cpp server** on port 8080 (OpenAI-compatible API)
 2. **Identity tool server** on port 3001 (`agents/openapi_tools.py` — serves the
-   18 tools as OpenAPI for Open WebUI, with per-user file shards, RBAC keys,
+   19 MCP tools plus the WebUI-only `weather` as OpenAPI for Open WebUI, with per-user file shards, RBAC keys,
    and an audit trail)
 3. **Open WebUI** on port 3000 (Docker container)
 4. **SearXNG** on port 8888 (Docker container, used by `web_search`)
@@ -554,15 +661,22 @@ On first run, `configure-webui.sh` populates Open WebUI with:
 - The system prompt (`system-prompt.md` + `system-prompt-tools.md`) written
   into each model's DB entry
 
-OpenCode runs separately from the stack:
+OpenCode runs separately from the stack, **from the checkout** (its
+`opencode.json` is project-local and starts the MCP server by the relative
+path `agents/mcp_server.py`):
 
 ```bash
-cd /path/to/openbeast  # the checkout: opencode.json (MCP tools + models) is project-local
+cd ~/openbeast         # the checkout, not another project directory
 opencode
 ```
 
-To use it from another project, copy the `provider` and `mcp` blocks into
-`~/.config/opencode/opencode.json` (see the OpenCode section above).
+That config talks straight to llama-server on `localhost:8080`: it does not go
+through the agent router or beast-hydra, and on a vLLM/TensorFold rig (any
+`INFERENCE_URL` other than `:8080`) it has nothing to talk to. There, add the
+provider entry `scripts/backends/use-model.sh` prints to
+`~/.config/opencode/opencode.json`. To work in another project directory,
+copy the `provider` and `mcp` blocks there with the absolute path of
+`agents/mcp_server.py` (§ OpenCode above).
 
 To stop everything:
 
@@ -570,10 +684,98 @@ To stop everything:
 ./stop.sh
 ```
 
+### RTX 5090: the default model, Inkling 2 Mini (SC117 abliterated) on Basalt
+
+The RTX 5090's shipped default since 2026-11-25 (Max;
+[DECISIONS-2026-11-25 §7](reports/DECISIONS-2026-11-25.md#7-sc117s-abliterated-inkling-2-mini-is-the-rtx-5090-default))
+is Inkling 2 Mini with SC117's abliteration, as a Basalt NVFP4-MX8 pack
+(`Inkling-2-Mini-SC117-abliterated-NVFP4-MX8.basalt`, sha256 `6eaa50d3…9b`,
+19.6 GB), served by Basalt v0.5.7 (`400b411c`) through
+`scripts/engines/basalt.sh` (profile `inkling2-mini-sc117`) with
+`AGENT_PROFILE=inkling-best`: the serve args and agent setup of board row
+`INK-T2-SC117` (51/71 scored, SCORE 75.3, single seed; the stock pack's
+INK-T2-STOCK 53/71, within noise), on a build of the pin **plus** the PR #632
+patch (`scripts/engines/patches/`, DECISIONS-2026-11-24 §11), which that row
+ran without ([ENGINES.md](ENGINES.md#basalt-the-rtx-5090-default)). From
+2026-11-24 to 2026-11-25 the default was Basalt's stock pack (profile
+`inkling2-mini-stock`, `jesdga/Inkling-2-Mini-Basalt` @ `c2afac3a`, sha256
+`28ec7072…1b99`): still a profile, the rollback below. Any other GPU keeps
+llama.cpp. What you need beyond §1-§5: the NVIDIA Container Toolkit
+([above](#gpu-in-docker-the-nvidia-container-toolkit); Basalt runs in a
+container with `--gpus`), ~60 GB of free disk while the pack is built (the
+release, a patched copy of it and the pack; ~20 GB after) and ~4 GB for the
+env image.
+
+**The default pack is built, not downloaded.** No Hub repo has it: it is
+Thinking Machines' release with SC117's 20 edited attention-output matrices
+written in (read as bytes from SC117's Strata pack), converted by Basalt's own
+converter. [`scripts/engines/inkling-sc117-pack.sh`](../scripts/engines/inkling-sc117-pack.sh)
+does it offline from three pinned downloads, checks every input and output
+hash, and prints `OK` with the pinned sum
+([report §2](reports/V5_INKLING2_MINI_SC117-2026-11-25.md#2-how-the-pack-was-made)).
+It needs `zstd` and docker (the converter runs in the Basalt env image,
+`--network none`).
+
+**Connected rig** (the build pulls the CUDA base image by digest and the
+Ubuntu packages from one archive snapshot; the compile itself runs with no
+network):
+
+```bash
+./scripts/engine.sh install basalt                          # source @ 400b411c, env image, offline compile; pins ENGINE_PIN_BASALT
+# the three inputs of the default pack (about 59 GB of downloads; keep them for a rebuild or delete them after)
+hf download thinkingmachines/Inkling-2-Mini --revision b85c3cfa615fc413cc9af3379f491b963f3b586a --local-dir /data/ink/release
+hf download strata-engine/Inkling-2-Mini-Strata Inkling-2-Mini-SQ-20.strata \
+  --revision 04996a1e2c45009b6a04f2af126cb6bdb2ba3587 --local-dir /data/ink/strata-official
+hf download SC117/Inkling-2-Mini-abliterated-Strata Inkling-2-Mini-SQ-20-abliterated.strata \
+  --revision ae324ac3676b97a3f67b475ffc2534c7521ff7c4 --local-dir /data/ink/sc117
+# the transplant and the conversion, offline (BASALT_TREE: a git checkout of basalt at 400b411c)
+./scripts/engines/inkling-sc117-pack.sh /data/ink/release /data/ink/strata-official/Inkling-2-Mini-SQ-20.strata \
+  /data/ink/sc117/Inkling-2-Mini-SQ-20-abliterated.strata BASALT_TREE /data/ink/work "$WEIGHTS_DIR"
+./scripts/verify-weights.sh --file Inkling-2-Mini-SC117-abliterated-NVFP4-MX8.basalt   # sha256 6eaa50d3… against scripts/weights.registry
+./scripts/engine.sh use default --dry-run                   # on a 5090: basalt, profile inkling2-mini-sc117, loopback :8080
+./scripts/engine.sh use default                             # writes openbeast.conf (backup kept), restarts a running stack
+# then one line in openbeast.conf, and a restart:
+#   AGENT_PROFILE=inkling-best
+./stop.sh && ./start.sh -d
+./scripts/backends/conformance.sh --url http://127.0.0.1:8080 --model inkling-2-mini   # key: LLAMA_API_KEY in the env
+```
+
+`use default` writes the profile this tree ships even when `openbeast.conf`
+names an older one (`ENGINE_PROFILE=inkling2-mini-stock` on a rig switched on
+2026-11-24); `use basalt` keeps the conf's profile; `--profile` wins over both.
+
+**Closed rig (offline)**, per [the offline rule](#9-offline--air-gapped-install):
+
+```bash
+# on a connected x86_64 box with docker and this checkout
+./scripts/engine.sh stage basalt --version v0.5.7 /media/usb/basalt      # bare repo of 400b411c + the env image (docker save) + MANIFEST (sha256, image id)
+# the three hf downloads above into /media/usb/ink/ (or build the pack there with the script and carry only the 19.6 GB pack)
+# on the rig
+OFFLINE=true ./scripts/engine.sh install basalt --from /media/usb/basalt  # commit vs the pin, Dockerfile hash vs this checkout, tarball sha256 + image id vs MANIFEST; compile with --network none
+./scripts/engines/inkling-sc117-pack.sh /media/usb/ink/release … "$WEIGHTS_DIR"   # as above; or copy a built pack:
+cp /media/usb/Inkling-2-Mini-SC117-abliterated-NVFP4-MX8.basalt "$WEIGHTS_DIR"/ && ./scripts/verify-weights.sh --file Inkling-2-Mini-SC117-abliterated-NVFP4-MX8.basalt
+./scripts/engine.sh use default        # then AGENT_PROFILE=inkling-best, ./stop.sh && ./start.sh -d, as above
+```
+
+**Back to the stock pack** (the 2026-11-24 default; the rollback):
+`./scripts/fetch-weight.sh Inkling-2-Mini-NVFP4-MX8.basalt` (19.6 GB, or the
+`hf download jesdga/Inkling-2-Mini-Basalt Inkling-2-Mini-NVFP4-MX8.basalt
+--revision c2afac3adb772e14d77b2ea2ac7068ad4460e932` copy offline), then
+`./scripts/engine.sh use basalt --profile inkling2-mini-stock` (the agent
+setup stays `inkling-best`).
+
+beast-ark also carries the Basalt source at the pin and the CUDA base image by
+digest (`agents/ark/catalog.toml` entry `basalt`; [BEAST_ARK.md](BEAST_ARK.md)).
+
+**Back to llama.cpp** (the fallback, offline, instant):
+`./scripts/engine.sh use llama --serve-script serve-qwen38-27b-uncensored-mtp-q5.sh`
+and `AGENT_PROFILE=qwen38-best`, then `./stop.sh && ./start.sh -d`. The full
+switch and rollback steps, with what to check: [MODELS.md](MODELS.md#switching-the-rtx-5090-to-its-default-and-back).
+
 ## 6. Verify
 
 - **Model server:** `curl http://localhost:8080/health` (returns `{"status":"ok"}`)
-- **Identity tool server:** `curl http://localhost:3001/openapi.json | python3 -m json.tool | head` (lists all 18 tools; `curl http://localhost:3001/health` for liveness)
+- **Identity tool server:** `curl http://localhost:3001/openapi.json | python3 -m json.tool | head` (lists all 20 tools, the 19 MCP ones plus `weather`; `curl http://localhost:3001/health` for liveness)
 - **Open WebUI:** open http://localhost:3000 in a browser
 - **SearXNG:** `curl 'http://localhost:8888/search?q=test&format=json' | head -c 200` (returns JSON results, not 403)
 - **beast-gate** (only with `EDGE_GATE=true`): `curl http://127.0.0.1:8090/gate/health`
@@ -582,12 +784,12 @@ To stop everything:
 - **beast-slot discovery** (only with the dashboard extension enabled —
   `./scripts/ext.sh enable dashboard`): `curl http://127.0.0.1:3002/api/slot`
   — read-only JSON: loaded model, slots busy/total, context, service health
-- **OpenCode:** run `opencode` from the OpenBeast checkout and select the `qwen*`/`heretic*` entry matching the model the rig is serving
+- **OpenCode:** run `opencode` from the OpenBeast checkout and select the `qwen*`/`heretic*` entry matching the model the rig is serving (llama-server on `:8080` only; on a vLLM/TensorFold rig use the `scripts/backends/use-model.sh` entry instead — see § 5)
 - **Tool use:** `configure-webui.sh` attaches the tool servers to every model row, so a new chat in Open WebUI has tools without a per-chat toggle; ask something that needs one ("search the web for…")
 - **Long-running agents:** ask the model to use `start_agent` to spawn a background agent, then `check_agent` to monitor
 - **Health check:** `./scripts/healthcheck.sh` (services + GPU VRAM + slot usage; `--restart` to auto-recover)
 - **Smoke test:** `./tests/test_smoke.sh` (end-to-end stack validation)
-- **Eval harness:** `python3 evals/run_eval.py` (v4 suite — 137 base tasks / 291 units; see evals/README.md)
+- **Eval harness:** `python3 evals/run_eval.py` (the v5.0 suite — 71 scored units over 34 base tasks; see evals/README.md)
 - **Log rotation (automatic on systemd):** `./start.sh` installs
   `openbeast-logrotate.timer` on every start where it is missing and a
   systemd `--user` manager is reachable — a daily user timer (no sudo) that
@@ -620,7 +822,11 @@ The script is idempotent (safe to re-run anytime) and stops for exactly two
 browser moments, telling you precisely what to do at each:
 
 1. **Tailnet login** — it prints a login URL; sign in with your SSO account.
-   The machine joins as `beast` (override with `TS_HOSTNAME=<name>`).
+   The machine joins as `beast` on a rig. Set `TS_HOSTNAME=<name>` in
+   `openbeast.conf` (or the env) to choose another; a DGX Spark has no default
+   and refuses to join until it is set. The name is used only for the first
+   join: an already-joined machine is never renamed (the script prints a note
+   with the `tailscale set --hostname=` command when the two differ).
 2. **Two one-time tailnet toggles** — on first setup it sends you to
    <https://login.tailscale.com/admin/dns> to enable **MagicDNS** and
    **HTTPS Certificates**, then waits and continues automatically once you
@@ -699,8 +905,10 @@ at a glance.
    `./stop.sh && ./start.sh`. If the stack was running when you ran
    `setup-tailscale.sh`, the script did **not** publish the WebUI (`:443`) —
    the running container still had auth off, which would have made every
-   tailnet device an admin. Re-run `./scripts/setup-tailscale.sh` after the
-   restart to publish it.
+   tailnet device an admin. It does not publish a stopped WebUI either: the
+   default admin password can only be checked (and retired) on a WebUI that
+   answers. Re-run `./scripts/setup-tailscale.sh` after the restart, once the
+   WebUI is up, to publish it.
 2. **Your admin account.** Any install that ever started with the default
    `WEBUI_AUTH=false` already has one: Open WebUI created `admin@localhost`
    as admin with its built-in password `admin`. The first auth-on start (and
@@ -774,7 +982,7 @@ Both machines are on your tailnet, so the promise is **"nothing leaves your
 tailnet"**, not "nothing leaves this machine".
 
 **On the client you need:** macOS or Linux (Windows/WSL2 untested), Tailscale
-installed and signed in to the same tailnet, Python 3.10+, and
+installed and signed in to the same tailnet, Python 3.11+, and
 [OpenCode](https://opencode.ai) (the script writes its config either way, but
 you need the binary to use it). The preflight checks all of these and changes
 nothing if any fail.
@@ -817,10 +1025,14 @@ git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
 ```
 
 Auto-detect only considers peers under **your own** MagicDNS suffix — a node
-named `beast` that was shared in from another tailnet is never picked. When a
-key is given and the host was auto-detected, the installer asks you to
-confirm the host on a terminal and refuses without one; pass `--host` to
-name the rig yourself. On a miss it lists the peers it can see. The install
+named `beast` that was shared in from another tailnet is never picked, and a
+`beast` owned by a *different* user of your tailnet (or a tagged node) is
+used only after you confirm it, key or no key. When a key is given and the
+host was auto-detected, the installer asks you to confirm the host on a
+terminal and refuses without one; pass `--host` to name the rig yourself.
+A key stored by an earlier install is re-sent only to the rig it was stored
+for: re-running with a different `--host` drops it (pass `--api-key-stdin`
+for the new rig). On a miss it lists the peers it can see. The install
 is hash-pinned and strict like the rig's (`OPENBEAST_PIP_STRICT=0` opts out,
 §3).
 
@@ -832,15 +1044,25 @@ slim checkout. Flags:
 | `--host <fqdn>` | rig's tailnet FQDN — for a second rig, or a `TS_HOSTNAME` other than `beast` |
 | `--api-key <key>` | the enrolled device key (or the rig's `LLAMA_API_KEY`); also read from `$OPENBEAST_API_KEY` |
 | `--api-key-stdin` | the same key, read from stdin (a hidden prompt on a terminal) so it never appears in `ps`; preferred on a shared machine |
+| `--name <rig>` | the name this rig gets in the client's rig registry (default: the key file's name minus `-gate`, else the host's first label) |
 | `--no-search` | skip search wiring entirely |
 | `--local-search` | run SearXNG in a container on the client instead of using the rig's `:8889` (needs Docker Desktop/Engine with the compose plugin) |
+| `--in-place` | run the client straight from this checkout instead of from its own copy: for developing OpenBeast itself (opencode then runs your working tree). Not usable on macOS from `~/Documents`, `~/Desktop`, `~/Downloads`, iCloud Drive or an external volume |
 | `--uninstall` | remove everything below |
 
 What lands on the client:
 
-- `~/.openbeast-client/` — a slim checkout (`agents/ skills/ scripts/ searxng/`)
-  and an isolated venv with the pinned deps. (Run from a full clone and it uses
-  that clone in place.)
+- `~/.openbeast-client/` — the client's own copy of the code
+  (`~/.openbeast-client/repo`: a slim checkout of `agents/ skills/ scripts/
+  searxng/`) and an isolated venv with the pinned deps. Run from a full clone,
+  the installer makes that copy from the clone's checked-out commit, with no
+  network; the clone itself is never what opencode runs, so it can live
+  anywhere, be moved or be deleted. Uncommitted changes are not copied
+  (`--in-place` runs the working tree instead). Why a copy: on macOS a
+  background process, which is what starts the tool server, is denied
+  `~/Documents` and similar folders, so a client run from a clone there loses
+  its tools with "Operation not permitted". A client installed before this
+  (2026-11-27) moves to the copy at its next `openbeast-client update`.
 - `~/.openbeast-client.env` (mode 0600) — the rig URLs and, if keyed, the bearer.
 - A **non-clobbering merge** into `~/.config/opencode/opencode.json`: the
   `openbeast-rig` provider pointed at `https://<rig>:8443/v1`, the full model
@@ -854,6 +1076,12 @@ What lands on the client:
 - `~/.local/bin/openbeast-client` — a symlink to `scripts/client.sh`. The
   directory is created if missing; when it isn't on `PATH` (the macOS default)
   the installer prints the exact line to add.
+- **autosync**, on by default: a launchd agent on macOS (a systemd user timer
+  on Linux) that checks the active rig every 30 s and re-syncs
+  `opencode.json` when the rig switches models, so the model name and context
+  window follow (`openbeast-client autosync status|run|uninstall`; log in
+  `~/.openbeast-client/autosync.log`). `OPENBEAST_AUTOSYNC=0` at install
+  skips it; then run `openbeast-client refresh-config` after a rig switches.
 
 Then `cd <any project> && opencode` and pick an `openbeast-rig` model — the
 model you pick must be the one the rig is actually serving.
@@ -865,10 +1093,21 @@ openbeast-client status        # client doctor + live beast-slot view
 openbeast-client agent "task"  # CLI agent HERE, thinking on the rig
 openbeast-client search up     # local SearXNG lifecycle (--local-search only)
 openbeast-client update        # refresh the checkout + pinned deps
+openbeast-client rigs          # every registered rig, reachable or not; * = active
+openbeast-client use <rig>     # switch the active rig (env + opencode.json, atomically)
+openbeast-client refresh-config   # re-sync the OpenCode model catalog from the active rig
+openbeast-client autosync status  # the 30 s model follower (install|uninstall|status|run)
 openbeast-client uninstall
 ```
 
-`status` is the one to run first: it checks the env file, venv imports,
+**Several rigs** (e.g. `beast` and the `spark-hydra` pair): install once, then
+`openbeast-client rig add <name> --host <fqdn> --api-key-stdin < <key file>`
+per extra rig and `openbeast-client use <name>` to switch. OpenCode gets one
+provider per rig (`openbeast-<name>`) next to `openbeast-rig`, the active one,
+so each session can pick its rig. The full flow, and the end-to-end check
+`scripts/client-e2e.sh`: [SPARK_HYDRA.md § F2](SPARK_HYDRA.md#f2-client-mode-one-or-several-rigs).
+
+`status` is the one to run first: it checks the env file, venv packages,
 tailscale, the rig's `/health` **and** `/v1/models` (so a wrong or revoked key
 surfaces here instead of mid-conversation), beast-slot discovery, search, and
 the OpenCode wiring.
@@ -880,7 +1119,7 @@ the OpenCode wiring.
 ```
 
 Removes `~/.openbeast-client`, the env file, the symlink, our `opencode.json`
-entries, and the local SearXNG container if there is one.
+entries, the autosync job, and the local SearXNG container if there is one.
 
 The full architecture — the discovery contract, what `:8443` grants and
 doesn't, beast-gate's controls, keyed mode, and the two-machine verification
@@ -891,7 +1130,7 @@ walkthrough — is in **[BEAST_SLOT.md](BEAST_SLOT.md)**.
 `~/.local/bin` is not on `PATH` by default on macOS. The full path always works:
 
 ```bash
-<checkout>/scripts/client.sh status
+~/.openbeast-client/repo/scripts/client.sh status
 ```
 
 To get the short command, add the directory (the installer prints the exact
@@ -926,6 +1165,12 @@ checkout. Full detail: [BEAST_SLOT.md](BEAST_SLOT.md).
 
 ## 9. Offline / air-gapped install
 
+> **Lost the internet on an installed rig (power outage, router dark)?** That
+> is not this section: see [BEAST_ISLAND.md](BEAST_ISLAND.md). The stack
+> handles it at runtime by itself (`ISLAND=auto`), or start it with
+> `./start.sh -d --offline`. This section is for a box that **never** has
+> internet.
+
 An installed rig serves fine with no internet at all. What needs the network
 is a **first install** — exactly four fetches: the llama.cpp source, the
 Python wheels, the ~20 GB weight, and the two container images — and an
@@ -936,7 +1181,10 @@ and being misdiagnosed as something local.
 
 **On a connected box** (a machine with this repo checked out and a
 `llama.cpp/` clone inside it — a GPU is not needed; without the clone the
-source component is skipped and the manifest says so):
+source component is skipped and the manifest says so). It must be the **same
+OS, CPU architecture and Python version as the rig**: the wheels and saved
+images are the build box's own, so `install` refuses a bundle built on, say,
+a Mac or an aarch64 Spark for an x86_64 rig — before placing anything.
 
 ```bash
 ./scripts/bundle.sh build /media/usb/openbeast --with-weights   # or --with-weights=A.gguf,B.gguf; --no-images / --no-source
@@ -967,8 +1215,11 @@ file — the same one-line-per-key format ssh and git use — which `sign`
 prints the exact command for. Wheels and weights have a second line of
 defence that lives in the repo, not the bundle (`requirements.lock`,
 `weights.registry`: a swapped wheel or weight is refused even by a rebuilt
-manifest); images and the source tarball have **only** the signature, which
-is why it exists.
+manifest) — for weights, only those with a real (non-`PENDING`) registry
+row. An unpinned weight has only the manifest, so an **unsigned** bundle
+will not place one, nor replace an existing file, unless you pass
+`--allow-unpinned-weights`. Images and the source tarball have **only** the
+signature, which is why it exists.
 
 **On the air-gapped rig** (clone or copy the repo there first):
 

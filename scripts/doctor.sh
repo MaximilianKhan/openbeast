@@ -32,6 +32,7 @@ source "$SCRIPT_DIR/lib/proc.sh"      # ob_recorded_pid_ours — is the supervis
 # ob_curl_hdr / ob_curl_bearer: every credential header below rides curl's
 # --config on fd 3, never argv (`ps` / /proc/*/cmdline are world-readable).
 source "$SCRIPT_DIR/lib/curl_auth.sh"
+source "$SCRIPT_DIR/lib/pyversions.sh"  # ob_py_versions — every pin's version in one python3
 # Where the core services answer (they bind BIND_HOST). It used to be a
 # private copy of the mapping with no `::` arm, so BIND_HOST=:: built
 # http://:::8080 and every service read as down on a healthy stack.
@@ -73,6 +74,15 @@ probe() { # probe <url> <match> [key]
   ob_curl_bearer "${3:-}" -s --max-time 4 "$1" 2>/dev/null | grep -qi "$2"
 }
 
+# _serve_target <port> <serve-status-text> — the proxy target `tailscale
+# serve status` lists under https://<name>:<port> ("unix:/path" or
+# "http://127.0.0.1:3003"), or nothing.
+_serve_target() {
+  awk -v p=":$1" '
+    /^https?:\/\// { cur = (substr($1, length($1) - length(p) + 1) == p); next }
+    cur && / proxy / { sub(/.* proxy /, ""); print; exit }' <<< "$2"
+}
+
 # ── Hardware ────────────────────────────────────────────────────────────────
 section "Hardware"
 if command -v ob_detect_gpu >/dev/null 2>&1; then
@@ -82,8 +92,26 @@ if command -v ob_detect_gpu >/dev/null 2>&1; then
   elif [[ "${OB_VRAM_MB:-0}" -gt 0 && "${OB_VRAM_MB:-0}" -lt "${OB_VRAM_FLOOR_MB:-22000}" ]]; then
     fail "GPU has ${OB_VRAM_MB} MiB VRAM — below the 24 GB floor" \
          "OpenBeast targets 3090 / 4090 class and up (docs/HARDWARE_PROFILES.md)"
+  elif [[ "${OB_GPU_UNIFIED:-0}" -eq 1 ]]; then
+    pass "GPU: ${OB_GPU_NAME:-unknown} (unified memory — ${OB_VRAM_MB:-?} MiB of host RAM, shared with the OS)"
   else
     pass "GPU: ${OB_GPU_NAME:-unknown} (${OB_VRAM_MB:-?} MiB VRAM)"
+  fi
+fi
+# UNIFIED memory (GB10): nvidia-smi's memory.used/total are [N/A], so the
+# VRAM-headroom rule below has nothing to read — and MemAvailable is the
+# number that matters: the model's allocations come out of the same RAM,
+# and a GB10 that runs out freezes rather than failing an allocation.
+if [[ "${OB_GPU_UNIFIED:-0}" -eq 1 ]] && command -v ob_meminfo_available_mb >/dev/null 2>&1; then
+  _avail_mb="$(ob_meminfo_available_mb)"
+  _resv_mb=$(( ${MEM_RESERVE_GB:-3} * 1024 ))
+  if [[ "$_avail_mb" -le 0 ]]; then
+    warn "unified memory: MemAvailable unreadable — headroom unknown" "cat /proc/meminfo"
+  elif [[ "$_avail_mb" -lt "$_resv_mb" ]]; then
+    warn "unified memory headroom: only ${_avail_mb} MiB available (MEM_RESERVE_GB=${MEM_RESERVE_GB:-3})" \
+         "the model and the stack share this RAM — stop heavy jobs, or shrink the model's pool (KV_POOL_GIB / MEMORY_RESERVE_GIB)"
+  else
+    pass "unified memory headroom: ${_avail_mb} MiB available beside the model (reserve ${MEM_RESERVE_GB:-3} GiB)"
   fi
 fi
 if command -v nvidia-smi >/dev/null 2>&1; then
@@ -187,6 +215,22 @@ if ! ob_bind_is_loopback "$BIND_HOST"; then
            "./scripts/setup-mcpo-keys.sh (or BIND_HOST=127.0.0.1)"
     fi
   fi
+  # conf.sh keeps login on for a network bind unless ALLOW_OPEN_WEBUI=true,
+  # so WEBUI_AUTH still false here means the open WebUI was acknowledged.
+  if [[ "${WEBUI_AUTH:-false}" != "true" ]]; then
+    warn "the WebUI has NO login on a network bind (ALLOW_OPEN_WEBUI=true acknowledges it) — everyone on that network is admin, with bash" \
+         "set WEBUI_AUTH=true (or BIND_HOST=127.0.0.1), then ./stop.sh && ./start.sh -d"
+  fi
+  # serve.sh refuses this one at launch unless acknowledged.
+  if [[ -z "${LLAMA_API_KEY:-}" ]]; then
+    if [[ "${ALLOW_OPEN_INFERENCE:-false}" == "true" ]]; then
+      warn "llama-server keyless on a network bind (ALLOW_OPEN_INFERENCE=true acknowledges it) — past beast-gate and its audit" \
+           "set LLAMA_API_KEY, or BIND_HOST=127.0.0.1 behind beast-gate (EDGE_GATE=true)"
+    else
+      fail "llama-server keyless on a network bind — serve.sh refuses to start it" \
+           "BIND_HOST=127.0.0.1 (remote: scripts/setup-tailscale.sh), set LLAMA_API_KEY, or ALLOW_OPEN_INFERENCE=true"
+    fi
+  fi
 else
   pass "bind host is loopback-scoped ($BIND_HOST)"
 fi
@@ -281,10 +325,19 @@ fi
 # ── Pinned dependencies ─────────────────────────────────────────────────────
 section "Pinned dependencies"
 if command -v python3 >/dev/null 2>&1; then
+  # Every pin's installed version from ONE interpreter (lib/pyversions.sh),
+  # not a `pip show` per pin: that was over half of doctor's run time.
+  _pins=(); _pinv=()
   while IFS='==' read -r pkg ver; do
     [[ -z "$pkg" || "$pkg" == \#* ]] && continue
-    ver="${ver#=}"
-    have=$(python3 -m pip show "$pkg" 2>/dev/null | awk '/^Version:/{print $2}')
+    _pins+=("$pkg"); _pinv+=("${ver#=}")
+  done < <(grep -vE '^\s*#|^\s*$' "$REPO_DIR/agents/requirements.txt")
+  _haves=()
+  if ((${#_pins[@]})); then
+    while read -r _ _h; do _haves+=("${_h:-}"); done < <(ob_py_versions "${_pins[@]}" || true)
+  fi
+  for _i in ${_pins[@]+"${!_pins[@]}"}; do
+    pkg="${_pins[_i]}"; ver="${_pinv[_i]}"; have="${_haves[_i]:-}"
     if [[ -z "$have" ]]; then
       # pydeps.sh, not a bare `pip install --user -r …`: that fails with
       # externally-managed-environment on Arch / Debian 12+ / Ubuntu 24.04
@@ -295,7 +348,8 @@ if command -v python3 >/dev/null 2>&1; then
     else
       pass "$pkg==$ver"
     fi
-  done < <(grep -vE '^\s*#|^\s*$' "$REPO_DIR/agents/requirements.txt")
+  done
+  unset _pins _pinv _haves _h _i
   # The four lines above are the DIRECT pins. The closure is 43 packages, and
   # the lock is what pins their content — so the question this row answers is
   # not "is the lock pretty" but "could this box reinstall exactly what it is
@@ -314,6 +368,16 @@ if command -v python3 >/dev/null 2>&1; then
   fi
 fi
 
+# >>> engine-plane hook (docs/ENGINES.md) — which engine, which build, which
+# pin, for this host class. Read-only, no network (scripts/engine.sh list).
+if [[ -f "$SCRIPT_DIR/lib/engine.sh" ]]; then
+  section "Inference engine"
+  # shellcheck source=lib/engine.sh
+  source "$SCRIPT_DIR/lib/engine.sh"
+  ob_engine_doctor_rows
+fi
+# <<< engine-plane hook
+
 # ── Remote skills ───────────────────────────────────────────────────────────
 # A skill body goes straight into a sub-agent's system prompt, so an imported
 # one is pinned by hash like any other supply-chain input. This row is the
@@ -322,6 +386,11 @@ section "Remote skills"
 _sk="$("$SCRIPT_DIR/skill-import.sh" verify --quiet 2>&1)" && _sk_rc=0 || _sk_rc=$?
 if [[ $_sk_rc -eq 0 ]]; then
   pass "$(tail -1 <<< "$_sk" | sed 's/^remote skills: OK — /remote skills: /')"
+elif [[ $_sk_rc -eq 3 ]] && grep -q '^skills: .* with no provenance' <<< "$_sk"; then
+  # 3, but not a hash mismatch: a SKILL.md that neither the ledger nor the
+  # in-house list accounts for (or that is misnamed / hidden).
+  fail "$(grep -m1 '^skills: .* with no provenance' <<< "$_sk")" \
+       "./scripts/skill-import.sh verify   (each ✗ line says what to do with that directory)"
 elif [[ $_sk_rc -eq 3 ]]; then
   # 3 is the gate's own "no": it looked, and a row and the files disagree.
   fail "an imported skill no longer matches skills/REMOTE_PROVENANCE.md" \
@@ -333,9 +402,9 @@ else
        "./scripts/skill-import.sh verify"
 fi
 # The global skills dir is outside that gate: a SKILL.md copied there by hand
-# has no pin, no scan and no ledger row, and skill() serves it labelled
-# [global, unverified] (R9-05). Symlinks back into <repo>/skills/ are gated;
-# a name the repo also ships is shadowed (repo wins) and never served.
+# has no pin, no scan and no ledger row, and skill() serves it all the same
+# (R9-05). Symlinks back into <repo>/skills/ are gated; a name the repo also
+# ships is shadowed (repo wins) and never served.
 _gsk_dir="$HOME/.local/share/local-llm-skills"
 if [[ -d "$_gsk_dir" ]]; then
   _gsk_repo="$(realpath "$REPO_DIR/skills" 2>/dev/null || echo "$REPO_DIR/skills")"
@@ -348,7 +417,7 @@ if [[ -d "$_gsk_dir" ]]; then
     [[ "$_gsk_real" == "$_gsk_repo"/* ]] || _gsk_bad+=("$_gsk_name")
   done
   if (( ${#_gsk_bad[@]} )); then
-    warn "global skills outside the import gate, served as [global, unverified]: ${_gsk_bad[*]}" \
+    warn "global skills outside the import gate (no pin, no scan): ${_gsk_bad[*]}" \
          "import them with ./scripts/skill-import.sh, or remove them from $_gsk_dir"
   else
     pass "global skills: none outside the import gate"
@@ -411,9 +480,18 @@ down_row() { [[ $STACK_DOWN -eq 1 ]] || warn "$1" "$2"; }
 if [[ "$INFERENCE_BACKEND" != "llama" ]] || ! ob_inference_managed; then
   # Someone else's server (vLLM / TensorFold across the Sparks, or a
   # llama-server on another box): ask it the question ITS /health answers.
+  # Managed = start.sh launches it (scripts/engine.sh use; Basalt on the RTX
+  # 5090): the stack runs it, so the rows must not say someone else does.
+  if ob_inference_managed; then
+    _be_who="managed by this stack$(_p="$(ob_engine_conf_get ENGINE_PROFILE 2>/dev/null || true)"; [[ -n "$_p" ]] && echo ", ENGINE_PROFILE=$_p")"
+    _be_fix="scripts/engine.sh status; ./stop.sh && ./start.sh -d (start.sh launches it: scripts/engine-serve.sh)"
+  else
+    _be_who="not managed here"
+    _be_fix="start it where it runs (docs/DGX_SPARK_PLAN.md) — healthcheck --restart will not"
+  fi
   if ob_backend_ready "$INFERENCE_URL"; then
     _be_models="$(ob_backend_models "$INFERENCE_URL" 2>/dev/null | head -3 | tr '\n' ' ' || true)"
-    pass "$(ob_backend_label) at $INFERENCE_URL (not managed here) — serving: ${_be_models:-? (/v1/models unreadable — LLAMA_API_KEY?)}"
+    pass "$(ob_backend_label) at $INFERENCE_URL ($_be_who) — serving: ${_be_models:-? (/v1/models unreadable — LLAMA_API_KEY?)}"
     # The id the agent runner sends (OPENBEAST_INFERENCE_MODEL). llama
     # ignores ids; vLLM 404s an unlisted one unless validation is skipped.
     if [[ "$INFERENCE_BACKEND" != "llama" ]]; then
@@ -428,21 +506,38 @@ if [[ "$INFERENCE_BACKEND" != "llama" ]] || ! ob_inference_managed; then
       fi
     fi
   else
-    warn "$(ob_backend_label) at $INFERENCE_URL is not ready (INFERENCE_BACKEND=$INFERENCE_BACKEND, not managed here)" \
-         "start it where it runs (docs/DGX_SPARK_PLAN.md) — healthcheck --restart will not"
+    if [[ $STACK_DOWN -eq 1 ]] && ob_inference_managed; then
+      :   # the "Stack is not running" line above already said it
+    else
+      warn "$(ob_backend_label) at $INFERENCE_URL is not ready (INFERENCE_BACKEND=$INFERENCE_BACKEND, $_be_who)" "$_be_fix"
+    fi
   fi
-  # vLLM leaves /health and /metrics open even with --api-key, and TensorFold
-  # has no key at all: the network path to it IS the access control.
+  # vLLM leaves /health and /metrics open even with --api-key, and native
+  # TensorFold leaves /health open with --api-key-file: the key guards /v1,
+  # the network path guards the rest.
   # ob_url_host strips an IPv6 literal's brackets: http://[::1]:8000 is
   # loopback (the old split left "::1]" and warned about it).
   _be_host="$(ob_url_host "$INFERENCE_URL")"
   if ! ob_bind_is_loopback "$_be_host"; then
-    if [[ "$INFERENCE_BACKEND" == "tensorfold" ]]; then
-      warn "TensorFold has no API key: anyone who can reach $INFERENCE_URL can use it" \
-           "bind it to the ConnectX / tailnet address only and firewall it (docs/DGX_SPARK_PLAN.md § Security)"
+    # Engine-aware: the CONTAINER TensorFold engine (the GLM recipe's 0.x)
+    # has no auth at all — TENSORFOLD_API_KEY_FILE is read by the native
+    # engine (>= 1.0) only, so advising it there produced a green board and
+    # an open port (supply review).
+    case "$INFERENCE_BACKEND" in
+      tensorfold) _be_keyfix="container TensorFold has NO auth: bind it to 127.0.0.1 and reach it through beast-gate, or firewall the port to this rig; only native TensorFold >= 1.0 enforces TENSORFOLD_API_KEY_FILE (then set the same LLAMA_API_KEY here)" ;;
+      vllm)       _be_keyfix="start vLLM with an API key (spark.env VLLM_API_KEY_FILE) and set the same LLAMA_API_KEY here" ;;
+      *)          _be_keyfix="start that llama-server with --api-key and set the same LLAMA_API_KEY here" ;;
+    esac
+    # Ask the SERVER, not the rig's config: a key set here proves nothing
+    # about a server that ignores it. A keyless GET /v1/models that answers
+    # 200 is an open /v1, whatever LLAMA_API_KEY holds.
+    _be_open="$(curl -s -o /dev/null -m 4 -w '%{http_code}' "${INFERENCE_URL%/}/v1/models" 2>/dev/null || true)"
+    if [[ "$_be_open" == "200" ]]; then
+      warn "the inference server at $INFERENCE_URL serves /v1 WITHOUT a key (keyless /v1/models → 200)$([[ -n "${LLAMA_API_KEY:-}" ]] && echo ' — LLAMA_API_KEY is set here, but the server does not enforce it')" \
+           "$_be_keyfix"
     elif [[ -z "${LLAMA_API_KEY:-}" ]]; then
       warn "the inference server at $INFERENCE_URL is reached without a key (LLAMA_API_KEY empty)" \
-           "start vLLM with an API key (spark.env VLLM_API_KEY_FILE) and set the same LLAMA_API_KEY here"
+           "$_be_keyfix"
     fi
   fi
 elif [[ $_llama_up -eq 1 ]]; then
@@ -524,12 +619,46 @@ if [[ $_WEBUI_UP -eq 1 && -x "$SCRIPT_DIR/configure-webui.sh" ]]; then
     1) fail "WebUI login is on, but admin@localhost still signs in with upstream's default password" \
             "./scripts/configure-webui.sh --secure-default-admin (or change it in Settings → Account)" ;;
     0) pass "built-in WebUI admin does not accept the upstream default password" ;;
+    5) warn "could not verify that admin@localhost no longer accepts upstream's default password (the sign-in was rate-limited, erroring or timed out)" \
+            "rerun doctor in a few minutes (the sign-in limit is 15 per 3 min)" ;;
     # 4: login is off (or not reported) on the running WebUI, so the probe
     # did not sign in at all — no row, never a green check it did not earn.
     # 3/other: WebUI went away between the two probes — the row above covers it.
     *) ;;
   esac
 fi
+# The DNS-rebinding Host guard (scripts/webui/sitecustomize.py), asked of the
+# RUNNING container: it fails open on purpose, so an image bump that breaks
+# or skips it used to leave a loopback rig with login off — every visitor
+# admin, with bash — open to a rebound page while this report stayed green.
+if [[ $_WEBUI_UP -eq 1 ]]; then
+  case "$(ob_webui_host_guard "http://$HEALTH_HOST:3000")" in
+    ok)   pass "Open WebUI refuses a rebound Host (DNS-rebinding guard live)" ;;
+    open) fail "Open WebUI SERVES a request for an unknown Host — its DNS-rebinding guard is not installed (login is off: a rebound web page gets admin, with bash)" \
+               "docker logs open-webui 2>&1 | grep 'Host allowlist'; if an image bump did it: ./scripts/update.sh --images rolls a failing image back, or pin the previous open-webui digest in docker-compose.yml (git log -p docker-compose.yml) and docker compose up -d" ;;
+    # off: OPENBEAST_WEBUI_HOSTS='*' (login on / opened on purpose) — no
+    # allowlist to check. down: went away between probes; the row above covers it.
+    *) ;;
+  esac
+fi
+
+# Running containers on the HOST network (names, space-separated). Each one
+# is a 127.0.0.1 peer to beast-chat and beast-artifact, so in
+# LOGIN_FROM=loopback mode code inside it can claim any tailnet login.
+# Computed once, on first use.
+_HOSTNET_DONE=0
+_HOSTNET=""
+_hostnet_containers() {
+  if [[ $_HOSTNET_DONE -eq 0 ]]; then
+    _HOSTNET_DONE=1
+    if command -v docker >/dev/null 2>&1; then
+      _HOSTNET="$(docker ps -q 2>/dev/null | xargs docker inspect \
+          -f '{{.Name}} {{.HostConfig.NetworkMode}}' 2>/dev/null \
+          | awk '$2 == "host" {sub(/^\//, "", $1); printf "%s ", $1}')"
+      _HOSTNET="${_HOSTNET% }"
+    fi
+  fi
+}
 
 # beast-chat (opt-in) — the operator console for the rig's own sessions.
 # Only checked when enabled: a row for a service nobody asked for is noise.
@@ -561,6 +690,18 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
     if [[ "$_chat_reads" == "any-identified" || "$_chat_reads" == "open" ]]; then
       warn "beast-chat has no operator allowlist — every tailnet login can read every session" \
            "set CHAT_OPERATORS=<your-tailnet-login> in openbeast.conf (writes still need a chat-scoped key)"
+    fi
+    # login_from=loopback trusts Tailscale-User-Login from ANY loopback peer,
+    # and a network_mode: host container IS a loopback peer: code running in
+    # one (an Open WebUI Function, a third-party backend image) can name the
+    # operator's login and read every transcript. Name the containers.
+    _chat_lf=$(echo "$_chat" | grep -o '"login_from":"[a-z]*"' | cut -d'"' -f4)
+    if [[ "$_chat_lf" == "loopback" ]]; then
+      _hostnet_containers
+      if [[ -n "$_HOSTNET" ]]; then
+        warn "beast-chat trusts a login header from any loopback peer, and host-network containers are running ($_HOSTNET) — code inside one can read every session" \
+             "set CHAT_LOGIN_FROM=unix in openbeast.conf, ./stop.sh && ./start.sh -d, then ./scripts/setup-tailscale.sh --publish-chat (docs/BEAST_CHAT.md)"
+      fi
     fi
   else
     down_row "beast-chat enabled but not responding (:${CHAT_PORT:-3003})" \
@@ -620,6 +761,17 @@ if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
            "http://$HEALTH_HOST:${ARTIFACT_PORT:-3004}/api/artifacts/health" 2>/dev/null)
   if [[ -n "$_art" ]]; then
     _nart=$(echo "$_art" | grep -o '"artifacts":[0-9]*' | cut -d: -f2)
+    # Same exposure as beast-chat's: in loopback mode a host-network
+    # container can name an operator (or admin) login and read every private
+    # page. Only from the detailed (token) body; an older server omits it.
+    _art_lf=$(echo "$_art" | grep -o '"login_from":"[a-z]*"' | cut -d'"' -f4)
+    if [[ "$_art_lf" == "loopback" ]]; then
+      _hostnet_containers
+      if [[ -n "$_HOSTNET" ]]; then
+        warn "beast-artifact trusts a login header from any loopback peer, and host-network containers are running ($_HOSTNET) — code inside one can read every private page" \
+             "set ARTIFACT_LOGIN_FROM=unix in openbeast.conf, ./stop.sh && ./start.sh -d, then ./scripts/setup-tailscale.sh --publish-artifact (docs/BEAST_ARTIFACT.md)"
+      fi
+    fi
     if [[ -n "$_nart" ]]; then
       pass "beast-artifact (:${ARTIFACT_PORT:-3004}) — ${_nart} published page(s)"
     else
@@ -678,6 +830,19 @@ if [[ -n "${CHAT_NOTIFY_URL:-}" || $_ntfy_on -eq 1 ]]; then
   else
     _n_origin="${BASH_REMATCH[1]}"
     pass "notifications configured → $_n_origin (on: ${CHAT_NOTIFY_ON:-failed,lost,done})"
+    # beast-chat drops a word that is not a terminal state, so a typo
+    # (CHAT_NOTIFY_ON=error) silenced every alert behind the pass above.
+    _n_bad=() _n_good=0
+    IFS=',' read -r -a _n_words <<< "${CHAT_NOTIFY_ON:-failed,lost,done}"
+    for _n_w in ${_n_words[@]+"${_n_words[@]}"}; do
+      _n_w="$(tr '[:upper:]' '[:lower:]' <<< "$_n_w" | tr -d '[:space:]')"
+      [[ -z "$_n_w" ]] && continue
+      case "$_n_w" in done|failed|stopped|lost) _n_good=1 ;; *) _n_bad+=("$_n_w") ;; esac
+    done
+    if [[ ${#_n_bad[@]} -gt 0 || $_n_good -eq 0 ]]; then
+      warn "CHAT_NOTIFY_ON: $( [[ ${#_n_bad[@]} -gt 0 ]] && printf "'%s' is not a session state; " "${_n_bad[@]}")$( [[ $_n_good -eq 0 ]] && echo "NO session state will notify" || echo "it is ignored")" \
+           "CHAT_NOTIFY_ON takes done, failed, stopped, lost (comma-separated), e.g. CHAT_NOTIFY_ON=failed,lost,done"
+    fi
     if [[ "${BEAST_CHAT:-false}" != "true" ]]; then
       warn "CHAT_NOTIFY_URL is set but BEAST_CHAT is off — beast-chat is what sends notifications" \
            "set BEAST_CHAT=true in openbeast.conf, then ./stop.sh && ./start.sh -d"
@@ -767,8 +932,16 @@ for nid, n in (s.get("nodes") or {}).items():
         print("warn|node %s: public address %s (allow_public)|keep nodes on loopback, RFC1918 or the tailnet" % (nid, host))
     else:
         print("pass|node %s: %s address, key %s|" % (nid, cls, n.get("key")))
-    if cls != "loopback" and n.get("key") == "none" and n.get("engine") != "tensorfold":
-        print("warn|node %s: remote node with no key|set key_file (0600) in hydra.toml" % nid)
+    if cls != "loopback" and n.get("key") == "none":
+        print("warn|node %s: remote node with no key|%s" % (nid,
+              "container TensorFold has no auth: bind it to loopback or firewall it to the rig; native TensorFold >= 1.0: set key_file (0600) in hydra.toml"
+              if n.get("engine") == "tensorfold" else "set key_file (0600) in hydra.toml"))
+    elif cls != "loopback" and n.get("engine") == "tensorfold":
+        # hydra holds a key, but only the native engine enforces one: the key
+        # proves nothing about the server (supply review). Ask the server:
+        # curl -s -o /dev/null -w '%{http_code}' <node url>/v1/models  → want 401
+        print("pass|node %s: tensorfold with a key — only native TensorFold >= 1.0 enforces it; "
+              "the container engine has none (check: a keyless /v1/models must answer 401)|" % nid)
 for did, d in (s.get("deployments") or {}).items():
     st = d.get("state")
     if st == "READY":
@@ -898,20 +1071,6 @@ fi
 # documented default on a personal tailnet — WARN, never FAIL.
 if command -v tailscale >/dev/null 2>&1; then
   section "Tailnet surfaces"
-  # Minimum version: TS-2026-007/-008 (Serve/Services loopback exposure + a
-  # DoS, fixed in 1.98.9). OpenBeast publishes everything through Serve onto
-  # loopback binds, so an older client is exactly the exposed shape
-  # (dependency audit 2026-10-27, R10-11). `sort -V` compares the versions.
-  _ts_min="1.98.9"
-  _ts_ver="$(tailscale version 2>/dev/null | head -1 | grep -oE '^[0-9]+(\.[0-9]+)+' || true)"
-  if [[ -z "$_ts_ver" ]]; then
-    info "tailscale version unknown (could not parse \`tailscale version\`)"
-  elif [[ "$(printf '%s\n%s\n' "$_ts_min" "$_ts_ver" | sort -V | head -1)" != "$_ts_min" ]]; then
-    warn "tailscale $_ts_ver is older than $_ts_min (Serve loopback-exposure fixes, TS-2026-007/-008)" \
-         "upgrade tailscale from your distro's packages (e.g. sudo pacman -Syu tailscale / sudo apt upgrade tailscale)"
-  else
-    pass "tailscale $_ts_ver (≥ $_ts_min, the Serve loopback-exposure fixes)"
-  fi
   _serve=$(tailscale serve status 2>/dev/null || true)
   if [[ -n "$_serve" ]]; then
     # Print the mappings as tailscale reports them. Don't grep per-port: the
@@ -928,7 +1087,31 @@ if command -v tailscale >/dev/null 2>&1; then
     # stop it, start a new one), so a mount pointing at a dead process is
     # worth more than a shrug: the operator thinks they can reach their rig.
     if echo "$_serve" | grep -qE ':8445[^0-9]'; then
-      if curl -s --max-time 4 "http://$CHAT_HEALTH_HOST:${CHAT_PORT:-3003}/api/chat/health" 2>/dev/null | grep -qi '"status":"ok"'; then
+      # The mount TARGET must match where the server honours logins. Two
+      # manual steps switch CHAT_LOGIN_FROM (restart, then --publish-chat);
+      # skip the second and either every phone login is the flat 404 (unix
+      # server behind a TCP mount) or the console 502s (TCP server behind a
+      # stale unix mount) — while a TCP liveness probe still passed.
+      _chat_tgt="$(_serve_target 8445 "$_serve")"
+      _chat_mode="${_chat_lf:-${CHAT_LOGIN_FROM:-loopback}}"
+      _chat_refix="./scripts/setup-tailscale.sh --publish-chat (re-points :8445 at what beast-chat runs now)"
+      if [[ "$_chat_tgt" == unix:* && "$_chat_mode" != unix ]]; then
+        fail ":8445 proxies to $_chat_tgt but beast-chat runs CHAT_LOGIN_FROM=loopback — the console 502s from the phone" "$_chat_refix"
+      elif [[ "$_chat_tgt" != unix:* && "$_chat_mode" == unix ]]; then
+        fail ":8445 proxies to ${_chat_tgt:-TCP} but beast-chat runs CHAT_LOGIN_FROM=unix — every tailnet login gets 404" "$_chat_refix"
+      elif [[ "$_chat_tgt" == unix:* && "${_chat_tgt#unix:}" != "${CHAT_SOCKET:-}" ]]; then
+        fail ":8445 proxies to $_chat_tgt but CHAT_SOCKET is ${CHAT_SOCKET:-unset} — the console 502s from the phone" "$_chat_refix"
+      elif [[ "$_chat_tgt" == unix:* && ! -S "$CHAT_SOCKET" ]]; then
+        fail ":8445 proxies to $_chat_tgt but no socket exists there — the console 502s from the phone" \
+             "./scripts/healthcheck.sh --restart (beast-chat binds the socket at start)"
+      elif [[ "$_chat_tgt" == unix:* ]]; then
+        if curl -s --max-time 4 --unix-socket "$CHAT_SOCKET" "http://localhost/api/chat/health" 2>/dev/null | grep -qi '"status":"ok"'; then
+          pass "beast-chat published on :8445 (tailnet-only, via $CHAT_SOCKET)"
+        else
+          fail ":8445 is published but beast-chat is NOT answering on $CHAT_SOCKET" \
+               "./scripts/healthcheck.sh --restart, or ./scripts/setup-tailscale.sh --unpublish-chat"
+        fi
+      elif curl -s --max-time 4 "http://$CHAT_HEALTH_HOST:${CHAT_PORT:-3003}/api/chat/health" 2>/dev/null | grep -qi '"status":"ok"'; then
         pass "beast-chat published on :8445 (tailnet-only)"
       else
         # Still a failure on a stopped stack — the mount is live and 502s —
@@ -946,7 +1129,27 @@ if command -v tailscale >/dev/null 2>&1; then
     # this mount (agents/artifact.py reads `tailscale serve status`), so a
     # mount over a dead server means every link on the phone is a 502.
     if echo "$_serve" | grep -qE ':8446[^0-9]'; then
-      if probe "http://$HEALTH_HOST:${ARTIFACT_PORT:-3004}/api/artifacts/health" '"status"'; then
+      # Same mount-vs-mode check as :8445 (ARTIFACT_LOGIN_FROM).
+      _art_tgt="$(_serve_target 8446 "$_serve")"
+      _art_mode="${_art_lf:-${ARTIFACT_LOGIN_FROM:-loopback}}"
+      _art_refix="./scripts/setup-tailscale.sh --publish-artifact (re-points :8446 at what beast-artifact runs now)"
+      if [[ "$_art_tgt" == unix:* && "$_art_mode" != unix ]]; then
+        fail ":8446 proxies to $_art_tgt but beast-artifact runs ARTIFACT_LOGIN_FROM=loopback — every artifact link 502s from the phone" "$_art_refix"
+      elif [[ "$_art_tgt" != unix:* && "$_art_mode" == unix ]]; then
+        fail ":8446 proxies to ${_art_tgt:-TCP} but beast-artifact runs ARTIFACT_LOGIN_FROM=unix — every tailnet login gets 404" "$_art_refix"
+      elif [[ "$_art_tgt" == unix:* && "${_art_tgt#unix:}" != "${ARTIFACT_SOCKET:-}" ]]; then
+        fail ":8446 proxies to $_art_tgt but ARTIFACT_SOCKET is ${ARTIFACT_SOCKET:-unset} — every artifact link 502s from the phone" "$_art_refix"
+      elif [[ "$_art_tgt" == unix:* && ! -S "$ARTIFACT_SOCKET" ]]; then
+        fail ":8446 proxies to $_art_tgt but no socket exists there — every artifact link 502s from the phone" \
+             "./scripts/healthcheck.sh --restart (beast-artifact binds the socket at start)"
+      elif [[ "$_art_tgt" == unix:* ]]; then
+        if curl -s --max-time 4 --unix-socket "$ARTIFACT_SOCKET" "http://localhost/api/artifacts/health" 2>/dev/null | grep -qi '"status"'; then
+          pass "beast-artifact published on :8446 (tailnet-only, via $ARTIFACT_SOCKET)"
+        else
+          fail ":8446 is published but beast-artifact is NOT answering on $ARTIFACT_SOCKET" \
+               "./scripts/healthcheck.sh --restart, or ./scripts/setup-tailscale.sh --unpublish-artifact"
+        fi
+      elif probe "http://$HEALTH_HOST:${ARTIFACT_PORT:-3004}/api/artifacts/health" '"status"'; then
         pass "beast-artifact published on :8446 (tailnet-only)"
       else
         _pfix="every artifact link 502s from the phone — set BEAST_ARTIFACT=true and ./scripts/healthcheck.sh --restart, or ./scripts/setup-tailscale.sh --unpublish-artifact"
@@ -958,8 +1161,25 @@ if command -v tailscale >/dev/null 2>&1; then
       warn "BEAST_ARTIFACT=true but :8446 is not published — artifact links open only on this box" \
            "./scripts/setup-tailscale.sh --publish-artifact"
     fi
-    # :8447 is the ntfy extension (the phone app's subscription).
-    if echo "$_serve" | grep -qE ':8447[^0-9]'; then
+    # :8447 is the ntfy extension (the phone app's subscription) — or, on a
+    # host without ntfy (spark-1, the rig), the status dashboard mounted there
+    # by hand (docs/BEAST_SLOT.md "The status dashboard"; setup-tailscale.sh
+    # refuses to re-point it). Judge what the mount proxies to, not the port:
+    # the rig's doctor failed "ntfy is NOT responding" on a 200 dashboard.
+    _8447_tgt="$(_serve_target 8447 "$_serve")"
+    _8447_tgt="${_8447_tgt%/}"
+    if [[ -n "$_8447_tgt" && "$_8447_tgt" == *":${DASHBOARD_PORT:-3002}" ]]; then
+      if probe "http://${HEALTH_HOST:-127.0.0.1}:${DASHBOARD_PORT:-3002}/api/slot" 'beast_slot'; then
+        pass "the status dashboard is published on :8447 (tailnet-only, read-only; docs/BEAST_SLOT.md)"
+      else
+        fail ":8447 publishes the status dashboard ($_8447_tgt) but it is NOT responding" \
+             "./scripts/ext.sh restart dashboard (or ./scripts/healthcheck.sh --restart)"
+      fi
+      if [[ " ${EXTENSIONS:-} " == *" ntfy "* ]]; then
+        warn "the ntfy extension is on but :8447 carries the status dashboard — the phone app cannot subscribe there" \
+             "mount ntfy on another port by hand (tailscale serve --bg --https=<port> http://127.0.0.1:${NTFY_PORT:-3005}) or move the dashboard (docs/BEAST_SLOT.md)"
+      fi
+    elif echo "$_serve" | grep -qE ':8447[^0-9]'; then
       if probe "http://127.0.0.1:${NTFY_PORT:-3005}/v1/health" 'healthy'; then
         pass "ntfy published on :8447 (tailnet-only)"
       else
@@ -1002,7 +1222,23 @@ if command -v tailscale >/dev/null 2>&1; then
       # What sits behind :8443 decides the real exposure. The gate allowlists
       # the OpenAI routes and keys per device; raw llama-server publishes its
       # entire route table (/lora-adapters, /slots, /v1/stream) to the tailnet.
-      if echo "$_serve" | grep -A2 -E ":8443[^0-9]" | grep -q ":${EDGE_PORT:-8090}"; then
+      # Judge the mount's TARGET against EDGE_GATE both ways (2026-11-22, the
+      # rig: :8443 -> llama :8080 while EDGE_GATE=true, so every enrolled
+      # device key reached llama-server and got its 401). The re-point needs
+      # tailscaled's operator (or root): `sudo tailscale set --operator=$USER` once.
+      _inf_tgt="$(_serve_target 8443 "$_serve")"
+      _gate_url="http://$HEALTH_HOST:${EDGE_PORT:-8090}"
+      _inf_gate=0
+      [[ "$_inf_tgt" =~ :${EDGE_PORT:-8090}/?$ ]] && _inf_gate=1
+      _repoint="tailscale serve --bg --https=8443 $_gate_url (as tailscaled's operator; once: sudo tailscale set --operator=\$USER), or ./scripts/setup-tailscale.sh"
+      if [[ $_inf_gate -eq 1 && "${EDGE_GATE:-false}" != "true" ]]; then
+        # The gate does not run with EDGE_GATE off: remote clients get 502.
+        fail ":8443 proxies to $_inf_tgt (the beast-gate port) but EDGE_GATE is not true — the gate is not started, remote clients get 502" \
+             "set EDGE_GATE=true in openbeast.conf and ./stop.sh && ./start.sh -d (or re-publish the engine: ./scripts/setup-tailscale.sh)"
+      elif [[ $_inf_gate -eq 0 && "${EDGE_GATE:-false}" == "true" && "${HYDRA:-false}" != "true" ]]; then
+        fail ":8443 proxies to ${_inf_tgt:-?}, not beast-gate (:${EDGE_PORT:-8090}), while EDGE_GATE=true — the gate is bypassed: device keys reach the engine (401) and no per-device audit" \
+             "$_repoint"
+      elif [[ $_inf_gate -eq 1 ]]; then
         # The mapping alone is not proof: if the gate process is down, :8443
         # is a 502 and reporting "per-device keys + audit" would be a
         # dangerously false green. Probe it.
@@ -1016,11 +1252,12 @@ if command -v tailscale >/dev/null 2>&1; then
       elif [[ "${HYDRA:-false}" == "true" ]]; then
         # hydra holds node keys: raw publication would hand the tailnet an
         # inference port with no per-device identity in front of the fleet.
-        fail ":8443 publishes a raw inference port while HYDRA=true" \
-             "set EDGE_GATE=true and re-run ./scripts/setup-tailscale.sh (it refuses raw publication under hydra)"
-      elif [[ "${EDGE_GATE:-false}" == "true" ]]; then
-        warn "EDGE_GATE=true but :8443 still points at raw llama-server" \
-             "re-run ./scripts/setup-tailscale.sh to repoint it at the gate"
+        if [[ "${EDGE_GATE:-false}" == "true" ]]; then
+          fail ":8443 proxies to ${_inf_tgt:-?}, a raw inference port, while HYDRA=true (EDGE_GATE=true, but the gate is bypassed)" "$_repoint"
+        else
+          fail ":8443 publishes a raw inference port while HYDRA=true" \
+               "set EDGE_GATE=true and re-run ./scripts/setup-tailscale.sh (it refuses raw publication under hydra)"
+        fi
       elif [[ -z "${LLAMA_API_KEY:-}" && "${ALLOW_OPEN_INFERENCE:-false}" == "true" ]]; then
         # Published keyless on purpose (setup-tailscale.sh
         # --i-accept-open-inference records ALLOW_OPEN_INFERENCE=true). Say it
@@ -1037,6 +1274,18 @@ if command -v tailscale >/dev/null 2>&1; then
              "the shared key gates it but doesn't shrink it; EDGE_GATE=true allowlists just the OpenAI routes"
       fi
     fi
+    # :8444 should carry /api/slot alone. A "/" handler there (the old
+    # no-set-path fallback, or the pre-fix fall-open) publishes the whole
+    # dashboard page and /api/status, and adding /api/slot beside it never
+    # removed it — so say so instead of trusting the last "published" line.
+    _slot_block="$(awk '/:8444([^0-9]|$)/ {on=1; next} on && /^[[:space:]]*\|--/ {print; next} {on=0}' <<< "$_serve")"
+    if grep -qE '\|--[[:space:]]+/[[:space:]]' <<< "$_slot_block"; then
+      warn ":8444 publishes the WHOLE dashboard (page + /api/status), not just /api/slot" \
+           "./scripts/setup-tailscale.sh --publish-slot (it resets :8444 and mounts /api/slot only; needs a tailscale with serve --set-path)"
+    elif [[ -n "$_slot_block" ]]; then
+      pass ":8444 publishes /api/slot only"
+    fi
+    unset _slot_block
   else
     pass "no tailscale serve mappings (stack is localhost-only)"
   fi
@@ -1095,6 +1344,36 @@ if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/d
     warn "log rotation timer is missing or disabled — stack.log and the audit logs grow without bound" \
          "./scripts/logrotate.sh --install"
   fi
+  # The watchdog is what brings a crashed tool server / gate / chat /
+  # artifact back; `./start.sh -d` installs it (WATCHDOG_AUTOINSTALL).
+  if systemctl --user is-enabled --quiet openbeast-watchdog.timer 2>/dev/null; then
+    pass "health watchdog enabled (openbeast-watchdog.timer, healthcheck --restart every 5 min)"
+  elif [[ "${WATCHDOG_AUTOINSTALL:-true}" == "true" ]]; then
+    warn "health watchdog (openbeast-watchdog.timer) not installed or not enabled — a crashed tool server, gate or chat console stays down" \
+         "./stop.sh && ./start.sh -d   (installs it), or see scripts/openbeast-watchdog.timer"
+  fi
+fi
+
+# ── beast-island (runtime offline mode) ─────────────────────────────────────
+# What the watcher says right now, plus the one misconfiguration worth a row:
+# probes that cannot work. Islanded is a PASS — it is the feature working.
+_isl_rc=0
+_isl="$(OPENBEAST_RUN_DIR="${ISLAND_STATE_DIR:-$REPO_DIR/.run}" python3 "$REPO_DIR/agents/island.py" status 2>/dev/null)" || _isl_rc=$?
+if [[ $_isl_rc -eq 3 ]]; then
+  # Asked whatever the conf says: a one-off --offline launch islands a box
+  # whose conf has ISLAND=off.
+  pass "beast-island: $_isl — local intelligence serving, web tools refuse fast"
+elif [[ "${ISLAND:-auto}" == "off" ]]; then
+  info "beast-island: ISLAND=off — no watcher; a lost internet route stalls web tools on timeouts"
+else
+  info "beast-island (ISLAND=${ISLAND:-auto}, grace ${ISLAND_GRACE:-90}s): ${_isl:-unknown}"
+fi
+if [[ "${ISLAND:-auto}" != "off" && -n "${ISLAND_PROBES:-}" ]] && ! python3 -c '
+import sys; sys.path.insert(0, sys.argv[1]); import island
+sys.exit(0 if island.parse_probes(sys.argv[2], fallback=False) else 1)
+' "$REPO_DIR/agents" "$ISLAND_PROBES" 2>/dev/null; then
+  warn "ISLAND_PROBES='$ISLAND_PROBES' has no valid IP:port entry — the defaults are probed instead" \
+       "space-separated IP literals with ports (IPv6 in brackets), e.g. ISLAND_PROBES=1.1.1.1:443 [2606:4700::1111]:443"
 fi
 
 # ── Closed network ──────────────────────────────────────────────────────────
@@ -1213,40 +1492,6 @@ if [[ -f "$REPO_DIR/agents/lang/pack_context.py" ]]; then
       warn "$_pc_line" "LANG_PACK_CONTEXT in openbeast.conf; docs/LANG_AWARENESS_PLAN.md" ;;
     *) warn "zig pack: status unavailable (see: python3 agents/lang/pack_context.py status)" ;;
   esac
-
-  # ── installed zig vs the shipped pack's zig ──────────────────────────────
-  # Asked separately from the row above, because that row is silent whenever
-  # the pack is switched off or zig is not in LANG_PACKS — and the mismatch
-  # matters regardless: the pack (written for one stdlib) is withheld, and the
-  # eval harness aborts zig tasks on it. zig moved 0.16 -> 0.17 silently on
-  # this rig on 2026-10-27 and nothing noticed. The version parsing and the
-  # `zig version` probe are pack_context's own (_PACK_HEADER_RE,
-  # _installed_zig), not a second copy of them.
-  _zv="$(cd "$REPO_DIR" && timeout 30 python3 -c '
-import os, sys
-sys.path.insert(0, "agents")
-from lang import pack_context as pc
-fn = pc.PACK_FILES.get("zig")
-try:
-    t = open(os.path.join(pc.PACKS_DIR, fn), encoding="utf-8", errors="replace").read()
-except (OSError, TypeError):
-    t = ""
-m = pc._PACK_HEADER_RE.search(t)
-print(m.group(1) if m else "?", pc._installed_zig() or "-")
-' 2>/dev/null || true)"
-  read -r _zv_pack _zv_have <<< "$_zv"
-  if [[ -z "${_zv_pack:-}" ]]; then
-    warn "zig version check unavailable (python3 agents/lang/pack_context.py failed to import)"
-  elif [[ "$_zv_have" == "-" ]]; then
-    info "zig not installed — the shipped pack targets zig $_zv_pack (only zig tasks need it)"
-  elif [[ "$_zv_pack" == "?" ]]; then
-    warn "the shipped zig pack has no version header" "python3 agents/packs/gen_zig_pack.py"
-  elif [[ "$_zv_have" == "$_zv_pack" ]]; then
-    pass "installed zig $_zv_have matches the shipped zig pack"
-  else
-    warn "installed zig $_zv_have != zig $_zv_pack the shipped pack was built for (pack withheld; zig evals abort on the drift)" \
-         "put zig $_zv_pack first on PATH (e.g. mise use -g zig@$_zv_pack), or regenerate the pack: agents/packs/gen_zig_pack.py"
-  fi
 fi
 
 # ── Verdict ─────────────────────────────────────────────────────────────────

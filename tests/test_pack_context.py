@@ -35,13 +35,21 @@ from lang import pack_context as PC  # noqa: E402
 from lang import packs as P  # noqa: E402
 
 PACK = os.path.join(AGENTS, "packs", "zig-0.16.md")
-PACK_SHA8 = hashlib.sha256(open(PACK, "rb").read()).hexdigest()[:8]
+PACK_SHA256 = hashlib.sha256(open(PACK, "rb").read()).hexdigest()
+PACK_SHA8 = PACK_SHA256[:8]
 LABEL = f"zig@{PACK_SHA8}"
+#: The pin as committed. The DELIVERY tests below run with the pin moved to
+#: whatever the committed pack's bytes are (the hermetic fixture moves it
+#: in-process; the script tests copy agents/lang with the pin rewritten): what
+#: they pin is the mechanism. test_production_serves_the_measured_pack is the
+#: one that pins the REAL pin to the REAL file.
+REAL_PIN = dict(PC.MEASURED_SHA256)
 
 
 @pytest.fixture(autouse=True)
 def hermetic(tmp_path, monkeypatch):
-    for k in ("OPENBEAST_EVAL", "OPENBEAST_TASK_PATHS", "OPENBEAST_LANG_IN_EVAL"):
+    for k in ("OPENBEAST_EVAL", "OPENBEAST_TASK_PATHS", "OPENBEAST_LANG_IN_EVAL",
+              "OPENBEAST_LANG_PACK_VARIANT"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("OPENBEAST_LANG_PACK_CONTEXT", "auto")
     monkeypatch.setenv("OPENBEAST_LANG_PACKS", "auto")
@@ -49,8 +57,32 @@ def hermetic(tmp_path, monkeypatch):
     # The pack says zig 0.16.0; the drift check compares against the
     # installed compiler. Pin it rather than depend on this box's zig.
     monkeypatch.setattr(PC, "_installed_zig", lambda ttl=60.0: "0.16.0")
+    monkeypatch.setattr(PC, "MEASURED_SHA256", {"zig": PACK_SHA256})
     PC._LOGGED.clear()
     yield
+
+
+def test_production_serves_the_measured_pack(monkeypatch, tmp_path):
+    """With the REAL pin, the committed production pack IS the measured
+    pack and is served. #188 replaced it with the unmeasured v2 bytes and
+    production silently served nothing ("zig pack: NOT SERVED"); v2 now lives
+    beside it (zig-0.16-v2.md, eval-only via OPENBEAST_PACK_VARIANT=v2)."""
+    monkeypatch.setattr(PC, "MEASURED_SHA256", REAL_PIN)
+    assert REAL_PIN["zig"] == PACK_SHA256, "the production pack is not the measured bytes"
+    p, why = PC.served_pack("zig")
+    assert p is not None and p.sha8 == PACK_SHA8, why
+    assert PC.status_line().startswith("zig pack: auto")
+    path, info = _ctx("write zig", str(tmp_path))
+    assert path == PACK and info["label"] == LABEL
+
+
+def test_production_refuses_the_unmeasured_v2(monkeypatch, tmp_path):
+    """Pointing production at v2 before its A/B must inject nothing."""
+    monkeypatch.setattr(PC, "MEASURED_SHA256", REAL_PIN)
+    monkeypatch.setattr(PC, "PACK_FILES", dict(PC.PACK_VARIANTS["v2"]))
+    p, why = PC.served_pack("zig")
+    assert p is None and "unmeasured treatment" in why
+    assert "NOT SERVED" in PC.status_line()
 
 
 def _ctx(task, workdir=None, context=""):
@@ -181,6 +213,23 @@ def test_off_switch_from_openbeast_conf(monkeypatch, tmp_path):
     assert PC.setting()[0] == "auto"                        # absent = default
 
 
+def test_an_appended_override_wins_like_conf_sh(monkeypatch, tmp_path):
+    """openbeast.conf is edited by APPENDING, and conf.sh / runner.py read the
+    LAST assignment. beast-lang read the first, so an appended `off` stayed
+    `auto` for the pack context and language_reference (ops review)."""
+    monkeypatch.delenv("OPENBEAST_LANG_PACK_CONTEXT", raising=False)
+    monkeypatch.delenv("OPENBEAST_LANG_PACKS", raising=False)
+    (tmp_path / "openbeast.conf").write_text(
+        "LANG_PACK_CONTEXT=auto\nLANG_PACKS=auto\n# ...\n"
+        "LANG_PACK_CONTEXT=off\nLANG_PACKS=off\n")
+    monkeypatch.setattr(P, "_REPO", str(tmp_path))
+    assert PC.setting()[0] == "off"
+    assert P.allow_list() == ("off", [])
+    # Negative control: a single assignment still reads as written.
+    (tmp_path / "openbeast.conf").write_text("LANG_PACK_CONTEXT=auto\n")
+    assert PC.setting()[0] == "auto"
+
+
 def test_lang_packs_without_zig_disables_it(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENBEAST_LANG_PACKS", "cpp,go")
     assert _ctx("write zig", str(tmp_path))[0] is None
@@ -232,6 +281,48 @@ def test_other_installed_zig_injects_nothing(monkeypatch, tmp_path):
     monkeypatch.setattr(PC, "_installed_zig", lambda ttl=60.0: "0.17.0")
     path, info = _ctx("write zig", str(tmp_path))
     assert path is None and "0.17.0" in info["reason"]
+
+
+def test_no_installed_zig_injects_nothing(monkeypatch, tmp_path):
+    """The pack says "The installed compiler is zig 0.16.0"; with no zig on
+    this box that is false, and the conf promises the pack is served "only
+    when it matches the installed zig"."""
+    monkeypatch.setattr(PC, "_installed_zig", lambda ttl=60.0: "")
+    path, info = _ctx("write zig", str(tmp_path))
+    assert path is None and "not installed" in info["reason"]
+    assert "NOT SERVED" in PC.status_line()
+
+
+def test_a_curated_only_pack_for_another_language_is_not_drift():
+    """pack_problem used to demand the zig generated-section header from
+    EVERY pack, so filing any non-zig pack in PACK_FILES aborted run_eval
+    under --packs. A curated-only pack has nothing generated to drift."""
+    curated = b"=== Language notes: rust 1.100 ===\n- use `--edition 2021`.\n"
+    assert PC.pack_problem("rust", "rust.md", curated) is None
+    # zig still requires its generated section
+    assert "no generated-section header" in PC.pack_problem("zig", "z.md", curated)
+    # a generated section stamped for another language is refused
+    zig_bytes = open(PACK, "rb").read()
+    assert "is for zig, but PACK_FILES files it under rust" in PC.pack_problem("rust", "r.md", zig_bytes)
+    assert PC.pack_problem("zig", PACK, zig_bytes) is None
+
+
+def test_run_eval_packs_flag_survives_a_non_zig_pack(tmp_path, monkeypatch):
+    sys.path.insert(0, os.path.join(REPO, "evals"))
+    import importlib
+    for m in ("cache", "run_eval"):
+        sys.modules.pop(m, None)
+    run_eval = importlib.import_module("run_eval")
+    from lang import host_pack as HP
+    monkeypatch.setattr(HP, "build", lambda host=None: HP.HostPack("Linux", "", []))
+    d = tmp_path / "packs"
+    d.mkdir()
+    shutil.copy(PACK, d / "zig-0.16.md")
+    (d / "rust.md").write_text("=== Language notes: rust ===\n- curated only.\n")
+    monkeypatch.setattr(run_eval, "PACKS_DIR", str(d))
+    monkeypatch.setattr(run_eval, "PACK_FILES", {"zig": "zig-0.16.md", "rust": "rust.md"})
+    on, comp, meta = run_eval.packs_flag({"BEAST_PACKS": "1"})
+    assert on and set(meta["paths"]) == {"zig", "rust"}
 
 
 def test_run_eval_uses_the_same_check():
@@ -451,8 +542,15 @@ def _fake_tree(tmp_path):
     shutil.copy(os.path.join(REPO, "agent.sh"), root / "agent.sh")
     shutil.copy(os.path.join(REPO, "scripts", "client.sh"), root / "scripts" / "client.sh")
     shutil.copytree(os.path.join(REPO, "scripts", "lib"), root / "scripts" / "lib")
-    for d in ("lang", "packs"):
-        os.symlink(os.path.join(AGENTS, d), root / "agents" / d)
+    os.symlink(os.path.join(AGENTS, "packs"), root / "agents" / "packs")
+    # A copy, not a symlink: the pin is moved to the committed pack's bytes
+    # (see REAL_PIN), the one difference from the real tree.
+    shutil.copytree(os.path.join(AGENTS, "lang"), root / "agents" / "lang",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    pc = root / "agents" / "lang" / "pack_context.py"
+    src = pc.read_text()
+    assert REAL_PIN["zig"] in src
+    pc.write_text(src.replace(REAL_PIN["zig"], PACK_SHA256))
     (root / "agents" / "runner.py").write_text(
         "import json, sys; print(json.dumps(sys.argv[1:]))\n")
     return root
@@ -472,21 +570,19 @@ def _env(tmp_path, home=None, **extra):
     return env
 
 
-def _require_zig_match():
-    """The scripts run a real python with this box's zig, which (correctly)
-    refuses the 0.16 pack under any other zig. That is not a reason to SKIP:
-    it means production serves no pack on this box either (R7-01), so fail
-    with the reason and the fix. No zig at all is fine (nothing to mismatch)."""
+def _zig_matches():
+    """The scripts run a real python with this box's zig: skip the positive
+    case where an installed zig would (correctly) refuse the 0.16 pack —
+    and where there is no zig at all, which refuses it too."""
     if not shutil.which("zig"):
-        return
+        return False
     v = subprocess.run(["zig", "version"], capture_output=True, text=True).stdout.strip()
-    if v != "0.16.0":
-        pytest.fail(f"installed zig is {v}, the pack is for 0.16.0 — production serves no "
-                    f"zig pack on this box either; pin it: mise use -g zig@0.16.0")
+    return v == "0.16.0"
 
 
 def test_agent_sh_passes_the_pack(tmp_path):
-    _require_zig_match()
+    if not _zig_matches():
+        pytest.skip("zig 0.16.0 is not installed")
     root = _fake_tree(tmp_path)
     run = subprocess.run(["bash", str(root / "agent.sh"), "-w", str(tmp_path),
                           "write a zig tokenizer"],
@@ -509,7 +605,8 @@ def test_agent_sh_off_and_eval_leave_argv_alone(tmp_path):
 
 
 def test_client_sh_agent_passes_the_pack(tmp_path):
-    _require_zig_match()
+    if not _zig_matches():
+        pytest.skip("zig 0.16.0 is not installed")
     root = _fake_tree(tmp_path)
     env = _env(tmp_path, home=tmp_path / "home",
                OPENBEAST_AGENT_INFERENCE_URL="http://rig.example:8443/v1")

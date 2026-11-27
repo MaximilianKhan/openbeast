@@ -65,7 +65,6 @@ if [[ "$QUANT" == q6 ]]; then CTX="${SWEEP_CTX:-131072}"; else CTX="${SWEEP_CTX:
 PORT=8080
 RESULTS="$REPO_DIR/.run/fable-fusion-mtp-${QUANT}-results.txt"
 mkdir -p "$REPO_DIR/.run"
-: > "$RESULTS"
 
 # THE CARD MUST BE OURS. stop.sh deliberately leaves llama-server alone while
 # a GPU lease is HELD, so on a campaign's card the old "stop the stack, then
@@ -98,11 +97,30 @@ if [[ "$LEASE_RC" -eq 3 ]]; then
   exec "$SCRIPT_DIR/gpu-lease.sh" run "$(basename "$0") $*" -- "$SCRIPT_DIR/$(basename "$0")" "$@"
 fi
 
+# Only now, with the card ours, is the previous sweep's file replaced: the
+# refusals above used to run AFTER it was truncated, so a run refused under
+# someone else's lease erased the evidence docs/MODELS.md cites and measured
+# nothing.
+: > "$RESULTS"
+
+# The sweep's llama-server is keyed, with a key minted for this run. It is
+# started directly on :$PORT, not through serve.sh, so it used to run with NO
+# key — and in the shared-key topology (LLAMA_API_KEY set, no beast-gate)
+# setup-tailscale.sh publishes :8443 straight at :$PORT, trusting
+# llama-server to check that key. stop.sh leaves that mapping up, so for the
+# whole sweep every tailnet device had keyless use of the GPU and every
+# route. llama-server reads LLAMA_API_KEY from its environment (owner-only
+# /proc/<pid>/environ); curl gets it on stdin (-K -), never argv.
+SWEEP_KEY="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+[[ ${#SWEEP_KEY} -eq 64 ]] || { echo "Error: could not mint a sweep key from /dev/urandom" >&2; exit 1; }
+export LLAMA_API_KEY="$SWEEP_KEY"
+
 # Deterministic ~700-token high-structure technical generation → realistic
 # coding/reasoning draft-acceptance (the workload MTP is bought for).
 PROMPT='Write a detailed, step-by-step technical explanation of how speculative decoding with multi-token prediction (MTP) accelerates transformer inference. Cover the draft step, verification, acceptance, and why it preserves output quality.'
 REQ() { # $1 = max_tokens
-  curl -s "http://127.0.0.1:$PORT/v1/chat/completions" -H 'Content-Type: application/json' \
+  printf 'header = "Authorization: Bearer %s"\n' "$SWEEP_KEY" | \
+  curl -s -K - "http://127.0.0.1:$PORT/v1/chat/completions" -H 'Content-Type: application/json' \
     -d "{\"model\":\"sweep\",\"messages\":[{\"role\":\"user\",\"content\":\"$PROMPT\"}],\"max_tokens\":$1,\"temperature\":0,\"seed\":42,\"chat_template_kwargs\":{\"enable_thinking\":false}}" \
     -o /dev/null
 }

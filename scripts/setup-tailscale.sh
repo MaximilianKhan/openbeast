@@ -16,7 +16,7 @@
 #   2. Joins your tailnet (prints a login URL on first run)
 #   3. Publishes, tailnet-only, with automatic HTTPS:
 #        https://<host>.<tailnet>.ts.net       → Open WebUI (:3000)
-#        https://<host>.<tailnet>.ts.net:8443  → llama-server API (:8080)
+#        https://<host>.<tailnet>.ts.net:8443  → beast-gate, or the engine at INFERENCE_URL
 #   4. Prints the URLs to use from your phone/laptop
 #
 # The identity tool server (:3001) and SearXNG (:8888) are NOT published by
@@ -89,6 +89,146 @@
 # The tailnet is the security perimeter. See docs/REMOTE_ACCESS_PLAN.md.
 set -euo pipefail
 
+# `tailscale serve` changes need root, OR the operator tailscaled was given
+# (`tailscale up --operator=$USER`, as spark-root-setup.sh does on a Spark).
+# As the operator nothing here needs sudo, so the script runs unattended
+# over ssh with no password prompt.
+# A refused `serve` (no operator and no usable sudo: "Access denied: serve
+# config denied", a sudo with no tty over ssh) says how to make this account
+# the operator, once; the call's exit status is kept.
+ts_admin() {
+  local rc=0
+  if [[ "$(tailscale debug prefs 2>/dev/null | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("OperatorUser", ""))
+except Exception: print("")' 2>/dev/null)" == "$(id -un)" ]]; then
+    tailscale "$@" || rc=$?
+  else
+    sudo tailscale "$@" || rc=$?
+  fi
+  if (( rc )) && [[ "${1:-}" == serve ]]; then
+    {
+      echo "      ERROR: tailscale $* was refused (exit $rc)."
+      echo "             Serve changes need root or tailscaled's operator. Make $(id -un) the"
+      echo "             operator once (then nothing here needs sudo):"
+      echo "               sudo tailscale set --operator=$(id -un)"
+      echo "             and re-run this script."
+    } >&2
+  fi
+  return "$rc"
+}
+
+# beast-slot mount (--publish-slot). Mount ONLY /api/slot: a bare
+# `--https=8444 → :3002` publishes the whole dashboard (HTML page +
+# /api/status) to every tailnet device. The whole-dashboard mount is used
+# ONLY on a tailscale build that has no --set-path at all, decided by asking
+# its help text up front. Any failure of the path-scoped mount itself (a
+# tailscaled hiccup, a cancelled sudo prompt, a conflicting :8444 config) used
+# to be read as "no --set-path" and fell OPEN to the whole dashboard; now it
+# is an error, and nothing wider is mounted.
+_ts_has_set_path() {
+  local _h
+  # Captured, not piped into grep -q: under pipefail an early-exiting grep
+  # SIGPIPEs tailscale and the pipeline reads as "no".
+  _h="$(tailscale serve --help 2>&1 || true)"
+  case "$_h" in *set-path*) return 0 ;; esac
+  return 1
+}
+_publish_chat_mount() { # _publish_chat_mount <up-host>
+  # CHAT_LOGIN_FROM=unix (lib/conf.sh): logins count only on CHAT_SOCKET, so
+  # :8445 proxies to that socket and a host-network container dialling
+  # 127.0.0.1 can no longer claim a login. Otherwise the TCP port, as before.
+  if [[ "${CHAT_LOGIN_FROM:-loopback}" == unix ]]; then
+    ts_admin serve --bg --https=8445 "unix:$CHAT_SOCKET"
+    echo "      beast-chat published (tailnet-only, :8445 → unix:$CHAT_SOCKET)."
+    [[ -S "$CHAT_SOCKET" ]] || echo "      NOTE: $CHAT_SOCKET does not exist yet — it appears when beast-chat starts."
+  else
+    ts_admin serve --bg --https=8445 "http://$1:${CHAT_PORT:-3003}"
+    echo "      beast-chat published (tailnet-only, :8445 → :${CHAT_PORT:-3003})."
+  fi
+}
+
+# _raw_inference_target <inference-url> <probe-host> <bind-host> — the URL a
+# RAW :8443 mount proxies to: the engine at INFERENCE_URL, dialled the way a
+# local client dials it. Fails (prints nothing) when INFERENCE_URL names
+# another machine — that is never mounted raw.
+_raw_inference_target() {
+  local u="$1" h p
+  # lib/backend.sh defines ob_url_is_local; a stripped copy without it has
+  # no backends either, and conf.sh then resolves INFERENCE_URL to the local
+  # llama default.
+  if declare -F ob_url_is_local >/dev/null 2>&1; then
+    ob_url_is_local "$u" "$2" "$3" || return 1
+  fi
+  u="${u#*://}"; u="${u%%/*}"
+  if [[ "$u" == \[* ]]; then h="${u%%]*}]"; p="${u##*]}"; p="${p#:}"
+  elif [[ "$u" == *:* ]]; then h="${u%:*}"; p="${u##*:}"
+  else h="$u"; p=""; fi
+  [[ -n "$p" ]] || { [[ "$1" == https://* ]] && p=443 || p=80; }
+  printf 'http://%s:%s\n' "$(ob_probe_host "$h")" "$p"
+}
+
+_publish_artifact_mount() { # _publish_artifact_mount <up-host>
+  # ARTIFACT_LOGIN_FROM=unix (lib/conf.sh): logins count only on
+  # ARTIFACT_SOCKET, so :8446 proxies to that socket — the same move as
+  # beast-chat's :8445. Otherwise the TCP port, as before.
+  if [[ "${ARTIFACT_LOGIN_FROM:-loopback}" == unix ]]; then
+    ts_admin serve --bg --https=8446 "unix:$ARTIFACT_SOCKET"
+    echo "      beast-artifact published (tailnet-only, :8446 → unix:$ARTIFACT_SOCKET)."
+    [[ -S "$ARTIFACT_SOCKET" ]] || echo "      NOTE: $ARTIFACT_SOCKET does not exist yet — it appears when beast-artifact starts."
+  else
+    ts_admin serve --bg --https=8446 "http://$1:${ARTIFACT_PORT:-3004}"
+    echo "      beast-artifact published (tailnet-only, :8446 → :${ARTIFACT_PORT:-3004})."
+  fi
+}
+
+_publish_slot_mount() { # _publish_slot_mount <upstream-host>
+  if _ts_has_set_path; then
+    # Reset :8444 first. tailscale serve keeps one handler per path, so
+    # adding /api/slot left any earlier "/" (whole dashboard) handler in
+    # place — from the no-set-path fallback below, or the old fall-open —
+    # and "re-run to narrow it" narrowed nothing. A failed mount below thus
+    # leaves :8444 unpublished, never wider.
+    ts_admin serve --https=8444 off >/dev/null 2>&1 || true
+    if ! ts_admin serve --bg --https=8444 --set-path=/api/slot "http://$1:${DASHBOARD_PORT:-3002}/api/slot"; then
+      echo "      ERROR: could not mount :8444/api/slot (tailscale's message is above)." >&2
+      echo "             NOT falling back to publishing the whole dashboard. Fix the cause" >&2
+      echo "             and re-run: ./scripts/setup-tailscale.sh --publish-slot" >&2
+      return 1
+    fi
+    echo "      beast-slot status API published (tailnet-only, :8444/api/slot)."
+  else
+    ts_admin serve --bg --https=8444 "http://$1:${DASHBOARD_PORT:-3002}"
+    echo "      beast-slot published (tailnet-only, :8444 → :${DASHBOARD_PORT:-3002})."
+    echo "      NOTE: this tailscale build has no --set-path, so the whole"
+    echo "            dashboard (page + /api/status) is tailnet-visible."
+    echo "            Update tailscale and re-run to narrow it to /api/slot."
+  fi
+}
+
+# The upstream a tailnet port proxies now ("" when unmounted), from
+# `tailscale serve status` (a "https://host:PORT" header, then "|-- / proxy URL").
+_mount_upstream() { # _mount_upstream <port>
+  tailscale serve status 2>/dev/null | awk -v p=":$1" '
+    /^https:\/\// { h = $1; on = (length(h) > length(p) && substr(h, length(h) - length(p) + 1) == p); next }
+    on && / proxy / { print $NF; exit }'
+}
+# The dashboard's loopback port (openbeast.conf is not loaded yet when the flags are read).
+_dashboard_port() {
+  local v="${DASHBOARD_PORT:-}"
+  [[ -n "$v" ]] || v="$(grep -E '^DASHBOARD_PORT=' "$(cd "$(dirname "$0")/.." && pwd)/openbeast.conf" 2>/dev/null \
+    | tail -1 | cut -d= -f2- | tr -d "\"'")"
+  echo "${v:-3002}"
+}
+# :8447 is ntfy's port, but the status dashboard is mounted there by hand
+# (docs/BEAST_SLOT.md): never re-point or unmount it from an ntfy flag.
+_refuse_if_dashboard_on_8447() {
+  local up; up="$(_mount_upstream 8447)"
+  if [[ "$up" == *":$(_dashboard_port)" || "$up" == *":$(_dashboard_port)/" ]]; then
+    echo "      ERROR: :8447 serves the status dashboard ($up; docs/BEAST_SLOT.md); move it first." >&2
+    exit 1
+  fi
+}
+
 STATUS_ONLY=0
 PUBLISH_SEARXNG=0
 PUBLISH_SLOT=0
@@ -101,12 +241,12 @@ for _arg in "$@"; do
   case "$_arg" in
     --publish-searxng)   PUBLISH_SEARXNG=1 ;;
     --unpublish-searxng)
-      sudo tailscale serve --https=8889 off
+      ts_admin serve --https=8889 off
       echo "SearXNG unpublished from the tailnet (:8889 off)."
       exit 0 ;;
     --publish-slot)      PUBLISH_SLOT=1 ;;
     --unpublish-slot)
-      sudo tailscale serve --https=8444 off
+      ts_admin serve --https=8444 off
       echo "beast-slot status API unpublished from the tailnet (:8444 off)."
       exit 0 ;;
     --publish-chat)      PUBLISH_CHAT=1 ;;
@@ -115,17 +255,18 @@ for _arg in "$@"; do
       # (8445), not by CHAT_PORT. Keeping this branch conf-free means it still
       # works on a rig whose openbeast.conf is broken — exactly when you most
       # want to take a surface down.
-      sudo tailscale serve --https=8445 off
+      ts_admin serve --https=8445 off
       echo "beast-chat unpublished from the tailnet (:8445 off)."
       exit 0 ;;
     --publish-artifact)  PUBLISH_ARTIFACT=1 ;;
     --unpublish-artifact)
-      sudo tailscale serve --https=8446 off
+      ts_admin serve --https=8446 off
       echo "beast-artifact unpublished from the tailnet (:8446 off)."
       exit 0 ;;
     --publish-ntfy)      PUBLISH_NTFY=1 ;;
     --unpublish-ntfy)
-      sudo tailscale serve --https=8447 off
+      _refuse_if_dashboard_on_8447
+      ts_admin serve --https=8447 off
       echo "ntfy unpublished from the tailnet (:8447 off)."
       exit 0 ;;
     --i-accept-open-webui) ACCEPT_OPEN_WEBUI=1 ;;
@@ -141,6 +282,17 @@ done
 # The mount table: which OpenBeast surface sits on which tailnet port, and
 # whether it is mounted right now. `tailscale serve status` names upstreams,
 # not features. Purely informational — never fails the caller.
+# :8447 is labelled by what it proxies: ntfy, or the dashboard mounted by hand.
+_label_8447() { # _label_8447 <ntfy-port>
+  local up; up="$(_mount_upstream 8447)"; up="${up%/}"
+  case "$up" in
+    "") echo "ntfy push notifications (:$1)" ;;
+    *":$1") echo "ntfy push notifications (:$1)" ;;
+    *":$(_dashboard_port)") echo "status dashboard (:$(_dashboard_port))" ;;
+    *) echo "other ($up)" ;;
+  esac
+}
+
 _print_mounts() { # _print_mounts <chat-port> <artifact-port> [ntfy-port]
   local serve_now row port what state
   serve_now="$(tailscale serve status 2>/dev/null || true)"
@@ -149,10 +301,10 @@ _print_mounts() { # _print_mounts <chat-port> <artifact-port> [ntfy-port]
   for row in \
     "443|Open WebUI (:3000)" \
     "8443|inference (llama-server / beast-gate)" \
-    "8444|beast-slot status API (:3002)" \
+    "8444|beast-slot status API (:${DASHBOARD_PORT:-3002})" \
     "8445|beast-chat console (:$1)" \
     "8446|beast-artifact pages (:$2)" \
-    "8447|ntfy push notifications (:${3:-3005})" \
+    "8447|$(_label_8447 "${3:-3005}")" \
     "8889|SearXNG for thin clients (:8888)"; do
     port="${row%%|*}"; what="${row#*|}"
     # The default :443 entry prints WITHOUT a port token, so it needs its own
@@ -166,19 +318,22 @@ _print_mounts() { # _print_mounts <chat-port> <artifact-port> [ntfy-port]
   done
 }
 
+# A plain read of one openbeast.conf key. lib/conf.sh is NOT sourced before
+# the join or by --status (it may write a generated secret into
+# openbeast.conf), so the keys needed that early are read with a grep.
+_conf_file="$(cd "$(dirname "$0")/.." && pwd)/openbeast.conf"
+_conf_get() { # _conf_get <KEY> <default>
+  local v
+  v="$(grep -E "^[[:space:]]*$1[[:space:]]*=" "$_conf_file" 2>/dev/null | tail -n1 \
+       | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]+(#.*)?$//; s/^["'\'']//; s/["'\'']$//' || true)"
+  printf '%s\n' "${v:-$2}"
+}
+
 if [[ $STATUS_ONLY -eq 1 ]]; then
-  # Read-only by construction: lib/conf.sh is NOT sourced here (it may write
-  # a generated secret into openbeast.conf); the two port labels are read
-  # straight from the env / conf with a plain grep.
+  # Read-only by construction: the two port labels come from the env / conf
+  # through _conf_get.
   command -v tailscale >/dev/null 2>&1 || {
     echo "tailscale is not installed — nothing is published on a tailnet." >&2; exit 1; }
-  _conf_file="$(cd "$(dirname "$0")/.." && pwd)/openbeast.conf"
-  _conf_get() { # _conf_get <KEY> <default>
-    local v
-    v="$(grep -E "^[[:space:]]*$1[[:space:]]*=" "$_conf_file" 2>/dev/null | tail -n1 \
-         | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]+(#.*)?$//; s/^["'\'']//; s/["'\'']$//' || true)"
-    printf '%s\n' "${v:-$2}"
-  }
   echo "Current serve config (tailscale serve status):"
   tailscale serve status 2>/dev/null | sed 's/^/      /' || true
   echo ""
@@ -188,9 +343,40 @@ if [[ $STATUS_ONLY -eq 1 ]]; then
   exit 0
 fi
 
-# Tailnet machine name — becomes https://beast.<tailnet>.ts.net everywhere.
-# (Chosen 2026-07-07; independent of the system hostname.)
-TS_HOSTNAME="${TS_HOSTNAME:-beast}"
+# Tailnet machine name — becomes https://<name>.<tailnet>.ts.net everywhere.
+# env TS_HOSTNAME > openbeast.conf TS_HOSTNAME > a per-host-class default:
+# "beast" on a rig (chosen 2026-07-07; independent of the system hostname),
+# none on a DGX Spark, where a pair of boxes both joining as "beast" would
+# collide, so _join_name refuses until the conf names the box.
+TS_HOSTNAME="${TS_HOSTNAME:-$(_conf_get TS_HOSTNAME "")}"
+if [[ -n "$TS_HOSTNAME" && ! "$TS_HOSTNAME" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]]; then
+  echo "Error: TS_HOSTNAME='$TS_HOSTNAME' is not a tailnet machine name" \
+       "(lowercase letters, digits, dashes; at most 63)." >&2
+  exit 1
+fi
+
+# _join_name <host-class> — the name a FIRST join uses: TS_HOSTNAME, else the
+# class default. Fails (prints why) when there is none.
+_join_name() {
+  if [[ -n "$TS_HOSTNAME" ]]; then printf '%s\n' "$TS_HOSTNAME"; return 0; fi
+  if [[ "$1" == spark ]]; then
+    echo "Error: set TS_HOSTNAME in openbeast.conf (e.g. TS_HOSTNAME=spark-1)" \
+         "before this DGX Spark joins the tailnet — every box defaulting to" \
+         "'beast' would collide." >&2
+    return 1
+  fi
+  printf 'beast\n'
+}
+
+# _name_note <current-tailnet-name> — on an already-joined machine the name is
+# never changed here; say so when the configured one differs.
+_name_note() {
+  if [[ -n "$TS_HOSTNAME" && -n "$1" && "$1" != "$TS_HOSTNAME" ]]; then
+    echo "      NOTE: joined as '$1', but TS_HOSTNAME is '$TS_HOSTNAME'. This script"
+    echo "            never renames a joined machine; to rename it (every URL"
+    echo "            and client --host changes): tailscale set --hostname=$TS_HOSTNAME"
+  fi
+}
 
 if [[ $EUID -eq 0 ]]; then
   echo "Run as your normal user — the script sudo's only where needed." >&2
@@ -252,11 +438,19 @@ fi
 
 # --- 2. Join the tailnet -----------------------------------------------------
 if tailscale status >/dev/null 2>&1; then
-  echo "[2/4] Already joined a tailnet."
+  _ts_name="$(tailscale status --json 2>/dev/null | python3 -c '
+import sys, json
+try: print(json.load(sys.stdin).get("Self", {}).get("HostName", ""))
+except Exception: print("")' 2>/dev/null || true)"
+  echo "[2/4] Already joined a tailnet${_ts_name:+ as '$_ts_name'}."
+  _name_note "$_ts_name"
 else
-  echo "[2/4] Joining your tailnet as '$TS_HOSTNAME' — a browser login URL will print below."
+  _host_class="$(REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)" bash -c \
+    'source "$REPO_DIR/scripts/lib/engine.sh" >/dev/null 2>&1; ob_engine_host_class' 2>/dev/null || echo rig)"
+  _join_as="$(_join_name "$_host_class")" || exit 1
+  echo "[2/4] Joining your tailnet as '$_join_as' — a browser login URL will print below."
   echo "      (Sign in with any SSO account; the free plan is plenty.)"
-  sudo tailscale up --hostname="$TS_HOSTNAME"
+  sudo tailscale up --hostname="$_join_as"
 fi
 
 # --- 3. Publish WebUI + API over HTTPS, tailnet-only -------------------------
@@ -315,7 +509,7 @@ source "$(dirname "$0")/lib/net.sh"   # ob_probe_host (conf.sh sources it too)
 # published by this script, gate or no gate.
 if [[ "${HYDRA:-false}" == "true" && "${EDGE_GATE:-false}" != "true" ]]; then
   echo "Error: hydra holds node keys: enable EDGE_GATE=true to publish inference." >&2
-  echo "       (HYDRA=true refuses a raw :8443 → :8080 mount. Set EDGE_GATE=true in" >&2
+  echo "       (HYDRA=true refuses a raw :8443 → engine mount. Set EDGE_GATE=true in" >&2
   echo "       openbeast.conf, ./stop.sh && ./start.sh -d, then re-run this script.)" >&2
   exit 1
 fi
@@ -339,7 +533,19 @@ if ! grep -qE '^[[:space:]]*WEBUI_AUTH[[:space:]]*=' "$CONF"; then
   WEBUI_AUTH=true
   echo "      Enabled WebUI login (WEBUI_AUTH=true in openbeast.conf)."
 else
-  echo "      WEBUI_AUTH already set — resolves to: ${WEBUI_AUTH:-false}"
+  # Conf and effective value separately: lib/conf.sh forces login ON while a
+  # :443 mount is live (or BIND_HOST is not loopback), so "WEBUI_AUTH=false"
+  # in the file can resolve to true here — saying only "true" hid that.
+  _conf_auth="$(_ob_conf_value WEBUI_AUTH || true)"
+  if [[ "${_conf_auth:-}" != "${WEBUI_AUTH:-false}" ]]; then
+    echo "      WEBUI_AUTH already set — openbeast.conf says ${_conf_auth:-<empty>}, effective: ${WEBUI_AUTH:-false}"
+    echo "      (an OPENBEAST_WEBUI_AUTH override, or login kept on because :443 is still"
+    echo "       published or BIND_HOST is a network address — ALLOW_OPEN_WEBUI=true is the"
+    echo "       only way to run it open there)"
+  else
+    echo "      WEBUI_AUTH already set — resolves to: ${WEBUI_AUTH:-false}"
+  fi
+  unset _conf_auth
 fi
 
 # What the RUNNING WebUI enforces (public /api/config → features.auth):
@@ -417,8 +623,9 @@ else
       # fixed password "admin" while auth was off. Retire it before the
       # login page is reachable from the tailnet.
       if ! "$REPO_DIR/scripts/configure-webui.sh" --secure-default-admin; then
-        _webui_block="admin@localhost still has upstream's default password and it
-               could not be rotated (see the warning above). Change it, then re-run."
+        _webui_block="admin@localhost still has upstream's default password, or the
+               WebUI would not say whether it does, and it was not rotated (see
+               the warning above). Change it, then re-run."
       fi ;;
     *)
       case "$_ct" in
@@ -426,10 +633,16 @@ else
           _webui_block="the WebUI container is up but never answered, so its default
                admin password could not be checked. Re-run this script once it is up." ;;
         absent|*:true)
-          # Not running (or a stopped container that restarts auth on): it
-          # starts from the conf, and start.sh's configure-webui.sh run
-          # retires the default password then.
-          : ;;
+          # Not running (no container: the normal state after ./stop.sh, or a
+          # stopped one that restarts auth on). Its volume may still hold
+          # admin@localhost with upstream's "admin" password from auth-off
+          # use, and nothing here can check that until it answers. Publishing
+          # anyway put a known admin password on the tailnet from the WebUI's
+          # first boot until start.sh's backgrounded configure-webui got to
+          # it — and for good if that rotation failed (it only warns).
+          _webui_block="the WebUI is not running, so its default admin password could
+               not be checked before going tailnet-wide. Start the stack
+               (./start.sh), wait for the WebUI, then re-run this script." ;;
         running:*|*:false)
           # A container carrying WEBUI_AUTH=false keeps it (restart:
           # unless-stopped) until compose recreates it.
@@ -448,9 +661,9 @@ if [[ -n "$_webui_block" ]]; then
   echo "      NOT publishing the WebUI (:443): $_webui_block" >&2
   # An earlier run may have mounted it — take it down rather than leave an
   # open admin UI on the tailnet.
-  sudo tailscale serve --https=443 off >/dev/null 2>&1 || true
+  ts_admin serve --https=443 off >/dev/null 2>&1 || true
 else
-  sudo tailscale serve --bg --https=443  "http://$UP_HOST:3000"
+  ts_admin serve --bg --https=443  "http://$UP_HOST:3000"
   WEBUI_PUBLISHED=1
   # Persist --i-accept-open-webui: without a recorded acknowledgement doctor
   # FAILed this deliberate configuration on every run, forever. Replace any
@@ -484,20 +697,38 @@ fi
 # exactly as ALLOW_OPEN_WEBUI is (conf.sh resolves both, env over conf).
 _EDGE_GATE="${EDGE_GATE:-false}"
 _EDGE_PORT="${EDGE_PORT:-8090}"
+# The raw mount's target is the engine itself, at INFERENCE_URL — the same
+# address beast-gate's upstream follows (start.sh OPENBEAST_LLAMA_UPSTREAM).
+# It was a fixed :8080, so on a TensorFold / vLLM box (:8000) the raw :8443
+# proxied to a port nothing listened on (502) while saying "published".
+# An INFERENCE_URL on ANOTHER machine is never mounted raw: tailscale serve
+# would hand the tailnet that box's engine with no identity in front; the
+# gate is the way to publish it.
+RAW_TARGET="$(_raw_inference_target "${INFERENCE_URL:-http://127.0.0.1:8080}" \
+                "${OPENBEAST_PROBE_HOST:-}" "$BIND_HOST")" || RAW_TARGET=""
 INFERENCE_PUBLISHED=0
 ALLOW_OPEN_INFERENCE="${ALLOW_OPEN_INFERENCE:-false}"
 # The flag given on an earlier run, persisted (see below), counts as given.
 ACCEPT_INFERENCE_FROM_FLAG=$ACCEPT_OPEN_INFERENCE
 [[ "$ALLOW_OPEN_INFERENCE" == "true" ]] && ACCEPT_OPEN_INFERENCE=1
 if [[ "$_EDGE_GATE" == "true" ]]; then
-  sudo tailscale serve --bg --https=8443 "http://$UP_HOST:${_EDGE_PORT:-8090}"
+  ts_admin serve --bg --https=8443 "http://$UP_HOST:${_EDGE_PORT:-8090}"
   INFERENCE_PUBLISHED=1
   echo "      Inference published via beast-gate (:8443 → :${_EDGE_PORT:-8090} → llama-server)."
   echo "      Remote devices need an enrolled key: ./scripts/clients.sh enroll <id>"
+elif [[ -z "$RAW_TARGET" ]]; then
+  {
+    echo "      NOT publishing inference (:8443): INFERENCE_URL=$INFERENCE_URL is another"
+    echo "               machine, and a raw mount would hand the tailnet that engine with"
+    echo "               no identity in front. Publish it through beast-gate: set"
+    echo "               EDGE_GATE=true in openbeast.conf, ./stop.sh && ./start.sh -d, then"
+    echo "               re-run this script (the gate follows INFERENCE_URL)."
+  } >&2
+  ts_admin serve --https=8443 off >/dev/null 2>&1 || true
 elif [[ -n "${LLAMA_API_KEY:-}" ]]; then
-  sudo tailscale serve --bg --https=8443 "http://$UP_HOST:8080"
+  ts_admin serve --bg --https=8443 "$RAW_TARGET"
   INFERENCE_PUBLISHED=1
-  echo "      Inference published RAW (:8443 → :8080) behind the shared LLAMA_API_KEY."
+  echo "      Inference published RAW (:8443 → ${RAW_TARGET##*:}) behind the shared LLAMA_API_KEY."
   echo "      (If the stack was started before that key was set, restart it — the"
   echo "      running llama-server is keyless until then.) For per-device keys +"
   echo "      audit, set EDGE_GATE=true in openbeast.conf and re-run (docs/BEAST_SLOT.md)."
@@ -505,7 +736,7 @@ elif [[ $ACCEPT_OPEN_INFERENCE -eq 1 ]]; then
   echo "      WARNING: no EDGE_GATE, no LLAMA_API_KEY and --i-accept-open-inference given —"
   echo "               publishing llama-server with NO key. Every tailnet device can use"
   echo "               the GPU and reach its whole route table."
-  sudo tailscale serve --bg --https=8443 "http://$UP_HOST:8080"
+  ts_admin serve --bg --https=8443 "$RAW_TARGET"
   INFERENCE_PUBLISHED=1
   # Persist the acknowledgement the way --i-accept-open-webui is persisted:
   # replace any earlier assignment, keep the conf 0600, temp file + mv.
@@ -535,13 +766,13 @@ else
   } >&2
   # An earlier run may have mounted it — take it down rather than leave a
   # keyless llama-server on the tailnet.
-  sudo tailscale serve --https=8443 off >/dev/null 2>&1 || true
+  ts_admin serve --https=8443 off >/dev/null 2>&1 || true
 fi
 if [[ $PUBLISH_SEARXNG -eq 1 ]]; then
   # Client mode (docs/BEAST_SLOT.md): the laptop's local web_search
   # tool calls the rig's SearXNG. Tailnet-only like everything else; see
   # the security note in the header.
-  sudo tailscale serve --bg --https=8889 "http://$UP_HOST:8888"
+  ts_admin serve --bg --https=8889 "http://$UP_HOST:8888"
   echo "      SearXNG published for thin clients (tailnet-only, :8889 → :8888)."
 fi
 if [[ $PUBLISH_SLOT -eq 1 ]]; then
@@ -553,18 +784,7 @@ if [[ $PUBLISH_SLOT -eq 1 ]]; then
     echo "      WARNING: dashboard extension not in EXTENSIONS — the slot API"
     echo "               will 502 until: ./scripts/ext.sh enable dashboard && ./stop.sh && ./start.sh"
   fi
-  # Mount ONLY /api/slot — a bare `--https=8444 → :3002` would publish the
-  # whole dashboard (HTML page + /api/status) to every tailnet device. Fall
-  # back to the full mount on tailscale builds without --set-path.
-  if sudo tailscale serve --bg --https=8444 --set-path=/api/slot \
-       "http://$UP_HOST:3002/api/slot" 2>/dev/null; then
-    echo "      beast-slot status API published (tailnet-only, :8444/api/slot)."
-  else
-    sudo tailscale serve --bg --https=8444 "http://$UP_HOST:3002"
-    echo "      beast-slot published (tailnet-only, :8444 → :3002)."
-    echo "      NOTE: this tailscale build lacks --set-path, so the whole"
-    echo "            dashboard (page + /api/status) is tailnet-visible."
-  fi
+  _publish_slot_mount "$UP_HOST"
 fi
 if [[ $PUBLISH_CHAT -eq 1 ]]; then
   # beast-chat (docs/BEAST_CHAT.md). Unlike the slot API this mounts "/" on
@@ -575,25 +795,8 @@ if [[ $PUBLISH_CHAT -eq 1 ]]; then
     echo "      WARNING: BEAST_CHAT is not true in openbeast.conf — :8445 will"
     echo "               502 until: set BEAST_CHAT=true && ./stop.sh && ./start.sh"
   fi
-  # The Unix-socket hardening (docs/BEAST_CHAT.md): with OPENBEAST_CHAT_SOCKET
-  # set, mount THAT. A TCP mount here used to silently replace a hand-made
-  # unix: mount on every re-run, and under LOGIN_FROM=unix every tailnet
-  # reader then got 404 (review R2-6).
-  _chat_sock="${OPENBEAST_CHAT_SOCKET:-}"
-  if [[ -n "$_chat_sock" ]]; then
-    sudo tailscale serve --bg --https=8445 "unix:$_chat_sock"
-    echo "      beast-chat published (tailnet-only, :8445 → unix:$_chat_sock)."
-  else
-    sudo tailscale serve --bg --https=8445 "http://$CHAT_UP_HOST:${CHAT_PORT:-3003}"
-    echo "      beast-chat published (tailnet-only, :8445 → :${CHAT_PORT:-3003})."
-  fi
-  if [[ "$(printf '%s' "${OPENBEAST_CHAT_LOGIN_FROM:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" == "unix" && -z "$_chat_sock" ]]; then
-    echo "      WARNING: OPENBEAST_CHAT_LOGIN_FROM=unix but OPENBEAST_CHAT_SOCKET is unset"
-    echo "               here — :8445 dials TCP, where tailnet logins are NOT honoured,"
-    echo "               so every reader gets 404. Re-run with OPENBEAST_CHAT_SOCKET set"
-    echo "               (the same environment start.sh had)."
-  fi
-  if [[ -z "$_chat_sock" ]] && ! _is_loop "$CHAT_UP_HOST"; then
+  _publish_chat_mount "$CHAT_UP_HOST"
+  if [[ "${CHAT_LOGIN_FROM:-loopback}" != unix ]] && ! _is_loop "$CHAT_UP_HOST"; then
     # The console trusts Tailscale-User-Login only from a LOOPBACK peer (the
     # header is otherwise forgeable), and tailscaled dials this address from
     # itself — so logins are not honoured through this mount.
@@ -617,22 +820,8 @@ if [[ $PUBLISH_ARTIFACT -eq 1 ]]; then
     echo "      WARNING: BEAST_ARTIFACT is not true — :8446 will 502 until:"
     echo "               set BEAST_ARTIFACT=true in openbeast.conf, then ./stop.sh && ./start.sh"
   fi
-  # Same Unix-socket hardening as beast-chat (docs/BEAST_ARTIFACT.md, R2-5).
-  _art_sock="${OPENBEAST_ARTIFACT_SOCKET:-}"
-  if [[ -n "$_art_sock" ]]; then
-    sudo tailscale serve --bg --https=8446 "unix:$_art_sock"
-    echo "      beast-artifact published (tailnet-only, :8446 → unix:$_art_sock)."
-  else
-    sudo tailscale serve --bg --https=8446 "http://$UP_HOST:${ARTIFACT_PORT:-3004}"
-    echo "      beast-artifact published (tailnet-only, :8446 → :${ARTIFACT_PORT:-3004})."
-  fi
-  if [[ "$(printf '%s' "${OPENBEAST_ARTIFACT_LOGIN_FROM:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" == "unix" && -z "$_art_sock" ]]; then
-    echo "      WARNING: OPENBEAST_ARTIFACT_LOGIN_FROM=unix but OPENBEAST_ARTIFACT_SOCKET is"
-    echo "               unset here — :8446 dials TCP, where tailnet logins are NOT"
-    echo "               honoured, so every reader gets 404. Re-run with"
-    echo "               OPENBEAST_ARTIFACT_SOCKET set (the same environment start.sh had)."
-  fi
-  if [[ -z "$_art_sock" ]] && ! _is_loop "$UP_HOST"; then
+  _publish_artifact_mount "$UP_HOST"
+  if [[ "${ARTIFACT_LOGIN_FROM:-loopback}" != unix ]] && ! _is_loop "$UP_HOST"; then
     # There is no 'public' visibility (private/tailnet only). The server
     # trusts Tailscale-User-Login from loopback OR from a peer whose address
     # is the one the connection was accepted on — tailscaled dialling the
@@ -676,7 +865,8 @@ if [[ $PUBLISH_NTFY -eq 1 ]]; then
     echo "      WARNING: the ntfy extension is not in EXTENSIONS — :8447 will 502 until:"
     echo "               ./scripts/ext.sh enable ntfy && ./stop.sh && ./start.sh"
   fi
-  sudo tailscale serve --bg --https=8447 "http://127.0.0.1:${NTFY_PORT:-3005}"
+  _refuse_if_dashboard_on_8447
+  ts_admin serve --bg --https=8447 "http://127.0.0.1:${NTFY_PORT:-3005}"
   echo "      ntfy published (tailnet-only, :8447 → 127.0.0.1:${NTFY_PORT:-3005})."
   if [[ "${OPENBEAST_NTFY_DEFAULT_ACCESS:-read-write}" != "deny-all" ]]; then
     echo "      NOTE: ntfy access is ${OPENBEAST_NTFY_DEFAULT_ACCESS:-read-write} — every tailnet device can"

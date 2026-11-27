@@ -535,7 +535,11 @@ def test_a_lease_held_by_our_own_wrapper_is_ours():
     line = "HELD by pid 11 — beast-lang P3  (since now)"
     assert S.check_lease(False, lambda: line, lambda: {10, 11})[0] is True
     assert S.check_lease(False, lambda: line, lambda: {10, 12})[0] is False
-    assert os.getppid() in S._ancestors() and os.getpid() in S._ancestors()
+    assert os.getpid() in S._ancestors()
+    # _ancestors() stops before PID 1 (init is never a lease holder), so when pytest's parent IS
+    # PID 1 (a container started with `bash -c`, no --init) the parent check does not apply.
+    if os.getppid() > 1:
+        assert os.getppid() in S._ancestors()
 
 
 def test_a_held_lease_blocks_the_cli_before_anything_is_sent(rig, monkeypatch, capsys):

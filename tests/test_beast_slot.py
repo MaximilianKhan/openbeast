@@ -180,6 +180,25 @@ class TestSlotContract(unittest.TestCase):
         self.assertEqual(self._status({})["capacity"]["serving_profile"],
                          "unknown")
 
+    def test_single_slot_engine_neutral_off_llama(self):
+        # Basalt (Inkling 2 Mini on the RTX 5090) answers the llama-server
+        # API and is probed as llama, but it has no llama.cpp MTP: its one
+        # slot is "single-slot", not "mtp-single-slot" (rig, 2026-11-25).
+        saved = dashboard._ENGINE
+        try:
+            dashboard._ENGINE = "basalt"
+            out = self._status({
+                "/health": (200, "ok"), "/props": (200, _PROPS),
+                "/slots": (200, _SLOTS_CURRENT),
+            }, kv=True)
+            self.assertEqual(out["capacity"]["serving_profile"], "single-slot")
+            # ...and it names itself: Basalt 404s an id it does not serve, so
+            # clients must not get the llama catalog (client_rigs.catalog).
+            self.assertEqual(out["backend"], "basalt")
+            self.assertEqual(out["slots"], {"total": 1, "busy": 1})
+        finally:
+            dashboard._ENGINE = saved
+
     def test_legacy_state_field_counts_busy(self):
         out = self._status({
             "/health": (200, "ok"), "/props": (200, _PROPS),
@@ -404,15 +423,59 @@ class TestRemoteBackends(unittest.TestCase):
             "kv_usage": None, "serving_profile": "single-slot"})
         self.assertFalse(any(u.endswith("/metrics") for u in self.seen))
 
+    # The live GLM pair's /health (spark-1, 2026-11-15), trimmed.
+    _TF_HEALTH = {"ok": True, "backend": "tensorfold", "busy": True,
+                  "requests_running": 2,
+                  "streams": {"decoding": 1, "prefilling": 1, "max": 4,
+                              "filling": 0, "paused": 0},
+                  "pool_tokens": 2582528, "pool_free_tokens": 1291264,
+                  "kept_prompts": 32, "iteration_s": 0.4,
+                  "context_length": 1048576}
+
+    def test_tensorfold_capacity_comes_from_its_health(self):
+        # ops review: /health carries the window, the pool and the load, and
+        # /api/slot served nulls for a 1M-token server.
+        out = self._status("tensorfold", {
+            "8000/health": (200, self._TF_HEALTH),
+            "/v1/models": (200, {"data": [{"id": "GLM-5.3-Flash-EXL3"}]}),
+        }, slots=4)
+        self.assertTrue(out["healthy"])
+        self.assertEqual(out["model"], {"id": "GLM-5.3-Flash-EXL3", "ctx": 1048576})
+        self.assertEqual(out["slots"], {"total": 4, "busy": 2})
+        self.assertEqual(out["capacity"], {
+            "ctx_shared": True, "ctx_total": 2582528, "queue_deferred": None,
+            "kv_usage": 0.5, "serving_profile": "batched-multi-slot"})
+
+    def test_tensorfold_streams_max_fills_unset_slots(self):
+        out = self._status("tensorfold", {"8000/health": (200, self._TF_HEALTH)})
+        self.assertEqual(out["slots"]["total"], 4)
+
+    def test_tensorfold_stalled_iteration_is_not_healthy(self):
+        # A frozen spark-2 leaves rank 0 answering ok:true while its current
+        # iteration never ends: iteration_s is the stall signal.
+        stuck = dict(self._TF_HEALTH, iteration_s=400.0)
+        out = self._status("tensorfold", {"8000/health": (200, stuck)}, slots=4)
+        self.assertFalse(out["healthy"])
+        self.assertFalse(out["services"]["model"])
+
+    def test_tensorfold_garbage_health_fields_stay_null(self):
+        bad = {"ok": True, "context_length": "lots", "requests_running": -1,
+               "pool_tokens": 0, "pool_free_tokens": 5, "iteration_s": "x"}
+        out = self._status("tensorfold", {"8000/health": (200, bad)}, slots=4)
+        self.assertTrue(out["healthy"])
+        self.assertIsNone(out["model"]["ctx"])
+        self.assertIsNone(out["slots"]["busy"])
+        self.assertIsNone(out["capacity"]["ctx_total"])
+        self.assertIsNone(out["capacity"]["kv_usage"])
+
     def test_bad_slots_value_is_ignored(self):
         out = self._status("tensorfold", {"8000/health": (200, {"ok": True})},
                            slots="eight")
         self.assertIsNone(out["slots"]["total"])
 
-    def test_key_never_sent_to_tensorfold(self):
-        # The real _get, with urlopen captured: TensorFold has no auth, so
-        # the key must not ride along; vLLM (--api-key) must get it.
-        import urllib.request as ur
+    def test_key_sent_to_vllm_and_tensorfold(self):
+        # The real _get, with its opener captured: vLLM (--api-key) and native
+        # TensorFold (--api-key-file) both guard /v1, so both get the key.
         dashboard._get = self._saved[0]
         dashboard._API_KEY = "k-secret"
         seen = []
@@ -429,16 +492,23 @@ class TestRemoteBackends(unittest.TestCase):
             def __exit__(self, *a):
                 return False
 
-        real = ur.urlopen
-        ur.urlopen = lambda req, timeout=2: (seen.append(req.get_header("Authorization")), R())[1]
+        class Opener:
+            def open(self, req, timeout=2):
+                seen.append(req.get_header("Authorization"))
+                # never on a redirect: the key is an unredirected header
+                assert "Authorization" not in req.headers
+                return R()
+
+        real = dashboard._OPENER
+        dashboard._OPENER = Opener()
         try:
-            for backend, want in (("tensorfold", None), ("vllm", "Bearer k-secret")):
+            for backend, want in (("tensorfold", "Bearer k-secret"), ("vllm", "Bearer k-secret")):
                 seen.clear()
                 dashboard._BACKEND = backend
                 dashboard._get("http://10.0.0.5:8000/v1/models", auth=True)
                 self.assertEqual(seen, [want], backend)
         finally:
-            ur.urlopen = real
+            dashboard._OPENER = real
 
     def test_llama_backend_has_no_backend_field(self):
         # The llama answer stays byte-identical: no `backend`, no kv_usage.
@@ -567,20 +637,71 @@ class TestEdgeAuthMode(unittest.TestCase):
     def test_corrupt_registry_does_not_claim_anon(self):
         self.assertEqual(self._auth(True, "{ half-written"), "device")
 
-    def test_anon_holds_only_while_no_registry_file_exists(self):
+    def test_anon_holds_only_while_no_registry_has_existed(self):
         # Negative control: no file at all — the gate really does serve
         # keyless callers as "anon" then.
         self.assertEqual(self._auth(True), "anon")
 
-    def test_empty_registry_file_is_device_not_anon(self):
-        # Review R2-2: what `clients.sh remove` leaves after the last device.
-        # The gate keys ALLOW_ANON on the FILE existing (edge.Registry.exists)
-        # and 401s every keyless caller, so "anon" would be a contract lie.
+    def test_emptied_registry_is_not_anon(self):
+        # What `clients.sh remove` of the last device leaves: the gate keeps
+        # ignoring ALLOW_ANON (401 no_registry), so advertising "anon" sent
+        # keyless clients into a guaranteed 401 (review 2026-11-15).
         self.assertEqual(self._auth(True, {"version": 1, "devices": []}),
                          "device")
 
+    def test_deleted_registry_with_marker_is_not_anon(self):
+        # The gate's sticky clients.enrolled marker survives the registry.
+        open(os.path.join(self.repo, ".run", "clients.enrolled"), "w").close()
+        self.assertEqual(self._auth(True), "device")
+
+    def test_registry_with_unkeyed_devices_is_device(self):
+        reg = {"version": 1, "devices": [{"id": "half", "key_sha256": ""}]}
+        self.assertEqual(self._auth(True, reg), "device")
+
     def test_gate_without_anon_is_device(self):
         self.assertEqual(self._auth(False), "device")
+
+    def _admission(self, **env):
+        keys = ("OPENBEAST_EDGE_MAX_INFLIGHT", "OPENBEAST_INFERENCE_SLOTS", "OPENBEAST_EDGE_RATE_LIMIT")
+        saved = {k: os.environ.get(k) for k in keys}
+        try:
+            for k in keys:
+                os.environ.pop(k, None)
+            os.environ.update(env)
+            dashboard._EDGE_ANON = False
+            return dashboard.slot_status().get("admission")
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_admission_published_with_the_gate(self):
+        # Review 2026-11-16: slots.total said 4 on the Spark pair while the
+        # gate admitted 2 per device; clients learned it only from 429s.
+        self.assertEqual(self._admission(OPENBEAST_INFERENCE_SLOTS="4"),
+                         {"per_device_inflight": 4, "per_device_rate_per_min": 120})
+        self.assertEqual(self._admission(OPENBEAST_INFERENCE_SLOTS="4", OPENBEAST_EDGE_MAX_INFLIGHT="3",
+                                         OPENBEAST_EDGE_RATE_LIMIT="60"),
+                         {"per_device_inflight": 3, "per_device_rate_per_min": 60})
+        self.assertEqual(self._admission()["per_device_inflight"], 2)
+
+    def test_admission_matches_the_gate_rule(self):
+        sys.path.insert(0, os.path.join(REPO, "agents"))
+        try:
+            import edge
+        except ImportError as e:                          # the gate's deps are not installed here
+            self.skipTest(f"agents/edge.py not importable: {e}")
+        for env in ({}, {"OPENBEAST_INFERENCE_SLOTS": "4"}, {"OPENBEAST_EDGE_MAX_INFLIGHT": "1"},
+                    {"OPENBEAST_EDGE_MAX_INFLIGHT": "6", "OPENBEAST_INFERENCE_SLOTS": "4"},
+                    {"OPENBEAST_INFERENCE_SLOTS": "0"}):
+            self.assertEqual(self._admission(**env)["per_device_inflight"],
+                             edge.default_max_inflight(env), env)
+
+    def test_no_admission_field_with_the_gate_off(self):
+        dashboard._EDGE_GATE = False
+        self.assertNotIn("admission", dashboard.slot_status())
 
 
 class TestServicesInstinct(unittest.TestCase):

@@ -175,17 +175,21 @@ def test_round_trip_every_fixture_selects_its_own_card_or_nothing():
             else:
                 silent.append((c.lang, f"{c.id}:old[{n}]"))
     # Every fixture the index was built from, for the languages measured
-    # (49 on the rig: 39 zig + 6 cpp + 4 python; 39 where only zig matches).
+    # (67 on the rig: 57 zig + 6 cpp + 4 python; 57 where only zig matches —
+    # 39 zig before pack v2 added 14 OLD fixtures, 2026-11-16, and v3 4 more,
+    # 2026-11-17).
     want = sum(idx["langs"][lang]["fixtures_with_diagnostics"] for lang in served)
     assert tot == want >= 39, f"{tot} diagnostics, the index records {want} — the claim sets shrank?"
     assert not wrong, f"a fixture selected somebody else's card: {wrong}"
     # EXACTLY the fixtures the index declares silent — no more (a regression)
-    # and no fewer (a stale declaration). On this toolchain that is 36/39 zig.
+    # and no fewer (a stale declaration). On this toolchain that is 54/57 zig
+    # (36/39 before pack v2; every one of v2's 14 and v3's 4 new OLD fixtures
+    # selects its own card).
     declared = {(lang, f) for lang, e in idx["langs"].items()
                 for f in e["unreachable"]["fixtures"]}
     assert set(silent) == {d for d in declared if d[0] in per_lang}, \
         (sorted(silent), sorted(declared))
-    assert per_lang["zig"] == [36, 39], per_lang
+    assert per_lang["zig"] == [54, 57], per_lang
     declared_claims = {(lang, cid) for lang, e in idx["langs"].items()
                        for cid in e["unreachable"]["claims"]}
     assert seen - reached == {d for d in declared_claims if d[0] in per_lang}
@@ -258,6 +262,29 @@ def test_a_claim_with_no_summary_is_never_attached(monkeypatch):
     monkeypatch.setattr(V, "load_claims", stripped)
     assert E.cards_for("zig", "error: root source file struct 'std' has no "
                               "member named 'io'", index=E.load_index()) == []
+
+
+def test_a_claim_not_VERIFIED_here_is_never_attached(monkeypatch):
+    """The index maps errors from OLD fixtures only, and may be built on
+    another box; it never checked the NEW form — the fix the card hands over.
+    The header says "Confirmed against the toolchain installed on this
+    machine", so escalation gets the gate packs.render() and
+    reference.verified_cards() already apply: VERIFIED here, now."""
+    monkeypatch.setattr(E, "index_gate", lambda lang, entry: {"served": True})
+    diag = ("error: root source file struct 'std' has no member named 'io'\n"
+            "    const out = std.io.getStdOut().writer();")
+    verdict = {"v": V.VERIFIED}
+    monkeypatch.setattr(V, "verify", lambda c: {"verdict": verdict["v"]})
+    served = E.cards_for("zig", diag, index=E.load_index())
+    assert served, "precondition: the committed index selects a card"
+    for bad in (V.NEW_FAILS, V.UNVERIFIABLE):
+        verdict["v"] = bad
+        assert E.cards_for("zig", diag, index=E.load_index()) == [], bad
+
+    def boom(c):
+        raise RuntimeError("driver broke")
+    monkeypatch.setattr(V, "verify", boom)
+    assert E.cards_for("zig", diag, index=E.load_index()) == []
 
 
 def test_the_rendered_block_says_where_its_facts_came_from():

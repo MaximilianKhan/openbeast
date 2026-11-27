@@ -37,14 +37,26 @@ affinity_ttl_s      = 1800
 affinity_max        = 4096
 audit               = ".run/hydra-audit.jsonl"
 audit_max_mb        = 50
-# THE FAMILY POLICY (Max, 2026-09-30: "all of our models are uncensored").
-# A hard filter on every non-strict request: first choice, spill, sticky
-# affinity, failover, the ctx last resort, and after any rule hop. A route
-# target outside it is a config ERROR, so a stock model can never be routed
-# to — it can only be reached by naming its strict deployment id (a pin).
-# Required once the routes span more than one family: hydra refuses a
-# mixed-family config that does not declare which families may answer.
-allowed_families    = ["qwen3.8-27b-uncensored", "glm-5.3-flash-uncensored"]
+# THE FAMILY POLICY. Max, 2026-11-19: "It's uncensored-preferred, as we want
+# to enable researchers, lawyers, and professionals to get the most honest and
+# neutral answers when weighing critical business decisions (some of these
+# models have alignment and post-training that lead to wrong decisions)."
+#   "uncensored-preferred"  (default) stock families may serve. Inside one
+#       priority group, AFTER every health / breaker / conformance / caps /
+#       ctx / drain filter and after affinity, an uncensored family is tried
+#       before a stock one, ahead of load. Priority still wins: a stock target
+#       at priority 0 goes before an uncensored one at priority 1.
+#   "uncensored-only"  the 2026-09-30 rule (#122): a hard filter on every
+#       non-strict request (first choice, spill, sticky affinity, failover,
+#       the ctx last resort, after any rule hop). A route target outside
+#       uncensored_families is a config ERROR; a stock deployment is reachable
+#       only by its strict id (a pin). uncensored_families is then required
+#       once the routes span more than one family.
+#   "any"  families play no part in routing (same_family routes still hold).
+# Strict pins never pass through the policy. The old key name
+# `allowed_families` still loads as uncensored_families (`check` warns).
+family_policy       = "uncensored-preferred"
+uncensored_families = ["qwen3.8-27b-uncensored", "glm-5.3-flash-uncensored"]   # abliterated weights only
 
 [hydra.breaker]
 fail_threshold    = 5
@@ -86,11 +98,16 @@ gpu_lease   = true                            # drain while an eval campaign hol
 ttft_timeout_s = 120
 labels      = ["local", "5090", "mtp"]
 
-[nodes.sparks]                                # both Sparks, TensorFold TP=2 = ONE node (rank 0 serves HTTP)
-url         = "http://100.101.102.103:8000"   # tensorfold/spark-node.sh rank 0 (tailnet IP)
-engine      = "tensorfold"                    # never gets a key; MUST be firewalled to the rig (DGX §7)
-slots       = 1                               # TENSORFOLD_PARALLEL=auto = one request at a time on CUDA (VERIFY)
-members     = ["spark-a", "spark-b"]
+[nodes.sparks]                                # spark-hydra: both Sparks, TensorFold TP=2 = ONE node
+# The live pair's shape (docs/SPARK_HYDRA.md): rank 0 listens on spark-1's
+# 127.0.0.1:8000 ONLY (TensorFold there has no API key), so the one door from
+# another box is beast-gate on :8443 — never the engine port itself.
+url         = "https://spark-1.tail4109f9.ts.net:8443"   # beast-gate (tailscale serve :8443 -> :8090)
+engine      = "openai"                        # the gate's OpenAI surface; readiness = its /health
+key_file    = "~/.config/openbeast/hydra/sparks.key"   # a beast-gate DEVICE key for this rig: scripts/clients.sh enroll ON spark-1
+slots       = 4                               # the pair's 4 streams (DeepSeek default or GLM; spark-1 INFERENCE_SLOTS=4); the gate
+                                              # admits one device that many (EDGE_MAX_INFLIGHT, else INFERENCE_SLOTS)
+members     = ["spark-1", "spark-2"]
 exclusive_group = "spark-pair"                # any other engine on these boxes joins this group, disabled
 connect_timeout_s = 5
 ttft_timeout_s    = 120                       # VERIFY: 320B/18B-active prefill on GB10 is unmeasured
@@ -109,8 +126,8 @@ labels      = ["remote", "ampere"]
 # role = "instinct-engine" is REFUSED: a dedicated instinct scorer is never a hydra pool.
 
 # ─────────────────────── deployments (strict ids) ───────────────────────
-# EVERY deployment is uncensored (hydra.allowed_families). A stock model has
-# no place in a route; list one here only to pin it by id, and `check` warns.
+# A deployment's `family` is what hydra.family_policy reads: list it in
+# hydra.uncensored_families only when the weights really are abliterated.
 [deployments."qwen38-unc-q5@rig"]
 node     = "rig"
 upstream = "Qwen3.8 27B Uncensored MTP Q5"   # llama-server lists its -a ALIAS as the id — this is
@@ -134,20 +151,34 @@ family   = "qwen3.8-27b-uncensored"           # same weights as the rig = same f
 caps     = ["tools", "json_schema", "grammar", "reasoning_budget", "id_slot"]
 
 [deployments."glm53-flash-unc@sparks"]
-# GLM-5.3-Flash Uncensored (320B total / 18B active), EXL3 TR3 4bpw — the
-# only EXL3 TensorFold's glm5_next reader accepts (4-bit, mcg codebook,
-# routed experts only): neko-legends/GLM-5.3-Flash-Uncensored-EXL3 (gated;
-# built from orcarouter's FP8). Profile: glm53-flash-unc-exl3-tensorfold.
-# Once that profile is in scripts/backends/models/, replace upstream + ctx
-# with   profile = "glm53-flash-unc-exl3-tensorfold"   (they must match its
-# SERVED_MODEL_NAME / MAX_MODEL_LEN, or `check` refuses the file).
+# GLM-5.3-Flash (320B total / 18B active), abliterated, EXL3 4bpw, as the live
+# pair serves it (docs/SPARK_HYDRA.md D1, the recipe's TensorFold): the id and
+# context below are what spark-1's /api/slot reported on 2026-11-16
+# (model.id, model.ctx). A pair serving through OpenBeast's own launcher
+# (D2) answers with its profile's SERVED_MODEL_NAME instead — then use
+#   profile = "glm53-flash-ablit-exl3-tensorfold"   (upstream + ctx come from it).
 node     = "sparks"
-upstream = "glm-5.3-flash-uncensored"         # VERIFY: the profile's SERVED_MODEL_NAME
-ctx      = 262144                             # VERIFY: TensorFold's EXL3 long context is "TBD" upstream
-family   = "glm-5.3-flash-uncensored"
+upstream = "GLM-5.3-Flash-EXL3"               # the recipe's served id (curl <url>/v1/models with the device key)
+ctx      = 1048576                            # the per-request window; the 4 streams share one 2097152-token pool
+family   = "glm-5.3-flash-uncensored"         # abliterated = uncensored (hydra.uncensored_families)
 caps     = ["tools"]                          # TensorFold: no json_schema / grammar / reasoning_budget
 conformance = "required"                      # default for non-loopback nodes anyway:
                                               # scripts/hydra.sh conformance glm53-flash-unc@sparks
+
+[deployments."deepseek-v41-flash@sparks"]
+# DeepSeek-V4.1-Flash (Mia EXL3), the pair's DEFAULT since 2026-11-18
+# (docs/SPARK_HYDRA.md): STOCK weights (the pack is ABLIT=0), so its family is
+# NOT in hydra.uncensored_families. Allowed under uncensored-preferred; under
+# uncensored-only it may sit in no route (a pin only). The pair serves ONE of
+# DeepSeek / GLM at a time on the same node: the one not served lists another
+# id on /v1/models, so it is MISMATCH and never routed until `beastglm` /
+# `beastds` switches the pair back.
+node     = "sparks"
+upstream = "DeepSeek-V4.1-Flash-1017"         # the recipe's served_name (scripts/backends/data/spark-families.json)
+ctx      = 524288                             # the pair's advertised window under DeepSeek (SPARK_HYDRA.md)
+family   = "deepseek-v4.1-flash"              # stock: not uncensored
+caps     = ["tools"]                          # TensorFold: no json_schema / grammar / reasoning_budget
+conformance = "required"
 
 # ────────────────────────── routes (virtual ids) ──────────────────────────
 # Lower priority = tried first. Inside a group: affinity, then least (inflight+1)/slots/weight.
@@ -181,10 +212,19 @@ description = "The Sparks flagship, by name only: GLM-5.3-Flash Uncensored or no
 targets = [ { d = "glm53-flash-unc@sparks", priority = 0 } ]
 spill   = false
 
+[routes."beast:spark"]
+description = "Whatever the Spark pair serves: GLM-5.3-Flash Uncensored preferred, DeepSeek-V4.1-Flash (stock) otherwise"
+targets = [
+  { d = "glm53-flash-unc@sparks",    priority = 0 },
+  { d = "deepseek-v41-flash@sparks", priority = 0 },   # same group: uncensored-preferred tries GLM first
+]
+spill   = false
+
 [routes."beast:long"]
-description = "Long context: the Sparks first, then the 27Bs"
+description = "Long context: the Sparks first (GLM preferred over the stock DeepSeek), then the 27Bs"
 targets = [
   { d = "glm53-flash-unc@sparks", priority = 0 },
+  { d = "deepseek-v41-flash@sparks", priority = 0 },
   { d = "qwen38-unc-q5@rig",      priority = 1 },
   { d = "qwen38-unc-q5@ti",       priority = 1 },
 ]
@@ -197,9 +237,10 @@ require = ["vision"]
 [routes.classify]                             # agents/router.py sends model:"classify" (ROUTER_CLASSIFY_MODEL)
 description = "Grammar-constrained spawn classifier — a full 27B, kept off the 1-slot 5090"
 # Decisions go to a full model, never a small or 3B-active one (the 35B-A3B
-# MoE here is ~3B active; the MoE lesson: judge by active compute), and never
-# to a stock one. Add another deployment only if it is an uncensored dense
-# 27B-class model (tests/test_hydra_core.py pins this).
+# MoE here is ~3B active; the MoE lesson: judge by active compute). Both
+# targets are the uncensored 27B (uncensored-preferred); add another
+# deployment only if it is a dense 27B-class model (tests/test_hydra_core.py
+# pins this).
 targets = [
   { d = "qwen38-unc-q5@ti",  priority = 0 },
   { d = "qwen38-unc-q5@rig", priority = 1 },

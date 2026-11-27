@@ -1,0 +1,98 @@
+[
+ {
+  "name": "session_show_defaults",
+  "description": "Show current active defaults. Required before your first build/run/test call in a session \u2014 do not assume defaults are configured."
+ },
+ {
+  "name": "session_use_defaults_profile",
+  "description": "Switch the active session defaults profile."
+ },
+ {
+  "name": "session_set_defaults",
+  "description": "Set session defaults for the active profile, or for a specified profile and make it active."
+ },
+ {
+  "name": "session_clear_defaults",
+  "description": "Clear session defaults for the active profile or a specified profile."
+ },
+ {
+  "name": "list_sims",
+  "description": "List iOS simulators."
+ },
+ {
+  "name": "boot_sim",
+  "description": "Boot iOS simulator for manual/non-build flows. Not required before simulator build-and-run (build_run_sim)."
+ },
+ {
+  "name": "open_sim",
+  "description": "Open the simulator frontend for visibility and manual workflows. Not required before simulator build-and-run (build_run_sim)."
+ },
+ {
+  "name": "build_sim",
+  "description": "Build for iOS sim (compile-only, no launch)."
+ },
+ {
+  "name": "build_run_sim",
+  "description": "Build, install, and launch on iOS Simulator, booting it when needed. Runtime logs are captured automatically and the log file path is included in the response. Preferred single-step run tool when defaults are set."
+ },
+ {
+  "name": "test_sim",
+  "description": "Test on iOS sim."
+ },
+ {
+  "name": "get_sim_app_path",
+  "description": "Get sim built app path."
+ },
+ {
+  "name": "install_app_sim",
+  "description": "Install app on sim."
+ },
+ {
+  "name": "launch_app_sim",
+  "description": "Launch app on simulator. Runtime logs are captured automatically and the log file path is included in the response."
+ },
+ {
+  "name": "stop_app_sim",
+  "description": "Stop sim app."
+ },
+ {
+  "name": "record_sim_video",
+  "description": "Record sim video."
+ },
+ {
+  "name": "clean",
+  "description": "Clean build products."
+ },
+ {
+  "name": "discover_projs",
+  "description": "Scans a directory (defaults to workspace root) to find Xcode project (.xcodeproj) and workspace (.xcworkspace) files. Use when project/workspace path is unknown."
+ },
+ {
+  "name": "list_schemes",
+  "description": "List Xcode schemes."
+ },
+ {
+  "name": "show_build_settings",
+  "description": "Show build settings."
+ },
+ {
+  "name": "get_app_bundle_id",
+  "description": "Extract bundle id from .app."
+ },
+ {
+  "name": "screenshot",
+  "description": "Capture screenshot."
+ },
+ {
+  "name": "snapshot_ui",
+  "description": "Capture a semantic rs/1 runtime UI snapshot with elementRef targets. Observe once, use tap for one target or batch for multiple same-screen targets, and refresh after navigation, scrolling, sheet changes, or obvious layout changes."
+ },
+ {
+  "name": "get_coverage_report",
+  "description": "Show per-target code coverage from an xcresult bundle."
+ },
+ {
+  "name": "get_file_coverage",
+  "description": "Show function-level coverage and uncovered line ranges for a specific file."
+ }
+]

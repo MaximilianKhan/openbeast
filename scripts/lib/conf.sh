@@ -27,6 +27,9 @@
 #   BEAST_CHAT       (env OPENBEAST_BEAST_CHAT)  default false
 #   CHAT_PORT        (env OPENBEAST_CHAT_PORT)   default 3003
 #   CHAT_OPERATORS   (env OPENBEAST_CHAT_OPERATORS) default empty
+#   CHAT_LOGIN_FROM  (env OPENBEAST_CHAT_LOGIN_FROM) default loopback | unix
+#   CHAT_SOCKET      (env OPENBEAST_CHAT_SOCKET)  default .run/chat.sock (unix only;
+#       made absolute, ~ expanded)
 #       beast-chat: the tailnet operator console for the rig's agent and job
 #       sessions (docs/BEAST_CHAT.md). Off by default.
 #   CHAT_NOTIFY_URL / CHAT_NOTIFY_ON / CHAT_NOTIFY_TOKEN_FILE
@@ -41,6 +44,13 @@
 #       reports a clear refusal instead of a multi-minute stall followed by a
 #       misdiagnosis. Affects bootstrap.sh, scripts/update.sh, the compose
 #       pull policy and doctor's reporting. Use `ob_offline` as the predicate.
+#   ISLAND           (env OPENBEAST_ISLAND)      default auto
+#   ISLAND_GRACE     (env OPENBEAST_ISLAND_GRACE) default 90 (seconds)
+#   ISLAND_PROBES    (env OPENBEAST_ISLAND_PROBES) default 1.1.1.1:443 9.9.9.9:443 8.8.8.8:443
+#       beast-island: the RUNTIME offline mode (power outage, router dark).
+#       auto = islands after ISLAND_GRACE seconds without a route and rejoins
+#       by itself; force = islanded from launch (./start.sh -d --offline);
+#       off = no watcher. docs/BEAST_ISLAND.md.
 #   GPU_BACKEND      (env OPENBEAST_GPU_BACKEND) default auto
 #       llama.cpp build backend: auto | cuda | hip | sycl | cpu. "auto" maps
 #       the detected GPU vendor (lib/hardware.sh): nvidia→cuda, amd→hip,
@@ -80,19 +90,79 @@ fi
 
 # Read one KEY= value from openbeast.conf. Ignores comments and surrounding
 # whitespace/quotes; last assignment wins. Prints nothing when absent.
+#
+# A QUOTED value may carry a trailing comment: `BIND_HOST="127.0.0.1"  # lo`
+# is 127.0.0.1. The plain quote strip below only removes a quote at BOTH
+# ends of what is left, so that line came back as `127.0.0.1"  # lo`; the
+# BIND_HOST comment-strip then left `127.0.0.1"`, which still read as
+# loopback and went into llama-server --host and every probe URL (review
+# 2026-11-16). The quoted form is taken whole only when nothing but a `#`
+# comment follows its closing quote, so a quote INSIDE a value (`"a"b"`) and
+# an unquoted value containing " #" (a password) read exactly as before.
+#
+# While this file is being sourced, lookups come from ONE pass over the conf
+# (_ob_conf_snapshot, below) instead of a `grep | tail` pair per key: ~85-100
+# lookups per source were ~170-200 forks, about half of every source (142 of
+# 320 ms on a Spark, 2.3 s on macOS bash 3.2; 2026-11-16 review) — and
+# start, doctor, healthcheck (every 5 min under the watchdog) and 40+
+# scripts source it. The snapshot has to be taken at top level: callers use
+# $(...), so a cache filled inside the function would die with the
+# subshell. It is marked with the conf path, so a REPO_DIR change never
+# reads stale lines, re-read wherever this file writes the conf, and
+# dropped at the end of this file, so a caller that writes openbeast.conf
+# later (setup-tailscale.sh, configure-webui.sh...) reads it fresh. Pure
+# bash (no associative array): bash 3.2 safe.
 _ob_conf_value() {
-  local key="$1" conf="$REPO_DIR/openbeast.conf" line
+  local key="$1" conf="$REPO_DIR/openbeast.conf" line="" q rest after
   [[ -f "$conf" ]] || return 1
-  line="$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$conf" | tail -n1)" || return 1
+  if [[ -n "${_OB_CONF_SNAP+x}" && "${_OB_CONF_SNAP_PATH:-}" == "$conf" ]]; then
+    [[ "$_OB_CONF_SNAP" == *$'\n'"$key="* ]] || return 1
+    line="${_OB_CONF_SNAP##*$'\n'"$key="}"   # the LAST assignment
+    line="${line%%$'\n'*}"
+    line="$key=$line"
+  else
+    line="$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$conf" | tail -n1)" || return 1
+  fi
   [[ -n "$line" ]] || return 1
   line="${line#*=}"
   line="${line#"${line%%[![:space:]]*}"}"   # ltrim
   line="${line%"${line##*[![:space:]]}"}"   # rtrim
+  q="${line:0:1}"
+  if [[ "$q" == '"' || "$q" == "'" ]]; then
+    rest="${line:1}"
+    if [[ "$rest" == *"$q"* ]]; then
+      after="${rest#*"$q"}"
+      after="${after#"${after%%[![:space:]]*}"}"
+      if [[ -z "$after" || "$after" == \#* ]]; then
+        line="${rest%%"$q"*}"
+        [[ -n "$line" ]] || return 1
+        printf '%s\n' "$line"
+        return 0
+      fi
+    fi
+  fi
   line="${line#\"}"; line="${line%\"}"
   line="${line#\'}"; line="${line%\'}"
   [[ -n "$line" ]] || return 1
   printf '%s\n' "$line"
 }
+# One read of openbeast.conf into _OB_CONF_SNAP: "\nKEY=<raw rest of line>"
+# per assignment, in file order, so `##` finds the last one as `tail -n1`
+# did. The key test is grep's: optional leading whitespace, the key,
+# optional whitespace, "=". The value is kept raw; _ob_conf_value trims it.
+_ob_conf_snapshot() {
+  local conf="$REPO_DIR/openbeast.conf" l re='^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=(.*)$'
+  _OB_CONF_SNAP=$'\n'
+  _OB_CONF_SNAP_PATH="$conf"
+  [[ -f "$conf" && -r "$conf" ]] || return 0
+  while IFS= read -r l || [[ -n "$l" ]]; do
+    [[ "$l" == *=* && "$l" =~ $re ]] || continue
+    _OB_CONF_SNAP+="${BASH_REMATCH[1]}=${BASH_REMATCH[2]}"$'\n'
+  done < "$conf"
+}
+_ob_conf_snapshot_drop() { unset _OB_CONF_SNAP _OB_CONF_SNAP_PATH; }
+_ob_conf_snapshot
+
 
 # A few OPENBEAST_<KEY> names are BOTH the env override for KEY and this
 # file's own derived export (the dashboard, children and `start.sh -d` read
@@ -166,19 +236,20 @@ _ob_bool() {
   esac
 }
 
-# _ob_word <raw value> <default> <KEY> — the parser for single-word keys
-# (BIND_HOST, SERVE_SCRIPT, REASONING, WEIGHT_ENFORCE, FILES_SHARDING): the
-# FIRST word, with any attached `#comment` and quotes dropped, exactly as
-# _ob_bool reads its token. `_ob_conf_value` returns the rest of the line
-# verbatim, so `WEIGHT_ENFORCE=strict  # supply chain` arrived as "strict  #
-# supply chain", serve.sh's `case` fell through to WARN, and an unpinned
-# weight was served with the refusal the operator turned on silently off;
-# `REASONING=off  # fast` went to llama-server as `--reasoning "off  # fast"`
-# and killed it at launch. Words after the first that are NOT a comment are
-# reported (ob_conf_lint) and dropped. Not used for values that may hold
-# spaces or a literal "#" (passwords, secrets, EXTENSIONS lists).
-_ob_word() { # _ob_word <VAR> <raw> <default> <KEY> — sets VAR (no subshell, so
-  #            a finding reaches _OB_CONF_PROBLEMS)
+# _ob_word <VAR> <raw value> <default> <KEY> — the parser for single-word
+# keys (SERVE_SCRIPT, REASONING, WEIGHT_ENFORCE, FILES_SHARDING): sets VAR to
+# the FIRST word, with any attached `#comment` and quotes dropped, exactly as
+# _ob_bool reads its token. `_ob_conf_value` returns the rest of an unquoted
+# line verbatim, so `WEIGHT_ENFORCE=strict  # supply chain` arrived as
+# "strict  # supply chain", the mode check fell through to warn, and an
+# unpinned weight was served with the refusal the operator turned on silently
+# off; `REASONING=off  # fast` went to llama-server as `--reasoning "off  #
+# fast"` and killed it at launch. Words after the first that are NOT a comment
+# are reported (ob_conf_lint) and dropped. Not for values that may hold spaces
+# or a literal "#" (passwords, secrets, EXTENSIONS lists). Sets VAR instead of
+# printing, so a finding reaches _OB_CONF_PROBLEMS (no subshell); call it only
+# after that array is declared (below BIND_HOST).
+_ob_word() {
   local _w_var="$1" raw="$2" def="$3" key="${4:-value}" tok rest
   read -r tok rest <<< "$raw" || true
   if [[ -n "$rest" && "$tok" != *\#* && "$rest" != \#* ]]; then
@@ -189,11 +260,32 @@ _ob_word() { # _ob_word <VAR> <raw> <default> <KEY> — sets VAR (no subshell, s
   [[ -n "$tok" ]] || tok="$def"
   printf -v "$_w_var" '%s' "$tok"
 }
-# Filled while resolving: values this file had to drop or reinterpret, one
-# message each. ob_conf_lint (end of file) reports them with its other
-# findings, so they are said once per command and doctor.sh can show them
-# as rows. (Declared before the first _ob_word call, which may append.)
-_OB_CONF_PROBLEMS=()
+
+# _ob_repo_path <raw> <default> — a trailing ` # comment` dropped, `~`
+# expanded, a relative path anchored to the checkout (FILES_DIR's rules).
+# Defined up here because the CHAT_SOCKET / ARTIFACT_SOCKET blocks use it too.
+_ob_repo_path() {
+  local p="${1%%[[:space:]]#*}"
+  p="${p%"${p##*[![:space:]]}"}"
+  [[ -n "$p" ]] || p="$2"
+  # shellcheck disable=SC2088  # matching a literal ~, not expanding one
+  case "$p" in
+    "~")   p="$HOME" ;;
+    "~/"*) p="$HOME/${p#\~/}" ;;
+  esac
+  case "$p" in
+    /*) ;;
+    *)  p="$REPO_DIR/$p" ;;
+  esac
+  printf '%s\n' "$p"
+}
+# _ob_sock_len_warn <KEY> <path> — AF_UNIX paths are capped (104 bytes on
+# macOS, 108 on Linux); a longer one fails to bind at start, far from here.
+_ob_sock_len_warn() {
+  if (( ${#2} > 100 )); then
+    echo "WARNING: $1='$2' is ${#2} bytes — a Unix socket path over ~100 bytes cannot be bound (macOS caps it at 104, Linux at 108). Pick a shorter path." >&2
+  fi
+}
 
 # ob_bind_is_loopback [host] — true when the address only listens on this
 # machine. Anything else (0.0.0.0, ::, a LAN or tailnet IP, a hostname) puts
@@ -205,7 +297,26 @@ ob_bind_is_loopback() {
   esac
 }
 
-_ob_word BIND_HOST "${OPENBEAST_BIND:-$(_ob_conf_value BIND_HOST || true)}" 127.0.0.1 BIND_HOST
+BIND_HOST="${OPENBEAST_BIND:-$(_ob_conf_value BIND_HOST || echo 127.0.0.1)}"
+# An address has no spaces and no '#': `BIND_HOST=127.0.0.1   # loopback only`
+# went verbatim into llama-server --host and every probe URL, and still read
+# as loopback (127.*), so nothing warned (stack-lifecycle review).
+BIND_HOST="${BIND_HOST%%[[:space:]#]*}"
+[[ -n "$BIND_HOST" ]] || BIND_HOST=127.0.0.1
+# Values this file had to drop while resolving, one message each. ob_conf_lint
+# (end of file) reports them with its other findings, so they are said once
+# per command and doctor.sh can show them as rows.
+_OB_CONF_PROBLEMS=()
+# What is left must look like an address or a hostname. Anything else (a
+# stray quote, a typo'd separator) cannot bind and used to reach --host and
+# every probe URL as written, and `127.0.0.1"` even passed
+# ob_bind_is_loopback. Loopback is the safe fallback, and lint says so.
+_ob_host_re='^[A-Za-z0-9._:%-]+$'; _ob_host6_re='^\[[A-Fa-f0-9:.%]+\]$'
+if [[ ! "$BIND_HOST" =~ $_ob_host_re && ! "$BIND_HOST" =~ $_ob_host6_re ]]; then
+  _OB_CONF_PROBLEMS+=("BIND_HOST='$BIND_HOST' is not an address or hostname — using 127.0.0.1 (loopback)")
+  BIND_HOST=127.0.0.1
+fi
+unset _ob_host_re _ob_host6_re
 # The warning for a non-loopback BIND_HOST sits further down, after the tool
 # server keys are resolved — whether it is merely loud or names an open
 # remote shell depends on them.
@@ -257,6 +368,14 @@ MODEL_ROLLBACK="$(_ob_bool "${OPENBEAST_MODEL_ROLLBACK:-$(_ob_conf_value MODEL_R
 # fragments / launches their processes. Manage with scripts/ext.sh; empty by
 # default (opinionated core only). Conf key EXTENSIONS.
 EXTENSIONS="${OPENBEAST_EXTENSIONS:-$(_ob_conf_value EXTENSIONS || true)}"
+# The dashboard extension's port. Conf key DASHBOARD_PORT; env
+# OPENBEAST_DASHBOARD_PORT (forwarded by `start.sh -d`), or the bare
+# DASHBOARD_PORT extensions/dashboard/run.sh has always read. Resolved here
+# so healthcheck and setup-tailscale.sh --publish-slot dial the same port
+# the dashboard binds (they hard-coded :3002).
+DASHBOARD_PORT="${OPENBEAST_DASHBOARD_PORT:-${DASHBOARD_PORT:-$(_ob_conf_value DASHBOARD_PORT || echo 3002)}}"
+export DASHBOARD_PORT
+export OPENBEAST_DASHBOARD_PORT="$DASHBOARD_PORT"
 # Reasoning/thinking control (serve.sh applies these to llama-server). OpenBeast
 # keeps reasoning ON by default (per-request toggle preserved); these are the
 # GLOBAL escape hatches, and they OVERRIDE any per-serve-script default:
@@ -277,6 +396,62 @@ if [[ -n "$REASONING" && ! "$REASONING" =~ ^(on|off|auto)$ ]]; then
   REASONING=""
 fi
 REASONING_BUDGET="${OPENBEAST_REASONING_BUDGET:-$(_ob_conf_value REASONING_BUDGET || true)}"
+# (_OB_CONF_PROBLEMS starts at BIND_HOST, above.)
+# ISLAND: beast-island, the RUNTIME counterpart of OFFLINE (agents/island.py,
+# docs/BEAST_ISLAND.md). OFFLINE says the box never has a route; ISLAND says
+# what to do when the route DISAPPEARS while the stack runs — the power-outage
+# case, router dark, rig on its UPS.
+#   auto  (default) a watcher probes the internet; after ISLAND_GRACE seconds
+#         with no route the web tools answer "offline" at once instead of
+#         stalling, and a launch with no route boots islanded
+#   force islanded from launch until the stack stops (start.sh --offline)
+#   off   no watcher at all
+# true/on/yes mean force and false/no/0 mean off, so the boolean spellings
+# people reach for do what they say. Anything else warns and means auto.
+_ob_is="${OPENBEAST_ISLAND:-$(_ob_conf_value ISLAND || true)}"
+_ob_is="${_ob_is%%[[:space:]#]*}"; _ob_is="${_ob_is//[\"\']/}"
+case "$(printf '%s' "$_ob_is" | tr 'A-Z' 'a-z')" in
+  ""|auto)          ISLAND=auto ;;
+  force|true|on|yes|1) ISLAND=force ;;
+  off|false|no|0)   ISLAND=off ;;
+  *) _OB_CONF_PROBLEMS+=("ISLAND='$_ob_is' is not auto, force or off — using auto")
+     ISLAND=auto ;;
+esac
+unset _ob_is
+ISLAND_GRACE="${OPENBEAST_ISLAND_GRACE:-$(_ob_conf_value ISLAND_GRACE || true)}"
+ISLAND_GRACE="${ISLAND_GRACE%%[[:space:]#]*}"
+[[ "$ISLAND_GRACE" =~ ^[0-9]+$ ]] || ISLAND_GRACE=90
+# Space-separated host:port TCP targets, IP literals (a probe that needs DNS
+# stalls exactly when it matters). Empty = agents/island.py's defaults. Quotes
+# and a trailing `# comment` are dropped (the value itself contains spaces, so
+# only a `#` starts a comment here).
+ISLAND_PROBES="${OPENBEAST_ISLAND_PROBES:-$(_ob_conf_value ISLAND_PROBES || true)}"
+ISLAND_PROBES="${ISLAND_PROBES%%#*}"; ISLAND_PROBES="${ISLAND_PROBES//[\"\']/}"
+ISLAND_PROBES="$(printf '%s' "$ISLAND_PROBES" | xargs 2>/dev/null || printf '%s' "$ISLAND_PROBES")"
+# Where the island state file lives — ONE answer for the writer (start.sh)
+# and every reader (stop/healthcheck/doctor/status here, mcp_server.py via
+# the same OPENBEAST_RUN_DIR rule in agents/island.py).
+ISLAND_STATE_DIR="${OPENBEAST_RUN_DIR:-$REPO_DIR/.run}"
+# Open WebUI's OFFLINE_MODE (docker-compose.yml). ALWAYS derived, never taken
+# from the environment: a shell that sourced this file once would otherwise
+# pin a stale answer for every later compose call. True when:
+#   - OFFLINE=true (a closed-network box), or ISLAND=force (a --offline launch)
+#   - a LIVE island watcher says the rig is islanded now or launched islanded
+#     (healthcheck.sh --restart re-runs compose mid-outage: a WebUI recreated
+#     without OFFLINE_MODE then stalls its boot on Hugging Face downloads)
+# start.sh re-decides it after its launch probe and exports the result.
+OPENBEAST_WEBUI_OFFLINE=false
+if [[ "$OFFLINE" == "true" || "$ISLAND" == "force" ]]; then
+  OPENBEAST_WEBUI_OFFLINE=true
+# Asked whatever ISLAND says in the conf (as healthcheck/doctor do): a one-off
+# `--offline` launch runs a watcher on a box whose conf says ISLAND=off, and
+# the watchdog's healthcheck does not inherit that launch's OPENBEAST_ISLAND.
+# A file with no live watcher behind it reads as not islanded anyway.
+elif [[ -f "$ISLAND_STATE_DIR/island.json" ]] \
+     && [[ "$(OPENBEAST_RUN_DIR="$ISLAND_STATE_DIR" python3 "$REPO_DIR/agents/island.py" status --webui-offline 2>/dev/null || true)" == "true" ]]; then
+  OPENBEAST_WEBUI_OFFLINE=true
+fi
+export OPENBEAST_WEBUI_OFFLINE
 # An integer or nothing. `REASONING_BUDGET=lots` (or `4096  # cap`, which
 # arrived whole) went to llama-server as --reasoning-budget and killed it at
 # launch, reported only as the generic "llama-server exited".
@@ -345,12 +520,95 @@ _BASH_WRAPPER="${OPENBEAST_BASH_WRAPPER:-$(_ob_conf_value BASH_WRAPPER || true)}
 if [[ -n "$_BASH_WRAPPER" ]]; then
   export OPENBEAST_BASH_WRAPPER="$_BASH_WRAPPER"
 fi
+# ── AGENT_PROFILE: a named set of daily-agent switches ─────────────────────
+#   AGENT_PROFILE  (env OPENBEAST_AGENT_PROFILE)  default empty (none)
+#       Each name is an alias for one internal switch table (_ob_profile_set);
+#       today all three names map to the same table, "t2", the switches of
+#       v5-thinking-first arm T2:
+#         INFERENCE_THINKING=on   AGENT_MAX_TOKENS=8192   AGENT_ACT_NUDGE=1
+#         BEAST_ASSIST=1          DIAG_EDIT_HINT=1        AGENT_VERIFY_DONE=1
+#         AGENT_ENV_BLOCK=1       AGENT_WALL_WARN=1       LANG_PACK_VARIANT=v3
+#       deepseek-best = T2 on DeepSeek-V4.1-Flash (Mia EXL3), the Spark pair:
+#         65/71, SCORE 94.9, board row DS-T2, 2026-11-19, single seed
+#         (docs/SPARK_HYDRA.md "DeepSeek best configuration").
+#       qwen38-best   = T2 on Qwen3.8 27B Uncensored MTP Q5_K_M (llama.cpp),
+#         the RTX 5090's previous default, one stream (arm Q_T2): 51/71 scored,
+#         SCORE 75.0 (52/71, 75.6 before the 2026-11-25 integrity rescan),
+#         board row Q38U-T2, 2026-11-23, single seed, against
+#         39/71 (SCORE 63.3) for its bare L0 baseline (row Q38U-L0; that pair
+#         also crosses harness10 -> harness9). The rig's default setup
+#         2026-11-23 to 2026-11-24 (docs/MODELS.md; report
+#         docs/reports/V5_QWEN38_RTX5090-2026-11-22.md §6). The fallback
+#         and rollback path since 2026-11-24.
+#       inkling-best  = T2 on Inkling 2 Mini (Basalt NVFP4-MX8), the RTX 5090
+#         default's setup: since 2026-11-25 on SC117's abliterated pack
+#         (profile inkling2-mini-sc117, row INK-T2-SC117, 51/71; Max,
+#         DECISIONS-2026-11-25 §7), before it on the stock pack (2026-11-24,
+#         DECISIONS-2026-11-24 §10),
+#         one stream (campaign arm I_T2_stock): 53/71 scored, SCORE 78.2,
+#         board row INK-T2-STOCK, 2026-11-24, single seed; level with
+#         qwen38-best's Q38U-T2 on the 65 units both measured cleanly (−2,
+#         p 0.69). Served by scripts/engines/basalt.sh, profile
+#         inkling2-mini-stock (docs/MODELS.md; report
+#         docs/reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md §10).
+#       A profile supplies a DEFAULT for each key; the key set explicitly
+#       (env OPENBEAST_<KEY>, then its own openbeast.conf line) always wins.
+#       none / empty = no profile. Anything else is reported (ob_conf_lint)
+#       and ignored. Which of these act on a DAILY agent, and which only do
+#       anything inside an eval: openbeast.conf.example, AGENT_PROFILE.
+#       A new model whose best row is T2 gets an alias here; a model whose
+#       best setup differs gets its own table in _ob_profile_value.
+# Read before the keys it feeds (BEAST_ASSIST just below, INFERENCE_THINKING
+# further down). Never exported: only the keys it resolves are.
+_OB_AGENT_PROFILES="deepseek-best qwen38-best inkling-best"   # the names; keep in step with _ob_profile_set
+# _ob_profile_set NAME — the internal switch table NAME aliases, or fail.
+_ob_profile_set() {
+  case "$1" in
+    deepseek-best|qwen38-best|inkling-best) printf 't2\n' ;;
+    *) return 1 ;;
+  esac
+}
+AGENT_PROFILE="${OPENBEAST_AGENT_PROFILE:-$(_ob_conf_value AGENT_PROFILE || true)}"
+AGENT_PROFILE="${AGENT_PROFILE%%[[:space:]#]*}"; AGENT_PROFILE="${AGENT_PROFILE//[\"\']/}"
+AGENT_PROFILE="$(printf '%s' "$AGENT_PROFILE" | tr 'A-Z' 'a-z')"
+if [[ "$AGENT_PROFILE" == none ]]; then
+  AGENT_PROFILE=""
+elif [[ -n "$AGENT_PROFILE" ]] && ! _ob_profile_set "$AGENT_PROFILE" >/dev/null; then
+  _OB_CONF_PROBLEMS+=("AGENT_PROFILE='$AGENT_PROFILE' is not one of: $_OB_AGENT_PROFILES, none — ignoring it (no profile)")
+  AGENT_PROFILE=""
+fi
+# _ob_profile_value KEY — the profile's value for an openbeast.conf KEY, or fail.
+_ob_profile_value() {
+  local _ob_set
+  _ob_set="$(_ob_profile_set "$AGENT_PROFILE")" || return 1
+  # Serving defaults that belong to one profile NAME, not its switch table:
+  # GATE_DEFAULT_MAX_TOKENS is beast-gate's reply cap for requests that set
+  # none, needed on the Spark pair (TensorFold reserves a request's reply
+  # budget in the shared KV pool; 32,768 when the request names none) and
+  # nowhere else, so the RTX 5090 profiles (qwen38-best, inkling-best) leave
+  # the gate's default off. 8192 = T2's AGENT_MAX_TOKENS (docs/SPARK_HYDRA.md
+  # "beast-gate's default max_tokens").
+  case "$AGENT_PROFILE:$1" in
+    deepseek-best:GATE_DEFAULT_MAX_TOKENS) printf '8192\n'; return 0 ;;
+    *:GATE_DEFAULT_MAX_TOKENS) return 1 ;;
+  esac
+  case "$_ob_set:$1" in
+    t2:INFERENCE_THINKING) printf 'on\n' ;;
+    t2:AGENT_MAX_TOKENS)   printf '8192\n' ;;
+    t2:LANG_PACK_VARIANT)  printf 'v3\n' ;;
+    t2:BEAST_ASSIST|t2:DIAG_EDIT_HINT|t2:AGENT_VERIFY_DONE \
+      |t2:AGENT_ACT_NUDGE|t2:AGENT_ENV_BLOCK|t2:AGENT_WALL_WARN)
+      printf '1\n' ;;
+    *) return 1 ;;
+  esac
+}
 # beast-assist (compiler feedback in the agent loop, docs/FEATURES.md).
 # agents/tools.py reads BEAST_ASSIST per-call; forward the conf key only
 # when non-empty, same pattern as BASH_WRAPPER above. Eval arms override
 # this explicitly per-cell (run_eval pins both spellings), so a rig-wide
-# enable never leaks into diag-OFF baselines.
-_BEAST_ASSIST="${BEAST_ASSIST:-$(_ob_conf_value BEAST_ASSIST || true)}"
+# enable never leaks into diag-OFF baselines. AGENT_PROFILE supplies it when
+# neither the env nor the conf does.
+_BEAST_ASSIST="${BEAST_ASSIST:-$(_ob_conf_value BEAST_ASSIST || _ob_profile_value BEAST_ASSIST || true)}"
 if [[ -n "$_BEAST_ASSIST" ]]; then
   export BEAST_ASSIST="$_BEAST_ASSIST"
 fi
@@ -381,6 +639,85 @@ if [[ -n "$_BEAST_ESCALATE" ]]; then
     export BEAST_ESCALATE=0
   fi
 fi
+# ── Daily-agent switches (agents/runner.py, agents/tools.py) ────────────────
+# Each is read per run (runner) or per call (tools) from the PROCESS env, and
+# compares against exactly "1"; nothing used to forward them from
+# openbeast.conf, so they existed only for evals. Each conf key below goes
+# through _ob_bool and is exported canonically as 1/0 under its OPENBEAST_
+# name, to the tool server, beast-chat and every agent they start (env
+# OPENBEAST_<KEY> > openbeast.conf > AGENT_PROFILE; nothing set = nothing
+# exported, so the runner's own defaults stand). _ob_derive records what
+# came from here, so a re-source (start.sh -d's daemon) re-reads the conf.
+#   AGENT_ACT_NUDGE    -> OPENBEAST_AGENT_ACT_NUDGE    act after idle turns (T2)
+#   AGENT_VERIFY_DONE  -> OPENBEAST_AGENT_VERIFY_DONE  G9 test-before-done
+#   AGENT_ENV_BLOCK    -> OPENBEAST_AGENT_ENV_BLOCK    G22 first-turn env block
+#   AGENT_WALL_WARN    -> OPENBEAST_AGENT_WALL_WARN    G23 wall-clock notices
+#   DIAG_EDIT_HINT     -> OPENBEAST_DIAG_EDIT_HINT     G13 edit, don't rewrite
+#   AGENT_FORCE_ACT    -> OPENBEAST_AGENT_FORCE_ACT    harness10: thinking-off act
+#                         turn after 2 capped thinking turns (env
+#                         OPENBEAST_AGENT_FORCE_ACT_AFTER sets the 2)
+#   AGENT_DONE_VERIFIED -> OPENBEAST_AGENT_DONE_VERIFIED harness10: "done when
+#                         verified" system-prompt line
+#   AGENT_ALGO_LINES   -> OPENBEAST_AGENT_ALGO_LINES   harness10: planning lines
+# Eval runs set every one of these per arm (evals/campaigns/*.json), and a
+# plain run_eval.py records the ambient ones in its cache key (agent_switches),
+# so an export here never silently changes a measured row.
+for _ob_k in AGENT_ACT_NUDGE AGENT_VERIFY_DONE AGENT_ENV_BLOCK AGENT_WALL_WARN DIAG_EDIT_HINT \
+    AGENT_FORCE_ACT AGENT_DONE_VERIFIED AGENT_ALGO_LINES; do
+  _ob_from_env=0
+  if _ob_raw="$(_ob_override "$_ob_k")"; then
+    _ob_from_env=1
+  else
+    _ob_raw="$(_ob_conf_value "$_ob_k" || _ob_profile_value "$_ob_k" || true)"
+  fi
+  if [[ -n "$_ob_raw" ]]; then
+    if [[ "$(_ob_bool "$_ob_raw" false "$_ob_k")" == "true" ]]; then
+      _ob_derive "$_ob_k" 1 "$_ob_from_env"
+    else
+      _ob_derive "$_ob_k" 0 "$_ob_from_env"
+    fi
+  else
+    _ob_underive "$_ob_k"
+  fi
+done
+unset _ob_k _ob_raw _ob_from_env
+# AGENT_MAX_TOKENS: agents/runner.py reads the conf key itself (env
+# OPENBEAST_AGENT_MAX_TOKENS first), so only a PROFILE value is exported here,
+# and only when neither the env nor the conf names one. beast-chat passes it
+# through its secret scrub by name (the name holds "TOKEN"; it is a count).
+if ! _ob_override AGENT_MAX_TOKENS >/dev/null; then
+  if [[ -z "$(_ob_conf_value AGENT_MAX_TOKENS || true)" ]] \
+     && _ob_v="$(_ob_profile_value AGENT_MAX_TOKENS)"; then
+    _ob_derive AGENT_MAX_TOKENS "$_ob_v" 0
+  else
+    _ob_underive AGENT_MAX_TOKENS
+  fi
+fi
+unset _ob_v
+# LANG_PACK_VARIANT: which zig awareness pack production agents get
+# (agents/lang/pack_context.py; LANG_PACK_CONTEXT and LANG_PACKS still decide
+# WHETHER one is served). v1 = the default measured pack, v3 = the pack arm T2
+# measured. pack_context reads the env, else the conf; the profile's value
+# reaches it through this export. Keep _OB_PACK_VARIANTS equal to
+# pack_context.PRODUCTION_VARIANTS (a test pins the two).
+_OB_PACK_VARIANTS="v1 v3"
+_ob_from_env=0
+if _ob_pv="$(_ob_override LANG_PACK_VARIANT)"; then
+  _ob_from_env=1
+else
+  _ob_pv="$(_ob_conf_value LANG_PACK_VARIANT || _ob_profile_value LANG_PACK_VARIANT || true)"
+fi
+_ob_pv="${_ob_pv%%[[:space:]#]*}"; _ob_pv="${_ob_pv//[\"\']/}"
+_ob_pv="$(printf '%s' "$_ob_pv" | tr 'A-Z' 'a-z')"
+if [[ -n "$_ob_pv" && " $_OB_PACK_VARIANTS " != *" $_ob_pv "* ]]; then
+  _OB_CONF_PROBLEMS+=("LANG_PACK_VARIANT='$_ob_pv' is not one of: $_OB_PACK_VARIANTS — agents get no awareness pack until it is")
+fi
+if [[ -n "$_ob_pv" ]]; then
+  _ob_derive LANG_PACK_VARIANT "$_ob_pv" "$_ob_from_env"
+else
+  _ob_underive LANG_PACK_VARIANT
+fi
+unset _ob_pv _ob_from_env
 # fetch() blocks Tailscale CGNAT (100.64.0.0/10) targets by default — pinned
 # explicitly in agents/tools.py because CPython's is_private classification of
 # that range changed across versions. Opt in (true) when the model should fetch
@@ -442,6 +779,26 @@ _ARTIFACT_OPERATORS="${OPENBEAST_ARTIFACT_OPERATORS:-$(_ob_conf_value ARTIFACT_O
 if [[ -n "$_ARTIFACT_OPERATORS" ]]; then
   export OPENBEAST_ARTIFACT_OPERATORS="$_ARTIFACT_OPERATORS"
 fi
+# Where beast-artifact honours the Tailscale-User-Login header — the same
+# switch as CHAT_LOGIN_FROM below, for the gallery (docs/BEAST_ARTIFACT.md).
+# `loopback` (default) trusts any peer on this host, host-network containers
+# included. `unix` trusts it only on ARTIFACT_SOCKET, a 0600 socket
+# `tailscale serve` proxies :8446 to (setup-tailscale.sh --publish-artifact
+# follows this key). Exported only when `unix`.
+ARTIFACT_LOGIN_FROM="$(printf '%s' "${OPENBEAST_ARTIFACT_LOGIN_FROM:-$(_ob_conf_value ARTIFACT_LOGIN_FROM || true)}" | tr '[:upper:]' '[:lower:]')"
+case "$ARTIFACT_LOGIN_FROM" in
+  ""|loopback) ARTIFACT_LOGIN_FROM=loopback ;;
+  unix) ;;
+  *) echo "WARNING: ARTIFACT_LOGIN_FROM='$ARTIFACT_LOGIN_FROM' is not loopback or unix — using loopback" >&2
+     ARTIFACT_LOGIN_FROM=loopback ;;
+esac
+ARTIFACT_SOCKET="${OPENBEAST_ARTIFACT_SOCKET:-$(_ob_conf_value ARTIFACT_SOCKET || true)}"
+if [[ "$ARTIFACT_LOGIN_FROM" == unix ]]; then
+  ARTIFACT_SOCKET="$(_ob_repo_path "$ARTIFACT_SOCKET" .run/artifact.sock)"
+  _ob_sock_len_warn ARTIFACT_SOCKET "$ARTIFACT_SOCKET"
+  export OPENBEAST_ARTIFACT_LOGIN_FROM=unix
+  export OPENBEAST_ARTIFACT_SOCKET="$ARTIFACT_SOCKET"
+fi
 # Per-device admission control (llama-server's own queue is unbounded).
 _EDGE_RATE="${OPENBEAST_EDGE_RATE_LIMIT:-$(_ob_conf_value EDGE_RATE_LIMIT || true)}"
 [[ -n "$_EDGE_RATE" ]] && export OPENBEAST_EDGE_RATE_LIMIT="$_EDGE_RATE"
@@ -458,6 +815,13 @@ _EDGE_ANON="${OPENBEAST_EDGE_ALLOW_ANON:-$(_ob_conf_value EDGE_ALLOW_ANON || tru
 # 8 MiB). Exported only when set, like the limits above.
 _EDGE_BODY="${OPENBEAST_EDGE_MAX_BODY:-$(_ob_conf_value EDGE_MAX_BODY || true)}"
 [[ -n "$_EDGE_BODY" ]] && export OPENBEAST_EDGE_MAX_BODY="$_EDGE_BODY"
+# Gate -> upstream deadlines, in seconds (gate defaults: read 600, connect
+# 10). The gate's 504 tells operators to raise EDGE_READ_TIMEOUT, so it has
+# to be settable here, not only by exporting the variable by hand.
+_EDGE_RTO="${OPENBEAST_EDGE_READ_TIMEOUT:-$(_ob_conf_value EDGE_READ_TIMEOUT || true)}"
+[[ -n "$_EDGE_RTO" ]] && export OPENBEAST_EDGE_READ_TIMEOUT="$_EDGE_RTO"
+_EDGE_CTO="${OPENBEAST_EDGE_CONNECT_TIMEOUT:-$(_ob_conf_value EDGE_CONNECT_TIMEOUT || true)}"
+[[ -n "$_EDGE_CTO" ]] && export OPENBEAST_EDGE_CONNECT_TIMEOUT="$_EDGE_CTO"
 # Inline media only by default: the gate answers 400 for an image/audio/video
 # part that names a URL, because llama-server would fetch it from inside the
 # rig (SSRF for a remote device). true forwards such parts again.
@@ -484,6 +848,29 @@ export OPENBEAST_CHAT_PORT="$CHAT_PORT"
 # server can tell "no allowlist configured" from "an allowlist of nobody".
 if [[ -n "$CHAT_OPERATORS" ]]; then
   export OPENBEAST_CHAT_OPERATORS="$CHAT_OPERATORS"
+fi
+# Where beast-chat honours the Tailscale-User-Login header (docs/BEAST_CHAT.md).
+# `loopback` (default) trusts any 127.0.0.1 peer — including code inside a
+# host-network container. `unix` trusts it only on CHAT_SOCKET, a 0600 socket
+# `tailscale serve` proxies to (setup-tailscale.sh --chat follows this key).
+# Exported only when `unix`, so the default leaves the environment unchanged.
+CHAT_LOGIN_FROM="$(printf '%s' "${OPENBEAST_CHAT_LOGIN_FROM:-$(_ob_conf_value CHAT_LOGIN_FROM || true)}" | tr '[:upper:]' '[:lower:]')"
+case "$CHAT_LOGIN_FROM" in
+  ""|loopback) CHAT_LOGIN_FROM=loopback ;;
+  unix) ;;
+  *) echo "WARNING: CHAT_LOGIN_FROM='$CHAT_LOGIN_FROM' is not loopback or unix — using loopback" >&2
+     CHAT_LOGIN_FROM=loopback ;;
+esac
+CHAT_SOCKET="${OPENBEAST_CHAT_SOCKET:-$(_ob_conf_value CHAT_SOCKET || true)}"
+if [[ "$CHAT_LOGIN_FROM" == unix ]]; then
+  # ABSOLUTE, ~ expanded: the same string goes to chat_server (which binds
+  # it from its own cwd) and to tailscaled (`unix:<path>`, resolved from
+  # ITS cwd — or not at all for a literal ~). A relative or ~ value meant
+  # two different files and a 502 console.
+  CHAT_SOCKET="$(_ob_repo_path "$CHAT_SOCKET" .run/chat.sock)"
+  _ob_sock_len_warn CHAT_SOCKET "$CHAT_SOCKET"
+  export OPENBEAST_CHAT_LOGIN_FROM=unix
+  export OPENBEAST_CHAT_SOCKET="$CHAT_SOCKET"
 fi
 # beast-chat push notifications (openbeast.conf.example § beast-chat). The
 # chat server reads OPENBEAST_CHAT_NOTIFY_URL / _ON / _TOKEN_FILE. ON always
@@ -573,25 +960,53 @@ export OPENBEAST_PROBE_HOST
 #       false: start.sh launches, rolls back, supervises and kills NOTHING —
 #       it waits for the server to answer, brings up everything else, and
 #       healthcheck --restart / stop.sh leave the server alone. vLLM and
-#       TensorFold are never managed (they run on other boxes, in
-#       containers this stack did not start), so `true` there warns and is
-#       ignored.
+#       TensorFold default to unmanaged (they run on other boxes, in
+#       containers this stack did not start); `true` is honoured only for
+#       ONE host — INFERENCE_URL on this box and an engine adapter with a
+#       launcher (scripts/engine.sh use, docs/ENGINES.md) — else it warns
+#       and is ignored.
 #   INFERENCE_SLOTS    integer                            default empty
 #       Concurrency /api/slot advertises when the server does not expose one
 #       (vLLM --max-num-seqs, TensorFold --parallel).
 #   INFERENCE_MODEL    served model id                    default empty
 #       vllm/tensorfold only: exported as OPENBEAST_INFERENCE_MODEL, the id
 #       agents/runner.py sends (scripts/backends/use-model.sh records it).
+#   INFERENCE_THINKING on | off                           default empty
+#       The serving host's thinking default for a chat request that names
+#       none: beast-gate injects chat_template_kwargs.enable_thinking, the
+#       WebUI thinking filter does the same for WebUI chats, and this host's
+#       own agents send it. Empty = nothing injected anywhere. Eval runs
+#       never follow it. spark-1: on (docs/SPARK_HYDRA.md).
+#   GATE_DEFAULT_MAX_TOKENS N                             default empty (off)
+#       beast-gate's max_tokens for a chat/completions request that names no
+#       cap; 0 = off. AGENT_PROFILE=deepseek-best gives 8192 (resolved below
+#       INFERENCE_THINKING).
 # The llama defaults are resolved even when nothing is set, so every consumer
 # below reads the same values it always did.
+#
+# The env side of all five is read through _ob_override and exported through
+# _ob_derive (OPENBEAST_DERIVED_INFERENCE_*). They were plain exports, so a
+# process that sourced this file and THEN rewrote openbeast.conf handed the
+# OLD values to everything it started as if the operator had exported them:
+# `scripts/engine.sh use default` on the rig (2026-11-25) wrote
+# INFERENCE_BACKEND=basalt, restarted the stack, and start.sh -- reading the
+# inherited OPENBEAST_INFERENCE_BACKEND=llama as an override -- launched the
+# old llama SERVE_SCRIPT on :8080 under the Inkling profile. engine-gate.sh's
+# candidate start had the same hole. An env value that differs from the
+# record is still a real override and wins (tests/test_engine_switch_env.sh).
+_ob_ib_env=0; _ob_iu_env=0; _ob_imn_env=0; _ob_is_env=0
+_ob_override INFERENCE_BACKEND >/dev/null && _ob_ib_env=1
+_ob_override INFERENCE_URL >/dev/null && _ob_iu_env=1
+_ob_override INFERENCE_MANAGED >/dev/null && _ob_imn_env=1
+_ob_override INFERENCE_SLOTS >/dev/null && _ob_is_env=1
 if [[ -f "$(dirname "${BASH_SOURCE[0]}")/backend.sh" ]]; then
   # shellcheck source=backend.sh
   source "$(dirname "${BASH_SOURCE[0]}")/backend.sh"
-  INFERENCE_BACKEND="$(ob_backend_normalize "${OPENBEAST_INFERENCE_BACKEND:-$(_ob_conf_value INFERENCE_BACKEND || true)}")"
+  INFERENCE_BACKEND="$(ob_backend_normalize "$(_ob_override INFERENCE_BACKEND || _ob_conf_value INFERENCE_BACKEND || true)")"
 else
   INFERENCE_BACKEND=llama
 fi
-_ob_infer_url="${OPENBEAST_INFERENCE_URL:-$(_ob_conf_value INFERENCE_URL || true)}"
+_ob_infer_url="$(_ob_override INFERENCE_URL || _ob_conf_value INFERENCE_URL || true)"
 _ob_infer_url="${_ob_infer_url%%[[:space:]]*}"   # a trailing `# comment` is not part of a URL
 _ob_infer_url="${_ob_infer_url%/}"
 _ob_infer_url="${_ob_infer_url%/v1}"             # a pasted .../v1 means the same server
@@ -613,7 +1028,7 @@ else
   INFERENCE_URL="http://${OPENBEAST_PROBE_HOST}:8080"
 fi
 unset _ob_infer_url
-_ob_managed_raw="${OPENBEAST_INFERENCE_MANAGED:-$(_ob_conf_value INFERENCE_MANAGED || true)}"
+_ob_managed_raw="$(_ob_override INFERENCE_MANAGED || _ob_conf_value INFERENCE_MANAGED || true)"
 if [[ "$INFERENCE_BACKEND" == "llama" ]]; then
   # A llama INFERENCE_URL on ANOTHER box is not ours to launch: defaulting to
   # managed there started a LOCAL llama-server while start.sh waited on the
@@ -638,13 +1053,26 @@ if [[ "$INFERENCE_BACKEND" == "llama" ]]; then
   unset _ob_remote
 else
   INFERENCE_MANAGED="$(_ob_bool "$_ob_managed_raw" false INFERENCE_MANAGED)"
+  # >>> engine-plane hook (docs/ENGINES.md): managed = ONE host. start.sh
+  # launches vLLM / TensorFold itself (scripts/engine-serve.sh) only when the
+  # engine has an adapter with a launcher and INFERENCE_URL names THIS box;
+  # a server on other boxes (the Sparks) stays someone else's, as before.
   if [[ "$INFERENCE_MANAGED" == "true" ]]; then
-    echo "WARNING: INFERENCE_MANAGED=true is not supported for INFERENCE_BACKEND=$INFERENCE_BACKEND — start.sh cannot launch it; treating it as false." >&2
-    INFERENCE_MANAGED=false
+    _ob_eng_ad="$(dirname "${BASH_SOURCE[0]}")/../engines/$INFERENCE_BACKEND.sh"
+    if [[ "$INFERENCE_URL_SET" == "true" ]] && declare -F ob_url_is_local >/dev/null 2>&1 \
+       && ! ob_url_is_local "$INFERENCE_URL" "$OPENBEAST_PROBE_HOST" "$BIND_HOST"; then
+      echo "WARNING: INFERENCE_MANAGED=true is not supported for INFERENCE_BACKEND=$INFERENCE_BACKEND at INFERENCE_URL=$INFERENCE_URL (another machine) — start.sh launches engines only on this box; treating it as false." >&2
+      INFERENCE_MANAGED=false
+    elif [[ ! -f "$_ob_eng_ad" ]] || ! grep -q "^eng_${INFERENCE_BACKEND//-/_}_launch()" "$_ob_eng_ad"; then
+      echo "WARNING: INFERENCE_MANAGED=true is not supported for INFERENCE_BACKEND=$INFERENCE_BACKEND — no single-host launcher (scripts/engines/$INFERENCE_BACKEND.sh); treating it as false." >&2
+      INFERENCE_MANAGED=false
+    fi
+    unset _ob_eng_ad
   fi
+  # <<< engine-plane hook
 fi
 unset _ob_managed_raw
-INFERENCE_SLOTS="${OPENBEAST_INFERENCE_SLOTS:-$(_ob_conf_value INFERENCE_SLOTS || true)}"
+INFERENCE_SLOTS="$(_ob_override INFERENCE_SLOTS || _ob_conf_value INFERENCE_SLOTS || true)"
 INFERENCE_SLOTS="${INFERENCE_SLOTS%%[[:space:]#]*}"
 if [[ -n "$INFERENCE_SLOTS" && ! "$INFERENCE_SLOTS" =~ ^[1-9][0-9]*$ ]]; then
   echo "WARNING: INFERENCE_SLOTS='$INFERENCE_SLOTS' is not a positive integer — ignoring it." >&2
@@ -668,19 +1096,75 @@ INFERENCE_MODEL="${INFERENCE_MODEL%"${INFERENCE_MODEL##*[![:space:]]}"}"   # rtr
 INFERENCE_MODEL="${INFERENCE_MODEL%\"}"; INFERENCE_MODEL="${INFERENCE_MODEL#\"}"
 INFERENCE_MODEL="${INFERENCE_MODEL%\'}"; INFERENCE_MODEL="${INFERENCE_MODEL#\'}"
 if [[ -n "$INFERENCE_MODEL" && "$INFERENCE_BACKEND" != "llama" ]]; then
-  export OPENBEAST_INFERENCE_MODEL="$INFERENCE_MODEL"
+  _ob_derive INFERENCE_MODEL "$INFERENCE_MODEL" "$_ob_im_env"
+else
+  _ob_underive INFERENCE_MODEL   # a stale id of ours (basalt -> llama) must not reach the runner
 fi
 export INFERENCE_BACKEND INFERENCE_URL INFERENCE_MANAGED
-export OPENBEAST_INFERENCE_BACKEND="$INFERENCE_BACKEND"
-export OPENBEAST_INFERENCE_MANAGED="$INFERENCE_MANAGED"
+_ob_derive INFERENCE_BACKEND "$INFERENCE_BACKEND" "$_ob_ib_env"
+_ob_derive INFERENCE_MANAGED "$INFERENCE_MANAGED" "$_ob_imn_env"
 # Same export discipline as AGENT_INFERENCE_URL: only when configured, so a
 # reader can tell "the operator pointed us somewhere" from "the default".
 if [[ "$INFERENCE_URL_SET" == "true" ]]; then
-  export OPENBEAST_INFERENCE_URL="$INFERENCE_URL"
+  _ob_derive INFERENCE_URL "$INFERENCE_URL" "$_ob_iu_env"
+else
+  _ob_underive INFERENCE_URL
 fi
 if [[ -n "$INFERENCE_SLOTS" ]]; then
-  export OPENBEAST_INFERENCE_SLOTS="$INFERENCE_SLOTS"
+  _ob_derive INFERENCE_SLOTS "$INFERENCE_SLOTS" "$_ob_is_env"
+else
+  _ob_underive INFERENCE_SLOTS
 fi
+unset _ob_ib_env _ob_iu_env _ob_imn_env _ob_is_env
+# INFERENCE_THINKING: the serving host's thinking default for requests that
+# name none — beast-gate injects it, the WebUI thinking filter applies it
+# (configure-webui.sh) and this host's own (non-eval) agents send it. Exported only when set, so
+# an unset key changes nothing anywhere. Eval runs never follow it.
+# AGENT_PROFILE supplies it when neither the env nor the conf does. The
+# export goes through _ob_derive, so a re-source (start.sh -d's daemon gets
+# the OPENBEAST_* env forwarded) reads the conf again instead of pinning a
+# value the conf or the profile no longer gives.
+_ob_it_env=0
+if INFERENCE_THINKING="$(_ob_override INFERENCE_THINKING)"; then
+  _ob_it_env=1
+else
+  INFERENCE_THINKING="$(_ob_conf_value INFERENCE_THINKING || _ob_profile_value INFERENCE_THINKING || true)"
+fi
+INFERENCE_THINKING="$(printf '%s' "$INFERENCE_THINKING" | tr 'A-Z' 'a-z')"
+INFERENCE_THINKING="${INFERENCE_THINKING%%[[:space:]#]*}"
+if [[ -n "$INFERENCE_THINKING" && "$INFERENCE_THINKING" != "on" && "$INFERENCE_THINKING" != "off" ]]; then
+  _OB_CONF_PROBLEMS+=("INFERENCE_THINKING='$INFERENCE_THINKING' is not on or off — ignoring it (requests keep the server's own thinking default)")
+  INFERENCE_THINKING=""
+fi
+if [[ -n "$INFERENCE_THINKING" ]]; then
+  _ob_derive INFERENCE_THINKING "$INFERENCE_THINKING" "$_ob_it_env"
+else
+  _ob_underive INFERENCE_THINKING
+fi
+unset _ob_it_env
+# GATE_DEFAULT_MAX_TOKENS: beast-gate's max_tokens for a chat/completions
+# request that sets neither max_tokens nor max_completion_tokens (agents/
+# edge.py max_tokens_default). env > openbeast.conf > AGENT_PROFILE
+# (deepseek-best: 8192; the other profiles: none). 0 or unset = the gate
+# injects nothing. A device's own `max_tokens_default` (clients.sh
+# max-tokens) overrides it per device.
+_ob_gm_env=0
+if _ob_gm="$(_ob_override GATE_DEFAULT_MAX_TOKENS)"; then
+  _ob_gm_env=1
+else
+  _ob_gm="$(_ob_conf_value GATE_DEFAULT_MAX_TOKENS || _ob_profile_value GATE_DEFAULT_MAX_TOKENS || true)"
+fi
+_ob_gm="${_ob_gm%%[[:space:]#]*}"
+if [[ -n "$_ob_gm" && ! "$_ob_gm" =~ ^[0-9]+$ ]]; then
+  _OB_CONF_PROBLEMS+=("GATE_DEFAULT_MAX_TOKENS='$_ob_gm' is not a whole number — ignoring it (beast-gate adds no default max_tokens)")
+  _ob_gm=""
+fi
+if [[ -n "$_ob_gm" ]]; then
+  _ob_derive GATE_DEFAULT_MAX_TOKENS "$_ob_gm" "$_ob_gm_env"
+else
+  _ob_underive GATE_DEFAULT_MAX_TOKENS
+fi
+unset _ob_gm _ob_gm_env
 # ── beast-hydra + beast-instinct (docs/BEAST_HYDRA_PLAN.md §6.7,
 #    docs/BEAST_INSTINCT_PLAN.md §5.2/§5.9) ─────────────────────────────────
 # Both are OPT-IN. With HYDRA and INSTINCT off (the default) this block
@@ -719,23 +1203,6 @@ _ob_port() {
     echo "WARNING: $3='$1' is not a port (1-65535) — using $2." >&2
     printf '%s\n' "$2"
   fi
-}
-# _ob_repo_path <raw> <default> — a trailing ` # comment` dropped, `~`
-# expanded, a relative path anchored to the checkout (FILES_DIR's rules).
-_ob_repo_path() {
-  local p="${1%%[[:space:]]#*}"
-  p="${p%"${p##*[![:space:]]}"}"
-  [[ -n "$p" ]] || p="$2"
-  # shellcheck disable=SC2088  # matching a literal ~, not expanding one
-  case "$p" in
-    "~")   p="$HOME" ;;
-    "~/"*) p="$HOME/${p#\~/}" ;;
-  esac
-  case "$p" in
-    /*) ;;
-    *)  p="$REPO_DIR/$p" ;;
-  esac
-  printf '%s\n' "$p"
 }
 HYDRA="$(_ob_bool "$(_ob_override HYDRA || _ob_conf_value HYDRA || true)" false HYDRA)"
 HYDRA_PORT="$(_ob_port "$(_ob_override HYDRA_PORT || _ob_conf_value HYDRA_PORT || true)" 8095 HYDRA_PORT)"
@@ -822,7 +1289,11 @@ else
       export OPENBEAST_INFERENCE_MODEL="$INFERENCE_MODEL"
     fi
     _ob_underive HYDRA; _ob_underive HYDRA_PORT; _ob_underive HYDRA_CONFIG
-    _ob_underive HYDRA_DEFAULT_MODEL; _ob_underive INFERENCE_MODEL
+    # INFERENCE_MODEL is not underived here: the block above already
+    # re-resolved it from the conf and recorded that (a hydra-era `beast`
+    # record no longer matches), and dropping it now would take the real id
+    # from the agents.
+    _ob_underive HYDRA_DEFAULT_MODEL
     unset OPENBEAST_HYDRA_UPSTREAM_MODEL OPENBEAST_HYDRA_OPERATOR_MODEL
   fi
 fi
@@ -890,9 +1361,20 @@ export OPENBEAST_MODEL_URL="$MODEL_URL"
 # (start.sh computes the byte value from /proc/meminfo at every launch, so
 # the cap scales with whatever box OpenBeast lands on — 128 GB or 32 GB).
 MEM_LIMIT_PCT="${OPENBEAST_MEM_LIMIT_PCT:-$(_ob_conf_value MEM_LIMIT_PCT || echo 75)}"
+# UNIFIED memory (GB10 head node, unmanaged model on this box): GiB kept
+# free beside the model. The supervisor sizes the stack's cap — and the chat
+# jobs' — from MemAvailable minus this once the model is resident, instead of
+# MEM_LIMIT_PCT of a MemTotal the model already holds most of. Ignored on a
+# discrete GPU. Doctor and healthcheck warn when MemAvailable is below it.
+MEM_RESERVE_GB="${OPENBEAST_MEM_RESERVE_GB:-$(_ob_conf_value MEM_RESERVE_GB || echo 3)}"
+[[ "$MEM_RESERVE_GB" =~ ^[0-9]+$ ]] || MEM_RESERVE_GB=3
 # start.sh installs + enables the daily openbeast-logrotate.timer (systemd
 # --user) when it is missing. false = leave rotation to the operator.
 LOGROTATE_AUTOINSTALL="$(_ob_bool "${OPENBEAST_LOGROTATE_AUTOINSTALL:-$(_ob_conf_value LOGROTATE_AUTOINSTALL || true)}" true LOGROTATE_AUTOINSTALL)"
+# `./start.sh -d` installs + enables openbeast-watchdog.timer (systemd --user,
+# healthcheck.sh --restart every 5 min) when it is missing. false = leave
+# supervision of the stack's services to the operator.
+WATCHDOG_AUTOINSTALL="$(_ob_bool "${OPENBEAST_WATCHDOG_AUTOINSTALL:-$(_ob_conf_value WATCHDOG_AUTOINSTALL || true)}" true WATCHDOG_AUTOINSTALL)"
 # Where files the CHAT model writes/reads via the direct tools land. A direct
 # tool call carries no conversation or user id (the OpenAPI tool server is
 # stateless), so without this the model picks its own path and defaults to a
@@ -932,6 +1414,15 @@ WEBUI_AUTH="$(_ob_bool "${OPENBEAST_WEBUI_AUTH:-$(_ob_conf_value WEBUI_AUTH || t
 # Env override: $OPENBEAST_WEBUI_BACKGROUND_TASKS. Not exported: the only
 # consumer, configure-webui.sh, sources this file itself.
 WEBUI_BACKGROUND_TASKS="$(_ob_bool "${OPENBEAST_WEBUI_BACKGROUND_TASKS:-$(_ob_conf_value WEBUI_BACKGROUND_TASKS || true)}" false WEBUI_BACKGROUND_TASKS)"
+# Open WebUI's random seed filter (agents/webui_functions/random_seed.py).
+# TensorFold uses a FIXED seed when a request names none, so Regenerate in
+# WebUI returned the same answer; the filter gives each unseeded chat request
+# a random seed (an explicit one still wins).
+#   true (default)   configure-webui.sh installs it active and global.
+#   false            configure-webui.sh switches an installed copy off.
+# Env override: $OPENBEAST_WEBUI_RANDOM_SEED. Not exported (only
+# configure-webui.sh reads it, and it sources this file itself).
+WEBUI_RANDOM_SEED="$(_ob_bool "${OPENBEAST_WEBUI_RANDOM_SEED:-$(_ob_conf_value WEBUI_RANDOM_SEED || true)}" true WEBUI_RANDOM_SEED)"
 # WEBUI_ADMIN_PASSWORD is deliberately NOT exported: the only consumer,
 # configure-webui.sh, sources this file itself and reads the variable in
 # its own shell. Exporting it would put the admin password in the
@@ -1025,12 +1516,236 @@ export OPENBEAST_ALLOW_OPEN_TOOLS="$ALLOW_OPEN_TOOLS"
 # flag publishes; doctor.sh then WARNs about the open :443 instead of FAILing.
 ALLOW_OPEN_WEBUI="$(_ob_bool "${OPENBEAST_ALLOW_OPEN_WEBUI:-$(_ob_conf_value ALLOW_OPEN_WEBUI || true)}" false ALLOW_OPEN_WEBUI)"
 export OPENBEAST_ALLOW_OPEN_WEBUI="$ALLOW_OPEN_WEBUI"
+# `tailscale …` with a bound, or nothing at all when it is not installed.
+_ob_ts() {
+  command -v tailscale >/dev/null 2>&1 || return 1
+  if command -v timeout >/dev/null 2>&1; then timeout 3 tailscale "$@"; else tailscale "$@"; fi
+}
+# True when `tailscale serve` maps :443 onto the WebUI (:3000).
+# Mounts made with `serve --bg` persist across reboots and stack restarts —
+# and tailscaled re-applies them when it comes up, so "tailscale gave no
+# answer" (a start racing tailscaled at boot, a >3 s stall) is NOT "no
+# mount": then the last real answer stands (.run/webui-on-443).
+# Nor is ONE "no mount" right after the last real answer said "mounted": a
+# tailscaled still coming up at boot can answer before it re-applies the
+# persisted serve config, and caching that "no" let a start recreate an
+# auth-off WebUI behind the mount it then restored. That answer is cached
+# (and believed) only once a second probe, OB_WEBUI_443_RECHECK_S (2) later,
+# agrees; any other second answer keeps login on.
+# A read-only source (doctor, engine.sh, start.sh --status, a report-only
+# healthcheck) UPDATES an existing cache too: it is run-dir state, not
+# openbeast.conf, and only a writable source could clear a stale "0" before —
+# so after an unmount every read-only command paid the 2 s recheck, on every
+# source, until a start happened to run (2026-11-16 review). It still never
+# creates the file. (No per-process "already rechecked" shortcut: a marker
+# inherited across a tailscaled restart would believe the boot-race "no"
+# this recheck exists for.)
+_ob_webui_on_443() {
+  local rc cache="$ISLAND_STATE_DIR/webui-on-443"
+  _ob_webui_443_probe && rc=0 || rc=$?
+  if (( rc == 1 )) && [[ "$(head -n1 "$cache" 2>/dev/null)" == "0" ]]; then
+    sleep "${OB_WEBUI_443_RECHECK_S:-2}"
+    _ob_webui_443_probe && rc=0 || rc=$?
+  fi
+  if (( rc == 0 || rc == 1 )); then
+    if [[ "${OB_CONF_READONLY:-}" != "1" ]]; then
+      { mkdir -p "$ISLAND_STATE_DIR" && echo "$rc" > "$cache"; } 2>/dev/null || true
+    elif [[ -f "$cache" ]]; then
+      { echo "$rc" > "$cache"; } 2>/dev/null || true
+    fi
+    return "$rc"
+  fi
+  [[ "$(head -n1 "$cache" 2>/dev/null)" == "0" ]]
+}
+# 0 = :443 maps onto :3000, 1 = tailscale answered and it does not, 2 = no
+# answer (not installed, not running, >3 s, unparseable).
+_ob_webui_443_probe() {
+  _ob_ts serve status --json 2>/dev/null | python3 -c '
+import json, re, sys
+try:
+    web = json.load(sys.stdin).get("Web") or {}
+except Exception:
+    sys.exit(2)
+for hp, cfg in web.items():
+    if hp.endswith(":443") and any(re.search(r":3000/?$", str((h or {}).get("Proxy", "")))
+                                   for h in ((cfg or {}).get("Handlers") or {}).values()):
+        sys.exit(0)
+sys.exit(1)' 2>/dev/null
+}
+# WEBUI_AUTH=false is honoured only while the WebUI is reachable from this
+# machine alone. Auth off means "no login, everyone is admin@localhost", and
+# that admin holds the privileged tool connection — bash. Two states put that
+# on a network with no acknowledgement (review, webui-searxng):
+#   - a non-loopback BIND_HOST: the WebUI binds it (compose HOST=), and the
+#     only guard was the tool server's keyless check, which setup-mcpo-keys.sh
+#     clears while the no-login admin UI (and its bash) stays on the LAN;
+#   - a :443 mount left by setup-tailscale.sh (they persist), after the conf
+#     or OPENBEAST_WEBUI_AUTH turned auth back off: start.sh recreated the
+#     container auth-off behind the live mount.
+# Either way login stays ON unless ALLOW_OPEN_WEBUI=true acknowledges it — the
+# same acknowledgement setup-tailscale.sh --i-accept-open-webui records.
+if [[ "$WEBUI_AUTH" != "true" && "$ALLOW_OPEN_WEBUI" != "true" ]]; then
+  _ob_open_why=""
+  if ! ob_bind_is_loopback "$BIND_HOST"; then
+    _ob_open_why="BIND_HOST=$BIND_HOST puts the WebUI on that network"
+  elif _ob_webui_on_443; then
+    _ob_open_why="tailscale serve still publishes the WebUI on :443 (every tailnet device)"
+  fi
+  if [[ -n "$_ob_open_why" ]]; then
+    WEBUI_AUTH=true
+    export OPENBEAST_WEBUI_AUTH=true
+    if [[ "${OB_CONF_WEBUI_AUTH_WARNED:-}" != "1" ]]; then
+      echo "WARNING: WEBUI_AUTH=false ignored — $_ob_open_why, and with login" >&2
+      echo "         off every visitor is the WebUI admin (with bash). Login stays ON;" >&2
+      echo "         the built-in admin's password is in openbeast.conf after the first" >&2
+      echo "         start. Set ALLOW_OPEN_WEBUI=true to really run it open." >&2
+      export OB_CONF_WEBUI_AUTH_WARNED=1
+    fi
+  fi
+  unset _ob_open_why
+fi
+# Open WebUI's CORS allowlist (docker-compose CORS_ALLOW_ORIGIN). Upstream's
+# default is '*' WITH credentials, so Starlette echoed any Origin back: on an
+# auth-off WebUI any web page the operator opened could POST the sign-in,
+# read the admin token and run code (Functions) or read the tool-server key;
+# with auth on, any page on any other tailnet host (ts.net is a public suffix,
+# so they are all same-site with the WebUI's cookie) could read the admin's
+# API. Socket.IO uses the same list, so it must name EVERY origin the WebUI is
+# really opened from: loopback, the bind address, the tailnet name Tailscale
+# Serve publishes it under — plus WEBUI_ORIGINS for anything else (your own
+# reverse proxy). WEBUI_ORIGINS='*' restores upstream's wildcard.
+# The tailnet name the WebUI is published under, from the most stable source
+# that answers. `tailscale status` alone is transient: a start at boot races
+# tailscaled (a user unit has no ordering against it), a logged-out or slow
+# (>3 s) daemon gives nothing — and an origin list computed then left the
+# tailnet UI failing Socket.IO's origin check until the next lucky restart.
+# So: Self.DNSName, else the host of a `serve status` Web key ("<fqdn>:443",
+# the mount itself), else the last name either gave (cached in the run dir).
+_ob_webui_tailnet_name() {
+  local name cache="$ISLAND_STATE_DIR/webui-tailnet-name"
+  name=$(_ob_ts status --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    print(((json.load(sys.stdin).get("Self") or {}).get("DNSName") or "").rstrip(".").lower())
+except Exception:
+    pass' 2>/dev/null) || name=""
+  if [[ -z "$name" ]]; then
+    name=$(_ob_ts serve status --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    keys = list((json.load(sys.stdin).get("Web") or {}))
+except Exception:
+    sys.exit(0)
+keys.sort(key=lambda k: not k.endswith(":443"))
+for k in keys:
+    h = k.rsplit(":", 1)[0].rstrip(".").lower()
+    if h and "." in h:
+        print(h)
+        break' 2>/dev/null) || name=""
+  fi
+  # A DNS name only; anything else in the cache is ignored, never echoed.
+  if [[ -n "$name" && "$name" =~ ^[a-z0-9.-]+$ ]]; then
+    if [[ "${OB_CONF_READONLY:-}" != "1" ]]; then
+      { mkdir -p "$ISLAND_STATE_DIR" && printf '%s\n' "$name" > "$cache.tmp" \
+          && mv -f "$cache.tmp" "$cache"; } 2>/dev/null || rm -f "$cache.tmp" 2>/dev/null
+    fi
+  else
+    name=$(head -n1 "$cache" 2>/dev/null || true)
+    [[ "$name" =~ ^[a-z0-9.-]+$ ]] || name=""
+  fi
+  printf '%s' "$name"
+}
+_ob_webui_cors() {
+  local extra list=() h fq
+  extra="${OPENBEAST_WEBUI_ORIGINS:-$(_ob_conf_value WEBUI_ORIGINS || true)}"
+  if [[ "${extra// /}" == "*" ]]; then echo '*'; return 0; fi
+  list=("http://localhost:3000" "http://127.0.0.1:3000")
+  if ! ob_bind_is_loopback "$BIND_HOST"; then
+    case "$BIND_HOST" in
+      0.0.0.0|::|"[::]")
+        # Wildcard: every address of this box, as typed in a browser.
+        for h in $(hostname -I 2>/dev/null); do
+          [[ "$h" == *:* ]] && h="[$h]"
+          list+=("http://$h:3000")
+        done ;;
+      *) h="$BIND_HOST"
+         [[ "$h" == *:* && "$h" != \[* ]] && h="[$h]"
+         list+=("http://$h:3000") ;;
+    esac
+    h="$(hostname 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+    [[ -n "$h" ]] && list+=("http://$h:3000")
+  else
+    # A loopback bind other than 127.0.0.1 (127.0.0.2, ::1): the WebUI binds
+    # ONLY that address (compose HOST=), so it is opened as http://<it>:3000
+    # and nothing else listed reaches it. Missing here, Socket.IO refused the
+    # browser's own origin and chat streaming broke, while the Host list
+    # below already allowed the address (2026-11-16 review).
+    case "$BIND_HOST" in
+      127.0.0.1|localhost|"") ;;
+      *) h="$BIND_HOST"
+         [[ "$h" == *:* && "$h" != \[* ]] && h="[$h]"
+         list+=("http://$h:3000") ;;
+    esac
+  fi
+  fq="${_OB_WEBUI_TS_FQDN-$(_ob_webui_tailnet_name)}"
+  if [[ -n "$fq" ]]; then
+    list+=("https://$fq")
+    ob_bind_is_loopback "$BIND_HOST" || list+=("http://$fq:3000")
+  fi
+  for h in ${extra//[,;]/ }; do list+=("$h"); done
+  local IFS=';'
+  echo "${list[*]}"
+}
+# The tailnet name, looked up ONCE per source of this file (two `timeout 3`
+# tailscale calls plus python when tailscaled is slow) and kept in
+# _OB_WEBUI_TS_FQDN, so serve.sh's llama-server CORS origin reuses it
+# instead of asking again. WEBUI_ORIGINS='*' needs no name: left unset.
+unset _OB_WEBUI_TS_FQDN
+_ob_wo="${OPENBEAST_WEBUI_ORIGINS:-$(_ob_conf_value WEBUI_ORIGINS || true)}"
+[[ "${_ob_wo// /}" == "*" ]] || _OB_WEBUI_TS_FQDN="$(_ob_webui_tailnet_name)"
+unset _ob_wo
+OPENBEAST_WEBUI_CORS="$(_ob_webui_cors)"
+export OPENBEAST_WEBUI_CORS
+# The Host names the WebUI answers (docker-compose OB_WEBUI_HOSTS, enforced
+# by scripts/webui/sitecustomize.py inside the container, with the shared
+# agents/hostpolicy.py allowlist on top: loopback, this machine's name,
+# *.ts.net). CORS does not stop
+# DNS rebinding: a page that re-resolves its own name to 127.0.0.1 is "same
+# origin" with the WebUI, and with login off it signs in as admin (bash).
+# Its requests carry its own name in Host, so while login is off — which the
+# guard above allows only on loopback — the WebUI answers loopback names
+# alone (plus the hosts of WEBUI_ORIGINS). ALLOW_OPEN_WEBUI=true (login off
+# on a network) is NOT a reason to drop the check: it says "let the network
+# in", not "let any page the operator opens in", and a rebound page is still
+# admin there. Its names come from the CORS list, which already holds the
+# bind address(es), this machine's name and the tailnet name. With login on
+# a rebound page has no session, and WEBUI_ORIGINS='*' is the operator's
+# explicit "any site": both are '*', no check.
+_ob_webui_hosts() {
+  if [[ "$WEBUI_AUTH" == "true" || "$OPENBEAST_WEBUI_CORS" == "*" ]]; then
+    echo '*'; return 0
+  fi
+  local list=(localhost 127.0.0.1 ::1) o h
+  ob_bind_is_loopback "$BIND_HOST" && [[ "$BIND_HOST" != *:* ]] && list+=("$BIND_HOST")
+  for o in ${OPENBEAST_WEBUI_CORS//;/ }; do
+    h="${o#*://}"; h="${h%%/*}"
+    # hostpolicy's form: an IPv6 literal keeps its brackets, a port goes.
+    if [[ "$h" == \[* ]]; then h="${h%%\]*}]"; else h="${h%%:*}"; fi
+    [[ -n "$h" ]] && list+=("$h")
+  done
+  local IFS=','
+  echo "${list[*]}"
+}
+OPENBEAST_WEBUI_HOSTS="$(_ob_webui_hosts)"
+export OPENBEAST_WEBUI_HOSTS
 # ALLOW_OPEN_INFERENCE (env OPENBEAST_ALLOW_OPEN_INFERENCE) default false: the
 # persisted form of setup-tailscale.sh --i-accept-open-inference — "yes,
 # publish llama-server on :8443 with no beast-gate and no LLAMA_API_KEY".
 # setup-tailscale writes it when that flag publishes; doctor.sh then WARNs
-# about the keyless :8443 instead of FAILing. Not exported: only those two
-# scripts read it, and both source this file.
+# about the keyless :8443 instead of FAILing. serve.sh takes it as the same
+# "yes" for a keyless llama-server on a non-loopback BIND_HOST, which it
+# otherwise refuses. Not exported: only those three read it, and all of them
+# source this file.
 ALLOW_OPEN_INFERENCE="$(_ob_bool "${OPENBEAST_ALLOW_OPEN_INFERENCE:-$(_ob_conf_value ALLOW_OPEN_INFERENCE || true)}" false ALLOW_OPEN_INFERENCE)"
 # ob_tools_exposed_open — true when the tool server would listen off-loopback
 # with no key: the state start.sh / doctor.sh / the tool server must refuse
@@ -1073,6 +1788,7 @@ if [[ -z "$SEARXNG_SECRET" && "${OB_CONF_READONLY:-}" != "1" ]]; then
   fi
   printf 'SEARXNG_SECRET=%s\n' "$SEARXNG_SECRET" >> "$_ob_conf"
   chmod 600 "$_ob_conf" 2>/dev/null || true
+  _ob_conf_snapshot          # the file just changed (or was just created): re-read it
 fi
 export OPENBEAST_SEARXNG_SECRET="$SEARXNG_SECRET"
 
@@ -1096,13 +1812,14 @@ export OPENBEAST_SEARXNG_SECRET="$SEARXNG_SECRET"
 _OB_CONF_EXTRA_KEYS="BEAST_ASSIST BEAST_ESCALATE CHAT_BASE_URL CHAT_PUBLIC_URL WEBUI_DEFAULT_ADMIN_PASSWORD"
 # Whole numbers that are used exactly as written (the port keys and the gate's
 # limits take no inline comment — openbeast.conf.example says so)...
-_OB_CONF_INT_KEYS="ROUTER_PORT EDGE_PORT CHAT_PORT ARTIFACT_PORT NTFY_PORT MEM_LIMIT_PCT EDGE_RATE_LIMIT EDGE_MAX_INFLIGHT EDGE_MAX_BODY ARTIFACT_RETAIN_DAYS"
+_OB_CONF_INT_KEYS="ROUTER_PORT EDGE_PORT CHAT_PORT ARTIFACT_PORT NTFY_PORT DASHBOARD_PORT MEM_LIMIT_PCT MEM_RESERVE_GB EDGE_RATE_LIMIT EDGE_MAX_INFLIGHT EDGE_MAX_BODY EDGE_READ_TIMEOUT EDGE_CONNECT_TIMEOUT ARTIFACT_RETAIN_DAYS"
 # ...and those whose reader strips a trailing `# comment` first.
-_OB_CONF_INT_KEYS_COMMENT_OK="HYDRA_READY_GRACE AGENT_LOG_RETENTION_DAYS LLAMA_LOAD_GRACE"
-# One-word keys read through _ob_word. An inline comment on them is now read
-# correctly, but the example's "inline comments are fine" note is only true
-# for true/false keys, and every other reader of these lines (doctor rows,
-# an operator's grep) sees the whole line — so it is said, not silent.
+_OB_CONF_INT_KEYS_COMMENT_OK="HYDRA_READY_GRACE AGENT_LOG_RETENTION_DAYS ISLAND_GRACE LLAMA_LOAD_GRACE"
+# One-word keys read by their first word (_ob_word; BIND_HOST strips its own
+# comment). An inline comment on them does not change the value, but the
+# example's "inline comments are fine" note is only true for true/false keys,
+# and every other reader of these lines (doctor rows, an operator's grep) sees
+# the whole line — so it is said, not silent.
 _OB_CONF_WORD_KEYS="BIND_HOST SERVE_SCRIPT REASONING WEIGHT_ENFORCE FILES_SHARDING"
 ob_conf_lint() {
   local conf="$REPO_DIR/openbeast.conf" example="$REPO_DIR/openbeast.conf.example" k v p
@@ -1185,3 +1902,7 @@ if [[ -z "${OB_CONF_LINTED:-}" ]]; then
   unset _ob_lint
   export OB_CONF_LINTED=1
 fi
+# Sourcing is over: drop the snapshot (see _ob_conf_value). From here on
+# every lookup reads openbeast.conf fresh, so a caller that edits it sees
+# its own write.
+_ob_conf_snapshot_drop

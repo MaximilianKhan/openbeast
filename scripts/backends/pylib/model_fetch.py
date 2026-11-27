@@ -2,8 +2,10 @@
 """Download a profile's pinned checkpoint, verify every byte, and lock it.
 
     model-fetch.sh --profile NAME            fetch (or, if present, verify) → MODELS_DIR/NAME
-    model-fetch.sh --profile NAME --verify   re-hash what is on disk against the lock; download nothing
-    model-fetch.sh --profile NAME --locate   (launchers) print the verified dir; sizes only, fast
+    model-fetch.sh --profile NAME --verify   re-hash what is on disk against the lock; download nothing.
+                                             No lock = exit 3 (a local SOURCE: --trust-first-use records one)
+    model-fetch.sh --profile NAME --locate   (launchers) print the locked dir; fast: weight files by
+                                             size, every other file by sha256. No lock = exit 3
 
 Guarantees, in the order they matter:
   1. Only the profile's REVISION (a commit SHA) is ever requested — resolve/<sha>/…, never a branch.
@@ -30,8 +32,10 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePosixPath
 
 HERE = Path(__file__).resolve().parent
@@ -89,6 +93,28 @@ def sha256_file(p: Path) -> str:
                 break
             h.update(b)
     return h.hexdigest()
+
+
+def hash_workers() -> int:
+    """Files hashed at once. hashlib releases the GIL on large updates, so
+    file-level threads scale until the disk is the limit: measured on a GB10
+    (20 cores, ~8 GB/s NVMe), 1 thread ~1.8 GB/s, 4 threads ~5.5 GB/s. 4 by
+    default; MODEL_FETCH_HASH_WORKERS overrides (1 = serial)."""
+    raw = os.environ.get("MODEL_FETCH_HASH_WORKERS", "")
+    try:
+        n = int(raw) if raw else min(4, os.cpu_count() or 1)
+    except ValueError:
+        n = 1
+    return max(1, min(n, 32))
+
+
+def sha256_many(paths: list[Path]) -> dict[Path, str]:
+    """sha256 of every path, hashed hash_workers() at a time; order-free result."""
+    n = hash_workers()
+    if n == 1 or len(paths) < 2:
+        return {p: sha256_file(p) for p in paths}
+    with ThreadPoolExecutor(max_workers=n) as ex:
+        return dict(zip(paths, ex.map(sha256_file, paths)))
 
 
 def git_blob_sha1(p: Path) -> str:
@@ -159,6 +185,35 @@ def artifacts(p: obprofile.Profile) -> list[dict]:
     return out
 
 
+class _Stalled(OSError):
+    """The connection still delivers, but too slowly (or not at all): reconnect and resume."""
+
+
+def _num_env(key: str, default: float) -> float:
+    raw = os.environ.get(key, "").strip()
+    if not raw:
+        return default
+    try:
+        v = float(raw)
+    except ValueError:
+        raise FetchError(f"{key}={raw!r}: a number, please") from None
+    if v < 0:
+        raise FetchError(f"{key}={raw!r}: must not be negative")
+    return v
+
+
+def stall_settings() -> tuple[float, float, int, float]:
+    """(min bytes per window, window s, restarts, per-read socket timeout s).
+
+    A Hub connection can crawl (~1 MB/s for hours) while a fresh one is fast at once, so a
+    file that grows less than FETCH_STALL_MB (50) MB in FETCH_STALL_SECS (180) s is dropped
+    and requested again from where it stopped (Range), up to FETCH_STALL_RESTARTS (5) times
+    per file. A read that returns nothing for FETCH_READ_TIMEOUT (120) s counts as a stall
+    too. FETCH_STALL_SECS=0 turns the stall check off."""
+    return (_num_env("FETCH_STALL_MB", 50) * 1024 * 1024, _num_env("FETCH_STALL_SECS", 180),
+            int(_num_env("FETCH_STALL_RESTARTS", 5)), _num_env("FETCH_READ_TIMEOUT", 120) or 120)
+
+
 def _download(repo: str, rev: str, e: dict, dest: Path) -> None:
     """One file into dest, resuming a partial; verified by the caller."""
     size = int(e.get("size") or 0)
@@ -168,28 +223,49 @@ def _download(repo: str, rev: str, e: dict, dest: Path) -> None:
         have = 0
     if have == size and size > 0:
         return
+    min_bytes, window, restarts, read_timeout = stall_settings()
     mode = "ab" if have else "wb"
     rng = (have, None) if have else None
-    tries = 0
+    tries = stalls = 0
     while True:
         try:
-            with hfapi.open_file(repo, rev, e["path"], rng, timeout=300) as r:
+            with hfapi.open_file(repo, rev, e["path"], rng, timeout=read_timeout) as r:
                 if rng and getattr(r, "status", 206) == 200:
                     mode, have = "wb", 0          # server ignored Range: start over
+                read = getattr(r, "read1", None) or r.read   # read1: what has arrived, so a trickle is seen
+                pos, t0 = have, time.monotonic()
+                win_pos = pos
                 with open(dest, mode) as f:
                     while True:
-                        b = r.read(CHUNK)
+                        try:
+                            b = read(CHUNK)
+                        except socket.timeout:
+                            raise _Stalled(f"nothing received for {read_timeout:g} s") from None
                         if not b:
                             break
                         f.write(b)
+                        pos += len(b)
+                        now = time.monotonic()
+                        if window and now - t0 >= window:
+                            got = pos - win_pos
+                            if got < min(min_bytes, size - win_pos):
+                                raise _Stalled(f"{got / 1e6:.1f} MB in {now - t0:.0f} s "
+                                               f"(under {min_bytes / 1e6:g} MB per {window:g} s)")
+                            t0, win_pos = now, pos
             return
+        except _Stalled as err:
+            stalls += 1
+            if stalls > restarts:
+                raise FetchError(f"{e['path']}: stalled {stalls} times (last: {err}); "
+                                 "re-run the same command to resume") from None
+            log(f"  stalled {e['path']}: {err}: reconnecting, restart {stalls} of {restarts} (it resumes)")
         except (hfapi.HubError, OSError) as err:
             tries += 1
             if tries >= 3 or isinstance(err, hfapi.Offline):
                 raise FetchError(f"{e['path']}: {err}") from None
             time.sleep(2 * tries)
-            have = dest.stat().st_size if dest.exists() else 0
-            mode, rng = ("ab", (have, None)) if have else ("wb", None)
+        have = dest.stat().st_size if dest.exists() else 0
+        mode, rng = ("ab", (have, None)) if have else ("wb", None)
 
 
 def _verify_entry(p: Path, e: dict) -> str:
@@ -288,7 +364,14 @@ def fetch_artifact(a: dict, mdir: Path, include: list[str], exclude: list[str], 
             "_final": str(final)}
 
 
+# What --locate leaves to a size check: the big weight files. Everything else (config.json,
+# tokenizer files, chat_template.jinja, *.py) is small and is what changes behaviour on a
+# same-size edit, so it is hashed even on the fast path.
+WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".gguf", ".pkl", ".ckpt", ".h5", ".msgpack", ".npz")
+
+
 def verify_dir(d: Path, entry: dict, full: bool = True) -> list[str]:
+    """full=False (--locate): sizes for the weight files, sha256 for everything else."""
     problems = []
     if not d.is_dir():
         return [f"{d} does not exist"]
@@ -300,35 +383,53 @@ def verify_dir(d: Path, entry: dict, full: bool = True) -> list[str]:
                 problems.append(f"{d} was fetched at {m.get('revision')}, the lock says {entry['revision']}")
         except ValueError:
             problems.append(f"{marker} is not valid JSON")
+    per_file: dict[str, str] = {}
+    to_hash: dict[Path, tuple[str, str]] = {}
     for rel, f in sorted((entry.get("files") or {}).items()):
         p = d / rel
         if not p.is_file():
-            problems.append(f"missing {rel}")
+            per_file[rel] = f"missing {rel}"
             continue
         if p.stat().st_size != f["size"]:
-            problems.append(f"{rel}: {p.stat().st_size} bytes, locked {f['size']}")
+            per_file[rel] = f"{rel}: {p.stat().st_size} bytes, locked {f['size']}"
             continue
-        if full and sha256_file(p) != f["sha256"]:
-            problems.append(f"{rel}: sha256 differs from the lock")
+        if full or not rel.endswith(WEIGHT_SUFFIXES):
+            to_hash[p] = (rel, f["sha256"])
+    # Hashed in parallel (a 164 GB tree is minutes of CPU on one thread);
+    # reported in the lock's sorted order, so the output never depends on timing.
+    for p, got in sha256_many(list(to_hash)).items():
+        rel, want = to_hash[p]
+        if got != want:
+            per_file[rel] = f"{rel}: sha256 differs from the lock"
+    problems += [per_file[rel] for rel in sorted(per_file)]
     locked = set(entry.get("files") or {})
     for p in d.rglob("*"):
         rel = p.relative_to(d).as_posix()
-        if p.is_file() and rel not in (MARKER, STAGE_META) and rel not in locked and rel.endswith((".safetensors", ".json", ".py",
-                                                                                ".jinja", ".model", ".txt")):
+        # Hidden paths (.cache/huggingface/ download metadata a `hf download
+        # --local-dir` copy carries) are skipped exactly as local_lock_entry
+        # skips them when it writes the lock: no engine loads from them.
+        if any(part.startswith(".") for part in PurePosixPath(rel).parts):
+            continue
+        # Every other file counts, whatever its suffix: engines and tokenizers also read
+        # *.bin / *.pt (pickle), *.tiktoken, *.yaml, ... — an allowlist would miss one.
+        if (p.is_file() or p.is_symlink()) and rel not in (MARKER, STAGE_META) and rel not in locked:
             problems.append(f"unlocked file {rel} (not from the pinned revision)")
     return problems
 
 
 def local_lock_entry(d: Path) -> dict:
-    files = {}
+    paths = []
     for p in sorted(d.rglob("*")):
         rel = p.relative_to(d).as_posix()
         if p.is_file() and rel != MARKER and not any(part.startswith(".") for part in PurePosixPath(rel).parts):
-            files[rel] = {"size": p.stat().st_size, "sha256": sha256_file(p), "hub_oid": None, "lfs": False}
+            paths.append(p)
+    sums = sha256_many(paths)
+    files = {p.relative_to(d).as_posix(): {"size": p.stat().st_size, "sha256": sums[p], "hub_oid": None, "lfs": False}
+             for p in paths}
     return {"source": str(d), "revision": None, "dir": None, "files": files}
 
 
-def run(p: obprofile.Profile, mdir: Path | None, mode: str) -> int:
+def run(p: obprofile.Profile, mdir: Path | None, mode: str, trust_first_use: bool = False) -> int:
     lock = read_lock(p.lock_path)
     arts = lock.get("artifacts") or {}
     rc = 0
@@ -338,9 +439,15 @@ def run(p: obprofile.Profile, mdir: Path | None, mode: str) -> int:
         if a.get("local"):
             d = Path(a["local"])
             if not entry:
-                if mode == "locate":
-                    print(f"{a['key']}\t{d}")
-                    log(f"[{a['key']}] local SOURCE {d} has no lock yet — run model-fetch.sh --profile {p.name}")
+                # No lock = nothing to verify against. --verify and --locate (the launchers,
+                # sync-weights on a worker) must say so, never record whatever bytes are there
+                # and call them verified. Recording a lock is an explicit act: a plain fetch, or
+                # --verify --trust-first-use.
+                if mode == "locate" or (mode == "verify" and not trust_first_use):
+                    log(f"[{a['key']}] local SOURCE {d} has no lock in {p.lock_path} — nothing to verify against. "
+                        f"Record one where the copy is known-good (model-fetch.sh --profile {p.name}) and carry "
+                        f"the lock with the repo; --verify --trust-first-use records one from these bytes")
+                    rc = max(rc, EXIT_ABSENT)
                     continue
                 log(f"[{a['key']}] local SOURCE {d}: recording a lock (trust on first use — nothing to compare to)")
                 arts[a["key"]] = local_lock_entry(d)
@@ -408,7 +515,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--profile", required=True)
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--verify", action="store_true", help="re-hash against the lock; never download")
-    g.add_argument("--locate", action="store_true", help="print '<artifact>\\t<dir>' for verified (by size) dirs")
+    g.add_argument("--locate", action="store_true",
+                   help="print '<artifact>\\t<dir>' for locked dirs (weights by size, other files by sha256)")
+    ap.add_argument("--trust-first-use", action="store_true",
+                    help="with --verify: a local SOURCE with no lock gets one recorded from the bytes on disk "
+                         "(otherwise --verify fails: there is nothing to verify against)")
     ap.add_argument("--models-dir", help="default: $MODELS_DIR, then MODELS_DIR in --env")
     ap.add_argument("--env", type=Path, default=HERE.parent / "spark.env")
     ap.add_argument("--profiles-dir", type=Path, default=Path(os.environ.get("OPENBEAST_PROFILES_DIR")
@@ -427,7 +538,10 @@ def main(argv: list[str] | None = None) -> int:
             mdir = models_dir(a.models_dir, a.env) if needs_dir else None
         if mdir is not None and not a.verify and not a.locate:
             mdir.mkdir(parents=True, exist_ok=True)
-        return run(p, mdir, "verify" if a.verify else "locate" if a.locate else "fetch")
+        if a.trust_first_use and not a.verify:
+            log("Error: --trust-first-use only applies to --verify (a plain fetch already records a first lock)")
+            return 2
+        return run(p, mdir, "verify" if a.verify else "locate" if a.locate else "fetch", a.trust_first_use)
     except (obprofile.ProfileError, FetchError, hfapi.HubError) as e:
         log(f"Error: {e}")
         return 1

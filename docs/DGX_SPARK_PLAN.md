@@ -1,5 +1,20 @@
 # Two DGX Sparks as the inference plane — plan and runbook
 
+> **Current state (2026-11-19):** the pair serves **DeepSeek-V4.1-Flash (Mia
+> EXL3)** by default (`DeepSeek-V4.1-Flash-1017`, unit `deepseek-v41-inference`,
+> 4 streams, a 524,288-token context of the model's 1,048,576, thinking on),
+> Max's decision on 2026-11-18 after testing (v5 61/71, the board's #1; 65/71
+> under arm T2 since 2026-11-19). GLM-5.3-Flash is the staged alternative
+> (`beastglm`). Switching goes only through `beast-spark`. How it actually runs,
+> and how to operate it: [`SPARK_HYDRA.md`](SPARK_HYDRA.md). This plan is the
+> design record; where the two differ, SPARK_HYDRA.md is what is deployed.
+>
+> History: on 2026-11-13 the pair went live as `spark-hydra` with GLM-5.3-Flash
+> Ablit on Mia-AiLab's TensorFold v0.6.0 recipe, command center on spark-1 (T2).
+> It served DeepSeek-V4.1-Flash-1017 from 2026-11-17, GLM again for part of
+> 2026-11-18, then DeepSeek by Max's decision. §15 records why GLM was the
+> first choice.
+
 **Status (2026-09-29): milestone 1 is built and tested hermetically. Nothing
 here has run on a GB10 yet.** Every step marked **VERIFY ON HARDWARE** comes
 from vendor docs, recipes or source reading, not from a measurement on our
@@ -74,9 +89,11 @@ keys and stops trying to own it.
 - **The GPU on the rig is free.** Nothing in M1 uses it; llama-server can
   still be run by hand (`INFERENCE_BACKEND=llama ./scripts/measure-vram.sh …`
   works) but the stack does not start one.
-- **T2** (the whole stack on Spark 1, next to vLLM) is *not* M1: it needs an
-  aarch64 Python lock, the arm zig tarball and GB10 detection in
-  `hardware.sh`. See §8.
+- **T2** (the whole stack on Spark 1, next to vLLM or TensorFold) is *not*
+  M1. Its blockers — GB10 detection in `hardware.sh`, a bootstrap that
+  builds llama.cpp and fetches a GGUF for a server it never starts, and the
+  aarch64 python wheels — are handled (§8 rows 14, 19, 20; §8a). What is left
+  is the air-gap bundle and the zig compiler, both outside the online path.
 
 ## 4. Rig configuration
 
@@ -162,15 +179,8 @@ with no revision argument, so the launcher only hands it the verified
 directory, read-only, with `HF_HUB_OFFLINE=1`. A drafter is pinned the same
 way (`DRAFTER_SOURCE`/`DRAFTER_REVISION`); without one it passes `--drafter
 none`, never `auto` (which would pick up any unpinned draft model in the HF
-cache). **TensorFold's own Python dependencies are not pinned:** the
-pip install at every start resolves them from PyPI afresh, so it needs
-github.com and PyPI each time and the launcher refuses to start under
-`OFFLINE`; `--help`, `--print` and the start output say so. The fix is a
-derived image with TensorFold installed once and pinned by digest:
-`TENSORFOLD_PREBUILT=true` in `spark.env` runs `tensorfold` from such an
-image with no install at start (allowed under `OFFLINE`); the recipe is in
-`spark.env.example`. That image is **not built yet** (it needs a Spark).
-**Start rank 1 first**, then rank 0 (RUNBOOK.md, "two ranks").
+cache). A derived image built once
+and pinned by digest would avoid the pip install at every start — later. **Start rank 1 first**, then rank 0 (RUNBOOK.md, "two ranks").
 
 Limits — each one is a reason TensorFold is the *second* backend, not the
 first:
@@ -179,8 +189,8 @@ first:
 |---|---|
 | **Alpha** | PyPI "Development Status :: 3 - Alpha"; five releases in ~36 h around v0.3.7. The launcher accepts only a commit SHA |
 | **No GGUF** | CUDA serves MLX-affine 4-bit safetensors (Vontra/* conversions), NVFP4 and EXL3 — and Qwen3.8-27B on **two** ranks only as MLX-4bit (NVFP4/EXL3 are one-GPU) |
-| **No API key, no auth at all** | Must sit behind beast-gate or a firewall (§7) |
-| **Unauthenticated rendezvous on 29551** | The TCPStore listener's bind address is not configurable in TensorFold's CLI — firewall it to the peer's link address |
+| **No API key on the Python 0.x engine** (this section's container path, and the live GLM recipe's v0.6.0) | Must sit on loopback behind beast-gate (§7). The native >= 1.0 engine (`TENSORFOLD_ENGINE=native`, spark.env's default) is keyed with `--api-key-file` (`TENSORFOLD_API_KEY_FILE`) |
+| **Unauthenticated rendezvous on 29551** (native: 29583, `NCCL_COMM_ID`; both use port + 1 too) | The listener binds every interface (`*:29551`, seen live) and its address is not configurable — `scripts/backends/spark-guard.sh` drops it unless it arrives on the ConnectX fabric (§7) |
 | **No `/metrics`, `/props`, `/slots`** | `/api/slot` reports healthy + model id + `INFERENCE_SLOTS`, capacity null |
 | **No thinking budget on CUDA** | `thinking_budget` / `reasoning_effort` are MLX-only; the runner's `max_tokens` is the only bound |
 | **Serial by default** | `--parallel auto` = one request at a time on CUDA; set an integer for shared rounds (not with Flash Next at `--tp 2`) |
@@ -197,20 +207,36 @@ two-rank 71–82 tok/s (docs/recipes/qwen3.8-27b.md). **VERIFY ON HARDWARE.**
   the Spark's tailnet or private-LAN IP. Both launchers refuse `0.0.0.0`/`::`
   without `SPARK_ALLOW_WILDCARD_BIND=true`. vLLM's `--api-key` guards only
   `/v1` (and `/v2`, `/inference`, `/cohere`): **`/health` and `/metrics` stay
-  open** (`middleware/authenticate.py`); TensorFold has no key at all.
-- **Firewall the link.** vLLM's `--master-port` (29501) and TensorFold's 29551
-  should accept only the peer's CX-7 address, e.g. on each Spark
-  `nft add rule inet filter input ip saddr != <peer-link-ip> tcp dport {29501, 29551} drop`
-  (adapt to the Spark's firewall; **VERIFY ON HARDWARE** that the CX-7 link
-  is not also routed to the LAN).
-- **Key the vLLM API, and present the key from the rig.** `VLLM_API_KEY_FILE`
-  (0600, checked by the launcher) on Spark 1; the same value in the rig's
-  `LLAMA_API_KEY`, which WebUI, the runner, the router, the gate and the
-  dashboard already present. `doctor.sh` warns when a remote vLLM is reached
-  keyless and whenever the backend is TensorFold. **With TensorFold leave
-  `LLAMA_API_KEY` empty:** it has no auth, so a key sent there buys nothing
-  and is one more place to be logged. The dashboard and doctor's probes never
-  send it to TensorFold; WebUI and the agent runner would, if it were set.
+  open** (`middleware/authenticate.py`); native TensorFold's key guards `/v1`
+  and leaves `/health` open; the Python 0.x engine has no key at all. When
+  the command center runs on the head Spark itself (§8a, spark-hydra), bind
+  `127.0.0.1` and let beast-gate be the only network door.
+- **Keep the rendezvous on the fabric: `sudo scripts/backends/spark-guard.sh`
+  on every Spark.** vLLM's `--master-port` (29501), TensorFold's 29551 and
+  native TensorFold's 29583 (each + 1) have no authentication and bind every
+  interface. **Measured 2026-11-15:** ufw is installed but disabled on DGX OS,
+  and Tailscale's `ts-input` chain accepts tailnet traffic before ufw would
+  anyway — the live 29551 answered from a tailnet laptop. spark-guard loads
+  its own nftables table (input, priority `filter - 10`, ahead of ufw and
+  Tailscale) that drops TCP to those ports, and to the fabric addresses
+  (NCCL's ephemeral bootstrap listeners), unless it arrives on loopback or a
+  ConnectX netdev; it never flushes the ruleset and persists through its own
+  unit. Operation and verification: SPARK_HYDRA.md "Firewall: spark-guard".
+  (The single `nft add rule inet filter …` this bullet used to suggest assumed
+  a table that does not exist on DGX OS.)
+- **Key the API, and present the key from the rig.** vLLM:
+  `VLLM_API_KEY_FILE`; native TensorFold (>= 1.0): `TENSORFOLD_API_KEY_FILE`
+  (`--api-key-file`). Either file is 0600 and checked by the launcher; put the
+  **same value in the rig's `LLAMA_API_KEY`** — WebUI, the runner, the router,
+  the gate, the dashboard, `ob_backend_models`, conformance, use-model, hydra
+  and doctor all present it, to TensorFold as to vLLM (since v1.9.0). A keyed
+  native engine with an empty `LLAMA_API_KEY` answers every consumer 401.
+  `doctor.sh` warns when a non-loopback `INFERENCE_URL` is reached with no
+  key. The Python 0.x container engine (and the GLM recipe's v0.6.0) has **no
+  key at all**: keep it on loopback behind beast-gate, as spark-hydra does
+  (`INFERENCE_URL=http://127.0.0.1:8000`); a key the rig sends it is ignored,
+  and doctor cannot tell the two engines apart, so a green row does not mean
+  it is keyed.
 - **Remote clients go through beast-gate.** `EDGE_GATE=true`: the gate's
   upstream follows `INFERENCE_URL`, so per-device keys, the path allowlist and
   the inference audit keep working. The *raw* `:8443` publish
@@ -219,18 +245,6 @@ two-rank 71–82 tok/s (docs/recipes/qwen3.8-27b.md). **VERIFY ON HARDWARE.**
 - **Two identity layers stay separate** (AGENTS.md): the gate identifies
   devices; the vLLM key only proves "is the rig". Never hand the vLLM key to
   a client.
-- **vLLM must be ≥ 0.31.0.** Below 0.22.0 a request can bypass the API-key
-  check (GHSA-94f4-hr76-p5j6), so `VLLM_API_KEY` protects nothing; below
-  0.31.0 another advisory applies (`spark.env.example` names both). At each
-  start the vLLM launcher reads `vllm.__version__` from the pinned image
-  (`docker run --network none`) and warns below 0.31, loudly below 0.22;
-  `SPARK_SKIP_VLLM_VERSION_CHECK=true` skips the probe. The NGC 26.05 image's
-  version is unchecked until a Spark runs it.
-- **Network and token settings reach vLLM.** The vLLM launcher honours
-  `OFFLINE` (from the env, `spark.env` or `openbeast.conf`: an unfetched
-  profile is refused), forwards `HF_ENDPOINT` (a Hub mirror) by name, and
-  reads `HF_TOKEN_FILE`, refusing a file readable by group or others, and
-  forwards the token by name, never on argv.
 
 ## 8. Coupling inventory — status after this PR
 
@@ -252,15 +266,47 @@ prints "not applicable" instead of failing; **later** = not needed for M1.
 | 11 | Router `response_format` | OK on vLLM, degrades cleanly on TensorFold |
 | 12 | `doctor.sh` VRAM rows / llama probe | **done** — backend probe, key warnings, n/a rows |
 | 13 | Weights, serve scripts, `WEIGHT_ENFORCE` (GGUF) | **n/a msg** in doctor. **done** for the Sparks: profiles pin `SOURCE@REVISION` (commit SHA only); `model-fetch.sh` verifies every file against the Hub's LFS sha256 / git blob id and writes `models/<name>.lock` |
-| 14 | `hardware.sh` GB10 (`memory.total` N/A) | **later** (T2 only) |
+| 14 | `hardware.sh` GB10 (`memory.total` N/A) | **done** — an `[N/A]` row is a unified-memory GPU: counted (it was `0x`), sized by `/proc/meminfo` MemTotal once (not per GPU), `OB_GPU_UNIFIED=1`, its own advice ("GB10 / DGX Spark profile", not "5090-class"); passes the 24 GB floor. Discrete cards byte-identical (tests/test_scripts.sh). **later**: the dashboard's `/api/status` GPU tile parses `int("[N/A]")` and shows "no GPU" on a Spark |
 | 15 | `gpu-lease.sh` busy check silently fail-open on `[N/A]` | **done** — says "not applicable" |
 | 16 | `stop.sh` llama sweep | **done** — leaves an unmanaged server alone |
 | 17 | Eval provenance (`capture_server_config`, `/props` jobs clamp) | **later** — see §10 |
 | 18 | `measure-vram.sh`, `profile-*-mtp.sh` | **n/a msg**. `evals/profile_mtp.py` **later** |
-| 19 | `bootstrap.sh` / `update.sh --llama` | **later** — harmless in T1 (the rig can still build llama.cpp) |
-| 20 | aarch64 (pydeps lock, zig tarball, air-gap bundle) | **later** (T2 only) |
-| 21 | `MEM_LIMIT_PCT` scope | N/A in T1 (containers on other boxes) |
+| 19 | `bootstrap.sh` / `update.sh --llama` | **done** for bootstrap — `INFERENCE_MANAGED=false` (any vLLM / TensorFold, a remote llama) skips cmake/g++/nvcc checks, the llama.cpp build, the `GPU_BACKEND` pin, the GGUF disk check and download, and the github/HF probes; the GPU is reported, never failed; `--minimal` (llama-server only) is refused. `update.sh --llama` unchanged (it needs a clone, which such a box does not have) |
+| 20 | aarch64 (pydeps lock, zig tarball, air-gap bundle) | **pydeps: no change needed** — the lock already lists every file of each release; on spark-1 a `--require-hashes` download got all 43 (7 native `manylinux_*_aarch64` cp312/abi3 wheels) and a fresh resolve names the same 43 packages. Cross-built wheelhouse flags in `pydeps.sh` (§8a). **zig: see §8a.** **air-gap bundle: later** — `bundle.sh build` saves the BUILD host's wheels and image platform, so a bundle for a Spark must be built on an aarch64 box |
+| 21 | `MEM_LIMIT_PCT` scope | N/A in T1 (containers on other boxes). **T2 (command center + rank 0 on one GB10) needs it:** 75 % of a MemTotal the model holds protects nothing, so the supervisor re-sizes the scope to MemAvailable − `MEM_RESERVE_GB` once the model is up (start.sh `fit_unified_mem_cap`) |
 | 22 | `client.sh` reads `/props` `n_ctx` | **later** — falls back cleanly; could read `max_model_len` |
+
+### 8a. T2 — the command center on a Spark
+
+Measured on spark-1 (2026-11-13): aarch64, Ubuntu 24.04, python 3.12.3,
+Docker 29.6, GB10 `compute_cap` 12.1, `nvidia-smi --query-gpu=memory.*`
+= `[N/A]`, MemTotal 127598416 kB.
+
+- **Config.** `INFERENCE_BACKEND=tensorfold`, `INFERENCE_URL=http://127.0.0.1:8000`
+  with the server bound to loopback (`HOST=127.0.0.1` in the GLM recipe,
+  `SPARK_SERVE_HOST=127.0.0.1` for `spark-node.sh`): the command center is on
+  the same box, so the model needs no network address at all, and
+  `EDGE_GATE=true` publishes the one keyed door (SPARK_HYDRA.md, deployed
+  2026-11-13). Bind the tailnet IP instead only for a *keyed* engine that
+  another box must reach directly. `INFERENCE_MANAGED` is forced false for TensorFold, so
+  `./bootstrap.sh` builds no llama.cpp and downloads no GGUF (row 19).
+- **Images.** All three compose images are multi-arch at the pinned digest
+  (`docker manifest inspect` on spark-1): open-webui (amd64 + arm64),
+  searxng (amd64, arm64, arm/v7), ntfy (amd64, arm64, arm v6/v7). The pins
+  are index digests, so the same `docker-compose.yml` pulls arm64 there.
+- **Python.** The committed lock installs as-is (row 20). For a closed
+  Spark, build the wheelhouse elsewhere with every manylinux tag spelled out
+  (`./scripts/pydeps.sh wheelhouse` prints the line); one
+  `--platform manylinux_2_39_aarch64` alone misses cffi.
+- **zig.** Nothing in the stack downloads a zig *compiler* (the rig's comes
+  from mise; CI pins the x86_64 tarball). `lang-library.sh acquire zig`
+  fetches the `x86_64-linux` tarball on any host, which is fine: it is read
+  as a std-source corpus, never executed. For `language_reference` and the
+  zig variants on a Spark, install the compiler by hand, pinned like CI's:
+  `zig-aarch64-linux-0.16.0.tar.xz`, sha256
+  `ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17`
+  (ziglang.org index, read 2026-11-13; the x86_64 entry there matches CI's
+  pin `70e49664…`). No zig is installed on spark-1 today.
 
 ## 9. Runbook: the day the Sparks arrive
 
@@ -271,8 +317,9 @@ prints "not applicable" instead of failing; **later** = not needed for M1.
    `rocep1s0f1 port 1 ==> enp1s0f1np1 (Up)`): HCA left, interface right.
 3. Static IPs on that interface (playbook), e.g. `192.168.100.10` (Spark 1)
    and `.11` (Spark 2); `ping` across. Passwordless SSH Spark 1 → Spark 2.
-4. Firewall the rendezvous ports to the peer (§7). Put each Spark on the
-   tailnet (or the rig's LAN) for the HTTP side.
+4. Keep the rendezvous ports on the fabric: `sudo scripts/backends/spark-guard.sh`
+   on each Spark (§7; `spark-root-setup.sh --guard` runs it). Put each Spark
+   on the tailnet (or the rig's LAN) for the HTTP side.
 
 **B. Prove the link is RDMA, not TCP**
 
@@ -481,7 +528,7 @@ commit and warns: pin that SHA. How to read it:
 | `Context` | `max_position_embeddings`, rope scaling, and a note when rope extension is declared |
 | `MoE` | experts / active per token: total params decide memory, active params decide speed |
 | `KV cache` | bytes per token from layer/head counts — hybrid (linear-attention / SSM) models count only full-attention layers; MLA counts the latent |
-| `Fit` | 1 vs 2 Sparks: weights/TP × (1 + 3 % slack) + 5 GB runtime per rank against `GPU_MEMORY_UTILIZATION` × 128 GB; what is left is KV room, shown in tokens. **fits / tight / does not fit**, with every assumption printed |
+| `Fit` | 1 to 8 Sparks (TP = N), the smallest N that fits reported: weights/N × (1 + 3 % × (N-1) slack) + 5 GB runtime per rank, and whether vLLM can split the heads N ways against `GPU_MEMORY_UTILIZATION` × 128 GB; what is left is KV room, shown in tokens. **fits / tight / does not fit**, with every assumption printed |
 | `Template` | does it render `tools`; which tool-call markers (`<tool_call>`, `<function=`, `<|python_tag|>`, `[TOOL_CALLS]`, …) and reasoning markers (`<think>`, …) appear |
 | `Suggest` | `--tool-call-parser` / `--reasoning-parser` names **from vLLM's registry at the vendored commit**, each with a confidence and its evidence. A template that never renders `tools` gets "no parser": OpenBeast's tools will not work with that model |
 | `vllm` / `tensorfold` | SUPPORTED / UNSUPPORTED / UNKNOWN at the vendored engine commits (`data/*.json`). "unknown to vLLM @a96ee59…" = needs a newer image, the Transformers backend, or trust_remote_code. TensorFold: family by `model_type`, a CUDA engine, a readable quant format, the ranks allowed for that format, tested vs untested checkpoint |
@@ -584,7 +631,7 @@ rig's `INFERENCE_URL` (`--force` overrides). It records
 `INFERENCE_MODEL="<id>"` in openbeast.conf; conf.sh exports it for
 vllm/tensorfold and `agents/runner.py` sends it. It prints the opencode
 provider entry for `~/.config/opencode/opencode.json` (the repo's
-`opencode.json` is tracked and era-hashed, so it is not edited). Open WebUI
+`opencode.json` is tracked and shared by every rig, so it is not edited). Open WebUI
 needs nothing: it lists `/v1/models`, which conformance proved.
 
 **7. Doctor**
@@ -602,7 +649,14 @@ profile.
 
 **Decision (Max, 2026-09-30):** the Sparks serve "GLM-5.3-Flash by
 orcarouter, or an EXL3 variant", and *all of our models are uncensored* —
-nothing stock is served or routed to. Profile:
+nothing stock is served or routed to. *(Superseded 2026-11-19: the pair's
+default is now DeepSeek-V4.1-Flash (Mia EXL3), a **stock** pack (`ABLIT=0`),
+chosen by Max after the v5 board (T2 65/71). The uncensored-only rule no
+longer describes what the Sparks serve. **Decided 2026-11-19 (Max, PR #245):
+the fleet policy is now uncensored-preferred.** Stock models are allowed, and
+an uncensored one is preferred when both could serve. beast-hydra's
+`family_policy` defaults to it, and `"uncensored-only"` stays available as an
+opt-in. See [BEAST_HYDRA.md "Family policy"](BEAST_HYDRA.md#family-policy).)* Profile:
 [`scripts/backends/models/glm53-flash-unc-exl3-tensorfold.env`](../scripts/backends/models/glm53-flash-unc-exl3-tensorfold.env).
 Nothing below has run on a GB10. Research notes behind it: the 2026-09-30
 review side-check (model-inspect runs against the local dir and pinned Hub
@@ -694,8 +748,8 @@ small: 11 sparse-MLA layers × (512 latent + 128 indexer) per token.
 6. **Measure and write down:** decode tok/s single-stream, the context
    TensorFold admits at start (then set `MAX_MODEL_LEN`), and whether the
    checkpoint kept its MTP layer (the profile runs `--drafter none`;
-   TensorFold's own GLM drafter `incoai/GLM-5.3-Flash-DFlash2` is CC
-   BY-NC-ND and unreviewed).
+   TensorFold's own GLM drafter `incoai/GLM-5.3-Flash-DFlash2` was CC
+   BY-NC-ND then; Apache-2.0 since revision `6cc6c481`, 2026-11-10).
 
 **Fallback if the TensorFold EXL3 path fails on hardware:** the one-Spark
 exllamav3/TabbyAPI route needs a launcher and a `BACKEND` value OpenBeast

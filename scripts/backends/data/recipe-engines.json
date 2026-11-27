@@ -1,0 +1,259 @@
+{
+ "_about": "beast-recipe's engine and family capability matrix: which engine build reads which model_type in which checkpoint format, at which rank counts (TP = Sparks, one rank per Spark), how it is launched, and what work stands between a model and a served endpoint. DATA: read by scripts/backends/pylib/recipe.py, never executed. docs/BEAST_RECIPE.md 'The engine and family matrix' explains every field and how to update it. Every engine and family names its source and the date it was read; labels follow the investigation: VERIFIED (read on a primary source), CLAIMED (a README, changelog or model card), ESTIMATED (our arithmetic).",
+ "_updated": "2026-11-23",
+ "_sources": [
+  "https://api.github.com/repos/ashhart/TensorFold/releases (v1.3.3 latest, 2026-11-21; no v1.3.4 tag), read 2026-11-22",
+  "docs/reviews/OWN_RECIPES_INVESTIGATION-2026-11-22.md (sections 3.1, 3.1b, 3.2, 4.1, 4.2, 4.5, 5, 6)",
+  "tensorfold capabilities --json on spark-1, tensorfold-native 1.2.10, 2026-11-22 (VERIFIED)",
+  "https://raw.githubusercontent.com/ashhart/TensorFold/HEAD/CHANGELOG.md, read 2026-11-22 (1.3.2, 1.3.3, 1.3.4 entries)",
+  "scripts/backends/data/spark-families.json (the families the pair serves today)",
+  "docker image ls on spark-1, 2026-11-22 (read-only)",
+  "docs/reports/GLM_SERVING_WINDOW-2026-11-23.md (D2's first serve on the pair, native 1.2.10, and its measured start lines)",
+  "~/openbeast-recipes/glm53-1104/scripts/config.sh on spark-1 at 82c442f, read-only 2026-11-23 (MEMORY_RESERVE_GIB default 6.5)"
+ ],
+ "hardware": {
+  "spark": {
+   "mem_total_gib": 121.69,
+   "rank_weight_comfortable_gib": 92,
+   "rank_weight_limit_gib": 100,
+   "replicated_share": 0.008,
+   "os_head_gib": 6.0,
+   "os_worker_gib": 3.0,
+   "memguard_floor_gib": 2.5,
+   "headroom_comfortable_gib": 6.0,
+   "max_sparks": 8,
+   "source": "MemTotal 127,598,412 kB on each Spark (MEASURED); the intake rule W <= 92 fits, 92-100 tight, > 100 no (spark-families.json pair); replicated share 0.008 calibrated on DeepSeek's rank file (0.5039 of the checkpoint at TP2); OS + command center ~6 GiB on the head, 2-3 on a worker (MEASURED 2026-11-17); memguard kills a rank under 2.5 GiB for 4 s"
+  },
+  "topologies": {
+   "1": "one Spark, no fabric; on the pair today that means the pair's model is down (both Sparks are taken by it)",
+   "2": "one QSFP cable, both PCIe twins as two RoCE rails (today: spark-1 + spark-2)",
+   "3": "a cabled triangle, one subnet per cable (GLM TP3 measured by Mia's Python recipe v1.5; CLAIMED)",
+   "4": "a cabled ring (GLM 1104 start-tp4-switchless.sh, CLAIMED) or a 200 GbE RoCE switch; spark-cluster.sh check does not know the ring yet",
+   "5-8": "a 200/400 GbE RoCE switch (community CRS812 builds; CLAIMED)"
+  },
+  "buy": "each added Spark: one DGX Spark + its QSFP cables (two more Sparks and two more cables make the 4-ring; no switch needed for 4)"
+ },
+ "gaps": {
+  "glue": {"rank": 1, "title": "recipe glue for an architecture the engine already has: profile, launch values, fabric, template, conformance", "effort": "0.5-1 day per model; the first one 1-2 days", "days": [0.5, 2], "who": "us, today"},
+  "d2-first-serve": {"rank": 1, "title": "D2 (spark-cluster.sh + spark-node.sh) has not served on the pair on this engine (it has on native TensorFold 1.2.10, 2026-11-23): the first native serve qualifies it", "effort": "one pair-down window of 0.5-1 day", "days": [0.5, 1], "who": "us, on hardware"},
+  "tuning": {"rank": 2, "title": "memory and launch tuning: KV dtype and pool, MEMORY_RESERVE_GIB, context, streams, MIN_AVAIL, from the engine's start line and MemAvailable under load on every rank", "effort": "0.5 day per model", "days": [0.5, 0.5], "who": "us"},
+  "drafter": {"rank": 3, "title": "a drafter for a model that ships none: none / MTP head / copy drafts / a published DFlash2 (hours), or train one (days to weeks of GPU time)", "effort": "hours (a-d); days-weeks (train)", "days": [0.1, 0.5], "who": "us"},
+  "quantize": {"rank": 4, "title": "our own EXL3 quantization (exllamav3 convert.py) in the exact layout the engine's reader requires", "effort": "1-3 days per 300-550B MoE on one Spark, mostly wall time; a quantizing Spark serves nothing", "days": [1, 3], "who": "us, with a free Spark"},
+  "perf-patches": {"rank": 5, "title": "performance patches (RoCE all-gather, prompt chunking, graphs, KV paging, spill) to reach a Mia recipe's speed", "effort": "weeks per model; zero for a first correct serve", "days": [10, 30], "who": "Mia's lab, upstream, contributors; us selectively"},
+  "parsers": {"rank": 6, "title": "tool/reasoning parser fixes for a new chat format (conformance names them)", "effort": "1-5 days", "days": [1, 5], "who": "us, when conformance names it"},
+  "exl3-layout": {"rank": 7, "title": "a new EXL3 layout (bits, codebook, scope) for a family the engine has", "effort": "1-2 weeks", "days": [5, 10], "who": "upstream / Mia / us with Zig+CUDA"},
+  "server-wrap": {"rank": 8, "title": "the engine has a generator for this family but no server path (tensorfold serve does not register it)", "effort": "1-2 weeks if the generator's forward is reusable (ESTIMATED)", "days": [5, 10], "who": "upstream TensorFold, or us"},
+  "family-tp": {"rank": 9, "title": "a tensor-parallel (multi-Spark) split for a family the engine runs on one GPU: heads/experts/vocab split, per-rank inputs, NCCL or RoCE collectives, drafter hooks", "effort": "4-12 weeks for a strong Zig/CUDA engineer; 0 if upstream lands it first", "days": [20, 60], "who": "upstream TensorFold or a fork author; us only if the model is decisive"},
+  "family": {"rank": 9, "title": "a new architecture family in the Zig engine (attention variant, MoE routing, norms, RoPE, KV layout, EXL3 expert kernels, TP split, drafter hooks)", "effort": "4-12 weeks for a strong Zig/CUDA engineer; upstream ships families faster", "days": [20, 60], "who": "upstream TensorFold or a fork author"},
+  "engine-stage": {"rank": 1, "title": "stage a signed native TensorFold release on every Spark (engine.sh stage on a connected box, install --from on each Spark; rollback keeps the old pin)", "effort": "0.5 day (ESTIMATED); install between models", "days": [0.5, 0.5], "who": "us"},
+  "image-build": {"rank": 1, "title": "build the recipe image from pinned parts (base by digest + vendored files, content-hashed tag) and carry it to every Spark", "effort": "0.5-1 day (the Hy4 precedent)", "days": [0.5, 1], "who": "us"},
+  "vllm-image": {"rank": 1, "title": "pin and stage a generic vLLM image (NGC) on every Spark; D2's vLLM path takes one VLLM_IMAGE per host from spark.env", "effort": "0.5 day", "days": [0.5, 0.5], "who": "us"},
+  "launcher": {"rank": 1, "title": "no launcher wired for this engine in OpenBeast (beast-recipe up has nothing to start)", "effort": "1-2 days", "days": [1, 2], "who": "us"},
+  "topology": {"rank": 1, "title": "cabling and fabric for more than 2 Sparks: the 3-triangle / 4-ring is not in spark-cluster.sh check yet (NCCL_IB_SUBNET_AWARE_ROUTING, LAN rendezvous)", "effort": "1-2 days + the hardware", "days": [1, 2], "who": "us, on hardware"},
+  "upstream-release": {"rank": 1, "title": "the engine version is announced upstream but not released (no tag, no signed archive): engine.sh stage cannot fetch it until it is; pin the latest released version meanwhile", "effort": "waiting on upstream (not our engineering)", "days": [0, 0], "who": "upstream TensorFold", "waits": true},
+  "reference-only": {"rank": 8, "title": "the engine has only a reference implementation for this family (no server, reference attention): a serving path would have to be written", "effort": "1-2 days for a launcher around it, and it stays slow (ESTIMATED)", "days": [1, 2], "who": "us"},
+  "licence-review": {"rank": 1, "title": "a custom or restricted licence: read it before staging or redistributing anything derived", "effort": "hours (Max decides)", "days": [0.1, 0.1], "who": "Max"}
+ },
+ "engines": [
+  {
+   "id": "tf-native-1.2.10",
+   "title": "native TensorFold 1.2.10 (the signed release on both Sparks, ~/.local/bin/tensorfold)",
+   "kind": "tensorfold-native",
+   "version": "1.2.10",
+   "status": "installed",
+   "installed_on": ["spark-1", "spark-2"],
+   "launcher": "d2-tensorfold",
+   "licence": "Apache-2.0 (pre-0.6.0 code keeps its MIT notice)",
+   "checked": "2026-11-22, tensorfold --version and capabilities --json on spark-1 (VERIFIED)",
+   "verify_cmd": "tensorfold --version",
+   "inherit_families": "spark-families.json:native-1.2.10",
+   "d2_served": {"2": "2026-11-23: GLM-5.3-Flash EXL3 TP2 through beast-recipe adopt + beast-spark, conformance PASS, 9/9 (docs/reports/GLM_SERVING_WINDOW-2026-11-23.md)"},
+   "families": {
+    "glm5_next": {"formats": ["exl3", "modelopt-nvfp4", "modelopt-mixed"], "ranks": [2, 3, 4, 5, 6, 7, 8], "rank_reason": "TF_GLM_RANK / TF_GLM_WORLD place 2 to 16 ranks (WORLD 1 is for a thin test model only)", "exl3": {"bits": [4], "codebook": ["mcg"], "scope": ["glm53_routed_experts_only"]}, "exl3_note": "TR3 only: 4-bit mcg routed experts, BF16 elsewhere; 5/6-bit packs need >= 1.3.3", "env": {"DENSE_BITS": {"var": "TF_GLM_DENSE_BITS", "values": [4, 6, 8, 16], "source": "VERIFIED: native 1.2.10 reads TF_GLM_DENSE_BITS (4, 6, 8 or 16; unset = bf16 dense linears, model 87.69 GiB at TP2); MEASURED 2026-11-23 at 4 (set by hand on both Sparks): model 82.36 GiB at 245760 / 17.5, 42.2 / 65.8 tok/s vs 30.7 / 57.7; model 84.33 GiB at 524288 / 11.5, 41.8 / 64.7 (docs/reports/GLM_SERVING_WINDOW-2026-11-23.md). 1.3.x not recorded: VERIFY before adding it there"}}, "launch": {"kv_dtype": "fp8", "kv_pool_gib": 10, "memory_reserve_gib": 11.5, "context": 524288, "parallel": 4, "source": "MEASURED 2026-11-23 on the pair (D2, 4-bit dense, command center up): start line 'model 84.33 GiB; 4 streams at once, 3.66 GiB each at a 524288-token window, of 16.1 GiB left after a 11.5 GiB reserve; a 5.2 GiB prompt cache'; MemAvailable bottomed at 18.3 / 19.4 GiB under the 4-stream bench plus a concurrent 214K-token needle; 9/9, 41.8 / 64.7 tok/s (docs/reports/GLM_SERVING_WINDOW-2026-11-23.md). The reserve is the floor a recipe on this family keeps (beast-recipe plan warns below it). Mia's v0.6.0 recipe runs 17.5 here (our local.sh); her 1104 config.sh defaults to 6.5 (VERIFIED, read-only on spark-1 2026-11-23). KV fp8 = native --kv-cache fp8: served on the pair 2026-11-23 (upstream still qualifies only BF16). Native sizes the KV pages itself from the reserve (no pool flag): kv_pool_gib is a budget"}},
+    "minimax_m3_vl": {"formats": ["exl3"], "ranks": [2], "rank_reason": "TF_MINIMAX_* places exactly 2 ranks (docs/SPARK_HYDRA.md D2)", "launch": {"kv_dtype": "bf16", "kv_pool_gib": 8, "memory_reserve_gib": 9.5, "context": 131072, "parallel": 4, "source": "ESTIMATED from GLM's values; no MiniMax run here yet. bf16 KV: native --kv-cache fp8 is documented for GLM's latent cache only"}},
+    "qwen3_5": {"formats": ["exl3", "mlx-q4g64"], "ranks": [1], "ranks_by_format": {"exl3": [1], "mlx-q4g64": [1, 2]}, "rank_reason": "EXL3 on ONE GPU; two ranks need the MLX affine checkpoint", "exl3": {"codebook": ["mul1"]}, "exl3_note": "the mcg codebook is admitted beside mul1 only from 1.3.3", "launch": {"kv_dtype": "bf16", "kv_pool_gib": 16, "memory_reserve_gib": 6.5, "context": 262144, "parallel": 4, "source": "ESTIMATED"}},
+    "qwen4_exp": {"formats": ["mlx-q4g32", "modelopt-mixed"], "ranks": [1, 2], "rank_reason": "Flash Next: one GPU or --tp 2 (ModelOpt only at --tp 2); no EXL3 on native"},
+    "qwen3_5_moe": {"formats": ["mlx-q4g64", "modelopt-mixed", "modelopt-nvfp4"], "ranks": [1], "rank_reason": "one GPU"},
+    "nemotron_h": {"formats": ["mlx-q4g64", "modelopt-nvfp4", "modelopt-ggml"], "ranks": [1], "rank_reason": "TF_NEMOTRON_* is not wired in spark-node.sh: TP 1 only"}
+   },
+   "refuses": {
+    "deepseek_v41": "no registered Zig family serves model_type deepseek_v41 (tensorfold info, spark-1, 1.2.10, 2026-11-19, VERIFIED)",
+    "hy_v4_flash": "no registered Zig family serves model_type hy_v4_flash (tensorfold info on the LibertAIDAI pack, spark-1, 1.2.10, 2026-11-19, VERIFIED)"
+   }
+  },
+  {
+   "id": "tf-native-1.3.3",
+   "title": "native TensorFold 1.3.3 (upstream ashhart/TensorFold release; not on the Sparks yet)",
+   "kind": "tensorfold-native",
+   "version": "1.3.3",
+   "status": "available",
+   "installed_on": [],
+   "launcher": "d2-tensorfold",
+   "licence": "Apache-2.0",
+   "checked": "2026-11-22, upstream CHANGELOG.md and supported-models.md; releases/latest is v1.3.3 (published 2026-11-21, VERIFIED by the GitHub API), tensorfold-1.3.3-linux-aarch64.tar.gz downloaded and listed (bin/tensorfold-native, lib/libtfgrammar.so); nothing run on a GB10 by us",
+   "verify_cmd": "tensorfold --version",
+   "stage_gap": "engine-stage",
+   "inherit_families": "tf-native-1.2.10",
+   "unverified_on_pair": "never installed or run on our Sparks",
+   "families": {
+    "glm5_next": {"formats": ["exl3", "modelopt-nvfp4", "modelopt-mixed"], "ranks": [2, 3, 4, 5, 6, 7, 8], "rank_reason": "--tp 1..64 (1.3.2), GLM admits 2-16; TP2 and TP3 over direct links in supported-models.md", "exl3": {"bits": [1, 2, 3, 4, 5, 6, 7, 8], "codebook": ["mcg"], "scope": ["glm53_routed_experts_only"]}, "exl3_note": "1.3.3: mcg routed experts at any whole bit width 1-8, mixed by projection (#2094; GLM 1104 patch 0001 upstreamed)", "launch": {"kv_dtype": "fp8", "kv_pool_gib": 10, "memory_reserve_gib": 17.5, "context": 245760, "parallel": 4, "source": "VERIFIED: our Mia GLM local.sh MEMORY_RESERVE_GIB 17.5 (Mia's GLM 1104 config.sh defaults to 6.5, VERIFIED 2026-11-23; native 1.2.10 measured 11.5 at 524288 on the pair, not yet this engine); KV fp8 = --kv-cache fp8, opt-in and unqualified upstream: VERIFY"}},
+    "minimax_m3_vl": {"formats": ["exl3"], "ranks": [2], "rank_reason": "exactly 2 ranks", "launch": {"kv_dtype": "bf16", "kv_pool_gib": 8, "memory_reserve_gib": 9.5, "context": 131072, "parallel": 4, "source": "ESTIMATED (bf16 KV: --kv-cache fp8 is documented for GLM only)"}},
+    "qwen3_5": {"formats": ["exl3", "mlx-q4g64"], "ranks": [1], "ranks_by_format": {"exl3": [1], "mlx-q4g64": [1, 2]}, "rank_reason": "EXL3 on ONE GPU", "exl3": {"codebook": ["mul1", "mcg"]}, "exl3_note": "1.3.3: the mcg codebook admitted beside mul1", "launch": {"kv_dtype": "bf16", "kv_pool_gib": 16, "memory_reserve_gib": 6.5, "context": 262144, "parallel": 4, "source": "ESTIMATED"}},
+    "hy_v4_flash": {"formats": ["exl3"], "ranks": [1], "serves": "generator-only", "rank_reason": "1.3.2 (#4003): Hy4-flash EXL3 4bpw 'loads all 42 layers on one GB10 (85.38 GiB, 29 GiB left)' with the opt-in CUDA slab upload mode; 1.3.3 (#4259, lands #4004): tf-hy4-cuda-generate (zig build hy4-cuda-generate) runs the text model greedily: a generator, not a server, and not in the release archive (bin/ ships only tensorfold-native, VERIFIED on the v1.3.3 tarball 2026-11-22)", "generator_cmd": "tf-hy4-cuda-generate", "with_work": {"ranks": [2], "gaps": ["server-wrap", "family-tp"], "note": "a two-Spark native hy_v4_flash family is in the works upstream (TensorFold#3797 open; #3801 in slices): when it lands, this becomes an engine-stage away"}, "extra_gaps": [
+      {"id": "hy4-generator-build", "title": "build tf-hy4-cuda-generate from source (zig build hy4-cuda-generate at the engine's tag; Zig toolchain + CUDA 13 on the Spark, or an image build): the release archives ship only bin/tensorfold-native", "effort": "0.5 day (ESTIMATED)", "days": [0.5, 1], "who": "us"},
+      {"id": "hy4-generator-qual", "title": "qualify the one-GB10 generator first: tf-hy4-cuda-generate on the LibertAIDAI pack on ONE Spark (the pair down), greedy output against the vLLM build on the same prompts; its single-stream decode is the floor a TP2 serve must beat", "effort": "one 0.5-day pair-down window", "days": [0.5, 0.5], "who": "us, on hardware"},
+      {"id": "hy4-exl3-reader", "title": "the pack's layout is scope hy4flash-routed-k4, codebook mul1, serving_reader_qualified false: the family's reader must accept exactly that (or the pack is re-quantized to what it reads)", "effort": "part of the family work; intake checks it", "days": [0, 2], "who": "upstream / us"},
+      {"id": "hy4-engram-local", "title": "Engram tables (~118 GiB of the 203 GiB pack) stay on each Spark's local NVMe and are streamed, never over NFS: both Sparks already hold the pack", "effort": "none (staged on both Sparks)", "days": [0, 0], "who": "-"},
+      {"id": "hy4-dfly", "title": "DFly2 drafting (in the checkpoint, dfly_* config) inside the TensorFold family: without it decode runs ~15 tok/s plain (CLAIMED) against vLLM's 31.4 with DFly 5", "effort": "1-3 weeks inside the family work, or copy drafts as a stopgap", "days": [5, 15], "who": "upstream / us"},
+      {"id": "hy4-parsers", "title": "hy_v4 tool-call and reasoning parsing in TensorFold's server (vLLM has hy_v4 parsers; conformance is the gate)", "effort": "1-5 days", "days": [1, 5], "who": "us"}
+    ], "launch_note": "the CUDA slab upload mode is opt-in (#4003) and must be switched on, or the load fails at layer 30: the env name is VERIFY (the upstream source or RUNTIME.md at the tag)", "launch": {"kv_dtype": "bf16", "kv_pool_gib": 6, "memory_reserve_gib": 9.5, "context": 262144, "parallel": 4, "source": "ESTIMATED: Hy4's MLA latent KV is small; values to be measured"}},
+    "deepseek_v41": {"formats": ["exl3"], "ranks": [1, 2, 4], "serves": "source-build", "rank_reason": "a DeepSeek-V4.1 CUDA family (dsv41-cuda) is in the source tree; 'DeepSeek checkpoints are not served yet by any release binary' (supported-models.md); serves at WORLD 1, 2 or 4; since 1.2.6, world 3 plans and writes its rank files (24/24/16 heads) but serving refuses three ranks (CHANGELOG 1.2.6, #2325/#2491)", "with_work": {"ranks": [1, 2, 4], "gaps": ["image-build"], "note": "a source build of upstream dsv41-cuda is a possible non-fork DeepSeek recipe later (UNVERIFIED on GB10 TP2)"}, "launch": {"kv_dtype": "fp4-compressed", "kv_pool_gib": 1.8, "memory_reserve_gib": 12.2, "context": 524288, "parallel": 4, "source": "the fork's measured values (DeepSeek recipe scripts/config.sh); ESTIMATED for upstream"}}
+   },
+   "refuses": {}
+  },
+  {
+   "id": "tf-native-1.3.4",
+   "title": "native TensorFold 1.3.4 (upstream ashhart/TensorFold release, the latest published; not on the Sparks yet)",
+   "kind": "tensorfold-native",
+   "version": "1.3.4",
+   "status": "available",
+   "installed_on": [],
+   "launcher": "d2-tensorfold",
+   "licence": "Apache-2.0",
+   "checked": "2026-11-22: v1.3.4 published 20:53Z (releases/tags/v1.3.4, not a draft or prerelease; signed linux-aarch64, linux-x86_64 and macos-arm64 archives, VERIFIED by the GitHub API); the release notes add dense MTP drafting for Qwen3.5-family targets on CUDA (#3582) and no Hy4/hy_v4 server path; families as 1.3.3 plus those notes (CLAIMED); nothing run on a GB10 by us",
+   "verify_cmd": "tensorfold --version",
+   "stage_gap": "engine-stage",
+   "inherit_families": "tf-native-1.2.10",
+   "unverified_on_pair": "never installed or run on our Sparks",
+   "families": {
+    "glm5_next": {"formats": ["exl3", "modelopt-nvfp4", "modelopt-mixed"], "ranks": [2, 3, 4, 5, 6, 7, 8], "rank_reason": "--tp 1..64 (1.3.2), GLM admits 2-16; TP2 and TP3 over direct links in supported-models.md", "exl3": {"bits": [1, 2, 3, 4, 5, 6, 7, 8], "codebook": ["mcg"], "scope": ["glm53_routed_experts_only"]}, "exl3_note": "1.3.3: mcg routed experts at any whole bit width 1-8, mixed by projection (#2094; GLM 1104 patch 0001 upstreamed)", "launch": {"kv_dtype": "fp8", "kv_pool_gib": 10, "memory_reserve_gib": 17.5, "context": 245760, "parallel": 4, "source": "VERIFIED: our Mia GLM local.sh MEMORY_RESERVE_GIB 17.5 (Mia's GLM 1104 config.sh defaults to 6.5, VERIFIED 2026-11-23; native 1.2.10 measured 11.5 at 524288 on the pair, not yet this engine); KV fp8 = --kv-cache fp8, opt-in and unqualified upstream: VERIFY"}},
+    "minimax_m3_vl": {"formats": ["exl3"], "ranks": [2], "rank_reason": "exactly 2 ranks", "launch": {"kv_dtype": "bf16", "kv_pool_gib": 8, "memory_reserve_gib": 9.5, "context": 131072, "parallel": 4, "source": "ESTIMATED (bf16 KV: --kv-cache fp8 is documented for GLM only)"}},
+    "qwen3_5": {"formats": ["exl3", "mlx-q4g64"], "ranks": [1], "ranks_by_format": {"exl3": [1], "mlx-q4g64": [1, 2]}, "rank_reason": "EXL3 on ONE GPU", "exl3": {"codebook": ["mul1", "mcg"]}, "exl3_note": "1.3.3: the mcg codebook admitted beside mul1; 1.3.4: dense MTP drafting for Qwen3.5-family targets on CUDA (#3582, release notes: CLAIMED)", "launch": {"kv_dtype": "bf16", "kv_pool_gib": 16, "memory_reserve_gib": 6.5, "context": 262144, "parallel": 4, "source": "ESTIMATED"}},
+    "hy_v4_flash": {"formats": ["exl3"], "ranks": [1], "serves": "generator-only", "rank_reason": "1.3.2 (#4003): Hy4-flash EXL3 4bpw 'loads all 42 layers on one GB10 (85.38 GiB, 29 GiB left)' with the opt-in CUDA slab upload mode; 1.3.3 (#4259, lands #4004): tf-hy4-cuda-generate (zig build hy4-cuda-generate) runs the text model greedily: a generator, not a server, and not in the release archive (bin/ ships only tensorfold-native, VERIFIED on the v1.3.3 tarball 2026-11-22)", "generator_cmd": "tf-hy4-cuda-generate", "with_work": {"ranks": [2], "gaps": ["server-wrap", "family-tp"], "note": "a two-Spark native hy_v4_flash family is in the works upstream (TensorFold#3797 open; #3801 in slices): when it lands, this becomes an engine-stage away"}, "extra_gaps": [
+      {"id": "hy4-generator-build", "title": "build tf-hy4-cuda-generate from source (zig build hy4-cuda-generate at the engine's tag; Zig toolchain + CUDA 13 on the Spark, or an image build): the release archives ship only bin/tensorfold-native", "effort": "0.5 day (ESTIMATED)", "days": [0.5, 1], "who": "us"},
+      {"id": "hy4-generator-qual", "title": "qualify the one-GB10 generator first: tf-hy4-cuda-generate on the LibertAIDAI pack on ONE Spark (the pair down), greedy output against the vLLM build on the same prompts; its single-stream decode is the floor a TP2 serve must beat", "effort": "one 0.5-day pair-down window", "days": [0.5, 0.5], "who": "us, on hardware"},
+      {"id": "hy4-exl3-reader", "title": "the pack's layout is scope hy4flash-routed-k4, codebook mul1, serving_reader_qualified false: the family's reader must accept exactly that (or the pack is re-quantized to what it reads)", "effort": "part of the family work; intake checks it", "days": [0, 2], "who": "upstream / us"},
+      {"id": "hy4-engram-local", "title": "Engram tables (~118 GiB of the 203 GiB pack) stay on each Spark's local NVMe and are streamed, never over NFS: both Sparks already hold the pack", "effort": "none (staged on both Sparks)", "days": [0, 0], "who": "-"},
+      {"id": "hy4-dfly", "title": "DFly2 drafting (in the checkpoint, dfly_* config) inside the TensorFold family: without it decode runs ~15 tok/s plain (CLAIMED) against vLLM's 31.4 with DFly 5", "effort": "1-3 weeks inside the family work, or copy drafts as a stopgap", "days": [5, 15], "who": "upstream / us"},
+      {"id": "hy4-parsers", "title": "hy_v4 tool-call and reasoning parsing in TensorFold's server (vLLM has hy_v4 parsers; conformance is the gate)", "effort": "1-5 days", "days": [1, 5], "who": "us"}
+    ], "launch_note": "the CUDA slab upload mode is opt-in (#4003) and must be switched on, or the load fails at layer 30: the env name is VERIFY (the upstream source or RUNTIME.md at the tag)", "launch": {"kv_dtype": "bf16", "kv_pool_gib": 6, "memory_reserve_gib": 9.5, "context": 262144, "parallel": 4, "source": "ESTIMATED: Hy4's MLA latent KV is small; values to be measured"}},
+    "deepseek_v41": {"formats": ["exl3"], "ranks": [1, 2, 4], "serves": "source-build", "rank_reason": "a DeepSeek-V4.1 CUDA family (dsv41-cuda) is in the source tree; 'DeepSeek checkpoints are not served yet by any release binary' (supported-models.md); serves at WORLD 1, 2 or 4; since 1.2.6, world 3 plans and writes its rank files (24/24/16 heads) but serving refuses three ranks (CHANGELOG 1.2.6, #2325/#2491)", "with_work": {"ranks": [1, 2, 4], "gaps": ["image-build"], "note": "a source build of upstream dsv41-cuda is a possible non-fork DeepSeek recipe later (UNVERIFIED on GB10 TP2)"}, "launch": {"kv_dtype": "fp4-compressed", "kv_pool_gib": 1.8, "memory_reserve_gib": 12.2, "context": 524288, "parallel": 4, "source": "the fork's measured values (DeepSeek recipe scripts/config.sh); ESTIMATED for upstream"}}
+   },
+   "refuses": {}
+  },
+  {
+   "id": "tf-fork-dsv41",
+   "title": "BertholomusAI's TensorFold Zig fork, branch deepseek-v41-zig @ fbbc971 + Mia's 54 zig/patches (the DeepSeek recipe image)",
+   "kind": "tensorfold-fork",
+   "version": "fbbc971+8a98ae503d85",
+   "status": "installed",
+   "installed_on": ["spark-1", "spark-2"],
+   "image": "tensorfold-dsv41:exl3-tp2-8a98ae503d85",
+   "launcher": "mia-unit:deepseek-v41-inference",
+   "recipe": "~/openbeast-recipes/deepseek-prep/runtime @ c7f2b851 (MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks, Apache-2.0)",
+   "licence": "Apache-2.0 (fork, patches, kernel kit; Triton MIT, CUTLASS BSD-3)",
+   "checked": "2026-11-22, docker image ls on spark-1 (d048841d851f, 24.9 GB; VERIFIED); serving DeepSeek on the pair since 2026-11-17",
+   "verify_cmd": "docker image inspect tensorfold-dsv41:exl3-tp2-8a98ae503d85",
+   "families": {
+    "deepseek_v41": {"formats": ["exl3"], "ranks": [2], "rank_reason": "this image is the TP2 build; the fork's rank cache and plan take WORLD 1, 2 or 4 (its plan splits heads evenly; upstream TensorFold >= 1.2.6 plans 3 ranks as 24/24/16 heads by o_groups, but serving still refuses 3 ranks, #2270) (DeepSeek recipe docs/zig-engine.md, VERIFIED)", "exl3": {"codebook": ["mul1"]}, "exl3_note": "mul1, out_scales=always, the reference tensor index (the rank-1 cache trap: EXL3_PLAYBOOK a1)", "rank_inputs": "tf-dsv41-rank-cache MODEL DIR R WORLD (rank files ~106 GB each at 2.9 bpw, no GPU) + the Engram token map + the kernel kit's RoPE tables", "with_work": {"ranks": [4], "gaps": ["image-build", "topology"], "note": "TP4: branch deepseek-v41-zig-tp4 @ 5940208 (input tools) and Mia's 4-Spark recipe; a 4-ring or a switch"}, "launch": {"kv_dtype": "fp4-compressed", "kv_pool_gib": 1.8, "memory_reserve_gib": 12.2, "context": 524288, "parallel": 4, "source": "VERIFIED: DeepSeek recipe scripts/config.sh (TENSORFOLD_MEMORY_RESERVE_GIB 12.2 'do not lower', KV ~1.8 GiB at the full window, MIN_AVAIL_GIB 112)"}}
+   },
+   "refuses": {}
+  },
+  {
+   "id": "tf-mia-glm-0.6.0",
+   "title": "TensorFold v0.6.0 (Python) + Mia's GLM recipe patches (image tensorfold-glm53:v0.6.0)",
+   "kind": "tensorfold-python",
+   "version": "0.6.0+31557ed1cef6",
+   "status": "installed",
+   "installed_on": ["spark-1", "spark-2"],
+   "image": "tensorfold-glm53:v0.6.0",
+   "launcher": "mia-unit:spark-hydra-inference",
+   "recipe": "~/openbeast-recipes/glm53 @ 33b50fd (Apache-2.0)",
+   "licence": "Apache-2.0",
+   "checked": "2026-11-22, docker image ls on spark-1 (ead0174052ac, VERIFIED); GLM served on the pair 2026-11-13..18",
+   "verify_cmd": "docker image inspect tensorfold-glm53:v0.6.0",
+   "families": {
+    "glm5_next": {"formats": ["exl3"], "ranks": [2, 3], "rank_reason": "TP2 (start.sh) and TP3 (start-tp3.sh, v1.8; measured by its author)", "exl3": {"bits": [4], "codebook": ["mcg"], "scope": ["glm53_routed_experts_only"]}, "launch": {"kv_dtype": "fp8", "kv_pool_gib": 10, "memory_reserve_gib": 17.5, "context": 245760, "parallel": 4, "source": "VERIFIED: our ~/openbeast-recipes/glm53/scripts/local.sh (KV_POOL_GIB 10, MEMORY_RESERVE_GIB 17.5)"}}
+   },
+   "refuses": {}
+  },
+  {
+   "id": "vllm-hy4",
+   "title": "vLLM's hy4-flash image + atakann's six sm_121 / ModelOpt files (openbeast/hy4-vllm, scripts/backends/hy4-vllm)",
+   "kind": "vllm",
+   "version": "77766db+e764efa",
+   "status": "installed",
+   "installed_on": ["spark-1", "spark-2"],
+   "image": "openbeast/hy4-vllm:e764efa-b486c74ef8b6",
+   "launcher": "hy4-vllm",
+   "licence": "vLLM Apache-2.0; atakann/dgx-spark-recipes MIT (image/CREDITS.md)",
+   "checked": "2026-11-22, docker image ls on spark-1 (6477587cdc52, 26.5 GB; VERIFIED); serving Hy4 since 2026-11-21",
+   "verify_cmd": "docker image inspect openbeast/hy4-vllm:e764efa-b486c74ef8b6",
+   "families": {
+    "hy_v4_flash": {"formats": ["modelopt-nvfp4"], "ranks": [2], "rank_reason": "TP2 with --enable-expert-parallel only: without it each Spark holds every expert and the model does not fit (the recipe's note)", "launch": {"kv_dtype": "auto", "kv_pool_gib": 6, "memory_reserve_gib": 5, "context": 262144, "parallel": 4, "source": "VERIFIED: scripts/backends/hy4-vllm/config.sh for KV 6 GiB and the window (the served config, journal 2026-11-21); the 5 GiB reserve is ESTIMATED"}}
+   },
+   "refuses": {}
+  },
+  {
+   "id": "vllm-ngc",
+   "title": "NVIDIA's vLLM container (spark.env VLLM_IMAGE, nvcr.io/nvidia/vllm:26.05-py3) through D2's vllm/spark-node.sh",
+   "kind": "vllm",
+   "version": "26.05",
+   "status": "not-installed",
+   "installed_on": [],
+   "image": "nvcr.io/nvidia/vllm:26.05-py3",
+   "launcher": "d2-vllm",
+   "licence": "Apache-2.0 (vLLM); the NGC container's own terms",
+   "checked": "2026-11-22: not in docker image ls on spark-1; the architecture and quantization lists are data/vllm.json (vendored at a vLLM commit)",
+   "verify_cmd": "docker image inspect nvcr.io/nvidia/vllm:26.05-py3",
+   "stage_gap": "vllm-image",
+   "registry": "vllm.json",
+   "families": {},
+   "refuses": {}
+  },
+  {
+   "id": "exllamav3",
+   "title": "ExLlamaV3 (turboderp-org/exllamav3, MIT), one host only",
+   "kind": "exllamav3",
+   "version": "1.6.7",
+   "status": "not-installed",
+   "installed_on": [],
+   "launcher": "none",
+   "licence": "MIT",
+   "checked": "2026-11-22, releases page and README (VERIFIED by fetch); model_tp.py: tensor-parallel workers are local processes on one host",
+   "families": {
+    "hy_v4_flash": {"formats": ["exl3"], "ranks": [1], "serves": "reference", "rank_reason": "single host only; on one Spark the 84.87 GiB trunk fits with 118 GiB of Engram streamed from disk, but Hy4 runs a pure-PyTorch reference attention (docs/reviews/HY4_FLASH_ENGINES-2026-11-19.md)"},
+    "glm5_next": {"formats": ["exl3"], "ranks": [1], "rank_reason": "single host only"},
+    "qwen3_5": {"formats": ["exl3"], "ranks": [1], "rank_reason": "single host only"},
+    "deepseek_v41": {"formats": ["exl3"], "ranks": [1], "rank_reason": "single host only (1.6.6 added DeepseekV41ForCausalLM)"}
+   },
+   "refuses": {}
+  }
+ ],
+ "drafters": {
+  "glm5_next": [
+   {"kind": "dflash2", "repo": "incoai/GLM-5.3-Flash-DFlash2", "revision": "6cc6c481eee930a5139619ed919f78726371adbc", "licence": "apache-2.0", "engines": ["tensorfold"], "size_gib": 2.2, "note": "2026-11-10 'Release under Apache 2.0': the same model.safetensors blob (LFS b038e1d9...) as the CC BY-NC-ND pin bf582e4e; re-pin to this revision (VERIFIED, Hub API)"},
+   {"kind": "mtp", "note": "the checkpoint's one MTP layer (GLM 1104 DRAFTER=mtp); slower than DFlash2 on GLM"},
+   {"kind": "copy", "note": "TensorFold copy drafts (GLM patch 0013): strong on code and edits"}
+  ],
+  "qwen3_5": [
+   {"kind": "dflash2", "repo": "z-lab/Qwen3.8-27B-DFlash2", "revision": "50307d4c4cde6860d4eee73e2547cd786fe8e8a4", "licence": "apache-2.0", "engines": ["tensorfold"], "size_gib": 1.0, "note": "named in data/tensorfold.json; cardData.license apache-2.0 at this revision (Hub API, 2026-11-22)"},
+   {"kind": "mtp", "note": "TensorFold 1.3.4: dense MTP for Qwen3.5-family targets"}
+  ],
+  "hy_v4_flash": [
+   {"kind": "in-checkpoint", "method": "dfly", "tokens": 5, "note": "DFly2 (0.85B, BF16) inside the checkpoint (model.dfly_layers.*); vLLM --speculative-config method dfly"}
+  ],
+  "deepseek_v41": [
+   {"kind": "in-checkpoint", "method": "dspark", "note": "DSpark draft blocks inside the pack (dspark_target_layer_ids [37,38,39], 4-bit)"}
+  ],
+  "minimax_m3_vl": [
+   {"kind": "in-checkpoint", "method": "dspark", "note": "dspark/ subfolder of the Mia pack (2.3 GB, 5 layers, block size 7, reads target layers 3,17,31,45,59; the pack README: acceptance NOT TESTED); tensorfold-native 1.2.10 has the minimax_m3 dspark tensor names (strings, spark-1, VERIFIED)"}
+  ]
+ },
+ "sizing": {
+  "_about": "checkpoint GiB at an expert width e bits, for bpw projections: fixed + per_bit x e (routed experts are 90-97 % of an MoE checkpoint). ESTIMATED in the investigation, section 4.2.",
+  "deepseek_v41": {"fixed_gib": 14.0, "per_bit_gib": 63.3, "source": "Mia's EAQ pack 196.1 GiB (MEASURED) at 3-bit experts (2 in layers 18-22): 40 x 384 x 3 x 5120 x 2304 = 543.6B routed parameters"},
+  "glm5_next": {"fixed_gib": 11.6, "per_bit_gib": 38.0, "source": "the TR3 pack 163.6 GiB (MEASURED) at 4-bit: 326B routed parameters, 152 GiB of them"},
+  "hy_v4_flash": {"resident_gib": {"exl3": 85.38}, "source": "CLAIMED, TensorFold 1.3.2 CHANGELOG (#4003, with the opt-in CUDA slab mode): the LibertAIDAI EXL3 4bpw pack 'loads all 42 layers on one GB10 (85.38 GiB, 29 GiB left)'; the rest of its 203 GiB is ~118 GiB of Engram tables streamed from local disk (docs/reviews/HY4_FLASH_ENGINES-2026-11-19.md: an 84.87 GiB trunk)"}
+ }
+}

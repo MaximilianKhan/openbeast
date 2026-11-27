@@ -1210,3 +1210,150 @@ def test_a_link_no_browser_can_open_says_so(store):
     assert "publish-artifact" in store.url_caveat("http://localhost:3004/a/x")
     assert store.url_caveat("https://beast.tail1.ts.net:8446/a/x") == ""   # control
     assert store.url_caveat(None) == ""
+
+
+def test_removing_the_top_version_never_frees_its_number(store):
+    """Review (spark-scale) beast-artifact: publish picked max(meta + disk)
+    + 1, so after a rollback and removing the TOP version the next publish
+    reused its number — /a/<id>/v/<n> (and its raw token) silently served
+    different bytes, against "Nothing overwrites a published version, ever"."""
+    aid = store.publish("<p>ONE</p>")["id"]
+    store.publish("<p>TWO</p>", artifact_id=aid)
+    store.publish("<p>THREE</p>", artifact_id=aid)
+    store.set_current(aid, 2)
+    store.remove_version(aid, 3)
+    r = store.publish("<p>FOUR</p>", artifact_id=aid)
+    assert r["version"] == 4
+    with pytest.raises(store.ArtifactError):
+        store.read_file(aid, 3)
+    # a page whose meta predates the high-water mark: removing its top
+    # version still records the number it must never hand out again
+    meta = store.get_meta(aid)
+    meta.pop("max_n", None)
+    store._write_meta(aid, meta)
+    store.set_current(aid, 2)
+    store.remove_version(aid, 4)
+    assert store.publish("<p>FIVE</p>", artifact_id=aid)["version"] == 5
+
+
+def test_a_plain_environment_reads_the_store_and_url_from_the_conf(
+        store, tmp_path, monkeypatch):
+    """Review (spark-scale) beast-artifact: OpenCode starts mcp_server.py with
+    the plain environment. BEAST_ARTIFACT came from openbeast.conf, but the
+    store root, base URL and port did not — publish_artifact wrote
+    ~/openbeast-files/artifacts while the server (conf.sh) served
+    $FILES_DIR/artifacts, and every URL it handed out was a 404."""
+    conf = tmp_path / "openbeast.conf"
+    conf.write_text("BEAST_ARTIFACT=true\nFILES_DIR=\"~/beast-store\"\n"
+                    "ARTIFACT_PORT=3999\n")
+    monkeypatch.setenv("OPENBEAST_CONF", str(conf))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    for name in ("OPENBEAST_FILES_DIR", "OPENBEAST_ARTIFACT_BASE_URL",
+                 "OPENBEAST_ARTIFACT_PORT"):
+        monkeypatch.delenv(name, raising=False)
+    assert store.store_root() == str(tmp_path / "home" / "beast-store"
+                                     / "artifacts")
+    _fresh_base_url(store, monkeypatch, "")
+    assert store.artifact_url("abc") == "http://localhost:3999/a/abc"
+    # a relative FILES_DIR is anchored to the checkout, as conf.sh does
+    conf.write_text("FILES_DIR=rel-files\nARTIFACT_BASE_URL=https://art.example/\n")
+    monkeypatch.setenv("OPENBEAST_REPO_DIR", str(tmp_path / "repo"))
+    assert store.store_root() == str(tmp_path / "repo" / "rel-files"
+                                     / "artifacts")
+    assert store.artifact_url("abc", 2) == "https://art.example/a/abc/v/2"
+    # the environment still wins over the conf
+    monkeypatch.setenv("OPENBEAST_FILES_DIR", str(tmp_path / "envfiles"))
+    assert store.store_root() == str(tmp_path / "envfiles" / "artifacts")
+
+
+def test_the_theme_stamp_reaches_a_document_that_styles_off_data_theme(store):
+    """Review (spark-scale) beast-artifact: the "already stamped?" test was a
+    substring scan of the first 2 KB, so a [data-theme] selector in <head>
+    skipped the stamp on exactly the pages that key off it."""
+    doc = (b"<!doctype html><html lang=\"en\"><head><style>"
+           b":root[data-theme=\"dark\"]{--bg:#000}</style></head>"
+           b"<body>x</body></html>")
+    out = store.wrap_skeleton(doc, theme="dark", link_guard=True)
+    assert b"<html data-theme=\"dark\" lang=\"en\">" in out
+    # an author who stamped their own <html> keeps it
+    own = b"<!doctype html><html data-theme=\"light\"><body>x</body></html>"
+    out = store.wrap_skeleton(own, theme="dark")
+    assert out.count(b"data-theme") == 1 and b"data-theme=\"light\"" in out
+
+
+# --- review 2026-11-16: conf reads are cached, URLs built per page ------------
+
+def _count_opens(store, monkeypatch):
+    opened = []
+    real = open
+
+    def counting(path, *a, **kw):
+        if str(path).endswith(".conf"):
+            opened.append(str(path))
+        return real(path, *a, **kw)
+    monkeypatch.setattr(store, "open", counting, raising=False)
+    return opened
+
+
+def _age(path, seconds=60):
+    t = time.time() - seconds
+    os.utime(path, (t, t))
+
+
+def test_the_conf_is_read_once_until_it_changes(store, tmp_path, monkeypatch):
+    """artifact_url() and is_admin() fall back to openbeast.conf whenever the
+    env var is empty: every gallery row and every identified request re-read
+    and regex-scanned the whole 40 KB file. It is now cached behind its stat,
+    and an edit still applies without a restart."""
+    conf = tmp_path / "openbeast.conf"
+    conf.write_text("ARTIFACT_ADMINS=a@example.com\n")
+    _age(conf)
+    monkeypatch.setenv("OPENBEAST_CONF", str(conf))
+    opened = _count_opens(store, monkeypatch)
+    for _ in range(20):
+        assert store.conf_value("ARTIFACT_ADMINS") == "a@example.com"
+        assert store.conf_value("ARTIFACT_PORT") is None
+    assert len(opened) == 1, opened
+    # an edit (new size + mtime) is picked up on the next call
+    conf.write_text("ARTIFACT_ADMINS=bb@example.com\n")
+    _age(conf, 30)
+    assert store.conf_value("ARTIFACT_ADMINS") == "bb@example.com"
+    # so is a removal
+    os.unlink(conf)
+    assert store.conf_value("ARTIFACT_ADMINS") is None
+
+
+def test_a_conf_written_just_now_is_never_served_stale(store, tmp_path,
+                                                      monkeypatch):
+    """Two same-size writes inside one mtime tick look identical to a stat
+    gate. A file modified in the last couple of seconds is re-read every
+    time instead of trusted from the cache."""
+    conf = tmp_path / "openbeast.conf"
+    monkeypatch.setenv("OPENBEAST_CONF", str(conf))
+    conf.write_text("ARTIFACT_ADMINS=a@example.com\n")
+    assert store.conf_value("ARTIFACT_ADMINS") == "a@example.com"
+    st = os.stat(conf)
+    conf.write_text("ARTIFACT_ADMINS=b@example.com\n")            # same size
+    os.utime(conf, ns=(st.st_atime_ns, st.st_mtime_ns))           # same mtime
+    assert store.conf_value("ARTIFACT_ADMINS") == "b@example.com"
+
+
+def test_a_gallery_page_builds_urls_only_for_the_rows_it_returns(
+        store, monkeypatch):
+    ids = [store.publish(f"<p>{i}</p>")["id"] for i in range(30)]
+    calls = []
+    real = store.artifact_url
+
+    def counted(aid, version=None):
+        calls.append(aid)
+        return real(aid, version)
+    monkeypatch.setattr(store, "artifact_url", counted)
+    rows, total = store.list_page(limit=5, admin=True)
+    assert total == 30 and len(rows) == 5
+    assert len(calls) == 5, len(calls)
+    assert all(r["url"] == f"https://beast:8446/a/{r['id']}" for r in rows)
+    assert {r["id"] for r in rows} <= set(ids)
+    # every row of an unlimited page still carries its URL
+    calls.clear()
+    rows = store.list_artifacts(limit=0, admin=True)
+    assert len(rows) == 30 and all(r["url"] for r in rows)

@@ -296,3 +296,118 @@ def test_unsafe_tree_paths_refuse_the_revision(tmp_path, remote, monkeypatch, ca
     remote.extra_entries = [{"type": "file", "path": bad, "size": 1, "oid": "0" * 40}]
     assert fetch(tmp_path, hf_profile(tmp_path)) == 1
     assert "unsafe path" in capsys.readouterr().err and remote.downloads() == []
+
+
+def test_local_source_with_hf_download_metadata_verifies(tmp_path, capsys):
+    # A `hf download --local-dir` copy carries .cache/huggingface/ metadata
+    # (trees/<rev>.json, download/*.metadata). The lock written on first use
+    # skips hidden paths; --verify must skip them the same way, not call the
+    # metadata "unlocked" (seen on the spark-hydra Ablit copy, 2026-11-13).
+    src = tmp_path / "ckpt"
+    (src / ".cache" / "huggingface" / "trees").mkdir(parents=True)
+    (src / "config.json").write_text(json.dumps({"model_type": "brand_new"}))
+    (src / "model.safetensors").write_bytes(b"\0" * 64)
+    (src / ".cache" / "huggingface" / "trees" / f"{SHA}.json").write_text("[]")
+    prof = tmp_path / "localtest.env"
+    prof.write_text(f"BACKEND=tensorfold\nSOURCE={src}\nSERVED_MODEL_NAME=local-test\nTENSOR_PARALLEL_SIZE=1\n")
+    assert model_fetch.main(["--profile", str(prof)]) == 0          # records the lock (TOFU)
+    lock = json.loads(prof.with_suffix(".lock").read_text())
+    assert set(lock["artifacts"]["model"]["files"]) == {"config.json", "model.safetensors"}
+    assert model_fetch.main(["--profile", str(prof), "--verify"]) == 0, capsys.readouterr()
+    (src / "model.safetensors").write_bytes(b"\1" * 64)              # a real change still fails
+    assert model_fetch.main(["--profile", str(prof), "--verify"]) != 0
+
+
+def _local_profile(tmp_path, name="localtof"):
+    src = tmp_path / f"{name}-ckpt"
+    src.mkdir()
+    (src / "config.json").write_text(json.dumps({"model_type": "brand_new", "hidden": 64}))
+    (src / "model.safetensors").write_bytes(b"\0" * 64)
+    prof = tmp_path / f"{name}.env"
+    prof.write_text(f"BACKEND=tensorfold\nSOURCE={src}\nSERVED_MODEL_NAME={name}\nTENSOR_PARALLEL_SIZE=1\n")
+    return src, prof
+
+
+def test_verify_without_a_lock_fails_and_never_records_one(tmp_path, capsys):
+    # Review finding: --verify on a local SOURCE with no lock wrote a
+    # trust-on-first-use lock and exited 0, so sync-weights reported a worker
+    # "verified against its lock" when there was nothing to verify against.
+    src, prof = _local_profile(tmp_path)
+    assert model_fetch.main(["--profile", str(prof), "--verify"]) == model_fetch.EXIT_ABSENT
+    assert "nothing to verify against" in capsys.readouterr().err
+    assert not prof.with_suffix(".lock").exists()
+    assert model_fetch.main(["--profile", str(prof), "--trust-first-use"]) == 2     # only with --verify
+    assert model_fetch.main(["--profile", str(prof), "--verify", "--trust-first-use"]) == 0
+    assert set(json.loads(prof.with_suffix(".lock").read_text())["artifacts"]["model"]["files"]) == \
+        {"config.json", "model.safetensors"}
+    assert model_fetch.main(["--profile", str(prof), "--verify"]) == 0
+
+
+def test_locate_refuses_an_unlocked_local_source(tmp_path, capsys):
+    # The launchers serve what --locate prints: an unlocked local SOURCE is
+    # not "verified", so it prints nothing and exits 3 (not fetched).
+    src, prof = _local_profile(tmp_path, "localloc")
+    capsys.readouterr()
+    assert model_fetch.main(["--profile", str(prof), "--locate"]) == model_fetch.EXIT_ABSENT
+    assert capsys.readouterr().out == ""
+    assert not prof.with_suffix(".lock").exists()
+    assert model_fetch.main(["--profile", str(prof)]) == 0                     # the explicit TOFU fetch
+    capsys.readouterr()
+    assert model_fetch.main(["--profile", str(prof), "--locate"]) == 0
+    assert capsys.readouterr().out.strip() == f"model\t{src}"
+
+
+def test_locate_hashes_the_small_files(tmp_path, capsys):
+    # --locate stays size-only for the weights, but a same-size edit to
+    # config.json / a template / a tokenizer file changes behaviour and is
+    # cheap to catch.
+    src, prof = _local_profile(tmp_path, "localsmall")
+    assert model_fetch.main(["--profile", str(prof)]) == 0
+    cfg = src / "config.json"
+    cfg.write_text(cfg.read_text().replace('"hidden": 64', '"hidden": 99'))      # same size
+    capsys.readouterr()
+    assert model_fetch.main(["--profile", str(prof), "--locate"]) == model_fetch.EXIT_MISMATCH
+    assert "config.json: sha256 differs" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("planted", ["pytorch_model.bin", "extra.pt", "evil.pth", "vocab.tiktoken",
+                                     "config.yaml", "README", "sub/model.gguf"])
+def test_verify_flags_an_unlocked_file_of_any_kind(tmp_path, capsys, planted):
+    src, prof = _local_profile(tmp_path, "localany")
+    assert model_fetch.main(["--profile", str(prof)]) == 0
+    (src / planted).parent.mkdir(parents=True, exist_ok=True)
+    (src / planted).write_bytes(b"x")
+    capsys.readouterr()
+    assert model_fetch.main(["--profile", str(prof), "--verify"]) == model_fetch.EXIT_MISMATCH
+    assert f"unlocked file {planted}" in capsys.readouterr().err
+
+
+def test_verify_hashes_in_parallel_with_deterministic_output(tmp_path, monkeypatch):
+    """Review 2026-11-16: --verify hashed a 164 GB tree on one thread (~1.8 GB/s
+    on a GB10) while 4 threads reach ~5.5 GB/s. Parallel hashing must give the
+    same problems, in the same sorted order, as the serial path."""
+    d = tmp_path / "m"
+    (d / "sub").mkdir(parents=True)
+    names = [f"model-{i:05d}.safetensors" for i in range(8)] + ["config.json", "sub/tok.json"]
+    for i, n in enumerate(names):
+        (d / n).write_bytes(bytes([i]) * (1000 + i))
+    entry = model_fetch.local_lock_entry(d)
+    assert set(entry["files"]) == set(names)
+    for n in names:
+        assert entry["files"][n]["sha256"] == hashlib.sha256((d / n).read_bytes()).hexdigest()
+    # Same-size tamper on two files, one missing, one unlocked extra.
+    (d / names[5]).write_bytes(b"\xff" * (1005))
+    (d / "config.json").write_bytes(b"\xee" * (1008))
+    (d / names[2]).unlink()
+    (d / "extra.py").write_text("x")
+    monkeypatch.setenv("MODEL_FETCH_HASH_WORKERS", "1")
+    serial = model_fetch.verify_dir(d, entry)
+    monkeypatch.setenv("MODEL_FETCH_HASH_WORKERS", "4")
+    assert model_fetch.hash_workers() == 4
+    parallel = model_fetch.verify_dir(d, entry)
+    assert parallel == serial
+    assert parallel[:3] == ["config.json: sha256 differs from the lock", f"missing {names[2]}",
+                            f"{names[5]}: sha256 differs from the lock"]
+    assert parallel[3:] == ["unlocked file extra.py (not from the pinned revision)"]
+    monkeypatch.setenv("MODEL_FETCH_HASH_WORKERS", "bogus")
+    assert model_fetch.hash_workers() == 1

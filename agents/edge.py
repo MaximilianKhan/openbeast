@@ -42,7 +42,8 @@ Env (resolved from openbeast.conf by scripts/lib/conf.sh):
   OPENBEAST_LLAMA_UPSTREAM     real llama-server (default http://127.0.0.1:8080)
   OPENBEAST_API_KEY            upstream key, if llama-server runs --api-key
   OPENBEAST_EDGE_RATE_LIMIT    requests/minute per device (default 120)
-  OPENBEAST_EDGE_MAX_INFLIGHT  concurrent generations per device (default 2);
+  OPENBEAST_EDGE_MAX_INFLIGHT  concurrent generations per device (default:
+                               OPENBEAST_INFERENCE_SLOTS when set, else 2);
                                a prompt array or n>1 counts prompts x n
   OPENBEAST_EDGE_MAX_BODY      largest request body accepted, in bytes (default
                                8 MiB — see MAX_BODY_BYTES)
@@ -50,12 +51,26 @@ Env (resolved from openbeast.conf by scripts/lib/conf.sh):
                                that name a URL for llama-server to fetch
                                (default false = inline media only — see
                                agents/mediapolicy.py)
+  OPENBEAST_INFERENCE_THINKING "on" / "off" = the serving host's thinking
+                               default (INFERENCE_THINKING): a chat request
+                               that names no thinking control gets
+                               chat_template_kwargs.enable_thinking set to
+                               it (see _apply_thinking_default). Unset (the
+                               default) = bodies forwarded as before
+  OPENBEAST_GATE_DEFAULT_MAX_TOKENS  max_tokens for a chat/completions
+                               request that sets neither max_tokens nor
+                               max_completion_tokens (GATE_DEFAULT_MAX_TOKENS;
+                               AGENT_PROFILE=deepseek-best gives 8192). A
+                               device's registry `max_tokens_default`
+                               overrides it. Unset / 0 = nothing injected
+                               (see _apply_max_tokens_default)
   OPENBEAST_EDGE_ALLOW_ANON    "true" = while there is NO registry file, serve
                                every caller as the "anon" device (default
-                               false = fail closed). Ignored once
-                               .run/clients.json exists — even emptied by
-                               `clients.sh remove`, even unreadable: then
-                               no/unknown key -> 401
+                               false = fail closed). Ignored for good once
+                               .run/clients.json has existed — even emptied
+                               by `clients.sh remove`, unreadable, or later
+                               deleted (.run/clients.enrolled remembers):
+                               then no/unknown key -> 401
 """
 from __future__ import annotations
 
@@ -89,6 +104,11 @@ REPO_DIR = os.environ.get("OPENBEAST_REPO_DIR") or os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))
 RUN_DIR = os.path.join(REPO_DIR, ".run")
 REGISTRY_PATH = os.path.join(RUN_DIR, "clients.json")
+# Written next to the registry the first time one exists (by the gate and by
+# `clients.sh` saves). Its presence keeps EDGE_ALLOW_ANON off after the
+# registry itself is deleted or moved aside; to truly start over as a fresh
+# rig, delete both.
+ENROLLED_MARKER = "clients.enrolled"
 AUDIT_PATH = os.path.join(RUN_DIR, "inference-audit.jsonl")
 # Gate-owned last-seen sidecar. Kept OUT of clients.json so the data path
 # never rewrites the authorization source (see Registry.touch).
@@ -107,6 +127,18 @@ MAX_BODY_BYTES = int(os.environ.get("OPENBEAST_EDGE_MAX_BODY", str(8 * 1024 * 10
 # Bodies above this are sanitized in a worker thread (see gate()); below it
 # the thread hop costs more than the parse (worst case ~1.5 ms inline).
 _SANITIZE_INLINE_BYTES = 16 * 1024
+# One threaded (big-body) sanitize at a time — see gate(). Created lazily
+# per event loop: an asyncio.Semaphore binds to the loop that first waits on
+# it, and the gate's loop is not running at import time.
+_big_sanitize: tuple[object, asyncio.Semaphore] | None = None
+
+
+def _big_sanitize_gate() -> asyncio.Semaphore:
+    global _big_sanitize
+    loop = asyncio.get_running_loop()
+    if _big_sanitize is None or _big_sanitize[0] is not loop:
+        _big_sanitize = (loop, asyncio.Semaphore(1))
+    return _big_sanitize[1]
 
 PORT = int(os.environ.get("OPENBEAST_EDGE_PORT", "8090"))
 BIND = os.environ.get("OPENBEAST_BIND", "127.0.0.1").strip() or "127.0.0.1"
@@ -114,11 +146,130 @@ UPSTREAM = os.environ.get(
     "OPENBEAST_LLAMA_UPSTREAM", "http://127.0.0.1:8080").rstrip("/")
 _UPSTREAM_KEY = os.environ.get("OPENBEAST_API_KEY", "").strip()
 RATE_LIMIT = int(os.environ.get("OPENBEAST_EDGE_RATE_LIMIT", "120"))
-MAX_INFLIGHT = int(os.environ.get("OPENBEAST_EDGE_MAX_INFLIGHT", "2"))
+
+
+def default_max_inflight(env=os.environ) -> int:
+    """The per-device generation cap. EDGE_MAX_INFLIGHT when set; otherwise
+    INFERENCE_SLOTS, the concurrency the model server was launched with, so a
+    single device can use every stream the server has; otherwise 2. Review
+    2026-11-16: the Spark pair serves 4 streams (INFERENCE_SLOTS=4) while the
+    gate admitted 2 per device, and a Mac running 3-4 agents got 429s with
+    streams idle. extensions/dashboard publishes the same number in
+    /api/slot (admission.per_device_inflight)."""
+    raw = env.get("OPENBEAST_EDGE_MAX_INFLIGHT", "").strip()
+    if raw:
+        return int(raw)
+    slots = env.get("OPENBEAST_INFERENCE_SLOTS", "").strip()
+    if slots.isdigit() and int(slots) > 0:
+        return int(slots)
+    return 2
+
+
+MAX_INFLIGHT = default_max_inflight()
 ALLOW_ANON = os.environ.get(
     "OPENBEAST_EDGE_ALLOW_ANON", "false").strip().lower() == "true"
 ALLOW_MEDIA_URLS = os.environ.get(
     "OPENBEAST_EDGE_ALLOW_MEDIA_URLS", "false").strip().lower() == "true"
+
+
+def thinking_default(env=os.environ) -> str | None:
+    """INFERENCE_THINKING: "on" / "off", or None (unset or anything else:
+    the gate adds nothing). docs/SPARK_HYDRA.md, "Recommended serving
+    configuration": spark-1 sets on, because the v5 arms measured
+    GLM-5.3-Flash at 51/71 with thinking on against 36/71 off (arms C and
+    B), and its TensorFold server thinks only when a request asks."""
+    v = env.get("OPENBEAST_INFERENCE_THINKING", "").split("#", 1)[0].strip().lower()
+    return v if v in ("on", "off") else None
+
+
+THINKING_DEFAULT = thinking_default()
+# A client that wants its body forwarded with NO gate-side default sends
+# this header with the value "off". agents/runner.py sends it on every eval
+# request, so an eval run that names no thinking mode still gets the
+# server's own default on every host (an eval row is half of a paired
+# comparison; the gate must not change what it measures). Never forwarded.
+GATE_DEFAULTS_HEADER = "x-openbeast-gate-defaults"
+# A request that names any of these already chose how (or whether) to
+# think, so the default stays out of it. Top level: llama.cpp's
+# reasoning_budget_tokens and the vLLM / OpenAI / OpenRouter / Anthropic
+# spellings. Inside chat_template_kwargs: the Qwen/GLM switch and the
+# DeepSeek-style `thinking`.
+_THINKING_BODY_KEYS = ("enable_thinking", "thinking", "reasoning",
+                       "reasoning_effort", "reasoning_budget_tokens",
+                       "thinking_budget")
+_THINKING_TEMPLATE_KEYS = ("enable_thinking", "thinking")
+
+
+def _apply_thinking_default(body: dict, default: str | None) -> bool:
+    """Set chat_template_kwargs.enable_thinking to the host default on a
+    chat body that names no thinking control. True when it did. Anything
+    the client said wins: an explicit enable_thinking (true or false), any
+    key in _THINKING_BODY_KEYS, or a chat_template_kwargs that is not an
+    object (forwarded as sent; the server judges it)."""
+    if default not in ("on", "off"):
+        return False
+    if any(body.get(k) is not None for k in _THINKING_BODY_KEYS):
+        return False
+    ctk = body.get("chat_template_kwargs")
+    if ctk is None:
+        ctk = {}
+    elif not isinstance(ctk, dict):
+        return False
+    elif any(ctk.get(k) is not None for k in _THINKING_TEMPLATE_KEYS):
+        return False
+    body["chat_template_kwargs"] = {**ctk, "enable_thinking": default == "on"}
+    return True
+
+def max_tokens_default(env=os.environ) -> int:
+    """GATE_DEFAULT_MAX_TOKENS: the max_tokens a generation request that
+    names no cap gets, or 0 (unset, 0, or not a whole number: nothing
+    injected). Why it exists (docs/SPARK_HYDRA.md, "beast-gate's default
+    max_tokens"; docs/reports/DEEPSEEK_SERVING_OPT-2026-11-25.md): TensorFold
+    on the Spark pair reserves a request's whole reply budget in the shared
+    524,288-token KV pool, and a request with no max_tokens reserves the
+    engine's 32,768 default. With 47-92K-token prompts that held concurrency
+    near 4 of the 8 slots and evicted cached prefixes, while replies average
+    1.1-1.4K tokens. 8192 is the DeepSeek best config's own turn cap (T2,
+    AGENT_MAX_TOKENS=8192)."""
+    raw = env.get("OPENBEAST_GATE_DEFAULT_MAX_TOKENS", "").split("#", 1)[0].strip()
+    if not raw.isdigit():
+        if raw:
+            print(f"[beast-gate] GATE_DEFAULT_MAX_TOKENS={raw[:32]!r} is not a "
+                  "whole number: no default max_tokens", file=sys.stderr, flush=True)
+        return 0
+    return int(raw)
+
+
+MAX_TOKENS_DEFAULT = max_tokens_default()
+# Any of these in the body is the client's own reply cap, honoured as sent
+# (never clamped up or down). n_predict is llama.cpp's native spelling.
+_MAX_TOKENS_KEYS = ("max_tokens", "max_completion_tokens", "n_predict")
+# The generation endpoints. /v1/embeddings generates nothing.
+_MAX_TOKENS_PATHS = frozenset({"/v1/chat/completions", "/v1/completions"})
+
+
+def device_max_tokens(device: dict, default: int) -> int:
+    """The default max_tokens for this device: its registry
+    `max_tokens_default` when that is a whole number (0 = never inject for
+    this device), else the gate's `default`. Set with
+    `./scripts/clients.sh max-tokens <id> N|default`."""
+    v = device.get("max_tokens_default")
+    if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
+        return v
+    return default
+
+
+def _apply_max_tokens_default(body: dict, n: int) -> bool:
+    """Set max_tokens = n on a body that names no reply cap. True when it
+    did. A key present with JSON null counts as absent (OpenAI reads null
+    as unset, and the engine would reserve its own default for it)."""
+    if n <= 0:
+        return False
+    if any(body.get(k) is not None for k in _MAX_TOKENS_KEYS):
+        return False
+    body["max_tokens"] = n
+    return True
+
 
 # The ONLY paths a remote client may reach. Everything else 404s — a remote
 # caller should not be able to tell which of the many llama-server routes
@@ -195,27 +346,44 @@ class Registry:
         # The FILE is there, parsed or not. Distinct from _present (a map was
         # loaded from it) — see `exists`.
         self._exists = False
+        self._missing = True
+        # Sticky "a registry has existed here": the marker survives the file
+        # being deleted or moved aside (see `exists`).
+        self._marker = os.path.join(os.path.dirname(path) or ".",
+                                    ENROLLED_MARKER)
+        self._ever = False
         self._bad_stamp = None
         self._touched: dict[str, float] = {}
         self.reload()
 
+    def _mark_enrolled(self) -> None:
+        """Persist that this rig has had a registry (once per process)."""
+        if self._ever:
+            return
+        self._ever = True
+        try:
+            fd = os.open(self._marker, os.O_WRONLY | os.O_CREAT, 0o600)
+            os.close(fd)
+        except OSError:
+            pass    # the in-process flag still holds until a restart
+
     def reload(self) -> None:
         try:
             st = os.stat(self.path)
-        except OSError:
-            # A file that vanishes drops its device map (its keys must not
-            # outlive it) but NOT the "a registry has existed" latch: moving
-            # clients.json aside used to reset `exists` and, with
-            # EDGE_ALLOW_ANON=true, reopen the gate to every tailnet peer
-            # until the next enrollment. Once seen in this process, a missing
-            # file reads as unreadable — closed.
-            if self._exists and self._present:
-                _log(f"ERROR: {self.path} has disappeared — refusing every "
-                     "caller until it is restored or a device is enrolled")
+        except OSError as e:
             self._by_hash, self._present, self._mtime = {}, False, 0.0
             self._size = -1
+            # Only a file that is really GONE may read as "never enrolled",
+            # and only if no registry was ever seen: a moved-aside, deleted
+            # or un-stat-able (EACCES) registry must keep the gate closed,
+            # not hand EDGE_ALLOW_ANON every tailnet peer.
+            self._missing = isinstance(e, FileNotFoundError)
+            self._exists = (not self._missing
+                            or self._ever or os.path.exists(self._marker))
             return
         self._exists = True
+        self._missing = False
+        self._mark_enrolled()
         # mtime alone is not enough: two writes inside the same filesystem
         # timestamp tick (mtime granularity can be 1s) would leave a stale
         # map — and a stale map means a MISSED REVOCATION. Key the cache on
@@ -246,9 +414,8 @@ class Registry:
                      + ("serving the last good copy" if self._present else
                         "refusing every caller")
                      + " until it is repaired: ./scripts/clients.sh list "
-                     "names the fault; restore the file, or re-enroll "
-                     "(the gate stays closed meanwhile — EDGE_ALLOW_ANON "
-                     "never reopens it once a registry has existed)")
+                     "names the fault; restore the file or move it aside "
+                     "and re-enroll")
             return
         self._by_hash = by_hash
         self._present = True
@@ -279,8 +446,12 @@ class Registry:
         and reopen the gate to every tailnet peer: `clients.sh remove` of the
         last device (which re-admitted the very key it removed), and a file
         truncated before a gate restart (no last good map to keep).
-        Latched per process: a file that disappears after it was seen still
-        reads True (closed), so moving it aside cannot reopen the gate.
+
+        It is also STICKY: once a registry has existed — seen by this
+        process, or recorded by the ENROLLED_MARKER beside it — a deleted or
+        moved-aside file (the repair advice for a corrupt one) still counts,
+        and so does one that cannot even be stat'ed. Only a rig that has
+        never had a registry can be anonymous.
         """
         self.reload()
         return self._exists
@@ -296,7 +467,7 @@ class Registry:
                 return None if dev.get("revoked_at") else dev
         return None
 
-    def touch(self, device_id: str) -> None:
+    def touch(self, device_id: str, uid: str | None = None) -> None:
         """Record last-seen in a GATE-OWNED sidecar, throttled.
 
         Deliberately does NOT write clients.json. Two reasons, both learned
@@ -310,16 +481,23 @@ class Registry:
              gratuitous disk churn (see the SSD-wear item in docs/TODO.md)
              and it blocked concurrent streams.
         `clients.sh list/show` merges this file for display.
+
+        The sidecar is keyed by the id (that is what `list` shows), but the
+        throttle is keyed by the ENROLLMENT (`uid`): a re-enrolled id must
+        get its first last-seen at once, not up to a minute later while the
+        sidecar still shows its predecessor's (`clients.sh remove` prunes
+        the old entry).
         """
         now = time.monotonic()
-        last = self._touched.get(device_id)
+        throttle_key = uid or device_id
+        last = self._touched.get(throttle_key)
         # `last is None` means never touched -> always write. Do NOT use 0.0 as
         # the sentinel: time.monotonic() is time since BOOT, so on a machine
         # that booted less than _TOUCH_INTERVAL_S ago the arithmetic would
         # silently skip a device's very first last-seen record.
         if last is not None and now - last < _TOUCH_INTERVAL_S:
             return
-        self._touched[device_id] = now
+        self._touched[throttle_key] = now
         try:
             seen = {}
             try:
@@ -368,13 +546,17 @@ class Bucket:
         if getattr(self, "tokens", 0.0) > self.capacity:
             self.tokens = float(self.capacity)
 
-    def reserve(self) -> str | None:
+    def reserve(self, hold: bool = True) -> str | None:
         """Atomically admit one request, or return a refusal reason.
 
         Check-and-increment MUST happen with no await in between: the caller
         reads the request body (a real suspension point) before proxying, and
         a check-then-act split there let a device blow straight through
         EDGE_MAX_INFLIGHT with concurrent requests.
+
+        hold=False admits a request that creates no generation (/v1/models):
+        it pays a rate token but neither needs nor takes an in-flight unit —
+        the cap counts generations, not HTTP requests.
         """
         now = time.monotonic()
         self.tokens = min(self.capacity,
@@ -382,10 +564,11 @@ class Bucket:
         self.updated = now
         if self.tokens < 1.0:
             return "rate_limited"
-        if self.inflight >= self.max_inflight:
+        if hold and self.inflight >= self.max_inflight:
             return "max_inflight"
         self.tokens -= 1.0
-        self.inflight += 1
+        if hold:
+            self.inflight += 1
         return None
 
     def reserve_more(self, extra: int) -> str | None:
@@ -441,12 +624,19 @@ class Limiter:
 # happened and how much it cost, never the content and never key material.
 # ---------------------------------------------------------------------------
 
+# Per-device series are keyed on (device id, device_uid): the id is the
+# Prometheus label, the uid is the ENROLLMENT. A tenant's /gate/metrics view
+# filters on its uid, so a removed-and-re-enrolled id never reads the
+# previous holder's usage; the rig's view sums them back under the id.
 _METRICS = {
-    "requests_total": {},     # (device, path, outcome) -> count
+    "requests_total": {},     # (device, uid, path, outcome) -> count
     "denied_total": {},       # reason -> count
-    "prompt_tokens": {},      # device -> count
-    "completion_tokens": {},  # device -> count
-    "latency_ms": {},         # device -> cumulative
+    "prompt_tokens": {},      # (device, uid) -> count
+    "completion_tokens": {},  # (device, uid) -> count
+    "latency_ms": {},         # (device, uid) -> cumulative
+    # Forwarded requests that got the gate's default max_tokens (a count;
+    # nothing of the request is kept).
+    "max_tokens_defaulted": {},  # (device, uid) -> count
 }
 
 
@@ -457,10 +647,19 @@ def device_uid(device: dict) -> str:
     `enroll laptop-air` yields a different physical device wearing the same
     name, which would silently conflate two devices in the audit trail (and
     inherit the old one's in-flight counters). Binding the enrollment
-    timestamp in makes each enrollment distinct without adding a field the
-    CLI would have to write.
+    timestamp in makes each enrollment distinct.
+
+    enrolled_at has one-second resolution, so a scripted `remove` + `enroll`
+    inside one second would mint the SAME uid. `clients.sh enroll` therefore
+    also writes a random `enroll_nonce`, bound in when present. Rows written
+    before it existed have none and keep the uid they always had, so audit
+    history still joins across the upgrade. A key rotation keeps both
+    fields: same device, same uid.
     """
     raw = f"{device.get('id','anon')}:{device.get('enrolled_at','')}"
+    nonce = device.get("enroll_nonce")
+    if nonce:
+        raw += f":{nonce}"
     return hashlib.sha256(raw.encode()).hexdigest()[:12]
 
 
@@ -491,11 +690,12 @@ def _audit(device: str, user: str | None, path: str, status: int,
             f.write(json.dumps(row) + "\n")
     except Exception:
         pass
-    _bump("requests_total", (device, path, outcome))
+    _bump("requests_total", (device, uid, path, outcome))
     if usage:
-        _add("prompt_tokens", device, usage.get("prompt_tokens") or 0)
-        _add("completion_tokens", device, usage.get("completion_tokens") or 0)
-    _add("latency_ms", device, ms)
+        _add("prompt_tokens", (device, uid), usage.get("prompt_tokens") or 0)
+        _add("completion_tokens", (device, uid),
+             usage.get("completion_tokens") or 0)
+    _add("latency_ms", (device, uid), ms)
 
 
 def _bump(metric: str, key) -> None:
@@ -639,7 +839,7 @@ def _identify(request: Request, registry: Registry) -> tuple[dict | None, str]:
     # lesson from 2026-07-17). The opt-out covers ONLY a rig that has never
     # had a registry file: see Registry.exists.
     if registry.exists:
-        return None, ("no_registry" if registry._present
+        return None, ("no_registry" if registry._present or registry._missing
                       else "registry_unreadable")
     if ALLOW_ANON:
         return {"id": "anon", "label": "unregistered"}, "ok"
@@ -674,6 +874,15 @@ def _json_too_deep(raw: bytes, limit: int = MAX_JSON_DEPTH) -> bool:
     first bracket past the cap, so a hostile body costs O(limit) to refuse.
     A malformed body can only miscount here; json.loads still rejects it.
     """
+    # Fast path: nesting can never exceed the number of opening brackets in
+    # the body (a bracket inside a string only over-counts, the safe way).
+    # bytes.count is a C scan with no per-token work, and it spares the
+    # common big body — one long prompt or inline base64 media — the regex
+    # match over a single multi-MiB string token, a C call that holds the GIL
+    # (42 ms for 7 MiB) and so stalls the event loop even from a worker
+    # thread (2026-11-16 review).
+    if raw.count(b"[") + raw.count(b"{") <= limit:
+        return False
     depth = 0
     for m in _JSON_TOKEN.finditer(raw):
         c = m.group()
@@ -732,12 +941,21 @@ _remote_media = remote_media
 
 
 def _sanitize_body(raw: bytes, device: dict,
-                   path: str = "/v1/chat/completions"
-                   ) -> tuple[bytes, str | None, bool, int]:
+                   path: str = "/v1/chat/completions",
+                   thinking: str | None = None,
+                   max_tokens: int = 0,
+                   ) -> tuple[bytes, str | None, bool, int, bool]:
     """Strip client-controlled tenancy knobs; inject server-side affinity.
 
-    Returns (body, model_name, streaming, generations) — see _generations
-    for the last. Raises BadBody for anything that
+    `thinking` ("on" / "off" / None) is the host's thinking default for a
+    chat body that names none (_apply_thinking_default); the gate passes
+    THINKING_DEFAULT unless the request opted out (GATE_DEFAULTS_HEADER).
+    `max_tokens` (0 = none) is the reply cap for a chat/completions body
+    that names none (_apply_max_tokens_default); the gate passes the
+    device's (device_max_tokens), and 0 under the same opt-out.
+
+    Returns (body, model_name, streaming, generations, max_tokens_defaulted)
+    — see _generations for the fourth. Raises BadBody for anything that
     is not a JSON object within MAX_JSON_DEPTH. FAIL CLOSED: every tenancy
     and metering guarantee below depends on the gate having parsed the body,
     so a body it cannot parse must never reach llama-server verbatim — that
@@ -786,6 +1004,10 @@ def _sanitize_body(raw: bytes, device: dict,
         slot = None                      # JSON true/false is not a slot index
     if isinstance(slot, int):
         body["id_slot"] = slot
+    if path == "/v1/chat/completions":
+        _apply_thinking_default(body, thinking)
+    defaulted = (path in _MAX_TOKENS_PATHS
+                 and _apply_max_tokens_default(body, max_tokens))
     streaming = bool(body.get("stream"))
     if streaming:
         # Without this the streaming path — which is the DEFAULT for chat —
@@ -795,14 +1017,48 @@ def _sanitize_body(raw: bytes, device: dict,
         opts = dict(opts) if isinstance(opts, dict) else {}
         opts["include_usage"] = True
         body["stream_options"] = opts
-    return (json.dumps(body).encode(), body.get("model"), streaming,
-            _generations(body, path))
+    return (_encode_body(body), _audit_model(body.get("model")), streaming,
+            _generations(body, path), defaulted)
+
+
+# What the audit row records as "model". The field is client-supplied and
+# written into EVERY row, refused requests included (the fan-out 400 runs
+# before anything reaches upstream), so an unbounded value let one enrolled
+# device append ~7 MiB of audit per request at no GPU cost — ~880 MiB a
+# minute at the default rate limit, faster than the daily logrotate.
+# Bounded like the claimed user header; a non-string is not a model name.
+# Only the audit copy is cut: upstream still receives the body as sent.
+_AUDIT_MODEL_CHARS = 128
+
+
+def _audit_model(model) -> str | None:
+    if not isinstance(model, str):
+        return None
+    return model[:_AUDIT_MODEL_CHARS] or None
+
+
+def _encode_body(body: dict) -> bytes:
+    """Re-serialize the sanitized body as UTF-8, the way it arrived.
+
+    json.dumps' default ensure_ascii=True turns every non-ASCII character
+    into a \\uXXXX escape (a 12-byte surrogate pair for an emoji), so a CJK
+    or emoji-heavy prompt reached upstream 2-3x larger than the client sent
+    it — past the gate's own MAX_BODY_BYTES for a near-cap body. A body
+    holding a lone surrogate ("\\ud800" parses fine) cannot be UTF-8
+    encoded; only that body keeps the escaped form, which is still the
+    same JSON value.
+    """
+    try:
+        return json.dumps(body, ensure_ascii=False).encode("utf-8")
+    except UnicodeEncodeError:
+        return json.dumps(body).encode()
 
 
 def _upstream_headers(request: Request, device: dict, request_id: str = "") -> dict:
     headers = {k: v for k, v in request.headers.items()
                if k.lower() not in _HOP_BY_HOP
-               and k.lower() not in _CLIENT_SPOOFABLE}
+               and k.lower() not in _CLIENT_SPOOFABLE
+               and k.lower() != GATE_DEFAULTS_HEADER}
     # Re-assert identity from the AUTHENTICATED device, so a client can't
     # smuggle its own X-OpenWebUI-User-* headers to something downstream that
     # trusts them (the agent router gates its spawn path on exactly that role
@@ -893,6 +1149,10 @@ def _usage_from_json_tail(tail: bytes) -> dict | None:
 # included — now serves every caller for this long.
 _HEALTH_TTL_S = 1.0
 
+# How long uvicorn waits for open requests on SIGTERM before cancelling them
+# (main(); the same bound as beast-chat's).
+GRACEFUL_SHUTDOWN_S = 5
+
 
 async def _upstream_health(app, client) -> tuple[int, dict]:
     st = app.state
@@ -905,13 +1165,25 @@ async def _upstream_health(app, client) -> tuple[int, dict]:
         cached = getattr(st, "health_cache", None)
         if cached and _clock() - cached[0] < _HEALTH_TTL_S:
             return cached[1], cached[2]
+        # A NORMALIZED liveness body, never the upstream's own JSON: an
+        # engine's /health can carry rig-wide counters (request, token and
+        # cached-token totals, live streams) for every tenant, and any
+        # enrolled device reads this path. The status code is kept — clients
+        # tell "still loading" (503) from "down" (502) by it.
         try:
             r = await client.get(f"{UPSTREAM}/health", timeout=5)
-            status, payload = r.status_code, (
-                json.loads(r.text) if r.text.startswith("{")
-                else {"status": "ok"})
+            status = r.status_code
         except httpx.HTTPError as e:
-            status, payload = 502, {"error": {"message": f"upstream: {e}"}}
+            _log(f"upstream /health failed: {e}")
+            status = 502
+        if 200 <= status < 300:
+            payload = {"status": "ok"}
+        else:
+            if status < 500:
+                status = 502
+            payload = {"status": "unavailable", "error": {
+                "message": f"model server not ready (HTTP {status})",
+                "type": "upstream_unavailable"}}
         st.health_cache = (_clock(), status, payload)
         return status, payload
 
@@ -971,6 +1243,29 @@ async def _send_watched(request: Request, coro, still_enrolled) -> tuple:
         raise
 
 
+def _browser_keyless(request: Request) -> bool:
+    """True for a browser request that carries no device key.
+
+    Origin / Sec-Fetch-Site mark a browser; a missing Authorization header
+    marks a request a page could send WITHOUT a CORS preflight (the gate has
+    no OPTIONS route, so a preflighted one never gets here). That pair is
+    the cross-site attack shape — only reachable as an identity under
+    EDGE_ALLOW_ANON, refused in every mode. A request that presents a key is
+    a client that holds one, not a page riding a tailnet user's browser.
+    """
+    if _bearer(request):
+        return False
+    site = (request.headers.get("sec-fetch-site") or "").strip().lower()
+    if site in ("cross-site", "same-site"):
+        return True
+    return request.headers.get("origin") is not None
+
+
+# Never relayed: llama-server reflects the caller's Origin in
+# Access-Control-Allow-Origin, which would let a web page READ a reply.
+_RESPONSE_STRIP_PREFIX = "access-control-"
+
+
 async def gate(request: Request):
     started = time.monotonic()
     path = request.url.path.rstrip("/") or "/"
@@ -984,6 +1279,19 @@ async def gate(request: Request):
         return JSONResponse(
             {"error": {"message": "not found", "type": "invalid_request_error"}},
             status_code=404)
+
+    if _browser_keyless(request):
+        # A web page's "simple" request (text/plain body, no Authorization
+        # header) needs no CORS preflight, so under EDGE_ALLOW_ANON any site
+        # open on any tailnet device could drive inference through us.
+        _bump("denied_total", "cross_site")
+        _log_denial("cross_site", f"denied cross_site path={path} "
+                    f"peer={_peer(request)}")
+        return JSONResponse(
+            {"error": {"message": "browser request refused: beast-gate "
+                       "serves device clients, not web pages — present a "
+                       "device key: Authorization: Bearer <key>",
+                       "type": "cross_site_refused"}}, status_code=403)
 
     device, reason = _identify(request, registry)
     if device is None:
@@ -1017,15 +1325,37 @@ async def gate(request: Request):
     # used to bloat audit rows.
     user = (request.headers.get("x-openwebui-user-id") or "")[:128] or None
 
+    def _rid(**extra) -> dict:
+        # On EVERY reply from here on, refusals included: the error a
+        # support question is about must carry the id its audit row has.
+        return {"X-OpenBeast-Request-Id": request_id, **extra}
+
+    def _too_large():
+        # Authenticated, so audited and counted like every other refusal.
+        _release()
+        _bump("denied_total", "too_large")
+        _audit(device_id, user, path, 413, None,
+               int((time.monotonic() - started) * 1000), None,
+               "too_large", request_id, uid)
+        _log(f"body over cap device={device_id} path={path} "
+             f"request_id={request_id}")
+        return JSONResponse(
+            {"error": {"message": "request body too large",
+                       "type": "invalid_request_error"}},
+            status_code=413, headers=_rid())
+
     if path == "/health":
         # Cheap liveness, no admission control — clients poll it.
         status, payload = await _upstream_health(app, client)
-        return JSONResponse(payload, status_code=status)
+        return JSONResponse(payload, status_code=status, headers=_rid())
 
     # Atomic admit: check-and-increment in one step with no await between,
     # otherwise concurrent requests sail past EDGE_MAX_INFLIGHT.
     bucket = app.state.limiter.bucket(device)
-    refusal = bucket.reserve()
+    # The model list generates nothing: rate-limited like everything else,
+    # but it must not 429 behind a device's own running generations.
+    holds = path != "/v1/models"
+    refusal = bucket.reserve(hold=holds)
     if refusal:
         _bump("denied_total", refusal)
         _audit(device_id, user, path, 429, None,
@@ -1036,14 +1366,14 @@ async def gate(request: Request):
                else f"device already has {bucket.max_inflight} generations in flight")
         return JSONResponse(
             {"error": {"message": msg, "type": "rate_limit_error"}},
-            status_code=429, headers={"Retry-After": retry})
+            status_code=429, headers=_rid(**{"Retry-After": retry}))
 
     # From here the slot is HELD: every exit path must release it. Note the
     # bare `except:`/BaseException handling below — asyncio.CancelledError is
     # a BaseException, so a client disconnect would otherwise skip the
     # release and wedge the device at 429 forever.
     # `held` grows past 1 only when the body fans out (see _generations).
-    released = {"done": False, "held": 1}
+    released = {"done": False, "held": 1 if holds else 0}
 
     def _release():
         if not released["done"]:
@@ -1052,10 +1382,7 @@ async def gate(request: Request):
 
     try:
         if int(request.headers.get("content-length") or 0) > MAX_BODY_BYTES:
-            _release()
-            return JSONResponse(
-                {"error": {"message": "request body too large",
-                           "type": "invalid_request_error"}}, status_code=413)
+            return _too_large()
         # Drain INCREMENTALLY and stop at the cap. `await request.body()`
         # buffers the whole body first, so a chunked request (no
         # Content-Length, so the check above cannot fire) would be fully
@@ -1065,27 +1392,37 @@ async def gate(request: Request):
         async for chunk in request.stream():
             buf += chunk
             if len(buf) > MAX_BODY_BYTES:
-                _release()
-                _log(f"body over cap device={device_id} path={path}")
-                return JSONResponse(
-                    {"error": {"message": "request body too large",
-                               "type": "invalid_request_error"}},
-                    status_code=413)
+                return _too_large()
         raw = bytes(buf)
-        body, model, streaming, gens = raw, None, False, 1
+        body, model, streaming, gens, defaulted = raw, None, False, 1, False
+        opted_out = (request.headers.get(GATE_DEFAULTS_HEADER, "")
+                     .strip().lower() == "off")
+        thinking = None if opted_out else THINKING_DEFAULT
+        max_tokens = 0 if opted_out else device_max_tokens(
+            device, MAX_TOKENS_DEFAULT)
         if raw and path in JSON_PATHS:
             try:
                 if len(raw) > _SANITIZE_INLINE_BYTES:
-                    # OFF the event loop. The depth scan is a Python loop per
-                    # token: a cap-sized body of "[],[],…" held the loop for
-                    # seconds, and since one device may send 120 of those a
-                    # minute it could stall every other tenant's stream and
-                    # time /gate/health out (which a watchdog reads as down).
-                    body, model, streaming, gens = await asyncio.to_thread(
-                        _sanitize_body, raw, device, path)
+                    # In a worker thread. The depth scan's per-token Python
+                    # loop releases the GIL at the switch interval, so a
+                    # cap-sized "[],[],…" body (which held the loop for
+                    # seconds inline) no longer freezes other tenants or
+                    # times /gate/health out. It is NOT full isolation:
+                    # json.loads, json.dumps and a regex match over one huge
+                    # string token are single C calls that hold the GIL, so
+                    # the loop still pauses for each (tens of ms at the cap).
+                    # Hence one big-body sanitize at a time: concurrent ones
+                    # only queue on the GIL and stack their pauses — measured
+                    # 220 ms worst case with four senders vs ~70 ms serialized
+                    # (2026-11-16 review).
+                    async with _big_sanitize_gate():
+                        (body, model, streaming, gens,
+                         defaulted) = await asyncio.to_thread(
+                            _sanitize_body, raw, device, path, thinking,
+                            max_tokens)
                 else:
-                    body, model, streaming, gens = _sanitize_body(
-                        raw, device, path)
+                    body, model, streaming, gens, defaulted = _sanitize_body(
+                        raw, device, path, thinking, max_tokens)
             except BadBody as e:
                 # Authenticated, so it is audited (an identity to attribute);
                 # nothing was forwarded, so there is no usage to meter.
@@ -1097,7 +1434,7 @@ async def gate(request: Request):
                 return JSONResponse(
                     {"error": {"message": str(e),
                                "type": "invalid_request_error"}},
-                    status_code=400)
+                    status_code=400, headers=_rid())
         if gens > bucket.max_inflight:
             # Could never be admitted, so 400 rather than a 429 to retry.
             _release()
@@ -1110,7 +1447,8 @@ async def gate(request: Request):
                     f"request fans out into {gens} generations (prompts x n); "
                     f"this device may run at most {bucket.max_inflight} at "
                     "once — split it into smaller requests"),
-                    "type": "invalid_request_error"}}, status_code=400)
+                    "type": "invalid_request_error"}}, status_code=400,
+                headers=_rid())
         refusal = bucket.reserve_more(gens - 1)
         if refusal:
             _release()
@@ -1124,11 +1462,14 @@ async def gate(request: Request):
                     "does not have them free right now"),
                     "type": "rate_limit_error"}},
                 status_code=429,
-                headers={"Retry-After": "5" if refusal == "rate_limited"
-                         else "2"})
-        released["held"] = gens
+                headers=_rid(**{"Retry-After": "5" if refusal == "rate_limited"
+                                else "2"}))
+        if holds:
+            released["held"] = gens
+        if defaulted:
+            _bump("max_tokens_defaulted", (device_id, uid))
         headers = _upstream_headers(request, device, request_id)
-        registry.touch(device_id)
+        registry.touch(device_id, uid)
 
         def _still_enrolled() -> bool:
             # The SAME enrollment, not merely a key that resolves: a device
@@ -1180,7 +1521,8 @@ async def gate(request: Request):
             _log(f"upstream connect timeout device={device_id} path={path}: {e}")
             return JSONResponse(
                 {"error": {"message": f"model server unreachable: {e}",
-                           "type": "upstream_unavailable"}}, status_code=502)
+                           "type": "upstream_unavailable"}}, status_code=502,
+                headers=_rid())
         except httpx.TimeoutException as e:
             # Distinct from unreachable: the model server IS there and simply
             # took longer than OPENBEAST_EDGE_READ_TIMEOUT to produce the
@@ -1195,9 +1537,11 @@ async def gate(request: Request):
                 {"error": {"message": (
                     "model server did not respond within the gate's timeout "
                     f"({os.environ.get('OPENBEAST_EDGE_READ_TIMEOUT', '600')}s). "
-                    "A long non-streaming completion can exceed it — raise "
-                    "OPENBEAST_EDGE_READ_TIMEOUT, or stream the request."),
-                    "type": "upstream_timeout"}}, status_code=504)
+                    "A long non-streaming completion can exceed it — stream "
+                    "the request, or ask the rig's operator to raise "
+                    "EDGE_READ_TIMEOUT in openbeast.conf."),
+                    "type": "upstream_timeout"}}, status_code=504,
+                headers=_rid())
         except httpx.HTTPError as e:
             _release()
             _audit(device_id, user, path, 502, None,
@@ -1206,14 +1550,16 @@ async def gate(request: Request):
             _log(f"upstream error device={device_id} path={path}: {e}")
             return JSONResponse(
                 {"error": {"message": f"model server unreachable: {e}",
-                           "type": "upstream_unavailable"}}, status_code=502)
+                           "type": "upstream_unavailable"}}, status_code=502,
+                headers=_rid())
     except BaseException:
         # Includes CancelledError (client vanished mid-read).
         _release()
         raise
 
     hdrs = {k: v for k, v in resp.headers.items()
-            if k.lower() not in _HOP_BY_HOP}
+            if k.lower() not in _HOP_BY_HOP
+            and not k.lower().startswith(_RESPONSE_STRIP_PREFIX)}
     hdrs["X-OpenBeast-Request-Id"] = request_id
     state = {"tail": b"", "whole": b"", "oversize": False, "audited": False}
 
@@ -1335,7 +1681,10 @@ async def gate(request: Request):
 
 
 def _introspection_scope(request: Request) -> str | None:
-    """Who is asking a /gate/* route: "*" (the rig), a device id, or None.
+    """Who is asking a /gate/* route: "*" (the rig), a device_uid, or None.
+
+    A device is scoped by its ENROLLMENT (device_uid), not its reusable id:
+    a re-enrolled `laptop` must not read its predecessor's series.
 
     These expose the device roster size and per-device usage counters. The
     gate is published at the tailnet ROOT (`tailscale serve :8443 -> :8090`
@@ -1355,7 +1704,7 @@ def _introspection_scope(request: Request) -> str | None:
     reg: Registry = request.app.state.registry
     key = _bearer(request)
     dev = reg.lookup(key) if key else None
-    return None if dev is None else str(dev.get("id", "anon"))
+    return None if dev is None else device_uid(dev)
 
 
 async def metrics(request: Request):
@@ -1366,17 +1715,22 @@ async def metrics(request: Request):
             {"error": {"message": "not found", "type": "invalid_request_error"}},
             status_code=404)
 
-    def mine(dev) -> bool:
-        return scope == "*" or dev == scope
+    def series(metric: str) -> list:
+        """(label key, value) rows visible to this scope. A tenant sees only
+        its own enrollment's rows; the rig sees every row, summed by device
+        id so re-enrollments do not emit duplicate label sets."""
+        out: dict = {}
+        for (dev, uid, *rest), n in _METRICS[metric].items():
+            if scope == "*" or uid == scope:
+                k = (dev, *rest)
+                out[k] = out.get(k, 0) + n
+        return sorted(out.items(), key=lambda kv: str(kv[0]))
 
     lines = [
         "# HELP openbeast_edge_requests_total Requests through beast-gate.",
         "# TYPE openbeast_edge_requests_total counter",
     ]
-    for (dev, path, outcome), n in sorted(
-            _METRICS["requests_total"].items(), key=lambda kv: str(kv[0])):
-        if not mine(dev):
-            continue
+    for (dev, path, outcome), n in series("requests_total"):
         lines.append(f'openbeast_edge_requests_total{{device="{_esc(dev)}",'
                      f'path="{_esc(path)}",outcome="{_esc(outcome)}"}} {n}')
     if scope == "*":
@@ -1394,11 +1748,12 @@ async def metrics(request: Request):
             ("completion_tokens", "openbeast_edge_completion_tokens_total",
              "Completion tokens generated per device."),
             ("latency_ms", "openbeast_edge_latency_ms_total",
-             "Cumulative upstream latency per device.")):
+             "Cumulative upstream latency per device."),
+            ("max_tokens_defaulted", "openbeast_edge_max_tokens_defaulted_total",
+             "Requests forwarded with the gate's default max_tokens.")):
         lines += [f"# HELP {name} {helptext}", f"# TYPE {name} counter"]
-        for dev, n in sorted(_METRICS[metric].items()):
-            if mine(dev):
-                lines.append(f'{name}{{device="{_esc(dev)}"}} {n}')
+        for (dev,), n in series(metric):
+            lines.append(f'{name}{{device="{_esc(dev)}"}} {n}')
     return StreamingResponse(iter(["\n".join(lines) + "\n"]),
                              media_type="text/plain; version=0.0.4")
 
@@ -1417,6 +1772,8 @@ async def health(request: Request):
         "auth": _auth_mode(reg),
         "devices": len(reg._by_hash),
         "upstream": UPSTREAM,
+        "thinking_default": THINKING_DEFAULT,
+        "max_tokens_default": MAX_TOKENS_DEFAULT,
     })
 
 
@@ -1487,10 +1844,16 @@ def main() -> None:
             "anon": "ANON (OPENBEAST_EDGE_ALLOW_ANON=true)",
             "closed": "CLOSED — enroll a device: ./scripts/clients.sh enroll <id>",
             }[_auth_mode(reg)]
-    print(f"beast-gate on http://{BIND}:{PORT} -> {UPSTREAM}  auth={mode}",
-          flush=True)
+    print(f"beast-gate on http://{BIND}:{PORT} -> {UPSTREAM}  auth={mode}  "
+          f"default max_tokens={MAX_TOKENS_DEFAULT or 'off'}", flush=True)
     # Loopback by default like every other service; publish via tailscale.
-    config = uvicorn.Config(app, host=BIND, port=PORT, log_level="warning")
+    # timeout_graceful_shutdown: without it uvicorn waits FOREVER on SIGTERM
+    # for every open request, and a generation through the gate runs for up
+    # to OPENBEAST_EDGE_READ_TIMEOUT (600 s) per chunk, so one long stream
+    # held a stop open until systemd's SIGKILL (beast-chat's fix, the same
+    # hazard). The client sees its stream end; the stack is stopping anyway.
+    config = uvicorn.Config(app, host=BIND, port=PORT, log_level="warning",
+                            timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S)
     uvicorn.Server(config).run(sockets=[sock])
 
 

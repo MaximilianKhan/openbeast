@@ -4,6 +4,8 @@ Two diagrams, two different jobs. **§1 is the trust model** — which machine
 does what, and what is allowed to cross between them. **§2 is the service
 map** — what actually runs inside the rig, and where identity is enforced.
 Read §1 to understand the product; read §2 to understand the implementation.
+**§3 is the deployment** as it runs today: the four machines, which process
+runs where, and the paths and ports that connect them.
 
 ## 1. The trust model — only inference crosses the wire
 
@@ -24,7 +26,7 @@ flowchart LR
 
         subgraph CLIENT["💻 CLIENT — any Mac / Linux laptop &nbsp;(optional, purely additive)"]
             cagent["⌨️ <b>OpenCode</b> · <b>openbeast-client</b><br/>the agent loop runs HERE"]
-            ctools["⚙️ <b>18 tools</b> — bash · files · grep · spawn<br/>they act on THIS laptop's disk"]
+            ctools["⚙️ <b>19 tools</b> — bash · files · grep · spawn<br/>they act on THIS laptop's disk"]
             cagent --> ctools
         end
 
@@ -90,10 +92,21 @@ flowchart LR
 - **The brain can move off the rig.** `INFERENCE_BACKEND=vllm|tensorfold`
   plus `INFERENCE_URL` point the whole command center (WebUI, router, gate,
   spawned agents, `/api/slot`) at an OpenAI-compatible server on other boxes —
-  planned: two DGX Sparks, tensor-parallel. The rig then launches, supervises
-  and kills no model server (`INFERENCE_MANAGED=false`); everything else in
-  this picture is unchanged. Plan, security and runbook:
+  live since v1.9.0 as spark-hydra: two DGX Sparks, tensor-parallel, with
+  their own command center on spark-1. Since 2026-11-18 the pair serves DeepSeek-V4.1-Flash (Mia EXL3) by default (four streams, 524,288 tokens per conversation), by Max's decision after testing (the v5 board's #1: 61/71, and 65/71 with its best agent setup, `AGENT_PROFILE=deepseek-best`); GLM-5.3-Flash (1,048,576 tokens) is staged as the alternative, one command away through beast-spark (§3). A dedicated user unit on spark-1 manages both ranks. The command center then launches,
+  supervises and kills no model server (`INFERENCE_MANAGED=false`);
+  everything else in this picture is unchanged. Runbook:
+  [`SPARK_HYDRA.md`](SPARK_HYDRA.md); original design notes:
   [`DGX_SPARK_PLAN.md`](DGX_SPARK_PLAN.md).
+- **Models bigger than the card stream their experts from RAM.** On the one
+  RTX 5090 a MoE model's routed experts can live in host RAM while a VRAM
+  cache (llama.cpp v1.0.0 `--moe-cache-mib`) holds the hot ones: Flash-Next
+  in the daily 75% memory scope, and opt-in **big mode** (GLM-5.3-Flash),
+  whose serve script declares its own 90% scope, on the rig only. While big
+  mode runs, hydra's rig deployment reads MISMATCH and `routes.beast` falls
+  to the next node, or 503s on a rig-only install. A fourth engine (Project
+  Maya) is admitted only after it measures 1.5x llama.cpp on the rig.
+  Runbook: [`WEIGHT_STREAMING.md`](WEIGHT_STREAMING.md).
 
 ## 2. Inside the command center — two planes
 
@@ -117,7 +130,7 @@ flowchart TB
 
     subgraph TOOLPLANE["🔑 TOOL PLANE — runs on the rig, acts on the rig · NEVER published"]
         its["<b>Identity tool server</b> · :3001<br/><code>agents/openapi_tools.py</code><br/>RBAC profile keys · per-user file shards · audit<br/><i>authenticates the HUMAN</i>"]
-        mcp["<b>MCP tool surface — 18 tools</b><br/><code>agents/mcp_server.py</code> · stdio, no port<br/>adds skill · start/start_skill/check/tail/list/stop_agent<br/>publish_artifact · list_artifacts · language_reference"]
+        mcp["<b>MCP tool surface — 19 tools</b><br/><code>agents/mcp_server.py</code> · stdio, no port<br/>adds skill · start/start_skill/check/tail/list/stop_agent<br/>publish_artifact · list_artifacts · language_reference · platform_docs"]
         core["<b>Tool primitives</b> · <code>agents/tools.py</code><br/>bash · read/write/edit/list/grep<br/>fetch (SSRF-guarded) · web_search<br/><i>+ push-diagnostics on write/edit (opt-in)</i>"]
         its --> mcp --> core
     end
@@ -280,8 +293,9 @@ flowchart TB
   [`BEAST_CAMPAIGN_PLAN.md`](BEAST_CAMPAIGN_PLAN.md).
 - **Nothing in the tool plane is ever published.** With RBAC Phase 2 keys
   (`scripts/setup-mcpo-keys.sh`), every `:3001` tool call must present a
-  profile key — **admin** reaches all 18 tools, **guest** reaches `web_search`
-  + `fetch` only (anything else 404s). `:3001`, `:8088`, `:8888` and `:8080`
+  profile key — **admin** reaches all 20 (the 19 MCP tools plus the
+  WebUI-only `weather`), **guest** reaches `web_search`, `fetch` and
+  `weather` only (anything else 404s). `:3001`, `:8088`, `:8888` and `:8080`
   are loopback-only; remote devices arrive exclusively through Tailscale's
   authenticated HTTPS proxy (see [Remote access](REMOTE_ACCESS_PLAN.md)).
 - **Inference.** llama.cpp serves an OpenAI-compatible API with MTP
@@ -291,6 +305,86 @@ flowchart TB
   pins `-np 1`, as MTP scripts do; a serve script that passes no `-np` gets
   `serve.sh`'s six unified-KV slots), and bootstrap refuses GPUs under the
   24 GB floor.
+- **Cold storage for everything else.** beast-ark (`scripts/ark.sh`,
+  `agents/ark/`) pins 112 open-source packages for offline work in
+  `agents/ark/catalog.toml`: Kubernetes and its images, container runtimes,
+  language toolchains, databases, observability, a git forge, a CA, DevDocs.
+  Each one has its git commit, a build per platform (rig, Spark, Mac) and a
+  sha256 or image digest that `lock` derived from upstream. `fetch` fills
+  a drive and checks every file. With no network, `verify` re-checks the
+  drive, `restore` unpacks or loads from it, and `serve` publishes it to the
+  tailnet as a read-only OCI registry with pip, npm and go mirrors. It is
+  separate from `bundle.sh`, which carries OpenBeast's own stack.
+  [`BEAST_ARK.md`](BEAST_ARK.md).
+
+## 3. The deployment — four machines (checked 2026-11-18)
+
+```
+                        tailnet (WireGuard) + home LAN
+   ┌──────────────┐                                        ┌──────────────────┐
+   │ Mac (client) │── :8443 beast-gate, :8444 slot ───────▶│ spark-1 (head)   │
+   │ opencode,    │── ssh (LAN / tailnet) ────────────────▶│ rank 0, :8000    │
+   │ openbeast-   │                                        │ command center   │
+   │ client, gh   │── :8443 ──▶ beast (5090 rig)           │ beast-gate :8090 │
+   └──────────────┘            llama.cpp, own stack        └────────┬─────────┘
+                                                     ConnectX-7 fabric│ 2 rails, MTU 9000
+                                                     10.100.216.x /   │ 10.100.217.x
+                                                                       ▼
+                                                           ┌──────────────────┐
+                                                           │ spark-2 (worker) │
+                                                           │ rank 1 only      │
+                                                           └──────────────────┘
+```
+
+| Machine | Runs | Does not run |
+|---|---|---|
+| **spark-1** (`spark-3dc6`, tailnet 100.66.191.118) | Rank 0 and the OpenAI API on `127.0.0.1:8000` (TensorFold, user unit `deepseek-v41-inference` for DeepSeek, the default since 2026-11-18, or `spark-hydra-inference` for GLM, the alternative). The command center from `~/openbeast` (user unit `openbeast` → transient scope `openbeast-stack`): Open WebUI `:3000`, tool server `:3001`, dashboard `:3002`, beast-chat `:3003` (and `.run/chat.sock`), beast-artifact `:3004`, SearXNG `:8888`, beast-gate `:8090`, the island watcher. `tailscale serve` publishes `:443` → WebUI, `:8443` → gate, `:8444` → `/api/slot`, `:8445` → chat socket, `:8446` → artifact, `:8889` → SearXNG, all tailnet-only. opencode v2.3.2 against `:8000` | llama.cpp (`INFERENCE_MANAGED=false`: the stack never starts or stops the model) |
+| **spark-2** (`spark-9f26`, tailnet 100.110.143.15) | Rank 1 (container `dsv41-1017-exl3-tf` for DeepSeek, `glm53-flash-tf` for GLM, started over ssh by spark-1's unit). User unit `opencode-model-link`: an ssh tunnel that makes spark-1's `:8000` appear on spark-2's `127.0.0.1:8000`. opencode v2.3.2. Scratch clones for GNU test suites, with the test venv `~/obvenv` | Any OpenBeast service. Its `~/openbeast` is a reference copy |
+| **Mac** | Client mode (`~/.openbeast-client`, `openbeast-client`), opencode with the `openbeast-tools` MCP server acting on the Mac's files, `gh` and the GitHub credentials, the eval venv `~/.local/opt/openbeast-eval-venv` | Inference |
+| **beast** (RTX 5090) | Its own full stack with llama.cpp on `:8080`, its own gate | Anything for the Sparks. Offline on the tailnet on 2026-11-18 |
+
+**Where things live on spark-1** (not in this repository; host-local):
+
+| Path | What |
+|---|---|
+| `~/openbeast` | The live command center checkout, `openbeast.conf`, `.run/` (state, pidfiles, audits, `clients.json`, `island.json`, `stack.log`) |
+| `~/openbeast-recipes/deepseek-prep/` | The DeepSeek runtime (Mia's recipe at `c7f2b85` in `runtime/`), pack and activation helpers, rollback to GLM, conformance records |
+| `~/openbeast-recipes/glm53/` | The GLM recipe |
+| `~/openbeast-models/` | HF caches: `deepseek-hf/` (packs as snapshots, Engram, rank-1 caches), `glm53-flash-ablit-exl3/` |
+| `~/Documents/` | Model folders as delivered (packs, GLM, notes), mirrored to spark-2's `~/Documents` as a backup; `opencode/` (the kept opencode release) |
+| `~/.config/openbeast/` | 0600 secrets: `tensorfold-api-key`, `gate-keys`, `hf-token`, `webui-max-password` |
+| `~/.config/systemd/user/` | The user units |
+| `~/.local/bin/` | `beast-spark`, `tensorfold` (native 1.2.10 on the Sparks, not serving), opencode link |
+
+None of this is recreated by a clone. The scripts that exist only here
+(`activate-stock.sh`, `rollback/restore-glm.sh`, `verify-chat.py`, the
+DeepSeek unit file, the recipe runtimes and their `tools/bench.py`) are listed
+in [docs/README.md](README.md#a-local-model-on-the-sparks-with-no-internet-the-reading-order);
+their recovery path is [SPARK_BACKUP_RESTORE.md](SPARK_BACKUP_RESTORE.md).
+
+**How a request flows.** From the Mac: opencode → `https://spark-1…:8443/v1`
+with a device key → Tailscale serve → beast-gate `:8090` (key check, caps,
+audit, thinking default) → TensorFold `:8000` → both ranks over the fabric.
+From opencode on a Spark: directly to `:8000` with the TensorFold key (no
+gate). From Open WebUI: `:3000` → `:8000`, with tools through `:3001`.
+
+**The gate's in-flight cap is per device, and by default it is the whole
+server.** `EDGE_MAX_INFLIGHT` (concurrent generations per device key) defaults
+to `INFERENCE_SLOTS` when that is set, else 2 (`default_max_inflight()` in
+`agents/edge.py`). spark-1's conf sets `INFERENCE_SLOTS=4` and leaves the cap
+unset, so one device can hold all four of the pair's streams. A second
+device has its own cap, so the gate admits it, and its requests queue at
+TensorFold behind the first device's. That is deliberate: a Mac
+running four agents or an eval at `--jobs 4` should not get 429s with streams
+idle (review 2026-11-16). When several people share the pair, set
+`EDGE_MAX_INFLIGHT` below `INFERENCE_SLOTS` in `openbeast.conf`. Requests that
+bypass the gate (opencode on a Spark, Open WebUI) are not counted at all.
+
+**What needs the internet.** Nothing on the serving path. Web search,
+`fetch`, installs, image pulls and GitHub do. The runbook for an outage is
+[BEAST_ISLAND.md "On the Spark pair"](BEAST_ISLAND.md#on-the-spark-pair);
+developing while GitHub is unreachable is
+[SELF_DEVELOPMENT.md §11](SELF_DEVELOPMENT.md#11-developing-with-github-unreachable).
 
 ## Project structure
 
@@ -309,6 +403,7 @@ scripts/                     # Server, ops, and feature CLIs
   doctor.sh                  # Config/security/supply-chain/health diagnosis (./start.sh doctor)
   update.sh                  # Update llama.cpp, images, Python deps (relocks the lockfile)
   fetch-weight.sh            # Download one registry weight, staged + sha256-verified
+  weights-download.sh        # Any model from a Hugging Face URL -> ~/Documents/weights/ORG/REPO, verified (docs/WEIGHTS_DOWNLOAD.md)
   verify-weights.sh          # Verify downloaded weights against weights.registry
   weights.registry           # sha256 + size pins for every shipped GGUF
   setup-tailscale.sh         # Publish to the tailnet (--publish-{searxng,slot,chat,artifact,ntfy})
@@ -320,6 +415,8 @@ scripts/                     # Server, ops, and feature CLIs
   publish-verdict.sh         # A campaign verdict or leaderboard → one stable artifact URL
   job.sh                     # beast-chat: run/list/show/stop a tracked long job
   lang-library.sh            # beast-lang: acquire/check/list/verify/pack/where
+  docs.sh                    # beast-docs: sources/sync/status/search/read/live/pack/unpack
+  ark.sh                     # beast-ark: list/plan/lint/lock/update/fetch/verify/restore/serve (docs/BEAST_ARK.md)
   lang-introspect.sh         # beast-lang: probe the installed toolchains
   lang-synthesize.sh         # beast-lang: model-drafted claims → verifier → staging → promote
   bundle.sh                  # Air-gap: build/sign/verify/install the offline bundle
@@ -335,20 +432,39 @@ scripts/                     # Server, ops, and feature CLIs
   lib/                       # conf.sh (config), hardware.sh, weights.sh, extensions.sh,
                              #   proc.sh (identity-checked signalling), portown.sh (does OUR pid hold the port),
                              #   bundle_manifest.py, pydeps_lock.py, skill_import.py,
-                             #   backend.sh (per-backend readiness: llama / vLLM / TensorFold)
+                             #   backend.sh (per-backend readiness: llama / vLLM / TensorFold),
+                             #   engine.sh (the engine plane; ob_engine_gate_ok), memscope.sh
+                             #   (per-profile memory scope: docs/WEIGHT_STREAMING.md),
+                             #   pyversions.sh (every pin's installed version in one python3:
+                             #   doctor.sh, update.sh --python)
+  engines/                   # one adapter per engine: llama / vllm / tensorfold / maya (opt-in, gated);
+                             #   maya/ = its requirements.lock, profiles/, prepare.sh
+  engine.sh, engine-gate.sh  # swap / pin / roll back the engine (docs/ENGINES.md); the 1.5x tok/s gate
+  beast-recipe.sh            # beast-recipe: any model + a Spark count -> verdict, plan, recipe, applied end to end
+                             #   (init/plan/engine/stage/up/check/adopt/rollback/list/show; dry run unless --run;
+                             #   docs/BEAST_RECIPE.md); its python is backends/pylib/recipe.py, the engine/family
+                             #   matrix backends/data/recipe-engines.json
+  tokps.py                   # decode / prefill tok/s of an endpoint, acceptance checks, gate verdicts
   backends/                  # DGX Spark inference (docs/DGX_SPARK_PLAN.md): {vllm,tensorfold}/spark-node.sh
                              #   rank launchers (--profile), spark.env.example (host settings),
                              #   models/<name>.env per-model profiles + TEMPLATE.env, model-inspect.sh,
                              #   model-fetch.sh (pinned + verified + locked), conformance.sh and
-                             #   use-model.sh (rig), pylib/ (their python), data/ (vendored engine lists)
+                             #   use-model.sh (rig), pylib/ (their python), data/ (vendored engine lists);
+                             #   spark-root-setup.sh, spark-guard.sh, spark-fabric-mtu.sh (per-Spark root setup,
+                             #   firewall, fabric MTU), spark-cluster.sh (ranks from the head),
+                             #   spark-deepseek-pack.sh + spark-deepseek-prepare-local.sh (DeepSeek pack swaps),
+                             #   spark-beast.sh (beast-spark: the one model switch), spark-model-intake.sh
+                             #   (is a dropped-in model servable?), spark-backup.sh + spark-restore.sh
+                             #   (docs/SPARK_BACKUP_RESTORE.md)
 
 agents/                      # Agent framework + servers
-  mcp_server.py              # MCP tool surface (18 tools; stdio for OpenCode)
+  mcp_server.py              # MCP tool surface (19 tools; stdio for OpenCode)
   openapi_tools.py           # Identity tool server on :3001 (RBAC keys, per-user shards, audit)
   tools.py                   # Tool primitives + beast-assist push-diagnostics (+ escalation, opt-in)
   runner.py                  # Autonomous agent loop (10-tool registry; steering inbox as a session)
   router.py                  # Agent-spawn router on :8088 (opt-in)
   edge.py                    # beast-gate on :8090 — identity-aware inference edge (opt-in)
+  island.py                  # beast-island — runtime offline mode: probe, watcher, .run/island.json
   hydra.py / hydra_core.py   # beast-hydra on :8095 — routes inference across engines (opt-in)
   instinct/                  # beast-instinct on :8094 — calibrated routing decisions (opt-in)
   chat_server.py             # beast-chat on :3003 — sessions API + the phone console (opt-in)
@@ -356,9 +472,12 @@ agents/                      # Agent framework + servers
   artifact.py                # beast-artifact store (versions, ownership, visibility)
   artifact_server.py         # beast-artifact on :3004 — gallery, viewer, sandboxed raw pages (opt-in)
   hostpolicy.py              # The Host-header allowlist both published servers share
+  loginsock.py               # The 0600 login socket + "did this request arrive on it" (chat, artifact)
   mediapolicy.py             # The inline-media rule beast-gate and the router share (no URL fetches)
   chat_ui/ · artifact_ui/    # The console and the gallery/viewer (self-contained HTML)
   lang/                      # beast-lang: drivers, introspect, verify, packs, escalate, reference, synthesize
+  docs/                      # beast-docs: sources.toml, DocC/HTML/markdown adapters, sync, search (docs/BEAST_DOCS.md)
+  ark/                       # beast-ark: catalog.toml (112 pinned packages), fetch/verify/restore, OCI client + read-only registry, pure-python ed25519 (docs/BEAST_ARK.md)
   requirements.txt / .lock   # Pinned deps and the hash-pinned closure CI installs
   logs/                      # Agent run logs (JSONL) [gitignored]
 
@@ -371,6 +490,7 @@ searxng/settings.yml         # Custom config: enables JSON format + disables lim
 tests/                       # pytest + standalone shell suites (tests/run_tests.sh runs all)
   test_scripts.sh            # Script behaviour under set -e/pipefail, incl. end-to-end healthcheck
   test_offline_fixes.sh      # bundle/pydeps/fetch-weight with stubbed hf/pip/docker/git
+  test_island.py             # beast-island: state machine, real watcher, hostile state files, conf
   test_skill_import.sh       # the remote-skill gate against a stub scanner and a stub git
   test_job_sh.sh · test_artifact_cli.sh · test_clients.sh · test_ssd_wear.sh
   test_chat_*.py · test_sessions.py · test_steering.py · test_artifact_*.py
@@ -379,19 +499,23 @@ tests/                       # pytest + standalone shell suites (tests/run_tests
   test_lang_*.py             # beast-lang: drivers, verifier, escalation, hardening, tool, synthesis
   test_edge.py · test_identity_*.py · test_tools.py · test_diagnostics.py · test_cache.py …
 
-evals/                       # Eval harness — 137 tasks / 291 units + multi-model benchmark
+evals/                       # Eval harness — v5 suite (suites/v5.json) over a 151-task / 320-unit library
   README.md                  # Distribution table, schema, scoring (start here)
-  run_eval.py                # Single-model runner (--jobs, --suite, --packs; greedy via OPENBEAST_EVAL_GREEDY)
+  run_eval.py                # Single-model runner (--jobs, --suite, --arms; greedy via OPENBEAST_EVAL_GREEDY)
+  profile.py                 # A v5 profile of one model inside a wall-clock budget (L0 -> plan -> L1 + L2)
+  campaign.py                # Chained harness arms from evals/campaigns/*.json (docs/MODEL_CAMPAIGN.md)
+  vlib.py                    # Validator library injected into every validator          [era-hashed]
   benchmark_all.py           # Multi-model sweep orchestration (server start/stop + recovery)
   scoring.py                 # v2 capability metric + per-category & per-language breakdown
   cache.py                   # Durable result cache, keyed on the era hash of the harness code
   suites/ · tasks/ · results/ · leaderboard.json
 
-docs/                        # 44 top-level documents — see README.md § Documentation
-skills/                      # 24 skills: 15 in-house + 9 imported (skills/README.md)
+docs/                        # the documents — the map is docs/README.md; commands: docs/COMMANDS.md
+recipes/                     # beast-recipe's recipes: <name>/recipe.env (+ SHA256SUMS, the rendered unit), seven worked examples
+skills/                      # 27 skills: 18 in-house + 9 imported (skills/README.md)
 system-prompt.md             # Soul file (persona, applied to all frontends)    [era-hashed]
-system-prompt-tools.md       # Tool guidance (Open WebUI only)                    [era-hashed]
-opencode.json                # OpenCode project config (MCP wiring + model list) [era-hashed]
+system-prompt-tools.md       # Tool guidance (Open WebUI only; not era-hashed)
+opencode.json                # OpenCode project config (MCP wiring + model list)
 docker-compose.yml           # Open WebUI + SearXNG containers (digest-pinned)
 openbeast.conf.example       # Config template — copy to openbeast.conf to customize
 weights/                     # GGUF model files (relocatable — see MODELS.md) [gitignored]

@@ -1,0 +1,307 @@
+# beast-docs sources — one [[source]] per documentation site (docs/BEAST_DOCS.md).
+#
+# Adding a site is a data change, not a code change: pick the adapter that
+# matches how the site serves its pages, name the hosts it may touch, and
+# fence the crawl with allow_prefixes. Nothing outside `hosts` is ever
+# fetched, redirects included, and robots.txt is obeyed for every host.
+#
+# Keys
+#   name            short id; also the directory under the store and the
+#                   prefix of every doc id ("swiftui:/documentation/...")
+#   title           human name
+#   adapter         apple-docc-json  developer.apple.com DocC JSON
+#                                    (/tutorials/data/<path>.json) -> markdown
+#                   html             static HTML -> markdown (main content only)
+#                   markdown         the site serves markdown itself at
+#                                    <page><markdown_suffix> (Android: .md.txt)
+#   markdown_suffix markdown only; default ".md.txt"
+#   hosts           every host the crawl may contact, as "host" (the
+#                   scheme's default port, 443/80, only) or "host:port"
+#   roots           where a crawl starts (human-facing URLs)
+#   allow_prefixes  URL path prefixes inside the crawl scope
+#   deny_prefixes   path prefixes excluded even when allowed
+#                   (both are matched against the NORMALIZED path: dot
+#                   segments removed, %2e decoded — agents/docs/urls.py)
+#   discovery       links     (default) follow in-scope links from the roots
+#                   llms-txt  read `index_url` (an llms.txt) and take its
+#                             in-scope links first, then follow links
+#                   sitemap   read `index_url` (sitemap or sitemap index) and
+#                             take in-scope <loc>s — Android's ten child
+#                             sitemaps are 1-37 MB each: full mirrors only
+#   index_url       the llms.txt / sitemap that discovery reads
+#   content_selectors  html only: where the main content lives, first match
+#                   wins ("tag", ".class", "#id", "tag.class"); falls back
+#                   to main, article, body
+#   strip_selectors html only: removed from the content before rendering
+#   max_pages       default page budget for one `sync` (--max-pages overrides)
+#   max_depth       link hops from a root
+#   delay           seconds between requests to a host (robots Crawl-delay
+#                   wins when larger)
+#   refresh_days    a page checked within this window is not re-requested by
+#                   the next sync; `status` calls a mirror STALE past it
+#   license         who owns the text and what that allows — shown by `status`
+#   robots_note     what robots.txt said when this entry was written
+#   requires_ack    true = the site's terms restrict copying; the first sync
+#                   needs --accept-terms (recorded in the manifest)
+#
+# Researched 2026-11-15 (URLs, dates and licensing in docs/BEAST_DOCS.md §2).
+
+# ── Apple — DocC JSON ─────────────────────────────────────────────────────
+# developer.apple.com/documentation/* pages are a JS app; the content behind
+# them is served as JSON at /tutorials/data/documentation/<path>.json with
+# ETag + Last-Modified (measured 2026-11-15). robots.txt allows both
+# /tutorials/data/ and /documentation/ (it disallows /reference/ and
+# /documentation/dataformats/) and sets no Crawl-delay; we crawl at 1 req/s
+# and check robots against the page URL as well as the JSON URL.
+#
+# LICENSING: Apple's site terms forbid copying "in any way (including
+# 'mirroring')" and automated "robot"/"spider" access except as expressly
+# permitted (archived terms, 2020-06-16; the live page was not re-read). These
+# entries are therefore `requires_ack = true`: the first sync refuses until the
+# operator passes --accept-terms, and the acceptance is recorded in the
+# mirror's manifest. Never pack/share an Apple mirror beyond your own boxes.
+
+[[source]]
+name = "swiftui"
+title = "Apple SwiftUI"
+adapter = "apple-docc-json"
+hosts = ["developer.apple.com"]
+roots = ["https://developer.apple.com/documentation/swiftui"]
+allow_prefixes = ["/documentation/swiftui"]
+max_pages = 3000
+max_depth = 8
+delay = 1.0
+refresh_days = 30
+license = "Copyright Apple Inc. All rights reserved (legalNotices in every page; terms https://www.apple.com/legal/internet-services/terms/site.html). Local personal cache only: do not redistribute a mirror."
+robots_note = "developer.apple.com/robots.txt on 2026-11-15: * disallows /reference/, /documentation/dataformats/, /search/, /cgi-bin/ ...; /tutorials/data/ and /documentation/ allowed; no Crawl-delay"
+requires_ack = true
+
+[[source]]
+name = "uikit"
+title = "Apple UIKit"
+adapter = "apple-docc-json"
+hosts = ["developer.apple.com"]
+roots = ["https://developer.apple.com/documentation/uikit"]
+allow_prefixes = ["/documentation/uikit"]
+max_pages = 3000
+max_depth = 8
+delay = 1.0
+refresh_days = 30
+license = "Copyright Apple Inc. All rights reserved. Local personal cache only: do not redistribute a mirror."
+robots_note = "developer.apple.com/robots.txt on 2026-11-15: * disallows /reference/, /documentation/dataformats/, /search/, /cgi-bin/ ...; /tutorials/data/ and /documentation/ allowed; no Crawl-delay"
+requires_ack = true
+
+[[source]]
+name = "swift"
+title = "Swift standard library (Apple)"
+adapter = "apple-docc-json"
+hosts = ["developer.apple.com"]
+roots = ["https://developer.apple.com/documentation/swift"]
+allow_prefixes = ["/documentation/swift/", "/documentation/swift"]
+deny_prefixes = ["/documentation/swiftui", "/documentation/swiftdata", "/documentation/swift_playgrounds"]
+max_pages = 3000
+max_depth = 8
+delay = 1.0
+refresh_days = 30
+license = "Copyright Apple Inc. All rights reserved. Local personal cache only: do not redistribute a mirror."
+robots_note = "developer.apple.com/robots.txt on 2026-11-15: * disallows /reference/, /documentation/dataformats/, /search/, /cgi-bin/ ...; /tutorials/data/ and /documentation/ allowed; no Crawl-delay"
+requires_ack = true
+
+[[source]]
+name = "xcode"
+title = "Apple Xcode"
+adapter = "apple-docc-json"
+hosts = ["developer.apple.com"]
+roots = ["https://developer.apple.com/documentation/xcode"]
+allow_prefixes = ["/documentation/xcode"]
+max_pages = 2000
+max_depth = 8
+delay = 1.0
+refresh_days = 30
+license = "Copyright Apple Inc. All rights reserved. Local personal cache only: do not redistribute a mirror."
+robots_note = "developer.apple.com/robots.txt on 2026-11-15: * disallows /reference/, /documentation/dataformats/, /search/, /cgi-bin/ ...; /tutorials/data/ and /documentation/ allowed; no Crawl-delay"
+requires_ack = true
+
+[[source]]
+name = "app-review"
+title = "App Store Review Guidelines"
+adapter = "html"
+hosts = ["developer.apple.com"]
+roots = ["https://developer.apple.com/app-store/review/guidelines/"]
+allow_prefixes = ["/app-store/review/guidelines/"]
+max_pages = 1
+max_depth = 0
+delay = 1.0
+refresh_days = 14
+content_selectors = ["section.section-guidelines", "main"]
+license = "Copyright Apple Inc. All rights reserved. Local personal cache only: do not redistribute a mirror."
+robots_note = "developer.apple.com/robots.txt on 2026-11-15: * disallows /reference/, /documentation/dataformats/, /search/, /cgi-bin/ ...; /tutorials/data/ and /documentation/ allowed; no Crawl-delay"
+requires_ack = true
+
+# ── Android — the site's own markdown ─────────────────────────────────────
+# Every DevSite page is also served as markdown at <page>.md.txt
+# (text/markdown, measured 2026-11-15), and sections publish an llms.txt
+# index of those files (developer.android.com/develop/ui/llms.txt lists 386
+# Compose pages). That is cleaner than scraping HTML, so the Android entries
+# use adapter = "markdown". The .md.txt files send no ETag/Last-Modified:
+# incremental sync falls back to the content hash (unchanged = no rewrite).
+# robots.txt (2026-11-15) disallows /*?*authuser=, /assets/, /images/,
+# /sdk/older_releases, /shareables/ and a few more; no Crawl-delay.
+# License (https://developer.android.com/license): documentation including
+# code is Apache 2.0 unless noted; other site content CC BY 2.5; OpenJDK-
+# derived java.*/javax.* reference text is GPLv2 + Classpath Exception.
+
+[[source]]
+name = "android-compose"
+title = "Android: Jetpack Compose guides"
+adapter = "markdown"
+hosts = ["developer.android.com"]
+roots = ["https://developer.android.com/develop/ui/compose/documentation"]
+discovery = "llms-txt"
+index_url = "https://developer.android.com/develop/ui/llms.txt"
+allow_prefixes = ["/develop/ui/compose"]
+max_pages = 1500
+max_depth = 6
+delay = 1.0
+refresh_days = 30
+license = "Apache 2.0 for documentation incl. code unless noted; other content CC BY 2.5 (https://developer.android.com/license). Attribute Google / AOSP."
+robots_note = "developer.android.com/robots.txt on 2026-11-15: * disallows /*?*authuser=, /assets/, /images/, /sdk/older_releases, /shareables/ ...; no Crawl-delay"
+
+[[source]]
+name = "android-compose-ref"
+title = "Android: Compose API reference (Kotlin)"
+adapter = "markdown"
+hosts = ["developer.android.com"]
+roots = ["https://developer.android.com/reference/kotlin/androidx/compose/packages"]
+allow_prefixes = ["/reference/kotlin/androidx/compose"]
+max_pages = 5000
+max_depth = 6
+delay = 1.0
+refresh_days = 30
+license = "Apache 2.0 for documentation incl. code unless noted; other content CC BY 2.5 (https://developer.android.com/license). Attribute Google / AOSP."
+robots_note = "developer.android.com/robots.txt on 2026-11-15 (see android-compose)"
+
+[[source]]
+name = "android-kotlin"
+title = "Android: Kotlin guides"
+adapter = "markdown"
+hosts = ["developer.android.com"]
+roots = ["https://developer.android.com/kotlin"]
+allow_prefixes = ["/kotlin"]
+max_pages = 300
+max_depth = 4
+delay = 1.0
+refresh_days = 30
+license = "Apache 2.0 for documentation incl. code unless noted; other content CC BY 2.5 (https://developer.android.com/license). Attribute Google / AOSP."
+robots_note = "developer.android.com/robots.txt on 2026-11-15 (see android-compose)"
+
+[[source]]
+name = "android-build"
+title = "Android: Gradle / Android Gradle Plugin build guides"
+adapter = "markdown"
+hosts = ["developer.android.com"]
+roots = ["https://developer.android.com/build"]
+allow_prefixes = ["/build"]
+max_pages = 400
+max_depth = 4
+delay = 1.0
+refresh_days = 30
+license = "Apache 2.0 for documentation incl. code unless noted; other content CC BY 2.5 (https://developer.android.com/license). Attribute Google / AOSP."
+robots_note = "developer.android.com/robots.txt on 2026-11-15 (see android-compose)"
+
+# ── Everything else with a developer site (selectors NOT yet live-checked:
+#    run `docs.sh sync <name> --max-pages 3` and `docs.sh read` one page
+#    before trusting a big crawl; fix content_selectors if the output has
+#    navigation in it) ───────────────────────────────────────────────────
+
+[[source]]
+name = "kotlin"
+title = "Kotlin language docs"
+adapter = "html"
+hosts = ["kotlinlang.org"]
+roots = ["https://kotlinlang.org/docs/home.html"]
+allow_prefixes = ["/docs/"]
+max_pages = 600
+max_depth = 4
+delay = 1.0
+refresh_days = 30
+content_selectors = ["article", "main"]
+license = "Kotlin docs: Apache 2.0 (JetBrains/kotlin-web-site). Check the site footer before redistributing."
+robots_note = "not yet checked"
+
+[[source]]
+name = "gradle"
+title = "Gradle user manual"
+adapter = "html"
+hosts = ["docs.gradle.org"]
+roots = ["https://docs.gradle.org/current/userguide/userguide.html"]
+allow_prefixes = ["/current/userguide/"]
+max_pages = 600
+max_depth = 4
+delay = 1.0
+refresh_days = 30
+content_selectors = ["main", "div.chapter", "article"]
+license = "Gradle docs: check https://docs.gradle.org footer before redistributing."
+robots_note = "not yet checked"
+
+[[source]]
+name = "blender-python"
+title = "Blender Python API"
+adapter = "html"
+hosts = ["docs.blender.org"]
+roots = ["https://docs.blender.org/api/current/index.html"]
+allow_prefixes = ["/api/current/"]
+max_pages = 3000
+max_depth = 5
+delay = 1.0
+refresh_days = 60
+content_selectors = ["div[role=main]", "article", "main"]
+license = "Blender docs: CC BY-SA 4.0 (check the page footer)."
+robots_note = "not yet checked"
+
+[[source]]
+name = "klipper"
+title = "Klipper firmware docs"
+adapter = "html"
+hosts = ["www.klipper3d.org"]
+roots = ["https://www.klipper3d.org/Overview.html"]
+allow_prefixes = ["/"]
+max_pages = 200
+max_depth = 3
+delay = 1.0
+refresh_days = 60
+content_selectors = ["article", "div.md-content", "main"]
+license = "Klipper docs: GPLv3 (Klipper3d/klipper repository)."
+robots_note = "not yet checked"
+
+[[source]]
+name = "octoprint"
+title = "OctoPrint docs"
+adapter = "html"
+hosts = ["docs.octoprint.org"]
+roots = ["https://docs.octoprint.org/en/main/"]
+allow_prefixes = ["/en/main/"]
+max_pages = 400
+max_depth = 4
+delay = 1.0
+refresh_days = 60
+content_selectors = ["div[role=main]", "article", "main"]
+license = "OctoPrint docs: AGPLv3 project; check the docs footer."
+robots_note = "not yet checked"
+
+[[source]]
+name = "tailscale"
+title = "Tailscale official documentation"
+adapter = "markdown"
+markdown_suffix = ".md"
+hosts = ["tailscale.com"]
+roots = ["https://tailscale.com/docs", "https://tailscale.com/docs/reference/coordination-server-down"]
+discovery = "sitemap"
+index_url = "https://tailscale.com/sitemap.xml"
+allow_prefixes = ["/docs"]
+max_pages = 3000
+max_depth = 6
+delay = 0.25
+refresh_days = 30
+license = "Tailscale Inc. and contributors. Publisher-provided Markdown for private offline reference. Preserve attribution. https://tailscale.com/terms"
+robots_note = "tailscale.com/robots.txt reviewed 2026-11-17: general user-agent allowed and no Crawl-delay specified."

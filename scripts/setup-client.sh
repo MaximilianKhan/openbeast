@@ -2,8 +2,9 @@
 # OpenBeast client mode — full local tool stack, the rig does the thinking.
 # (docs/BEAST_SLOT.md; macOS + Linux. Windows/WSL2 untested.)
 #
-#   ./scripts/setup-client.sh [--host <rig-fqdn>] [--api-key <key>]
-#                             [--no-search | --local-search] [--uninstall]
+#   ./scripts/setup-client.sh [--host <rig-fqdn>] [--api-key <key>] [--name <rig>]
+#                             [--no-search | --local-search] [--in-place]
+#                             [--uninstall]
 #
 # What you get: OpenCode on THIS machine with the full OpenBeast tool
 # arsenal running LOCALLY (bash/edit_file act on this machine's files, via a
@@ -16,6 +17,10 @@
 #   client: client.sh status ──────── HTTPS :8444 ─▶ rig beast-slot API
 #            (rig side: ./scripts/setup-tailscale.sh --publish-searxng --publish-slot)
 #
+# Every opencode session also loads the system prompt Open WebUI uses on the
+# rigs (system-prompt.md + system-prompt-tools.md, copied to
+# ~/.openbeast-client/prompts/ and listed in opencode.json `instructions`).
+#
 # Data flow, stated plainly: file contents the agent READS on this machine
 # are sent to the rig as model context — the model must see data to reason
 # about it. Both machines are on your tailnet, so the promise is "nothing
@@ -27,20 +32,46 @@
 #                    wired into the env file + opencode.json (chmod 600)
 #   --api-key-stdin  same, but read from stdin (prompted, hidden) — keeps the
 #                    key out of `ps`; preferred on a shared machine
+#   --name <rig>     the name this rig gets in the client's rig registry
+#                    (default: the key file's name minus -gate, or the host's
+#                    first label). Several rigs: run this once, then add more
+#                    with `openbeast-client rig add` and switch with
+#                    `openbeast-client use <rig>` (docs/SPARK_HYDRA.md § F2)
 #   --no-search      skip search wiring (web_search disabled on the client)
 #   --local-search   run SearXNG locally via Docker (bridge network — works on
 #                    Docker Desktop) instead of using the rig's :8889
+#   --in-place       run the client straight from THIS checkout instead of
+#                    from its own copy (below). For developing OpenBeast
+#                    itself: opencode then runs your working tree, uncommitted
+#                    edits included. On macOS a checkout under ~/Documents,
+#                    ~/Desktop, ~/Downloads, iCloud Drive or an external volume
+#                    cannot be used this way: background processes are denied
+#                    those folders, and the tool server is started by one
 #   --uninstall      remove ~/.openbeast-client, the env file, the local
 #                    SearXNG container, and our opencode.json entries
 #   --purge-logs     with --uninstall: ALSO delete agent transcripts from an
 #                    in-place checkout (they hold prompts + file contents)
+#   --wheelhouse <dir>  install the pinned python deps from a wheelhouse made
+#                    by `scripts/pydeps.sh wheelhouse <dir>` on a connected box
+#                    (also $OPENBEAST_WHEELHOUSE): no package index is
+#                    contacted. With a checkout copied over (run this script
+#                    from inside it, no clone), that is the OFFLINE install;
+#                    docs/BEAST_APPS.md § Offline client.
 #
-# After install, the client CLI lives at scripts/client.sh in the checkout and
+# WHERE THE CLIENT RUNS FROM: always its own copy, ~/.openbeast-client/repo
+# (a sparse git checkout: agents/ skills/ scripts/ searxng/). Run from inside
+# a clone, this script seeds that copy from the clone's checked-out commit,
+# with no network; run on its own, it clones the copy from GitHub. Either way
+# the checkout you ran it from is never what opencode executes, so it can
+# live anywhere (see scripts/lib/client_copy.sh for why that matters on
+# macOS), be moved, or be deleted. `openbeast-client update` updates the copy.
+#
+# After install, the client CLI lives at scripts/client.sh in that copy and
 # is symlinked to ~/.local/bin/openbeast-client (created if needed). If that
 # dir is not on your PATH — the macOS default — the installer prints the exact
 # line to add, and the full path always works:
-#   openbeast-client status|agent|search|update|uninstall
-#   <checkout>/scripts/client.sh status
+#   openbeast-client status|rigs|use|rig|agent|search|update|uninstall
+#   ~/.openbeast-client/repo/scripts/client.sh status
 #
 # Bash 3.2-compatible on purpose (stock macOS ships it): avoids all
 # bash-4-only builtins; tests/test_scripts.sh §13 enforces this.
@@ -52,15 +83,37 @@ OC_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
 OC_CONFIG="$OC_CONFIG_DIR/opencode.json"
 REPO_URL="https://github.com/MaximilianKhan/openbeast"
 
-HOST_FQDN=""; NO_SEARCH=0; LOCAL_SEARCH=0; UNINSTALL=0; PURGE_LOGS=0
+HOST_FQDN=""; RIG_NAME=""; NO_SEARCH=0; LOCAL_SEARCH=0; UNINSTALL=0; PURGE_LOGS=0
+IN_PLACE=0
+WHEELHOUSE="${OPENBEAST_WHEELHOUSE:-}"
 API_KEY="${OPENBEAST_API_KEY:-}"
 # Re-running without --api-key must not silently de-key a keyed install:
 # fall back to the key already stored by a previous run (same treatment the
 # client SearXNG secret gets below). Pass --api-key "" to deliberately clear.
+# A stored key is a credential FOR ONE RIG: remember which host it was written
+# next to, so a re-run against a DIFFERENT rig never presents it there
+# (_forget_foreign_stored_key, once the target host is known).
+KEY_FROM_STORE=0; STORED_HOST=""
 if [ -z "$API_KEY" ] && [ -f "$HOME/.openbeast-client.env" ]; then
   API_KEY="$(sed -n "s/^OPENBEAST_API_KEY='\{0,1\}\([^']*\)'\{0,1\}$/\1/p" \
     "$HOME/.openbeast-client.env" 2>/dev/null | tail -1)"
+  [ -n "$API_KEY" ] && KEY_FROM_STORE=1
+  STORED_HOST="$(sed -n "s|^OPENBEAST_AGENT_INFERENCE_URL='\{0,1\}https\{0,1\}://\([^:/']*\).*|\1|p" \
+    "$HOME/.openbeast-client.env" 2>/dev/null | tail -1)"
 fi
+_lc_host() { printf '%s' "$1" | tr 'A-Z' 'a-z' | sed 's/\.$//'; }
+# The stored key goes only to the host it was stored for. Anything else — a
+# different --host, a different auto-detected peer, an env file with no URL —
+# gets no key unless one is passed again explicitly.
+_forget_foreign_stored_key() {
+  [ "$KEY_FROM_STORE" = "1" ] && [ -n "$API_KEY" ] || return 0
+  if [ -n "$STORED_HOST" ] && [ "$(_lc_host "$STORED_HOST")" = "$(_lc_host "$HOST_FQDN")" ]; then
+    return 0
+  fi
+  echo "  ! the stored device key belongs to ${STORED_HOST:-an unrecorded rig}, not $HOST_FQDN —"
+  echo "    NOT sending it there. If $HOST_FQDN needs a key: --api-key-stdin"
+  API_KEY=""; KEY_FROM_STORE=0
+}
 while [ $# -gt 0 ]; do
   case "$1" in
     --host)         HOST_FQDN="${2:?--host needs a value}"; shift ;;
@@ -68,7 +121,7 @@ while [ $# -gt 0 ]; do
                     # `--api-key ""` as the way to CLEAR a stored key, and a
                     # null-check would reject exactly that.
                     [ $# -ge 2 ] || { echo "--api-key needs a value (use \"\" to clear)" >&2; exit 2; }
-                    API_KEY="$2"; shift ;;
+                    API_KEY="$2"; KEY_FROM_STORE=0; shift ;;
     --api-key-stdin)
                     # The key as an ARGUMENT is readable by every local uid
                     # (ps) for the whole install — pip included. Read one
@@ -81,13 +134,17 @@ while [ $# -gt 0 ]; do
                     else
                       IFS= read -r API_KEY || true
                     fi
-                    API_KEY="$(printf '%s' "$API_KEY" | tr -d '\r')" ;;
+                    API_KEY="$(printf '%s' "$API_KEY" | tr -d '\r')"; KEY_FROM_STORE=0 ;;
+    --name)         RIG_NAME="${2:?--name needs a value}"; shift ;;
     --no-search)    NO_SEARCH=1 ;;
     --local-search) LOCAL_SEARCH=1 ;;
+    --in-place)     IN_PLACE=1 ;;
     --uninstall)    UNINSTALL=1 ;;
     --purge-logs)   PURGE_LOGS=1 ;;
-    -h|--help)      sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    status|agent|search|update)
+    --wheelhouse)   [ $# -ge 2 ] && [ -n "$2" ] || { echo "--wheelhouse needs a directory" >&2; exit 2; }
+                    WHEELHOUSE="$2"; shift ;;
+    -h|--help)      sed -n '2,74p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    status|agent|search|update|rigs|use|rig)
       # Two scripts, confusingly similar names: setup-client.sh INSTALLS
       # (flags), client.sh OPERATES (subcommands). Sending someone who typed
       # a subcommand here away with "unknown option" is a dead end — point
@@ -112,10 +169,10 @@ fi
 # Resolved ONCE, before anything uses them — the uninstall path shells out to
 # python too, so this cannot live inside preflight.
 _find_py() {
-  for _c in "${OPENBEAST_PYTHON:-}" python3.13 python3.12 python3.11 python3.10 python3 python; do
+  for _c in "${OPENBEAST_PYTHON:-}" python3.14 python3.13 python3.12 python3.11 python3 python; do
     [ -n "$_c" ] || continue
     command -v "$_c" >/dev/null 2>&1 || continue
-    if "$_c" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then
+    if "$_c" -c 'import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)' 2>/dev/null; then
       command -v "$_c"; return 0
     fi
   done
@@ -136,6 +193,7 @@ TS_BIN="$(_find_ts || true)"
 if [ $UNINSTALL -eq 1 ]; then
   echo "=== OpenBeast client uninstall ==="
   _left_behind=""
+  "$(cd "$(dirname "$0")" && pwd)/client.sh" autosync uninstall >/dev/null 2>&1 || true
   # Local SearXNG container (best-effort — only if docker + compose file exist).
   if command -v docker >/dev/null 2>&1; then
     for _repo in "$CLIENT_DIR/repo" "$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"; do
@@ -148,9 +206,9 @@ if [ $UNINSTALL -eq 1 ]; then
     done
   fi
   if [ -f "$OC_CONFIG" ]; then
-    "${PY_BIN:-python3}" - "$OC_CONFIG" <<'PYEOF'
-import json, sys
-path = sys.argv[1]
+    "${PY_BIN:-python3}" - "$OC_CONFIG" "$CLIENT_DIR" <<'PYEOF'
+import json, os, sys
+path, client_dir = sys.argv[1:3]
 try:
     cfg = json.load(open(path))
 except Exception as e:
@@ -159,6 +217,8 @@ removed = []
 mcp = cfg.get("mcp", {})
 if "openbeast-tools" in mcp:
     del mcp["openbeast-tools"]; removed.append("mcp.openbeast-tools")
+if isinstance(mcp.get("servers"), dict) and "openbeast-tools" in mcp["servers"]:
+    del mcp["servers"]["openbeast-tools"]; removed.append("mcp.servers.openbeast-tools")
 # Sweep the legacy "local-tools" key older installers wrote — but ONLY when its
 # command points into our venv (~/.openbeast-client, true for both install
 # shapes), so we never touch the checkout's own bare-python3 "local-tools".
@@ -172,19 +232,78 @@ prov = cfg.get("provider", {})
 # "llama-cpp" pointed at localhost:8080.
 if "openbeast-rig" in prov:
     del prov["openbeast-rig"]; removed.append("provider.openbeast-rig")
+# The per-rig providers `openbeast-client` writes (openbeast-<rig>), named
+# "OpenBeast <rig> (...)" — only those, never a user's own openbeast-* entry.
+for pid in [p for p in prov if p.startswith("openbeast-")
+            and str((prov[p] or {}).get("name", "")).startswith("OpenBeast ")]:
+    del prov[pid]; removed.append("provider." + pid)
 if prov.get("llama-cpp", {}).get("options", {}).get("baseURL", "").endswith(":8443/v1"):
     del prov["llama-cpp"]; removed.append("provider.llama-cpp (legacy)")
 # Clear a default model we set — but only if it still points at our provider, so
 # a user who repointed it keeps their choice and we leave no dangling default.
 for key in ("model", "small_model"):
-    if str(cfg.get(key, "")).startswith("openbeast-rig/"):
+    if str(cfg.get(key, "")).startswith("openbeast-"):
         del cfg[key]; removed.append(key)
+# The soul's `instructions` entries: ours are exactly the ones under
+# $CLIENT_DIR/prompts/ (removed below with $CLIENT_DIR); the user's stay.
+ins = cfg.get("instructions")
+if isinstance(ins, list):
+    soul = os.path.realpath(os.path.join(client_dir, "prompts")) + os.sep
+    keep = [e for e in ins if not (isinstance(e, str) and
+            os.path.realpath(os.path.expanduser(e)).startswith(soul))]
+    if len(keep) != len(ins):
+        removed.append("instructions (%d soul file%s)" % (len(ins) - len(keep), "" if len(ins) - len(keep) == 1 else "s"))
+        if keep:
+            cfg["instructions"] = keep
+        else:
+            del cfg["instructions"]
 # Drop containers we emptied, so an uninstall does not leave "mcp": {} behind.
 for k in ("mcp", "provider"):
     if k in cfg and not cfg[k]:
         del cfg[k]
-json.dump(cfg, open(path, "w"), indent=2); open(path, "a").write("\n")
+# Atomic, keeping the file's mode (and a symlinked config stays a symlink):
+# a crash mid-write must not leave the user's opencode.json truncated.
+import tempfile
+real = os.path.realpath(path)
+fd, tmp = tempfile.mkstemp(prefix="." + os.path.basename(real) + ".", dir=os.path.dirname(real))
+try:
+    os.fchmod(fd, os.stat(real).st_mode & 0o777)
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps(cfg, indent=2) + "\n")
+    os.replace(tmp, real)
+except BaseException:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
 print("  ✓ opencode.json: removed " + (", ".join(removed) or "nothing (no entries of ours)"))
+# client_rigs.py keeps one rolling backup beside the config on every sync;
+# it holds the device key(s) and our providers, so it goes with the rest.
+try:
+    os.unlink(real + ".openbeast-prev")
+    print("  ✓ removed %s.openbeast-prev (held the device key)" % os.path.basename(real))
+except FileNotFoundError:
+    pass
+# Timestamped backups OUR tools made beside the config (beast-apps before
+# every write, client-e2e before step d) hold the device key(s) too: they go.
+# Any other opencode.json.bak* is not ours to delete: listed.
+import glob
+ours, others = set(), set()
+for d in sorted({os.path.dirname(path) or ".", os.path.dirname(real)}):
+    for b in glob.glob(os.path.join(d, "opencode.json.bak*")):
+        n = os.path.basename(b)
+        (ours if n.startswith(("opencode.json.bak-beast-apps-", "opencode.json.bak-e2e-")) else others).add(b)
+for b in sorted(ours):
+    try:
+        os.unlink(b)
+    except OSError:
+        others.add(b)
+if ours - others:
+    print("  ✓ removed %d opencode.json backup(s) made by beast-apps / client-e2e (they held the device key)"
+          % len(ours - others))
+for b in sorted(others):
+    print("  - kept %s (not made by us; it may hold a key — delete it yourself if done)" % b)
 PYEOF
   fi
   if [ -L "$HOME/.local/bin/openbeast-client" ]; then
@@ -232,6 +351,16 @@ PYEOF
   rm -rf "$CLIENT_DIR"
   rm -f "$ENV_FILE"
   echo "  ✓ removed $CLIENT_DIR and $ENV_FILE"
+  # The rig registry goes; the device KEYS stay: each was printed once on its
+  # rig, and re-enrolling is the only way back. Say where they are.
+  _obcfg="${XDG_CONFIG_HOME:-$HOME/.config}/openbeast"
+  if [ -f "$_obcfg/rigs.json" ]; then
+    rm -f "$_obcfg/rigs.json"
+    echo "  ✓ removed the rig registry ($_obcfg/rigs.json)"
+  fi
+  if ls "$_obcfg"/*.key >/dev/null 2>&1 || ls "$_obcfg"/rigs/*.key >/dev/null 2>&1; then
+    echo "  - device key files kept in $_obcfg (delete them yourself if you are done with them)"
+  fi
   if [ -n "$_left_behind" ]; then
     echo ""
     echo "  ! LEFT IN PLACE: $_left_behind"
@@ -270,7 +399,7 @@ PY="$PY_BIN"
 if [ -n "$PY" ]; then
   echo "  ✓ python $("$PY" -c 'import sys;print(".".join(map(str,sys.version_info[:3])))') ($PY)"
 else
-  echo "  ✗ no python ≥3.10 found (checked python3.13/3.12/3.11/3.10/python3/python)"
+  echo "  ✗ no python ≥3.11 found (checked python3.14/3.13/3.12/3.11/python3/python)"
   _seen="$(python3 -c 'import sys;print(".".join(map(str,sys.version_info[:3])))' 2>/dev/null || true)"
   [ -n "$_seen" ] && echo "    python3 on PATH is $_seen — too old (macOS Xcode CLT ships 3.9)"
   echo "    macOS:  brew install python@3.12"
@@ -309,12 +438,21 @@ if [ -z "$HOST_FQDN" ] && [ $fail -eq 0 ]; then
   # `beast` that someone shared in from another tailnet has a different
   # suffix; picking it by first label alone would send it the key (the
   # health probe below presents the bearer) and then every prompt.
-  # One line per peer: "rig <fqdn>" (ours, named beast), "own <fqdn>",
+  # The suffix alone is not enough either: on a multi-user tailnet any member
+  # can name a device `beast`, and the rig receives every prompt and every
+  # file the agent reads, and its completions drive THIS machine's tools.
+  # So a `beast` owned by the same tailnet user as this device is taken as
+  # is; one owned by anyone else (or a tagged node — no user to compare) is
+  # used only after a human confirms it, key or no key.
+  # One line per peer: "rig <fqdn>" (ours, named beast, same owner),
+  # "rigx <fqdn>" (ours, named beast, other owner), "own <fqdn>",
   # "foreign <fqdn>".
   _peers="$("$TS" status --json 2>/dev/null | "$PY" -c '
 import json, sys
 d = json.load(sys.stdin)
-me = ((d.get("Self") or {}).get("DNSName") or "").rstrip(".")
+self_ = d.get("Self") or {}
+me = (self_.get("DNSName") or "").rstrip(".")
+my_uid = self_.get("UserID")
 suffix = me.partition(".")[2] or (d.get("MagicDNSSuffix") or "").strip(".")
 for p in (d.get("Peer") or {}).values():
     dns = (p.get("DNSName") or "").rstrip(".")
@@ -322,15 +460,46 @@ for p in (d.get("Peer") or {}).values():
         continue
     name, _, rest = dns.partition(".")
     ours = bool(suffix) and rest == suffix
-    kind = "foreign" if not ours else ("rig" if name == "beast" else "own")
+    if not ours:
+        kind = "foreign"
+    elif name != "beast":
+        kind = "own"
+    else:
+        same = my_uid is not None and p.get("UserID") == my_uid
+        kind = "rig" if same else "rigx"
     print(kind, dns)
 ' || true)"
   HOST_FQDN="$(printf '%s\n' "$_peers" | sed -n 's/^rig //p' | sed -n '1p')"
+  _other_owner=0
+  if [ -z "$HOST_FQDN" ]; then
+    HOST_FQDN="$(printf '%s\n' "$_peers" | sed -n 's/^rigx //p' | sed -n '1p')"
+    [ -n "$HOST_FQDN" ] && _other_owner=1
+  fi
   if [ -n "$HOST_FQDN" ]; then
     echo "  ✓ rig auto-detected: $HOST_FQDN"
+    _forget_foreign_stored_key
+    _confirmed=0
+    if [ "$_other_owner" = "1" ]; then
+      # Not this user's device: it would get every prompt and drive local tools.
+      if [ -t 0 ]; then
+        printf '    %s is owned by ANOTHER tailnet user (or is a tagged node). Use it as\n' "$HOST_FQDN" >&2
+        printf '    your rig — it receives every prompt%s and drives tools here? [y/N] ' \
+          "$([ -n "$API_KEY" ] && echo ' and the rig API key')" >&2
+        IFS= read -r _yn || _yn=""
+        case "$_yn" in
+          y|Y|yes|YES) _confirmed=1 ;;
+          *) echo "  ✗ not confirmed — name the rig yourself: --host <rig-fqdn>"; fail=1 ;;
+        esac
+      else
+        echo "  ✗ refusing to wire an AUTO-DETECTED rig owned by another tailnet user"
+        echo "    (or a tagged node) with no terminal to confirm on. Name it explicitly:"
+        echo "      $0 --host $HOST_FQDN"
+        fail=1
+      fi
+    fi
     # A key is about to be presented to a host nobody typed. Have a human
     # confirm it, or refuse when there is no terminal to ask on.
-    if [ -n "$API_KEY" ]; then
+    if [ -n "$API_KEY" ] && [ $fail -eq 0 ] && [ $_confirmed -eq 0 ]; then
       if [ -t 0 ]; then
         printf '    Send the rig API key to %s? [y/N] ' "$HOST_FQDN" >&2
         IFS= read -r _yn || _yn=""
@@ -364,6 +533,7 @@ for p in (d.get("Peer") or {}).values():
   fi
 fi
 [ $fail -eq 0 ] || { echo "Preflight failed — nothing was changed."; exit 1; }
+[ -n "$HOST_FQDN" ] && _forget_foreign_stored_key
 
 API_URL="https://$HOST_FQDN:8443/v1"
 SLOT_URL="https://$HOST_FQDN:8444/api/slot"
@@ -463,7 +633,10 @@ else
   echo "      ./scripts/setup-tailscale.sh --publish-slot"
 fi
 if [ $NO_SEARCH -eq 0 ] && [ $LOCAL_SEARCH -eq 0 ]; then
-  if curl -s -m 5 "$SEARCH_URL/search?q=test&format=json" 2>/dev/null | grep -q '"results"'; then
+  # /healthz + a query-less format=json request (400 "No query" when JSON is
+  # on): no live search fanned out to upstream engines (scripts/client.sh).
+  if [ "$(curl -s -m 5 "$SEARCH_URL/healthz" 2>/dev/null)" = "OK" ] \
+     && [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$SEARCH_URL/search?format=json" 2>/dev/null)" = "400" ]; then
     echo "  ✓ rig search reachable ($SEARCH_URL)"
   else
     echo "  ! rig search not answering ($SEARCH_URL) — on the rig, run:"
@@ -472,13 +645,64 @@ if [ $NO_SEARCH -eq 0 ] && [ $LOCAL_SEARCH -eq 0 ]; then
   fi
 fi
 
-# ---- 2. slim checkout (or use the clone we're inside) -----------------------
+# ---- 2. the client's own copy of the code ------------------------------------
+# The client always runs from $CLIENT_DIR/repo, never from the checkout this
+# script was started in (scripts/lib/client_copy.sh says why). Inside a clone
+# the copy is seeded from that clone's HEAD commit, offline; with no clone
+# around it is cloned from GitHub. --in-place is the developer's opt-out.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+_use_in_place() {   # $1 = why
+  CLIENT_REPO="$SRC_REPO"
+  echo "  ✓ $1 — using it in place: $CLIENT_REPO"
+  if ob_copy_protected "$(ob_copy_phys "$CLIENT_REPO")"; then
+    echo "  ! $CLIENT_REPO is in a folder macOS keeps from background processes."
+    echo "    opencode starts the tool server from one, so its tools will fail with"
+    echo "    'Operation not permitted'. Move the checkout out of Documents / Desktop /"
+    echo "    Downloads / iCloud, or install without --in-place."
+  fi
+}
 if [ -f "$SCRIPT_DIR/../agents/tools.py" ]; then
-  CLIENT_REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
-  echo "  ✓ running inside a full clone — using it in place: $CLIENT_REPO"
+  SRC_REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
+  if [ -f "$SCRIPT_DIR/lib/client_copy.sh" ]; then
+    # shellcheck source=lib/client_copy.sh
+    . "$SCRIPT_DIR/lib/client_copy.sh"
+  else
+    # a partial checkout without the helper: behave as before it existed
+    ob_copy_phys() { (cd "$1" 2>/dev/null && pwd -P) || true; }
+    ob_copy_protected() { return 1; }
+    ob_copy_is_checkout() { return 1; }
+  fi
+  mkdir -p "$CLIENT_DIR"
+  if [ "$(ob_copy_phys "$SRC_REPO")" = "$(ob_copy_phys "$CLIENT_DIR/repo")" ]; then
+    # Re-run from the copy itself (what `openbeast-client update` and the
+    # printed paths lead to): it IS the install.
+    CLIENT_REPO="$CLIENT_DIR/repo"
+    rm -f "$CLIENT_DIR/in-place"
+    echo "  ✓ running from the client copy: $CLIENT_REPO"
+  elif [ $IN_PLACE -eq 1 ]; then
+    _use_in_place "--in-place"
+    printf '%s\n' "$SRC_REPO" > "$CLIENT_DIR/in-place"
+  elif ! ob_copy_is_checkout "$SRC_REPO"; then
+    # No git history to seed a copy from (an unpacked archive, or no git).
+    _use_in_place "not a git checkout"
+  elif ob_copy_seed "$SRC_REPO" "$CLIENT_DIR/repo"; then
+    CLIENT_REPO="$CLIENT_DIR/repo"
+    rm -f "$CLIENT_DIR/in-place"
+    _dirty="$(ob_copy_dirty "$SRC_REPO" | sed -n '1,5p')"
+    if [ -n "$_dirty" ]; then
+      echo "  ! uncommitted changes in $SRC_REPO are NOT in the copy:"
+      printf '%s\n' "$_dirty" | sed 's/^/      /'
+      echo "    (commit them and re-run, or install with --in-place to run the working tree)"
+    fi
+  else
+    echo "  ! could not make the client copy in $CLIENT_DIR/repo (reason above)."
+    _use_in_place "falling back to this checkout"
+  fi
 else
   CLIENT_REPO="$CLIENT_DIR/repo"
+  if [ $IN_PLACE -eq 1 ]; then
+    echo "  ✗ --in-place needs a checkout to run from: run scripts/setup-client.sh from inside one"; exit 1
+  fi
   command -v git >/dev/null 2>&1 || { echo "  ✗ git required for the slim checkout"; exit 1; }
   if [ -d "$CLIENT_REPO/.git" ]; then
     git -C "$CLIENT_REPO" sparse-checkout set agents skills scripts searxng >/dev/null 2>&1 || true
@@ -486,13 +710,21 @@ else
     echo "  ✓ slim checkout refreshed ($CLIENT_REPO)"
   else
     mkdir -p "$CLIENT_DIR"
-    git clone --depth 1 --filter=blob:none --sparse "$REPO_URL" "$CLIENT_REPO" >/dev/null 2>&1
+    git clone --depth 1 --filter=blob:none --sparse "$REPO_URL" "$CLIENT_REPO" >/dev/null 2>&1 || {
+      echo "  ✗ cannot clone $REPO_URL (offline, or GitHub unreachable)."
+      echo "    Offline: copy a checkout to this machine (a clone, or one made from an"
+      echo "    openbeast.bundle on a USB stick) and run scripts/setup-client.sh from"
+      echo "    INSIDE it: the client copy is then made from it and nothing is cloned."
+      echo "    Add --wheelhouse <dir> for the python deps (docs/BEAST_APPS.md § Offline client)."
+      exit 1
+    }
     # scripts/ + searxng/ ride along for client.sh, the local-search compose
     # variant, and its settings.yml. conf.sh stays UNUSED on a client (it is
     # rig-shaped: it would generate a SearXNG secret into openbeast.conf).
     git -C "$CLIENT_REPO" sparse-checkout set agents skills scripts searxng >/dev/null 2>&1
     echo "  ✓ slim checkout created (agents/ skills/ scripts/ searxng/ → $CLIENT_REPO)"
   fi
+  rm -f "$CLIENT_DIR/in-place"
 fi
 
 # ---- 3. isolated venv with the pinned deps ----------------------------------
@@ -500,6 +732,15 @@ VENV="$CLIENT_DIR/venv"
 mkdir -p "$CLIENT_DIR"
 # Build the venv with the interpreter we VETTED, not whatever "python3"
 # resolves to — otherwise a 3.9 on PATH silently creates a 3.9 venv.
+# An EXISTING venv is checked too: one an older install built with 3.10
+# (accepted back then) would be reused here, and the lock (starlette, jiter,
+# rpds-py need >=3.11) would then die inside pip with a resolver error that
+# reads like a hostile mirror — the very failure the 3.11 floor exists for.
+if [ -x "$VENV/bin/python3" ] && ! "$VENV/bin/python3" -c \
+     'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+  echo "  ! $VENV is $("$VENV/bin/python3" -V 2>&1 | head -1), below 3.11 — rebuilding it with $PY"
+  "$PY" -m venv --clear "$VENV"
+fi
 [ -x "$VENV/bin/python3" ] || "$PY" -m venv "$VENV"
 # THE HASH-PINNED LOCK, the same closure the rig and CI install. This venv
 # runs the tool arsenal (bash, file edits) on THIS machine, and it used to be
@@ -515,7 +756,15 @@ mkdir -p "$CLIENT_DIR"
 # unverified from that same mirror. The opt-out is for a python the closure
 # does not cover (Intel macOS needs a compiler for cffi, see pydeps.sh).
 _pd_rc=0
-OPENBEAST_PYTHON="$VENV/bin/python3" "$CLIENT_REPO/scripts/pydeps.sh" install -q || _pd_rc=$?
+WHEELHOUSE="${WHEELHOUSE:-}"       # this step also runs on its own (tests/test_supply_chain.sh)
+if [ -n "$WHEELHOUSE" ]; then
+  # --from first: pydeps.sh stops reading its own flags at -q. It verifies the
+  # lock (the committed one, or OPENBEAST_LOCK_SHA256) and audits the dir.
+  echo "  installing the pinned python deps from $WHEELHOUSE (no index)"
+  OPENBEAST_PYTHON="$VENV/bin/python3" "$CLIENT_REPO/scripts/pydeps.sh" install --from "$WHEELHOUSE" -q || _pd_rc=$?
+else
+  OPENBEAST_PYTHON="$VENV/bin/python3" "$CLIENT_REPO/scripts/pydeps.sh" install -q || _pd_rc=$?
+fi
 if [ "$_pd_rc" -eq 0 ]; then
   _pins="hash-pinned closure from agents/requirements.lock"
 elif [ "$_pd_rc" -eq 3 ]; then
@@ -536,7 +785,8 @@ else
   echo "  ! the hash-pinned install failed on this python, and NOT on a hash (see above) —"
   echo "    OPENBEAST_PIP_STRICT=0: falling back to agents/requirements.txt, which pins"
   echo "    VERSIONS but not content."
-  "$VENV/bin/pip" install -q -r "$CLIENT_REPO/agents/requirements.txt"
+  _fl=""; [ -n "$WHEELHOUSE" ] && _fl="--no-index"
+  "$VENV/bin/pip" install -q ${_fl:+$_fl --find-links "$WHEELHOUSE"} -r "$CLIENT_REPO/agents/requirements.txt"
   _pins="pins from agents/requirements.txt — NOT hash-verified"
 fi
 "$VENV/bin/python3" -c "import mcp, openai" || { echo "  ✗ venv deps failed to import"; exit 1; }
@@ -581,6 +831,14 @@ _q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 # the redirect above — and it now holds the bearer key.
 chmod 600 "$ENV_FILE"
 echo "  ✓ wrote $ENV_FILE (0600)"
+# The rig registry (openbeast-client rigs / use): this rig becomes the active
+# one — added, or updated if its host is already registered. Its key stays
+# in a 0600 file (an existing one holding the same key is referenced).
+if [ -f "$CLIENT_REPO/scripts/lib/client_rigs.py" ]; then
+  OB_TS_BIN="$TS" OB_REPO="$CLIENT_REPO" "$PY" "$CLIENT_REPO/scripts/lib/client_rigs.py" \
+    adopt-env ${RIG_NAME:+--name "$RIG_NAME"} \
+    || echo "  ! could not update the rig registry — openbeast-client rigs will retry"
+fi
 
 # ---- 4b. local SearXNG (--local-search) -------------------------------------
 if [ $LOCAL_SEARCH -eq 1 ]; then
@@ -622,13 +880,40 @@ if api_key:
 # on ModuleNotFoundError ("server unavailable"). A distinct key can't be
 # shadowed; we pin the venv python + an absolute path. Do NOT rename to
 # "local-tools".
-cfg.setdefault("mcp", {})["openbeast-tools"] = {
+entry = {
     "type": "local",
     "command": [os.path.join(venv, "bin", "python3"),
                 os.path.join(repo, "agents", "mcp_server.py")],
-    "enabled": True,
     "environment": env,
 }
+# opencode v2 keeps MCP servers under mcp.servers.<name> and does NOT merge a
+# v1 top-level mcp.<name> entry with them: a file mixing the two layouts loses
+# servers silently (seen 2026-11-15: `opencode mcp list` said "No MCP servers
+# configured" once beast-apps had added a v2 entry next to our v1 one). So on
+# v2 — detected from the CLI, or from a file that already uses mcp.servers —
+# write the v2 shape and move any other v1 server entries in with it.
+mcp = cfg.setdefault("mcp", {})
+def _oc_major():
+    try:
+        import re, subprocess
+        out = subprocess.run(["opencode", "--version"], capture_output=True, text=True, timeout=20).stdout
+        m = re.search(r"(\d+)\.\d+", out)
+        return int(m.group(1)) if m else 0
+    except Exception:
+        return 0
+if isinstance(mcp.get("servers"), dict) or _oc_major() >= 2:
+    servers = mcp.setdefault("servers", {})
+    for k in [k for k, v in mcp.items() if k != "servers" and isinstance(v, dict) and "type" in v]:
+        v = mcp.pop(k)
+        if v.pop("enabled", True) is False:
+            v["disabled"] = True
+        servers.setdefault(k, v)
+    # Code Mode (v2's default) wraps tools in an `execute` script; OpenBeast's
+    # conformance and evals measure plain tool calls, so expose them directly.
+    servers["openbeast-tools"] = dict(entry, codemode=False)
+    mcp.pop("openbeast-tools", None)
+else:
+    mcp["openbeast-tools"] = dict(entry, enabled=True)
 
 # Model list: copy from the checkout's opencode.json (kept current with the
 # rig's serve scripts); fall back to the default model alone.
@@ -659,13 +944,42 @@ cfg.setdefault("provider", {})["openbeast-rig"] = {
 default_model = "openbeast-rig/" + next(iter(models))
 cfg.setdefault("model", default_model)
 cfg.setdefault("small_model", default_model)
-json.dump(cfg, open(oc_path, "w"), indent=2); open(oc_path, "a").write("\n")
+# Atomic, and private from the first byte when it holds the key: the file is
+# written to a 0600 temp file next to it and renamed over the old one. Writing
+# into the existing (often 0644) file and chmod'ing afterwards let another
+# local user who had it open, or opened it in between, read the key. The
+# rename also replaces the inode, so an fd held on the old file sees no key.
+import tempfile
+real = os.path.realpath(oc_path)          # a dotfile manager's symlink stays one
+mode = 0o600 if api_key else (os.stat(real).st_mode & 0o777)
+fd, tmp = tempfile.mkstemp(prefix=".opencode.json.", dir=os.path.dirname(real))
+try:
+    with os.fdopen(fd, "w") as f:
+        json.dump(cfg, f, indent=2)
+        f.write("\n")
+    os.chmod(tmp, mode)
+    os.replace(tmp, real)
+except BaseException:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
 if api_key:
-    os.chmod(oc_path, 0o600)
     print(f"  ✓ merged provider + MCP config into {oc_path} (chmod 600 — holds the key)")
 else:
     print(f"  ✓ merged provider + MCP config into {oc_path}")
 PYEOF
+
+# ---- 5a. the soul: the same system prompt Open WebUI runs with ---------------
+# system-prompt.md + system-prompt-tools.md (what configure-webui.sh installs
+# as the WebUI model's system prompt) are COPIED to $CLIENT_DIR/prompts/ and
+# put at the front of opencode's `instructions`; the user's own entries stay.
+# Every later sync (use, rig add, refresh-config, update) refreshes them.
+if [ -f "$CLIENT_REPO/scripts/lib/client_rigs.py" ]; then
+  OB_REPO="$CLIENT_REPO" "$PY" "$CLIENT_REPO/scripts/lib/client_rigs.py" soul --oc "$OC_CONFIG" \
+    || echo "  ! could not wire the soul into opencode.json — openbeast-client refresh-config retries"
+fi
 
 # ---- 5b. client CLI on PATH -------------------------------------------------
 # Two Linux assumptions used to break this on macOS: ~/.local/bin usually does
@@ -711,6 +1025,13 @@ fi
 # fills it in later.
 "$CLIENT_REPO/scripts/client.sh" refresh-config 2>/dev/null \
   || echo "  ! could not probe the rig for its live model — run 'openbeast-client refresh-config' once it is up"
+# Keep it current: a rig that switches models (beastglm / beastds on the Sparks)
+# is picked up within 30 s instead of when someone next runs refresh-config.
+# OPENBEAST_AUTOSYNC=0 skips it (tests, or a machine that must not run timers).
+if [ "${OPENBEAST_AUTOSYNC:-1}" != 0 ]; then
+  "$CLIENT_REPO/scripts/client.sh" autosync install \
+    || echo "  ! autosync not installed — after a rig switches models run: openbeast-client refresh-config"
+fi
 
 # ---- 6. report --------------------------------------------------------------
 echo ""
@@ -741,6 +1062,10 @@ elif [ $NO_SEARCH -eq 0 ]; then
   echo "  • web_search uses the rig's private SearXNG"
 fi
 [ -n "$API_KEY" ] && echo "  • keyed mode: requests carry the bearer; env + opencode.json are 0600"
+echo "  • every session loads the rig's WebUI system prompt (the soul + tool guide),"
+echo "    copied to $CLIENT_DIR/prompts/ and listed in opencode's 'instructions'"
 echo "  • quitting OpenCode reaps the tool subprocess — nothing keeps running"
+echo "  • more rigs: openbeast-client rig add <name> --host <fqdn> --api-key-stdin,"
+echo "    then openbeast-client use <name>; openbeast-client rigs lists them"
 echo ""
-echo "Uninstall any time:  $0 --uninstall"
+echo "Uninstall any time:  $CLIENT_REPO/scripts/setup-client.sh --uninstall"

@@ -21,7 +21,9 @@ asserts the negative control next to the property.
 """
 import json
 import os
+import resource
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -60,6 +62,19 @@ def _c_works() -> bool:
     if not _C_WORKS:
         _C_WORKS.append(_driver_compiles("c", "int main(void){return 0;}\n"))
     return _C_WORKS[0]
+
+
+def _gnu_cc() -> bool:
+    """True when `gcc` (and so `g++`) is GNU. On macOS `gcc` is Apple clang:
+    it never runs `#pragma GCC dependency` and words its diagnostics
+    differently, so the controls that prove gcc's side channels real have
+    nothing to observe there (the refusal tests run everywhere)."""
+    try:
+        out = subprocess.run(["gcc", "--version"], capture_output=True,
+                             text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "clang" not in out.lower()
 
 CLAIMS = os.path.join(ROOT, "agents", "lang", "claims")
 SECRET = "BEASTLANG_SECRET=hunter2-do-not-leak"
@@ -217,13 +232,45 @@ def test_output_is_bounded_in_the_parent(tmp_path):
     assert "truncated" in out and str(3 * 1024 * 1024 + 5) in out
 
 
+# Holds the GiB for a while: a parent-side cap is SAMPLED (every
+# GROUP_GUARD_POLL_S), so a bomb that exits at once could slip between polls.
+_HOLDING_BOMB = [sys.executable, "-c",
+                 "import time; b = bytearray(1 << 30); print('allocated', len(b), flush=True); "
+                 "time.sleep(float(__import__('os').environ.get('HOLD', '0')))"]
+
+
 def test_the_address_space_cap_stops_a_memory_bomb(tmp_path):
-    bomb = [sys.executable, "-c", "b = bytearray(1 << 30); print('allocated', len(b))"]
-    rc, out = _proc.run(bomb, timeout=60, as_limit=512 * 1024 * 1024)
-    assert rc != 0 and "MemoryError" in out, (rc, out[-200:])
+    env = {**os.environ, "HOLD": "20"}
+    t0 = time.monotonic()
+    rc, out = _proc.run(_HOLDING_BOMB, timeout=60, env=env, as_limit=512 * 1024 * 1024)
+    assert rc != 0, (rc, out[-200:])
+    if hasattr(resource, "prlimit"):   # Linux: the kernel refuses the allocation
+        assert "MemoryError" in out, out[-200:]
+    else:                              # macOS: the parent-side group RSS cap
+        assert "memory cap" in out and time.monotonic() - t0 < 15, out[-200:]
     # negative control: the same program is fine when the cap allows it
-    rc, out = _proc.run(bomb, timeout=60, as_limit=0)
+    rc, out = _proc.run(_HOLDING_BOMB, timeout=60, as_limit=0)
     assert rc == 0 and "allocated" in out
+
+
+def test_the_parent_side_cap_where_there_is_no_prlimit(monkeypatch):
+    """Review 2026-11-16: on macOS the setrlimit fallback fails (or is never
+    enforced) and the error was swallowed, so the cap silently did not
+    exist. Simulate that platform anywhere: no prlimit, setrlimit refused."""
+    def refused(*_a):
+        raise OSError("current limit exceeds maximum limit")
+    monkeypatch.delattr(resource, "prlimit", raising=False)
+    monkeypatch.setattr(resource, "setrlimit", refused)   # inherited at fork
+    monkeypatch.setattr(_proc, "GROUP_GUARD_POLL_S", 0.2)
+    env = {**os.environ, "HOLD": "20"}
+    t0 = time.monotonic()
+    rc, out = _proc.run(_HOLDING_BOMB, timeout=60, env=env, as_limit=512 * 1024 * 1024)
+    assert rc == -signal.SIGKILL and "[killed: memory cap" in out, (rc, out[-300:])
+    assert time.monotonic() - t0 < 15
+    # Under the cap nothing is killed.
+    rc, out = _proc.run([sys.executable, "-c", "print('small')"], timeout=30,
+                        as_limit=512 * 1024 * 1024)
+    assert rc == 0 and out.strip() == "small"
 
 
 @pytest.mark.parametrize("lang,src", [
@@ -502,6 +549,25 @@ def test_c_family_snippets_that_read_a_host_file_are_refused(lang, secret, monke
     assert ran == [], f"the toolchain was started on a refused snippet: {ran}"
 
 
+@pytest.mark.parametrize("lang", ["c", "cpp"])
+def test_a_leading_bom_does_not_hide_a_host_include(lang, secret, monkeypatch):
+    # clang/gcc skip a leading UTF-8 BOM, but the directive scan's `^` sat
+    # before it: '\ufeff#include "/abs"' reached the compiler unrefused.
+    ran = []
+    real = D._run
+    monkeypatch.setattr(D, "_run", lambda argv, *a, **k: ran.append(argv) or real(argv, *a, **k))
+    drv = D.driver_for(lang)
+    for src in _c_leaks(secret):
+        r = drv.compile_source("\ufeff" + src)
+        assert not r and r.detail.startswith("refused, not compiled"), (src, r.detail)
+    assert ran == []
+
+
+def test_a_leading_bom_is_not_a_python_syntax_error():
+    r = D.driver_for("python").compile_source("\ufeffimport json\njson.dumps\n")
+    assert r and "SyntaxError" not in r.detail, r.detail
+
+
 def test_the_leak_was_real_and_ordinary_includes_are_untouched(secret, tmp_path, monkeypatch):
     if not _c_works():
         pytest.skip("no C toolchain here that accepts the driver's flags")
@@ -554,6 +620,68 @@ def test_zig_snippets_that_read_a_host_file_are_refused(secret):
         assert not r and r.detail.startswith("refused, not compiled"), (src, r.detail)
     for src in ('const s = @embedFile("data.txt");\n_ = s;',
                 'const b = @import("builtin");\n_ = b;'):
+        assert z.refusal(z.wrap(src)) is None, src
+
+
+def _c_ff_vt_leaks(path):
+    """A form feed or vertical tab AFTER the `#`: gcc/g++/clang warn ("form
+    feed in preprocessing directive") and still run the directive."""
+    out = []
+    for ws in ("\f", "\v"):
+        out += [
+            f'#{ws}include "{path}"\nint main(void){{return 0;}}\n',
+            f'#{ws}include{ws}"{path}"\nint main(void){{return 0;}}\n',
+            f'#{ws}include <{path}>\nint main(void){{return 0;}}\n',
+            f'# {ws}/**/{ws}include "{path}"\nint main(void){{return 0;}}\n',
+            f'#{ws}line 1 "{path}"\nint x = ;\n',
+            f'#{ws}1 "{path}"\nint x = ;\n',
+            f'int main(void){{ static const unsigned char b[] = {{\n#{ws}embed "{path}"\n}}; '
+            "return b[0]; }\n",
+            f'#{ws}if __has_include("{path}")\n#endif\n',
+            f'#define F "{path}"\n#{ws}include F\nint main(void){{return 0;}}\n',
+            f'{ws}import{ws}"{path}";\n',
+        ]
+    # clang ignores a NUL byte ("null character ignored") and still runs the
+    # directive, so a NUL anywhere is refused outright.
+    out += [
+        f'#\x00include "{path}"\nint main(void){{return 0;}}\n',
+        f'\x00#include "{path}"\nint main(void){{return 0;}}\n',
+        f'#\x00line 1 "{path}"\nint x = ;\n',
+        f'#include\x00"{path}"\nint main(void){{return 0;}}\n',
+    ]
+    return out
+
+
+@pytest.mark.parametrize("lang", ["c", "cpp"])
+def test_a_form_feed_or_vtab_after_the_hash_still_refuses(lang, secret, monkeypatch):
+    ran = []
+    monkeypatch.setattr(D, "_run", lambda argv, *a, **k: ran.append(argv))
+    drv = D.driver_for(lang)
+    for src in _c_ff_vt_leaks(secret):
+        r = drv.compile_source(src)
+        assert not r and r.refused, (lang, src, r.detail)
+    assert ran == [], f"the toolchain was started on a refused snippet: {ran}"
+    # negative controls: an ordinary include / #line with \f stays judged
+    for src in ('#\finclude <stdio.h>\nint main(void){return 0;}\n',
+                '#\finclude\f"local.h"\nint main(void){return 0;}\n',
+                '#\vline 10 "renamed.c"\nint main(void){return 0;}\n'):
+        assert drv.refusal(src) is None, src
+
+
+def test_zig_cdefine_cannot_inject_a_directive(secret):
+    """@cDefine/@cUndef are printed verbatim into the @cImport header
+    (`#define {name} {value}\n`), so an escaped newline in either argument
+    injects an `#include` of a host file that clang then reads."""
+    z = D.driver_for("zig")
+    for src in (f'const c = @cImport({{ @cDefine("X", "1\\n#include \\"{secret}\\""); }});\n_ = c;',
+                f'const c = @cImport({{ @cDefine("X\\n#include <{secret}>\\n#define Y", "1"); }});\n_ = c;',
+                f'const c = @cImport({{ @cUndef("X\\n#include <{secret}>"); }});\n_ = c;',
+                'const v = "1\\n#include <x>";\nconst c = @cImport({ @cDefine("X", v); });\n_ = c;',
+                'const c = @cImport({ @cDefine("X",\n    \\\\1\n); });\n_ = c;'):
+        r = z.compile_source(z.wrap(src))
+        assert not r and r.refused, (src, r.detail)
+    for src in ('const c = @cImport({ @cDefine("X", "1"); @cInclude("local.h"); });\n_ = c;',
+                'const c = @cImport({ @cDefine("_GNU_SOURCE", {}); @cUndef("X"); });\n_ = c;'):
         assert z.refusal(z.wrap(src)) is None, src
 
 
@@ -1093,6 +1221,8 @@ def test_the_c_side_channels_were_real(secret, monkeypatch):
     #line echoes the file and the dependency pragma answers existence."""
     if not _c_works():
         pytest.skip("no C toolchain here that accepts the driver's flags")
+    if not _gnu_cc():
+        pytest.skip("GNU gcc behaviour; this host's gcc is clang")
     c = D.driver_for("c")
     monkeypatch.setattr(D.CDriver, "refusal", lambda self, s: None)
     assert "hunter2" in c.compile_source(_c_side_channels(secret)[0]).detail
@@ -1117,6 +1247,8 @@ def test_the_ucn_spelled_dependency_pragma_was_an_oracle(lang, secret, monkeypat
     "No such file", so the diagnostic answers existence."""
     if not _c_works():
         pytest.skip("no C toolchain here that accepts the driver's flags")
+    if not _gnu_cc():
+        pytest.skip("GNU gcc behaviour; this host's gcc is clang")
     drv = D.driver_for(lang)
     monkeypatch.setattr(type(drv), "refusal", lambda self, s: None)
     for tpl in ('#pragma GCC depend\\u0065ncy "{}"\nint main(void){{return 0;}}\n',

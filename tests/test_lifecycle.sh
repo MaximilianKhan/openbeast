@@ -48,7 +48,7 @@ _sandbox() { # _sandbox <dir>
     printf '#!/bin/bash\nexit 1\n' > "$d/bin/$c"; chmod +x "$d/bin/$c"
   done
   # pkill/pgrep reach the REAL process table. Let through only patterns
-  # anchored inside this sandbox (stop.sh also carries an unanchored legacy
+  # anchored inside this sandbox (stop.sh once carried an unanchored legacy
   # `pkill -f "mcpo --port"`, which must never run against the host).
   for c in pkill pgrep; do
     printf '#!/bin/bash\nfor a in "$@"; do [[ "$a" == *%s* ]] && exec /usr/bin/%s "$@"; done\nexit 1\n' \
@@ -352,7 +352,7 @@ printf '#!/bin/bash\necho "weight rejected by the registry" >&2\nexit 3\n' > "$_
 chmod +x "$_L/scripts/serve-refused.sh"
 _R="$(_launch_case serve-refused.sh serve-ok.sh)"
 if [[ "$_R" == "RC=1 SERVING=serve-refused.sh LASTGOOD=serve-ok.sh FAIL=refused "* ]] \
-   && grep -q "Refusing to roll back: 'serve-refused.sh' was rejected by the weight registry" "$_L/out"; then
+   && grep -q "Refusing to roll back: 'serve-refused.sh' was refused by serve.sh" "$_L/out"; then
   pass "a strict weight refusal (serve.sh exit 3) is NOT rolled back past, even with a last-good and MODEL_ROLLBACK=true"
 else
   fail "a weight-registry refusal was rolled back past: $_R :: $(tr '\n' ' ' < "$_L/out")"
@@ -544,6 +544,23 @@ if [[ "$(_ext_conf)" == 'EXTENSIONS="other"' ]]; then
 else
   fail "ext.sh disable dashboard -> $(_ext_conf) ($(tr '\n' ' ' <<< "$_O"))"
 fi
+# extensions-ntfy review: enable/disable built the new conf line from the
+# env-resolved list, writing a one-off OPENBEAST_EXTENSIONS into the conf.
+echo 'EXTENSIONS="other"' > "$_X/openbeast.conf"
+RUN_ENV=(OPENBEAST_EXTENSIONS=dashboard)
+_O="$(_ext enable dashboard)"
+if [[ "$(_ext_conf)" == 'EXTENSIONS="other dashboard"' && "$_O" == *"OPENBEAST_EXTENSIONS=\"dashboard\" is set"* ]]; then
+  pass "enable with an env override adds to the conf's own list, and says the override is set"
+else
+  fail "ext.sh enable under OPENBEAST_EXTENSIONS -> $(_ext_conf) ($(tr '\n' ' ' <<< "$_O"))"
+fi
+_O="$(_ext disable dashboard)"
+if [[ "$(_ext_conf)" == 'EXTENSIONS="other"' ]]; then
+  pass "…and disable removes it from the conf's list, keeping what only the conf named"
+else
+  fail "ext.sh disable under OPENBEAST_EXTENSIONS -> $(_ext_conf) ($(tr '\n' ' ' <<< "$_O"))"
+fi
+RUN_ENV=()
 # start.sh's launch loop, lifted verbatim, under set -euo pipefail.
 python3 - "$REPO_DIR/start.sh" "$_X/launch.sh" <<'PY'
 import sys
@@ -1031,6 +1048,96 @@ else
 fi
 
 echo ""
+echo "start.sh -d raises the memory scope for a big-mode profile only (docs/WEIGHT_STREAMING.md):"
+# The 128 GB rig's MemTotal, whatever box runs this; host class forced to rig.
+printf 'MemTotal:       127926272 kB\nMemAvailable:  120000000 kB\n' > "$_SE/meminfo"
+printf '#!/bin/bash\n# openbeast-scope: mem-limit-pct=90 memlock=infinity host-class=rig min-mem-gib=118\nexit 0\n' \
+  > "$_SE/scripts/serve-big-test.sh"
+printf '#!/bin/bash\nexit 0\n' > "$_SE/scripts/serve-daily-test.sh"
+chmod +x "$_SE/scripts/serve-big-test.sh" "$_SE/scripts/serve-daily-test.sh"
+printf 'SEARXNG_SECRET=x\n' > "$_SE/openbeast.conf"
+_big() { # _big <serve script> [extra env...]
+  rm -f "$_SE/systemd-run.log"
+  RUN_ENV=(OB_MEMINFO="$_SE/meminfo" OB_ENGINE_HOST_CLASS="${_BIG_CLASS:-rig}" "${@:2}")
+  _start_rc "$_SE" 30 -d "$1"
+  RUN_ENV=()
+}
+# 90% of 127926272 kB, computed the way start.sh does it.
+_MAX90=$(( 127926272 * 1024 / 100 * 90 )); _MAX75=$(( 127926272 * 1024 / 100 * 75 ))
+_big serve-big-test.sh
+if grep -q -- "-p MemoryMax=$_MAX90 " "$_SE/systemd-run.log" 2>/dev/null \
+   && grep -q -- "--setenv=OPENBEAST_MEM_LIMIT_PCT=90" "$_SE/systemd-run.log" \
+   && grep -q -- "--_daemonized serve-big-test.sh" "$_SE/systemd-run.log" \
+   && { grep -q -- "-p LimitMEMLOCK=infinity" "$_SE/systemd-run.log" || [[ "$_SO" == *"asks for memlock=infinity"* ]]; }; then
+  # (The banner after systemd-run never prints here: the stub ends the
+  # launcher right after recording the launch, so the launch IS the evidence.)
+  pass "a big profile's scope is 90% of RAM, the daemon is told so, and memlock is passed (or the limit is named)"
+else
+  fail "big profile scope (rc=$_SRC): $(tail -n 4 <<< "$_SO" | tr '\n' ' ') :: $(cat "$_SE/systemd-run.log" 2>/dev/null)"
+fi
+_big serve-daily-test.sh
+if grep -q -- "-p MemoryMax=$_MAX75 " "$_SE/systemd-run.log" 2>/dev/null \
+   && ! grep -q -- "LimitMEMLOCK\|OPENBEAST_MEM_LIMIT_PCT" "$_SE/systemd-run.log"; then
+  pass "…any other profile keeps 75%, no memlock, nothing forwarded (control)"
+else
+  fail "daily profile scope changed: $(cat "$_SE/systemd-run.log" 2>/dev/null)"
+fi
+_BIG_CLASS=spark _big serve-big-test.sh
+if [[ $_SRC -ne 0 && "$_SO" == *"rig-only profile"* && "$_SO" == *"Nothing was started"* && ! -e "$_SE/systemd-run.log" ]]; then
+  pass "…and the big profile is refused on a Spark before anything is spawned"
+else
+  fail "big profile on a spark (rc=$_SRC): $(tail -n 3 <<< "$_SO" | tr '\n' ' ')"
+fi
+
+echo ""
+echo "start.sh -d after a stop that has not finished (2026-11-23: openbeast.service restart after a model switch):"
+# systemctl: openbeast-stack reports "deactivating" for $_SE/deact more polls
+# ("forever": until a KILL), then inactive; every call is logged.
+cat > "$_SE/bin/systemctl" <<SH
+#!/bin/bash
+printf '%s\n' "\$*" >> "$_SE/systemctl.log"
+if [[ "\$*" == *"show -p ActiveState --value openbeast-stack"* ]]; then
+  n=\$(cat "$_SE/deact" 2>/dev/null || echo 0)
+  if [[ "\$n" == forever ]]; then echo deactivating
+  elif (( n > 0 )); then echo deactivating; echo \$((n - 1)) > "$_SE/deact"
+  else echo inactive; fi
+  exit 0
+fi
+[[ "\$*" == *"kill -s KILL openbeast-stack"* ]] && { echo 0 > "$_SE/deact"; exit 0; }
+[[ "\$*" == *"reset-failed openbeast-stack"* ]] && exit 0
+exit 1
+SH
+chmod +x "$_SE/bin/systemctl"
+printf 'SEARXNG_SECRET=x\n' > "$_SE/openbeast.conf"
+_settle() { rm -f "$_SE/systemd-run.log" "$_SE/systemctl.log"; echo "$1" > "$_SE/deact"
+  RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=http://$_LO:9" "${@:2}")
+  _start_rc "$_SE" 40 -d; RUN_ENV=(); }
+_settle 3
+if [[ "$_SO" == *"the previous openbeast-stack unit is still stopping"* && "$_SO" == *"the previous openbeast-stack unit is down (inactive)"* ]] \
+   && grep -q -- "--unit=openbeast-stack" "$_SE/systemd-run.log" 2>/dev/null \
+   && ! grep -q "kill -s KILL" "$_SE/systemctl.log" \
+   && [[ "$(grep -n 'reset-failed openbeast-stack' "$_SE/systemctl.log" | head -1 | cut -d: -f1)" -gt \
+         "$(grep -n 'show -p ActiveState' "$_SE/systemctl.log" | tail -1 | cut -d: -f1)" ]]; then
+  pass "-d waits for a previous openbeast-stack still stopping, then launches (systemd-run no longer refuses the name)"
+else
+  fail "-d with a stack unit still deactivating (rc=$_SRC): $(tail -n 4 <<< "$_SO" | tr '\n' ' ') :: $(paste -sd';' "$_SE/systemctl.log" 2>/dev/null)"
+fi
+_settle forever OB_STACK_SETTLE_S=1
+if [[ "$_SO" == *"still stopping after 1s: SIGKILL"* ]] && grep -q "kill -s KILL openbeast-stack" "$_SE/systemctl.log" \
+   && grep -q -- "--unit=openbeast-stack" "$_SE/systemd-run.log" 2>/dev/null; then
+  pass "…bounded: one that never finishes is SIGKILLed after OB_STACK_SETTLE_S, then the launch goes ahead"
+else
+  fail "-d with a stuck stack unit (rc=$_SRC): $(tail -n 4 <<< "$_SO" | tr '\n' ' ') :: $(paste -sd';' "$_SE/systemctl.log" 2>/dev/null)"
+fi
+_settle 0
+if [[ "$_SO" != *"still stopping"* ]] && grep -q -- "-p TimeoutStopSec=30s" "$_SE/systemd-run.log" 2>/dev/null; then
+  pass "…no wait when nothing is stopping; the stack unit gets TimeoutStopSec=30s (not systemd's 90 s, the outer unit's whole budget)"
+else
+  fail "stack unit stop timeout / no-wait control: $(cat "$_SE/systemd-run.log" 2>/dev/null) :: $(tail -n 3 <<< "$_SO" | tr '\n' ' ')"
+fi
+printf '#!/bin/bash\nexit 1\n' > "$_SE/bin/systemctl"
+
+echo ""
 echo "start.sh's missing-deps hint (UX-14):"
 _DP="$_T/deps"; _sandbox "$_DP"; mkdir -p "$_DP/nodeps" "$_DP/deps"
 # Whatever this box has installed, PYTHONPATH decides: one shim makes the
@@ -1086,6 +1193,8 @@ _banner_case() { # _banner_case <compose-rc> -> prints start.sh's output up to t
     sleep 0.1
   done
   tool="$(cat "$_BN/.run/mcpo.pid" 2>/dev/null || true)"; [[ "$tool" =~ ^[0-9]+$ ]] && _PIDS="$_PIDS $tool"
+  # The banner ends the start: healthcheck --restart may repair from here on.
+  [[ -e "$_BN/.run/starting" ]] && echo "TEST: .run/starting still present at the banner"
   kill -TERM "$p" 2>/dev/null || true; wait "$p" 2>/dev/null || true
   cat "$_BN/out"
 }
@@ -1103,6 +1212,11 @@ if grep -qE '^  Open WebUI: +http://localhost:3000 \(container still starting' <
   pass "compose succeeded: the URL is shown, as still starting (control)"
 else
   fail "foreground banner after a good compose: $(grep -E 'Stack is running|Open WebUI|Warning' <<< "$_O" | tr '\n' ' ') :: $(tail -n 3 <<< "$_O" | tr '\n' ' ')"
+fi
+if grep -q "Stack is running" <<< "$_O" && ! grep -q "TEST: .run/starting still present" <<< "$_O"; then
+  pass "the start-in-progress marker is gone by the banner (the watchdog may repair from there)"
+else
+  fail "start.sh still marks itself as starting at its banner"
 fi
 if [[ "$(grep -c '_webui_line' "$REPO_DIR/start.sh")" -ge 3 ]]; then
   pass "the -d launcher and the foreground banner share one Open WebUI row"
@@ -1132,10 +1246,13 @@ src = open(sys.argv[1]).read()
 a = src.index("MCPO_UP=0\n")
 b = src.index('echo "Tool server ready on http://localhost:3001"', a)
 open(sys.argv[2], "w").write(
-    'set -euo pipefail\nHEALTH_HOST=127.0.0.1; MCPO_PID=$$; : > "$SLEEP_LOG"; _n=0\n'
+    'set -euo pipefail\nHEALTH_HOST=127.0.0.1; MCPO_PID=$$; : > "$SLEEP_LOG"; echo 0 > "$SLEEP_LOG.n"\n'
     'sleep() { echo "$1" >> "$SLEEP_LOG"; SECONDS=$((SECONDS + ${CLOCK_STEP:-0})); }\n'
-    'curl() { _n=$((_n + 1)); [[ $_n -gt ${CURL_FAILS:-0} ]]; }\n'
-    + src[a:b] + 'echo "UP after $_n probes"\n')
+    # The probe count lives in a file: the loop reads curl's body through $(…).
+    'curl() { local n; n=$(( $(cat "$SLEEP_LOG.n") + 1 )); echo "$n" > "$SLEEP_LOG.n"\n'
+    '         [[ $n -gt ${CURL_FAILS:-0} ]] && echo \'{"status":"ok"}\'; }\n'
+    '_ready_ours() { return 0; }\n_lost_bind() { echo "lost: $1" >&2; }\n'
+    + src[a:b] + 'echo "UP after $(cat "$SLEEP_LOG.n") probes"\n')
 PY
 _O="$(SLEEP_LOG="$_PL/sleeps" CURL_FAILS=3 bash "$_PL/loop.sh" 2>&1)" || true
 if [[ "$_O" == *"UP after 4 probes"* && "$(sort -u "$_PL/sleeps" | tr '\n' ' ')" == "0.2 " && "$(wc -l < "$_PL/sleeps")" -eq 3 ]]; then
@@ -1441,12 +1558,18 @@ echo ""
 echo "doctor.sh's missing-dependency hint:"
 _P="$_T/pydeps"; _sandbox "$_P"
 mkdir -p "$_P/agents"
-printf 'obnotapackage==1.2.3\n' > "$_P/agents/requirements.txt"
+printf 'obnotapackage==1.2.3\nobnotpackage2==4.5\n' > "$_P/agents/requirements.txt"
 # python3 -m pip show: "not installed" for everything; any other python3 call
-# goes to the real interpreter.
-printf '#!/bin/bash\n[[ "$1 $2 $3" == "-m pip show" ]] && exit 1\nexec /usr/bin/python3 "$@"\n' > "$_P/bin/python3"
+# goes to the real interpreter. Every call is logged: doctor reads all pins in
+# ONE interpreter now (lib/pyversions.sh), never a pip startup per pin.
+printf '#!/bin/bash\necho "$1 $2 $3" >> "%s/py.log"\n[[ "$1 $2 $3" == "-m pip show" ]] && exit 1\nexec /usr/bin/python3 "$@"\n' "$_P" > "$_P/bin/python3"
 chmod +x "$_P/bin/python3"
 _O="$(_run "$_P" "$_P/scripts/doctor.sh")"
+if ! grep -q -- '-m pip show' "$_P/py.log" && grep -qF "✗ obnotpackage2 not installed (pinned 4.5)" <<< "$_O"; then
+  pass "doctor reads every pin's version without a pip startup per pin (review 2026-11-16)"
+else
+  fail "doctor pin versions: $(grep -c -- '-m pip show' "$_P/py.log") pip show calls; $(grep -F 'obnotpackage2' <<< "$_O")"
+fi
 if grep -qF "✗ obnotapackage not installed (pinned 1.2.3)" <<< "$_O" \
    && grep -A1 -F "obnotapackage not installed" <<< "$_O" | grep -qF "fix: ./scripts/pydeps.sh install"; then
   pass "a missing pinned package points at ./scripts/pydeps.sh install"
@@ -1500,6 +1623,444 @@ if [[ -n "${_CW:-}" && "${_LW:-}" == "$((_CW + 3))" && "${_LF:-x}" == "$_CF" ]];
 else
   fail "conf findings changed doctor's verdict wrongly: ${_LW:-?}w/${_LF:-?}f with them, ${_CW:-?}w/${_CF:-?}f without"
 fi
+
+# ---------------------------------------------------------------------------
+# stack-lifecycle review (2026-11): the watchdog against a start in progress
+# and a stop in the middle of its tick, relaunches and readiness that must be
+# OUR process, the legacy mcpo sweep, and an inline comment on BIND_HOST.
+# ---------------------------------------------------------------------------
+echo ""
+echo "stack-lifecycle review (2026-11):"
+_SL="$_T/sl"; _sandbox "$_SL"; mkdir -p "$_SL/agents" "$_SL/pydeps"
+: > "$_SL/pydeps/fastapi.py"; : > "$_SL/pydeps/uvicorn.py"
+printf '#!/bin/bash\necho "$*" >> "$DOCKER_LOG"\nexit 0\n' > "$_SL/bin/docker"; chmod +x "$_SL/bin/docker"
+# curl: everything answers, except the ports in $CURL_DOWN (and those in
+# $CURL_DOWN_ONCE, for their first probe only). A probe of a port in
+# $CURL_STOP_ON first writes .run/stopped: ./stop.sh landing mid-tick.
+cat > "$_SL/bin/curl" <<'SH'
+#!/bin/bash
+url=""; for a in "$@"; do [[ "$a" == http* ]] && url="$a"; done
+port="${url#http://*:}"; port="${port%%/*}"
+for p in ${CURL_STOP_ON:-}; do [[ "$port" == "$p" ]] && echo "2026-11-15T00:00:00 test ./stop.sh" > "$SL_RUN/stopped"; done
+for p in ${CURL_DOWN:-}; do [[ "$port" == "$p" ]] && exit 7; done
+for p in ${CURL_DOWN_ONCE:-}; do
+  [[ "$port" == "$p" && ! -e "$SL_RUN/.down-once-$p" ]] && { : > "$SL_RUN/.down-once-$p"; exit 7; }
+done
+case "$url" in
+  *:3000/*)      printf '{"version":"x"}' ;;
+  *:8888*)       printf '<title>searxng</title>' ;;
+  */gate/health) printf '{"status":"ok","service":"beast-gate"}' ;;
+  *)             printf '{"status":"ok"}' ;;
+esac
+SH
+chmod +x "$_SL/bin/curl"
+# The tool server, by $TOOL_MODE: exit (dies at once), linger (alive 3 s,
+# never binds), serve (binds $STUB_HOST:3001), race (a DETACHED child takes
+# :3001 and answers, while this process dies 2 s later — the bind race).
+# Every run notes whether .run/starting existed when it was spawned.
+cat > "$_SL/agents/openapi_tools.py" <<'PY'
+import http.server, os, sys, threading, time
+open(os.environ["SL_MARK"], "a").write(
+    "ran starting=%s\n" % os.path.exists(os.path.join(os.environ["SL_RUN"], "starting")))
+mode = os.environ.get("TOOL_MODE", "exit")
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        b = b'{"status":"ok"}'
+        self.send_response(200); self.send_header("Content-Length", str(len(b)))
+        self.end_headers(); self.wfile.write(b)
+def serve():
+    srv = http.server.HTTPServer((os.environ["STUB_HOST"], 3001), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+if mode == "linger":
+    time.sleep(3)
+elif mode == "serve":
+    serve(); time.sleep(20); os._exit(0)
+elif mode == "race":
+    if os.fork() == 0:
+        os.setsid()
+        fd = os.open(os.devnull, os.O_RDWR)
+        for i in (0, 1, 2): os.dup2(fd, i)
+        serve()
+        open(os.environ["SL_SQUAT"], "w").write(str(os.getpid()))
+        time.sleep(20); os._exit(0)
+    time.sleep(2)
+sys.exit(1)
+PY
+printf 'import sys\nsys.exit(1)\n' > "$_SL/agents/edge.py"
+_sl_hc() { # _sl_hc [VAR=value...] — one healthcheck --restart tick; prints its output
+  : > "$_SL/docker.log"; : > "$_SL/mark"; rm -f "$_SL/.run"/.down-once-*
+  RUN_ENV=(DOCKER_LOG="$_SL/docker.log" SL_RUN="$_SL/.run" SL_MARK="$_SL/mark" SL_SQUAT="$_SL/squat"
+           STUB_HOST="$_LO" OPENBEAST_BIND="$_LO" "$@")
+  _run "$_SL" "$_SL/scripts/healthcheck.sh" --restart
+  RUN_ENV=()
+}
+_sl_reap() { # stop whatever the last tick relaunched (by its record)
+  local f p
+  for f in mcpo edge; do
+    p="$(cat "$_SL/.run/$f.pid" 2>/dev/null || true)"
+    [[ "$p" =~ ^[0-9]+$ ]] && kill "$p" 2>/dev/null || true
+  done
+}
+
+# 1. A live supervisor that has not reached its banner: report only. It
+#    starts the tool server itself after the model load, and a copy started
+#    here raced it for the port.
+sleep 120 & _SUP=$!; _PIDS="$_PIDS $_SUP"
+bash -c 'source "$1"; ob_pid_record "$2" "$3"' _ "$REPO_DIR/scripts/lib/proc.sh" "$_SL/.run/supervisor.pid" "$_SUP"
+echo "$_SUP" > "$_SL/.run/starting"
+_O="$(_sl_hc CURL_DOWN=3001)"
+if [[ ! -s "$_SL/mark" && "$_O" == *"Stack is starting (supervisor pid $_SUP)"* ]]; then
+  pass "a start in progress (live supervisor + .run/starting): the watchdog relaunches nothing"
+else
+  fail "the watchdog raced a starting supervisor: tool server ran $(wc -l < "$_SL/mark")x: $(grep -F '→' <<< "$_O" | tr '\n' ' ')"
+fi
+rm -f "$_SL/.run/starting"
+_O="$(_sl_hc CURL_DOWN=3001 TOOL_MODE=exit)"
+if [[ -s "$_SL/mark" && "$_O" == *"restart FAILED: the relaunched tool server exited"* ]]; then
+  pass "…past the banner a DOWN tool server is relaunched, and one that dies is named at once (control)"
+else
+  fail "no relaunch without the marker: $(grep -F '→' <<< "$_O" | tr '\n' ' ')"
+fi
+echo "999999" > "$_SL/.run/starting"
+_O="$(_sl_hc CURL_DOWN=3001 TOOL_MODE=exit)"
+if [[ -s "$_SL/mark" && "$_O" != *"Stack is starting"* ]]; then
+  pass "…and a marker that names no live supervisor is ignored (a crashed start)"
+else
+  fail "a stale .run/starting blocked the watchdog"
+fi
+rm -f "$_SL/.run/starting"
+
+# 2. ./stop.sh while the tick is running: the marker is read again before
+#    every restart, not once at the top.
+_O="$(_sl_hc CURL_DOWN="3001 3000 8888" CURL_STOP_ON=3001 TOOL_MODE=exit)"
+if [[ ! -s "$_SL/mark" && ! -s "$_SL/docker.log" && "$_O" == *"stopped on purpose during this pass"* ]]; then
+  pass "a stop that lands mid-tick: no tool server, WebUI or SearXNG is brought back"
+else
+  fail "the tick undid a ./stop.sh made while it ran: tool server $(wc -l < "$_SL/mark")x, docker: $(tr '\n' ' ' < "$_SL/docker.log")"
+fi
+rm -f "$_SL/.run/stopped"
+
+# 3. A relaunch is ours only if OUR process holds the port.
+_O="$(_sl_hc CURL_DOWN_ONCE=3001 TOOL_MODE=linger)"
+if [[ "$_O" == *"restart FAILED: the relaunched tool server exited"* && "$_O" != *"→ restarted (pid"* ]]; then
+  pass "a relaunched tool server that never binds is FAILED, though something answers :3001"
+else
+  fail "something else answering :3001 counted as our relaunch: $(grep -F '→' <<< "$_O" | tr '\n' ' ')"
+fi
+_O="$(_sl_hc CURL_DOWN_ONCE=3001 TOOL_MODE=serve)"
+if [[ "$_O" == *"→ restarted (pid $(cat "$_SL/.run/mcpo.pid" 2>/dev/null))"* ]]; then
+  pass "…and one that does hold :3001 is restarted (control)"
+else
+  fail "a relaunched tool server holding :3001 was not accepted: $(grep -F '→' <<< "$_O" | tr '\n' ' ')"
+fi
+_sl_reap
+printf 'EDGE_GATE=true\n' > "$_SL/openbeast.conf"
+_O="$(_sl_hc CURL_DOWN=8090)"
+if [[ "$_O" == *"restart FAILED: the relaunched beast-gate exited"* && "$_O" != *"→ restarted"* ]]; then
+  pass "a relaunched beast-gate that dies is FAILED (was: 'restarted' after a bare sleep 3)"
+else
+  fail "the gate relaunch: $(grep -A1 'beast-gate' <<< "$_O" | tr '\n' ' ')"
+fi
+: > "$_SL/openbeast.conf"
+# Green, but from a process this stack did not start: flagged, like chat.
+(exec python3 -c 'import socket, sys, time
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind((sys.argv[1], 3001)); s.listen(4); time.sleep(60)' "$_LO" >/dev/null 2>&1) & _SQ=$!; _PIDS="$_PIDS $_SQ"
+for _ in 1 2 3 4 5 6 7 8 9 10; do (exec 3<>"/dev/tcp/$_LO/3001") 2>/dev/null && break; sleep 0.2; done
+rm -f "$_SL/.run/mcpo.pid"
+_O="$(_sl_hc)"
+if grep -q "FOREIGN Tool server answers, but from pid .*$_SQ" <<< "$_O"; then
+  pass "a green :3001 held by a process the stack did not start is FOREIGN, not OK"
+else
+  fail "a foreign :3001 holder read as healthy: $(grep -i 'tool server' <<< "$_O" | tr '\n' ' ')"
+fi
+echo "$_SQ" > "$_SL/.run/mcpo.pid"
+_O="$(_sl_hc)"
+if ! grep -q "FOREIGN Tool server" <<< "$_O" && grep -q "OK   Tool server" <<< "$_O"; then
+  pass "…and the recorded holder is OK (control)"
+else
+  fail "the recorded tool server was flagged: $(grep -i 'tool server' <<< "$_O" | tr '\n' ' ')"
+fi
+kill "$_SQ" 2>/dev/null || true; wait "$_SQ" 2>/dev/null || true
+rm -f "$_SL/.run/mcpo.pid"
+
+# 4. start.sh: the tool server is ready only when OURS holds :3001. Unmanaged
+#    backend, real curl; the stub loses the bind race to a squatter.
+_SR="$_T/slr"; _sandbox "$_SR"; rm -f "$_SR/bin/curl"; mkdir -p "$_SR/agents"
+cp "$_SL/agents/openapi_tools.py" "$_SR/agents/"
+: > "$_SR/mark"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=http://$_LO:9" OPENBEAST_LLAMA_LOAD_GRACE=1
+         "PYTHONPATH=$_SL/pydeps" TOOL_MODE=race STUB_HOST="$_LO" SL_RUN="$_SR/.run" SL_MARK="$_SR/mark" SL_SQUAT="$_SR/squat")
+_start_rc "$_SR" 40
+RUN_ENV=()
+_sq="$(cat "$_SR/squat" 2>/dev/null || true)"; [[ "$_sq" =~ ^[0-9]+$ ]] && { kill "$_sq" 2>/dev/null || true; }
+if [[ $_SRC -eq 1 && "$_SO" == *"tool server exited during startup"* && "$_SO" == *"DIFFERENT process answers on port 3001"* \
+      && "$_SO" != *"Tool server ready"* ]]; then
+  pass "start.sh: a squatter answering :3001 while ours loses the bind is not 'ready' (it is named)"
+else
+  fail "start.sh accepted another process's :3001 as its tool server (rc=$_SRC): $(grep -iE 'tool server|DIFFERENT' <<< "$_SO" | tr '\n' ' ')"
+fi
+if grep -q "starting=True" "$_SR/mark" && [[ ! -e "$_SR/.run/starting" ]]; then
+  pass "…the supervisor marks itself starting while it spawns, and the marker goes with it on exit"
+else
+  fail ".run/starting: at spawn '$(tr '\n' ' ' < "$_SR/mark")', after exit $(ls "$_SR/.run" | tr '\n' ' ')"
+fi
+
+# 5. stop.sh never pkills by a pattern outside this checkout (the legacy
+#    `mcpo --port` sweep reached any project's mcpo).
+_SP="$_T/slp"; _sandbox "$_SP"
+for _c in pkill pgrep; do
+  printf '#!/bin/bash\necho "%s $*" >> "%s/pk.log"\nexit 1\n' "$_c" "$_SP" > "$_SP/bin/$_c"; chmod +x "$_SP/bin/$_c"
+done
+_run "$_SP" "$_SP/stop.sh" >/dev/null
+if [[ -s "$_SP/pk.log" ]] && ! grep -v "$_SP" "$_SP/pk.log" >/dev/null; then
+  pass "every pkill/pgrep pattern stop.sh uses is anchored to this checkout"
+else
+  fail "stop.sh kills by an unanchored pattern: $(grep -v "$_SP" "$_SP/pk.log" | tr '\n' ' ')"
+fi
+if ! grep -vE '^[[:space:]]*#' "$REPO_DIR/scripts/healthcheck.sh" | grep -q 'mcpo --port'; then
+  pass "…and neither does healthcheck.sh (no 'mcpo --port' sweep)"
+else
+  fail "healthcheck.sh still pkills 'mcpo --port' — any project's mcpo"
+fi
+
+# ---------------------------------------------------------------------------
+# BIND_HOST with an inline comment is the address, not the comment
+# (stack-lifecycle review).
+# ---------------------------------------------------------------------------
+echo ""
+echo "BIND_HOST with an inline comment:"
+_BHS="$_T/bindhost"; _sandbox "$_BHS"
+_bh() { # _bh <conf line> — BIND_HOST|INFERENCE_URL as conf.sh resolves them
+  printf '%s\n' "$1" > "$_BHS/openbeast.conf"
+  env -i HOME="$_BHS/home" PATH="$_BHS/bin:/usr/bin:/bin" OB_CONF_READONLY=1 \
+    bash -c 'REPO_DIR="$1"; source "$1/scripts/lib/conf.sh" 2>/dev/null; printf "%s|%s" "$BIND_HOST" "$INFERENCE_URL"' _ "$_BHS"
+}
+_BH="$(_bh 'BIND_HOST=127.0.0.1   # loopback only')"
+if [[ "$_BH" == "127.0.0.1|http://127.0.0.1:8080" ]]; then
+  pass "BIND_HOST=127.0.0.1 # comment -> 127.0.0.1 (was the whole line, in every bind and URL)"
+else
+  fail "BIND_HOST with an inline comment gave: '$_BH'"
+fi
+_BH="$(_bh 'BIND_HOST=192.0.2.9')"
+[[ "$_BH" == "192.0.2.9|http://192.0.2.9:8080" ]] && pass "…a plain BIND_HOST is unchanged (control)" \
+  || fail "plain BIND_HOST gave '$_BH'"
+# review 2026-11-16: a QUOTED value with a comment kept its closing quote
+# (`127.0.0.1"`), which still read as loopback and reached --host.
+_BH="$(_bh 'BIND_HOST="127.0.0.1"   # loopback only')"
+[[ "$_BH" == "127.0.0.1|http://127.0.0.1:8080" ]] \
+  && pass "BIND_HOST=\"127.0.0.1\" # comment -> 127.0.0.1 (was 127.0.0.1\", passing as loopback)" \
+  || fail "quoted BIND_HOST with an inline comment gave: '$_BH'"
+_BH="$(_bh "BIND_HOST='192.0.2.9' # LAN")"
+[[ "$_BH" == "192.0.2.9|http://192.0.2.9:8080" ]] && pass "…single quotes too" \
+  || fail "single-quoted BIND_HOST with a comment gave '$_BH'"
+_BH="$(_bh 'BIND_HOST="[::1]"')"
+[[ "$_BH" == "[::1]|"* ]] && pass "…a bracketed IPv6 address is an address" \
+  || fail "BIND_HOST=[::1] gave '$_BH'"
+# Junk that survives every strip is refused, not bound: loopback + one lint row.
+printf '%s\n' 'BIND_HOST=127.0.0.1,10.0.0.1' > "$_BHS/openbeast.conf"
+_BH="$(env -i HOME="$_BHS/home" PATH="$_BHS/bin:/usr/bin:/bin" OB_CONF_READONLY=1 \
+  bash -c 'REPO_DIR="$1"; source "$1/scripts/lib/conf.sh" 2>/dev/null; printf "%s|" "$BIND_HOST"; ob_conf_lint' _ "$_BHS")"
+if [[ "$_BH" == "127.0.0.1|"*"BIND_HOST='127.0.0.1,10.0.0.1' is not an address or hostname"* ]]; then
+  pass "BIND_HOST=127.0.0.1,10.0.0.1 -> 127.0.0.1, and lint names it"
+else
+  fail "malformed BIND_HOST gave: '$_BH'"
+fi
+# _ob_conf_value itself: the quoted-plus-comment form, and the forms it must
+# NOT change (a quote inside a value; a bare value containing ' #').
+_qv() { printf '%s\n' "$1" > "$_BHS/openbeast.conf"
+  env -i PATH=/usr/bin:/bin OB_CONF_READONLY=1 OB_CONF_LINTED=1 \
+    bash -c 'REPO_DIR="$1"; source "$1/scripts/lib/conf.sh" 2>/dev/null; _ob_conf_value K' _ "$_BHS"; }
+_q1="$(_qv 'K="a b" # note')"; _q2="$(_qv 'K="a"b"')"; _q3="$(_qv 'K=pa #ss')"; _q4="$(_qv 'K="x #y"')"
+if [[ "$_q1" == "a b" && "$_q2" == 'a"b' && "$_q3" == "pa #ss" && "$_q4" == "x #y" ]]; then
+  pass "_ob_conf_value: \"v\" # c -> v; inner quotes and a bare ' #' are kept as before"
+else
+  fail "_ob_conf_value quoting: [$_q1] [$_q2] [$_q3] [$_q4]"
+fi
+
+# ---------------------------------------------------------------------------
+# extensions-ntfy review: DASHBOARD_PORT was honoured by run.sh only;
+# healthcheck and --publish-slot dialled :3002 regardless.
+# ---------------------------------------------------------------------------
+echo ""
+echo "DASHBOARD_PORT reaches every caller of the dashboard:"
+_DP="$_T/dport"; _sandbox "$_DP"
+printf '#!/bin/bash\nfor a in "$@"; do [[ "$a" == http* ]] && echo "$a" >> "$CURL_LOG"; done\nexit 7\n' > "$_DP/bin/curl"
+chmod +x "$_DP/bin/curl"
+_dport_urls() { # _dport_urls <conf-text> [VAR=value ...] -> the slot URLs healthcheck asked for
+  local text="$1"; shift
+  printf 'SEARXNG_SECRET=s\nEXTENSIONS="dashboard"\n%s\n' "$text" > "$_DP/openbeast.conf"
+  : > "$_DP/curl.log"
+  RUN_ENV=(CURL_LOG="$_DP/curl.log" "$@")
+  _run "$_DP" "$_DP/scripts/healthcheck.sh" >/dev/null
+  RUN_ENV=()
+  grep '/api/slot' "$_DP/curl.log" || true
+}
+_U="$(_dport_urls "DASHBOARD_PORT=3999")"
+if [[ "$_U" == *":3999/api/slot"* && "$_U" != *":3002/"* ]]; then
+  pass "conf DASHBOARD_PORT=3999: healthcheck probes :3999/api/slot"
+else
+  fail "healthcheck with DASHBOARD_PORT=3999 asked for: $(tr '\n' ' ' <<< "$_U")"
+fi
+_U="$(_dport_urls "" OPENBEAST_DASHBOARD_PORT=3998)"
+[[ "$_U" == *":3998/api/slot"* ]] && pass "…and the OPENBEAST_DASHBOARD_PORT env override (what start.sh -d forwards)" \
+  || fail "OPENBEAST_DASHBOARD_PORT ignored: $(tr '\n' ' ' <<< "$_U")"
+_U="$(_dport_urls "")"
+[[ "$_U" == *":3002/api/slot"* ]] && pass "…unset is :3002, as before (control)" \
+  || fail "default dashboard port moved: $(tr '\n' ' ' <<< "$_U")"
+if ! grep -nE '(UP_HOST|\$1):3002' "$REPO_DIR/scripts/setup-tailscale.sh" >/dev/null \
+   && grep -q 'http://$1:${DASHBOARD_PORT:-3002}/api/slot' "$REPO_DIR/scripts/setup-tailscale.sh" \
+   && grep -q '_publish_slot_mount "$UP_HOST"' "$REPO_DIR/scripts/setup-tailscale.sh"; then
+  pass "setup-tailscale.sh --publish-slot mounts :8444 at DASHBOARD_PORT"
+else
+  fail "setup-tailscale.sh still mounts a hard-coded :3002: $(grep -nE '(UP_HOST|\$1):3002' "$REPO_DIR/scripts/setup-tailscale.sh" | tr '\n' ' ')"
+fi
+
+# ---------------------------------------------------------------------------
+# extensions-ntfy review: a dead dashboard was reported by healthcheck but
+# never relaunched by --restart, so :8444/api/slot stayed 502 until a full
+# stack restart.
+# ---------------------------------------------------------------------------
+echo ""
+echo "healthcheck.sh --restart relaunches a dead dashboard extension:"
+_DR="$_T/dashre"; _sandbox "$_DR"
+_DPORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
+mkdir -p "$_DR/extensions/dashboard"
+printf 'NAME=dashboard\nKIND=process\n' > "$_DR/extensions/dashboard/manifest"
+cat > "$_DR/extensions/dashboard/server.py" <<'PY'
+import http.server, os
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        b = b'{"beast_slot": 2}'
+        self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+    def log_message(self, *a): pass
+http.server.HTTPServer(("127.0.0.1", int(os.environ["DASHBOARD_PORT"])), H).serve_forever()
+PY
+printf '#!/bin/bash\nexec python3 "$(cd "$(dirname "$0")" && pwd)/server.py"\n' > "$_DR/extensions/dashboard/run.sh"
+chmod +x "$_DR/extensions/dashboard/run.sh"
+# Only the dashboard's own URL reaches a real curl; every other probe is down.
+printf '#!/bin/bash\nfor a in "$@"; do [[ "$a" == *":%s/api/slot" ]] && exec /usr/bin/curl "$@"; done\nexit 7\n' "$_DPORT" > "$_DR/bin/curl"
+chmod +x "$_DR/bin/curl"
+printf 'SEARXNG_SECRET=s\nEXTENSIONS="dashboard"\nDASHBOARD_PORT=%s\n' "$_DPORT" > "$_DR/openbeast.conf"
+_O="$(timeout 300 bash -c "$(declare -f _run); RUN_ENV=(); _run '$_DR' '$_DR/scripts/healthcheck.sh' --restart")"
+_DPID="$(cat "$_DR/.run/ext-dashboard.pid" 2>/dev/null || true)"
+[[ "$_DPID" =~ ^[0-9]+$ ]] && _PIDS="$_PIDS $_DPID"
+if [[ "$_O" == *"restarting the dashboard extension"* && "$_O" == *"→ restarted (pid $_DPID)"* ]] \
+   && kill -0 "$_DPID" 2>/dev/null && [[ -s "$_DR/.run/ext-dashboard.start" ]] \
+   && /usr/bin/curl -fsS -m 2 "http://127.0.0.1:$_DPORT/api/slot" | grep -q beast_slot; then
+  pass "a dead dashboard is relaunched, recorded (pid + start time) and serving"
+else
+  fail "dashboard not relaunched: $(grep -iE 'dashboard|→' <<< "$_O" | tr '\n' ' ')"
+fi
+_O="$(timeout 300 bash -c "$(declare -f _run); RUN_ENV=(); _run '$_DR' '$_DR/scripts/healthcheck.sh' --restart")"
+if [[ "$_O" != *"restarting the dashboard"* && "$(cat "$_DR/.run/ext-dashboard.pid")" == "$_DPID" ]]; then
+  pass "…and a serving dashboard is left alone (control)"
+else
+  fail "healthcheck relaunched a live dashboard: $(grep -iE 'dashboard' <<< "$_O" | tr '\n' ' ')"
+fi
+[[ "$_DPID" =~ ^[0-9]+$ ]] && kill "$_DPID" 2>/dev/null || true
+# review 2026-11-16: the dashboard relaunch was gated on the raw $RESTART, so
+# a ./stop.sh landing mid-pass (after the services rows, before this one)
+# got an unsupervised dashboard back. The stub "lands" stop.sh the moment the
+# pass asks for /api/slot.
+_DS="$_T/dashstop"; _sandbox "$_DS"
+mkdir -p "$_DS/extensions/dashboard"
+cp "$_DR/extensions/dashboard/"{manifest,server.py,run.sh} "$_DS/extensions/dashboard/"
+printf '#!/bin/bash\nfor a in "$@"; do [[ "$a" == *":%s/api/slot" ]] && { mkdir -p "%s/.run"; : > "%s/.run/stopped"; exit 7; }; done\nexit 7\n' \
+  "$_DPORT" "$_DS" "$_DS" > "$_DS/bin/curl"
+chmod +x "$_DS/bin/curl"
+printf 'SEARXNG_SECRET=s\nEXTENSIONS="dashboard"\nDASHBOARD_PORT=%s\n' "$_DPORT" > "$_DS/openbeast.conf"
+_O="$(timeout 300 bash -c "$(declare -f _run); RUN_ENV=(); _run '$_DS' '$_DS/scripts/healthcheck.sh' --restart")"
+_SPID="$(cat "$_DS/.run/ext-dashboard.pid" 2>/dev/null || true)"
+[[ "$_SPID" =~ ^[0-9]+$ ]] && kill "$_SPID" 2>/dev/null
+if [[ "$_O" != *"restarting the dashboard"* && -z "$_SPID" \
+      && "$_O" == *"not restarting: the stack was stopped on purpose"* ]]; then
+  pass "…but not after a ./stop.sh that landed during the pass (_may_restart)"
+else
+  fail "dashboard relaunched after a mid-pass stop: $(grep -iE 'dashboard|→' <<< "$_O" | tr '\n' ' ')"
+fi
+
+# ---------------------------------------------------------------------------
+# review 2026-11-22: `ext.sh restart <name>` waits for the old process (the
+# dashboard saves its power history on SIGTERM) and reports the health route.
+# A fake process extension whose server takes a second to exit on SIGTERM,
+# and a curl stub that answers only while a server says it is healthy.
+# ---------------------------------------------------------------------------
+echo ""
+echo "ext.sh restart waits for the old process and checks the health route:"
+_R="$_T/restart"; _sandbox "$_R"
+for _e in fake quiet; do
+  mkdir -p "$_R/extensions/$_e"
+  printf 'NAME=%s\nKIND=process\nHEALTH_PORT_VAR=DASHBOARD_PORT\nHEALTH_PATH=/api/slot\n' "$_e" > "$_R/extensions/$_e/manifest"
+  printf '#!/bin/bash\nexec python3 "$(cd "$(dirname "$0")" && pwd)/server.py"\n' > "$_R/extensions/$_e/run.sh"
+  chmod +x "$_R/extensions/$_e/run.sh"
+done
+cat > "$_R/extensions/fake/server.py" <<PY
+import os, signal, sys, time
+ev, ok = "$_R/events", "$_R/healthy"
+def log(m):
+    with open(ev, "a") as fh: fh.write(m + " %d\n" % os.getpid())
+def term(*_):
+    time.sleep(1.0)                 # flushing state, as the dashboard does
+    log("flushed")
+    try: os.unlink(ok)
+    except OSError: pass
+    os._exit(0)
+signal.signal(signal.SIGTERM, term)
+log("start")
+open(ok, "w").close()
+time.sleep(300)
+PY
+printf 'import time\ntime.sleep(300)\n' > "$_R/extensions/quiet/server.py"
+printf '#!/bin/bash\nfor a in "$@"; do [[ "$a" == *":39417/api/slot" ]] && [[ -e "%s/healthy" ]] && exit 0; done\nexit 7\n' \
+  "$_R" > "$_R/bin/curl"
+chmod +x "$_R/bin/curl"
+printf 'EXTENSIONS="fake quiet"\nDASHBOARD_PORT=39417\n' > "$_R/openbeast.conf"
+_rx() { _run "$_R" "$_R/scripts/ext.sh" "$@"; }
+_O="$(_rx restart fake)"
+_P1="$(cat "$_R/.run/ext-fake.pid" 2>/dev/null || true)"; [[ "$_P1" =~ ^[0-9]+$ ]] && _PIDS="$_PIDS $_P1"
+if [[ "$_O" == *"Restarted 'fake' (pid $_P1), answering /api/slot"* ]]; then
+  pass "restart with no process running launches it and reports the health route answering"
+else
+  fail "ext.sh restart fake (first) -> $(tr '\n' ' ' <<< "$_O")"
+fi
+_O="$(_rx restart fake)"
+_P2="$(cat "$_R/.run/ext-fake.pid" 2>/dev/null || true)"; [[ "$_P2" =~ ^[0-9]+$ ]] && _PIDS="$_PIDS $_P2"
+_FL="$(grep -n "^flushed $_P1\$" "$_R/events" | cut -d: -f1)"
+_ST="$(grep -n "^start $_P2\$" "$_R/events" | cut -d: -f1)"
+if [[ "$_O" == *"Restarted 'fake' (pid $_P2), answering /api/slot"* && "$_P2" != "$_P1" \
+      && -n "$_FL" && -n "$_ST" && "$_FL" -lt "$_ST" ]] && ! kill -0 "$_P1" 2>/dev/null; then
+  pass "…a second restart waits for the old process to flush and exit before the new one starts"
+else
+  fail "ext.sh restart fake (second) -> $(tr '\n' ' ' <<< "$_O") events: $(tr '\n' ' ' < "$_R/events")"
+fi
+[[ "$_P2" =~ ^[0-9]+$ ]] && kill "$_P2" 2>/dev/null || true
+for _ in $(seq 1 30); do [[ -e "$_R/healthy" ]] || break; sleep 0.1; done
+rm -f "$_R/healthy"
+_RC=0; _O="$(env -i HOME="$_R/home" PATH="$_R/bin:/usr/bin:/bin" bash "$_R/scripts/ext.sh" restart quiet 2>&1)" || _RC=$?
+_P3="$(cat "$_R/.run/ext-quiet.pid" 2>/dev/null || true)"; [[ "$_P3" =~ ^[0-9]+$ ]] && _PIDS="$_PIDS $_P3"
+if [[ $_RC -eq 1 && "$_O" == *"is running (pid $_P3) but /api/slot did not answer within 10 s"* ]]; then
+  pass "a process whose health route never answers: exit 1 with the log tail"
+else
+  fail "ext.sh restart quiet (rc=$_RC) -> $(tr '\n' ' ' <<< "$_O")"
+fi
+[[ "$_P3" =~ ^[0-9]+$ ]] && kill "$_P3" 2>/dev/null || true
+# The memory-capped stack scope is active: the new process is attached to it
+# (a restart over ssh would otherwise leave it in the ssh session's scope).
+printf '#!/bin/bash\n[[ "$*" == *"is-active"*"openbeast-stack.service"* ]] && exit 0\nexit 1\n' > "$_R/bin/systemctl"
+printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s/busctl.log"\nexit 0\n' "$_R" > "$_R/bin/busctl"
+chmod +x "$_R/bin/systemctl" "$_R/bin/busctl"
+_O="$(_rx restart fake)"
+_P4="$(cat "$_R/.run/ext-fake.pid" 2>/dev/null || true)"; [[ "$_P4" =~ ^[0-9]+$ ]] && _PIDS="$_PIDS $_P4"
+if [[ "$_P4" =~ ^[0-9]+$ ]] && grep -q "AttachProcessesToUnit ssau openbeast-stack.service / 1 $_P4\$" "$_R/busctl.log" 2>/dev/null; then
+  pass "restart attaches the new process to the active openbeast-stack scope"
+else
+  fail "ext.sh restart fake (stack scope) -> busctl: $(tr '\n' ' ' < "$_R/busctl.log" 2>/dev/null) out: $(tr '\n' ' ' <<< "$_O")"
+fi
+[[ "$_P4" =~ ^[0-9]+$ ]] && kill "$_P4" 2>/dev/null || true
+for _ in $(seq 1 30); do [[ -e "$_R/healthy" ]] || break; sleep 0.1; done
+printf '#!/bin/bash\nexit 1\n' > "$_R/bin/systemctl"; rm -f "$_R/bin/busctl"
 
 # ---------------------------------------------------------------------------
 echo ""

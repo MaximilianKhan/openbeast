@@ -1,0 +1,39 @@
+# hy4-vllm-inference: Hy4-flash (NVFP4) on vLLM, TP 2 + expert parallel over
+# spark-1 (head, API on 127.0.0.1:8000) + spark-2 (headless rank 1). A user
+# service on spark-1. docs/SPARK_HYDRA.md "Hy4-flash (NVFP4, vLLM TP2): measured"
+#
+# STAGED, NOT A BOOT DEFAULT. There is no [Install] section, so this unit
+# cannot be enabled (systemctl reports it "static"), never starts at boot and
+# `beast-spark up` never picks it. Start it only through `beast-spark hy4`
+# (alias beasthy4): it stops the model that serves, starts this, waits for
+# Hy4-flash-NVFP4 on /v1/models, sets INFERENCE_MODEL, and puts the previous
+# model back if any of that fails. `beast-spark ds` / `glm` stop it again.
+#
+# Installed by: scripts/backends/spark-hy4-stage.sh install (copies start.sh,
+# stop.sh, config.sh and memguard.sh to ~/openbeast-recipes/hy4-vllm and this
+# file to ~/.config/systemd/user, then daemon-reload; it enables nothing).
+
+[Unit]
+Description=Hy4-flash NVFP4 on vLLM, TP 2 over spark-1 + spark-2 (staged; started only by beast-spark hy4)
+After=network-online.target
+Wants=network-online.target
+Conflicts=deepseek-v41-inference.service spark-hydra-inference.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/openbeast-recipes/hy4-vllm
+Environment=FOREGROUND=1
+ExecStart=/usr/bin/bash %h/openbeast-recipes/hy4-vllm/start.sh
+ExecStop=/usr/bin/bash %h/openbeast-recipes/hy4-vllm/stop.sh
+# A deliberate stop ends "inactive", not "failed" (no reset-failed needed): stop.sh
+# writes HY4_STOP_MARK before it stops the ranks, and start.sh, which sees them end
+# before systemd's SIGTERM, then exits 0. A rank that dies on its own (a crash,
+# memguard) still exits 1 and shows "failed". No SuccessExitStatus=: it would hide
+# crashes too.
+# Weights load in ~2 min; the first start of an image autotunes ~10 min more
+# (kept in ~/.cache/hy4-vllm/<image hash>/ for the next start).
+TimeoutStartSec=infinity
+TimeoutStopSec=150
+# A failed experimental start is not retried: beast-spark restores the model
+# that served before. Restarting would keep two Sparks' memory busy in a loop.
+Restart=no

@@ -11,5 +11,7 @@
   "cleanup": "rm -rf /tmp/eval_clev",
   "max_iter": 35,
   "category": "Concurrency & Systems",
-  "subcategory": "Concurrent data structures"
+  "subcategory": "Concurrent data structures",
+  "ref_stem": "152_chase_lev_deque/clev",
+  "dest": "/tmp/eval_clev/clev.py"
 }

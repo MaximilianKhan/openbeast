@@ -56,6 +56,7 @@ def test_grep_skips_git_dir(tmp_path):
     assert "src.txt" in out and ".git" not in out
 
 
+@pytest.mark.linux_only(reason="GNU grep -P")
 def test_grep_pcre_hint_on_zero_matches(tmp_path):
     (tmp_path / "a.txt").write_text("abc 123\n")
     out = tools.grep(r"\d+", str(tmp_path))
@@ -467,3 +468,151 @@ def test_start_agent_keep_dumpable_opt_out(tmp_path):
     # Negative control: the probe sees a dumpable process when opted out.
     out = _run_start_agent_probe(tmp_path, OPENBEAST_KEEP_DUMPABLE="1")
     assert "AT_SPAWN [1]" in out, out
+
+
+# --- start_agent workdir vs the BASH_WRAPPER grant (review: sandbox) --------
+
+def test_wrapper_refuses_home_and_root_workdirs(tmp_path, monkeypatch):
+    import mcp_server
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    (home / "proj").mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("OPENBEAST_BASH_WRAPPER",
+                       'sandlock run -p openbeast -w "$PWD" --')
+    for wd in ("/", str(home), str(tmp_path), str(home / ".ssh")):
+        assert mcp_server._sandboxed_workdir_refusal(wd), wd
+        assert mcp_server.start_agent("noop", workdir=wd).startswith("Error")
+    assert mcp_server._sandboxed_workdir_refusal(str(home / "proj")) is None
+    monkeypatch.delenv("OPENBEAST_BASH_WRAPPER")
+    assert mcp_server._sandboxed_workdir_refusal(str(home)) is None
+
+
+def test_wrapper_refuses_parents_of_persistence_dirs(tmp_path, monkeypatch):
+    # Review 2026-11-16: the write guard matches protected locations by
+    # PREFIX, so a workdir that CONTAINS one (~/.config holds systemd/user,
+    # git and the sandlock policy; ~/.local holds bin/ and the sandlock
+    # binary; ~/Library holds LaunchAgents) passed, and the wrapper's
+    # `-w "$PWD"` then made the persistence target writable.
+    import mcp_server
+    home = tmp_path / "home"
+    for d in (".config/systemd/user", ".local/bin", "Library/LaunchAgents",
+              "Library/Caches", ".config/sandlock/profiles", "proj/sub",
+              "dots/shell", "work"):
+        (home / d).mkdir(parents=True)
+    # A file the live ~/.bashrc sources is protected too, wherever it lives.
+    (home / "dots" / "shell" / "aliases.sh").write_text("alias x=y\n")
+    (home / ".bashrc").write_text(f"source {home}/dots/shell/aliases.sh\n")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("OPENBEAST_BASH_WRAPPER",
+                       'sandlock run -p openbeast -w "$PWD" --')
+    for rel in (".config", ".local", "Library", ".config/sandlock",
+                ".config/sandlock/profiles", "dots", "dots/shell"):
+        wd = str(home / rel)
+        why = mcp_server._sandboxed_workdir_refusal(wd)
+        assert why and why.startswith("Error"), (rel, why)
+        assert mcp_server.start_agent("noop", workdir=wd).startswith("Error"), rel
+    # Directories that hold nothing protected stay usable.
+    for rel in ("proj", "proj/sub", "Library/Caches", "work"):
+        assert mcp_server._sandboxed_workdir_refusal(str(home / rel)) is None, rel
+
+
+# --- stop_agent for an agent this process did not spawn (review) -------------
+
+def test_stop_agent_falls_back_to_the_ledger(tmp_path, monkeypatch):
+    # A detached agent outlives a tool-server restart (that is what detach
+    # is for) and check/list_agents show it from the ledger — stop_agent
+    # used to answer "unknown agent" for exactly those.
+    import signal as _signal
+    import subprocess as _sp
+    import mcp_server
+    import sessions
+    monkeypatch.setattr(sessions, "SESSIONS_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setattr(mcp_server, "_agents", {})
+    proc = _sp.Popen(["sleep", "300"], start_new_session=True)
+    try:
+        assert sessions.register("detached-1", pid=proc.pid, pgid=proc.pid)
+        out = mcp_server.stop_agent("detached-1")
+        assert "stopped" in out, out
+        # 30 s, not 5: a loaded full run missed 5 (2026-11-24 review); SIGTERM is still required
+        assert proc.wait(timeout=30) == -_signal.SIGTERM
+        # Already gone now: reported, never signalled again.
+        assert "Error: unknown" not in mcp_server.stop_agent("detached-1")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+
+def test_stop_agent_never_stops_a_job_session(tmp_path, monkeypatch):
+    # Review 2026-11-16: the ledger fallback took ANY record kind, so the
+    # model-callable stop_agent killed a scripts/job.sh job (an eval
+    # campaign, a quantization run) whose id it had learned.
+    import subprocess as _sp
+    import mcp_server
+    import sessions
+    monkeypatch.setattr(sessions, "SESSIONS_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setattr(mcp_server, "_agents", {})
+    proc = _sp.Popen(["sleep", "300"], start_new_session=True)
+    try:
+        assert sessions.register("job-1", kind="job", pid=proc.pid, pgid=proc.pid)
+        out = mcp_server.stop_agent("job-1")
+        assert out.startswith("Error") and "job" in out, out
+        assert proc.poll() is None, out   # not signalled
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_stop_agent_ledger_refuses_a_recycled_pid(tmp_path, monkeypatch):
+    import subprocess as _sp
+    import mcp_server
+    import sessions
+    monkeypatch.setattr(sessions, "SESSIONS_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setattr(mcp_server, "_agents", {})
+    proc = _sp.Popen(["sleep", "300"], start_new_session=True)
+    try:
+        assert sessions.register("detached-2", pid=proc.pid, pgid=proc.pid,
+                                 meta={})
+        rec = sessions.get("detached-2")
+        rec["meta"]["pid_start"] = -12345  # the pid now belongs to a stranger
+        monkeypatch.setattr(mcp_server, "_ledger_get", lambda _id: rec)
+        out = mcp_server.stop_agent("detached-2")
+        assert proc.poll() is None, out   # not signalled
+        assert "not running" in out or "already" in out, out
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+# --- list_agents parse cost (review) ------------------------------------------
+
+def test_list_agents_reads_only_a_tail_of_each_transcript(tmp_path, monkeypatch):
+    # Up to 100 ledger sessions x a 10 MB parse each made one list_agents
+    # ~1 GB of JSON work inside the shared tool server.
+    import json as _json
+    import mcp_server
+    import sessions
+    monkeypatch.setattr(sessions, "SESSIONS_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setattr(mcp_server, "_agents", {})
+    log = tmp_path / "agent-big.jsonl"
+    pad = "x" * 1000
+    with open(log, "w") as f:
+        f.write(_json.dumps({"type": "spawn", "task": "big task"}) + "\n")
+        for n in range(1, 3001):
+            f.write(_json.dumps({"type": "iteration", "number": n}) + "\n")
+            f.write(_json.dumps({"type": "assistant", "content": pad}) + "\n")
+        f.write(_json.dumps({"type": "done", "summary": "ok"}) + "\n")
+    assert sessions.register("big", transcript=str(log), title="big task")
+    sessions.finalize("big", "done")
+    seen = []
+    real = mcp_server._parse_agent_log
+
+    def spy(path, max_bytes=10_000_000):
+        seen.append(max_bytes)
+        return real(path, max_bytes)
+    monkeypatch.setattr(mcp_server, "_parse_agent_log", spy)
+    out = mcp_server.list_agents()
+    assert seen and max(seen) <= 1_000_000, seen
+    row = next(line for line in out.splitlines() if line.startswith("big"))
+    assert "completed" in row and "3000/" in row, row

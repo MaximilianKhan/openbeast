@@ -129,6 +129,13 @@
             "context": 262144,
             "output": 32768
           }
+        },
+        "qwen38-flash-next-unc-iq4xs-moecache": {
+          "name": "Qwen3.8-Flash-Next Uncensored IQ4_XS (177B MoE, MoE expert cache, single-slot)",
+          "limit": {
+            "context": 262144,
+            "output": 32768
+          }
         }
       }
     }

@@ -10,10 +10,46 @@
 #   client.sh search up|down     start/stop the local SearXNG container
 #   client.sh refresh-config     re-sync the opencode model catalog only
 #                                (no git pull, no dependency install)
-#   client.sh update             refresh the checkout + pinned deps + the
+#   client.sh autosync [install|uninstall|status|run]
+#                                keep opencode in step with the rig: every 30 s
+#                                (launchd on macOS, a systemd user timer on
+#                                Linux) probe the active rig and re-sync the
+#                                catalog when it switched models (the name and
+#                                context window opencode shows). setup-client.sh
+#                                installs it; status is the default
+#   client.sh update [--no-pull] [--wheelhouse <dir>]
+#                                refresh the checkout + pinned deps + the
 #                                opencode model catalog (adds models the rig
-#                                gained, drops ones it no longer serves)
+#                                gained, drops ones it no longer serves).
+#                                Offline: --no-pull after updating the checkout
+#                                from a bundle, --wheelhouse (or
+#                                $OPENBEAST_WHEELHOUSE) to install the pinned
+#                                deps with no index contacted
+#   client.sh relocate           move a client that still runs from the checkout
+#                                it was installed in to its own copy,
+#                                ~/.openbeast-client/repo (`update` does this
+#                                by itself; scripts/lib/client_copy.sh says why)
+#   client.sh rigs [--json] [--no-probe]
+#                                every registered rig, reachability and health
+#                                (each rig's :8444/api/slot), * = active
+#   client.sh use <rig> [--force]
+#                                switch the active rig: rewrites the env file
+#                                and opencode.json atomically, refreshes the
+#                                catalog. Refuses a rig that is down or rejects
+#                                the key (nothing changed) unless --force
+#   client.sh rig add <name> [--host <fqdn>] [--api-key-stdin | --key-file F]
+#                            [--search rig|local|none] [--model ID]
+#   client.sh rig remove <name> | rig detect
+#                                manage the registry (keys: 0600 files, never
+#                                argv); detect = register your tailnet's 'beast'
 #   client.sh uninstall          remove client mode entirely
+#
+# Several rigs (docs/SPARK_HYDRA.md § F2): the registry is
+# ${XDG_CONFIG_HOME:-~/.config}/openbeast/rigs.json, kept by
+# scripts/lib/client_rigs.py. A single-rig install is migrated into it on
+# first run. opencode gets one provider per rig (openbeast-<rig>) plus
+# openbeast-rig, an alias of the active rig, and every sync re-copies the
+# soul (system-prompt.md + system-prompt-tools.md) into its `instructions`.
 #
 # Deliberately does NOT source scripts/lib/conf.sh — that file is rig-shaped
 # (it generates secrets into openbeast.conf). Client config lives in
@@ -61,10 +97,16 @@ _find_ts() {
   return 1
 }
 TS_BIN="$(_find_ts || true)"
-# Prefer the venv interpreter — it is guaranteed >=3.10 because
-# setup-client.sh built it with a vetted one.
+# Prefer the venv interpreter. setup-client.sh builds it with a vetted >=3.11
+# one and rebuilds a venv an older install made with 3.10; `update` refuses
+# such a venv (_venv_floor) rather than die inside pip.
 if [ -x "$VENV/bin/python3" ]; then PY_BIN="$VENV/bin/python3"
 else PY_BIN="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo python3)"; fi
+
+# The rig registry (several rigs, one active): scripts/lib/client_rigs.py.
+RIGS_PY="$REPO/scripts/lib/client_rigs.py"
+RIG_REGISTRY="${XDG_CONFIG_HOME:-$HOME/.config}/openbeast/rigs.json"
+_rigs() { OB_TS_BIN="$TS_BIN" OB_REPO="$REPO" "$PY_BIN" "$RIGS_PY" "$@"; }
 
 # Re-sync the opencode model catalog from the checkout into the installed
 # config. WHY THIS EXISTS: setup-client.sh copies the model list ONCE at install
@@ -78,104 +120,129 @@ else PY_BIN="$(command -v python3 2>/dev/null || command -v python 2>/dev/null |
 # user's own are left exactly as they were — this runs on every update, so it
 # must never be able to clobber a working install (or leak the key by widening
 # the file mode).
-_refresh_oc_catalog() {
-  [ -f "$OC_CONFIG" ] || { echo "  ! no opencode config at $OC_CONFIG — run scripts/setup-client.sh"; return 0; }
-  "$PY_BIN" - "$OC_CONFIG" "$REPO" <<'PYEOF' || echo "  ! catalog refresh failed (config left untouched)"
-import json, os, stat, sys, urllib.request
-oc_path, repo = sys.argv[1], sys.argv[2]
-cfg = json.load(open(oc_path))
-prov = cfg.get("provider", {}).get("openbeast-rig")
-if prov is None:
-    print("  ! opencode.json has no 'openbeast-rig' provider — run scripts/setup-client.sh")
-    raise SystemExit(0)
-try:
-    models = json.load(open(os.path.join(repo, "opencode.json")))["provider"]["llama-cpp"]["models"]
-except Exception as e:
-    print("  ! could not read the checkout's opencode.json (%s) — catalog unchanged" % e)
-    raise SystemExit(0)
-if not models:
-    print("  ! checkout catalog is empty — refusing to blank the client's list")
-    raise SystemExit(0)
-before = set(prov.get("models") or {})
-after = set(models)
-
-# The rig serves ONE model and ignores the model id in the request, so every
-# catalog row resolves to whatever is loaded right now. Ask it what that is and
-# pin a row that is true by construction, carrying the REAL n_ctx rather than a
-# hand-maintained number that drifts. Best-effort: a rig that is down or
-# unreachable just leaves the static catalog in place.
-live = None
-base = (prov.get("options") or {}).get("baseURL", "").rstrip("/")
-key = (prov.get("options") or {}).get("apiKey") or ""
-if base:
-    def _get(url):
-        r = urllib.request.Request(url)
-        if key and key != "not-needed":
-            r.add_header("Authorization", "Bearer " + key)
-        return json.load(urllib.request.urlopen(r, timeout=6))
-    try:
-        alias = _get(base + "/models")["data"][0]["id"]
-        # /props carries the real n_ctx, but it lives at the SERVER root (not
-        # under /v1) and beast-gate's path allowlist deliberately blocks it on
-        # gated installs — so this is strictly best-effort. No n_ctx just means
-        # the live row ships without a context limit.
-        root = base[:-3] if base.endswith("/v1") else base
-        try:
-            n_ctx = _get(root + "/props")["default_generation_settings"]["n_ctx"]
-        except Exception:
-            n_ctx = None
-        live = (alias, n_ctx)
-    except Exception:
-        live = None
-
-models = dict(models)
-if live:
-    alias, n_ctx = live
-    # Keyed by the id the rig SERVES, never an invented one: opencode sends
-    # this key as the request's "model". llama-server ignores it, but vLLM
-    # and hydra (unknown_model = "404") reject an id they do not serve — the
-    # old "rig-live" key made every request from such a rig's clients a 404.
-    row = dict(models.get(alias) or {})
-    row["name"] = "%s  [live on rig]" % alias
-    if n_ctx:
-        row["limit"] = {"context": n_ctx, "output": 32768}
-    models[alias] = row
-prov["models"] = models
-
-# Keep the default pointed at something that exists. Prefer the live row.
-want = ("openbeast-rig/" + live[0]) if live else None
-cur = cfg.get("model", "")
-if want and (cur.startswith("openbeast-rig/") or not cur):
-    cfg["model"] = want
-    cfg.setdefault("small_model", want)
-elif cur.startswith("openbeast-rig/") and cur.split("/", 1)[1] not in models:
-    cfg["model"] = "openbeast-rig/" + next(iter(models))
-# small_model too: an install made before the live row carried the served id
-# has "openbeast-rig/rig-live" here, a row that no longer exists.
-small = str(cfg.get("small_model", ""))
-if small.startswith("openbeast-rig/") and small.split("/", 1)[1] not in models:
-    cfg["small_model"] = want or ("openbeast-rig/" + next(iter(models)))
-
-mode = stat.S_IMODE(os.stat(oc_path).st_mode)
-json.dump(cfg, open(oc_path, "w"), indent=2); open(oc_path, "a").write("\n")
-os.chmod(oc_path, mode)   # keyed installs are 0600 — never widen it
-
-added = sorted(after - before)
-gone = sorted(before - after - {"rig-live"} - ({live[0]} if live else set()))
-print("  ok opencode catalog refreshed: %d models%s%s" % (
-    len(models),
-    (" (+%s)" % ", ".join(added)) if added else "",
-    (" (-%s)" % ", ".join(gone)) if gone else ""))
-if live:
-    print("  ok rig is serving '%s'%s — pinned as the default" % (
-        live[0], (" at %d ctx" % live[1]) if live[1] else ""))
-else:
-    print("  ! rig unreachable — catalog updated, live model not probed")
-PYEOF
+# autosync's job runs from a copy of the few files it reads, under
+# $CLIENT_DIR/autosync, never from the checkout: macOS denies a launchd agent
+# access to ~/Documents (where checkouts usually live) without Full Disk
+# Access, and every run failed with "Operation not permitted" (2026-11-18).
+# The copy mirrors the repo layout so OB_REPO can point at it. Refreshed by
+# `autosync install` and by every catalog sync while autosync is installed.
+AS_SNAP="$CLIENT_DIR/autosync"
+AS_FILES="scripts/lib/client_rigs.py opencode.json system-prompt.md system-prompt-tools.md"
+_as_snapshot() {
+  mkdir -p "$AS_SNAP/scripts/lib" && chmod 700 "$CLIENT_DIR" "$AS_SNAP" 2>/dev/null
+  for _f in $AS_FILES; do
+    [ -f "$REPO/$_f" ] || continue
+    cp "$REPO/$_f" "$AS_SNAP/$_f.new" && mv -f "$AS_SNAP/$_f.new" "$AS_SNAP/$_f" || return 1
+  done
 }
+
+# The client runs from its own copy, $CLIENT_DIR/repo, never from the checkout
+# it was installed from (scripts/lib/client_copy.sh: macOS denies background
+# processes ~/Documents and friends, and opencode's background service is what
+# starts the tool server). setup-client.sh installs that way; this moves a
+# client that an OLDER installer left running in place. Exactly what moves:
+# the copy is seeded from this checkout's HEAD commit (no network), the
+# openbeast-tools entry in opencode.json is pointed at it, and the
+# openbeast-client symlink follows. The rig, the key, the venv, the catalog
+# and the user's own opencode config are not touched; the old checkout is
+# left exactly as it is.
+#   _relocate auto    from `update` and from client_rigs.py's sync: silent
+#                     when there is nothing to do, and a checkout with
+#                     uncommitted changes under the copied directories is
+#                     left in place (the copy would not carry them)
+#   _relocate asked   `openbeast-client relocate`: says why when it does not move
+# Returns 0 when the client moved, 1 otherwise.
+_COPY_LIB="$REPO/scripts/lib/client_copy.sh"
+# This client.sh relocates by itself (`update`): client_rigs.py's sync need
+# not ask a second time (it does so only for an older client.sh, which does
+# not set this).
+export OB_CLIENT_RELOCATES=1
+# shellcheck source=lib/client_copy.sh
+[ -f "$_COPY_LIB" ] && . "$_COPY_LIB"
+_relocate() {
+  _rl_mode="${1:-auto}"; _rl_dest="$CLIENT_DIR/repo"
+  _rl_say() { [ "$_rl_mode" = "asked" ] && echo "$1"; return 0; }
+  [ -f "$_COPY_LIB" ] || { _rl_say "  ! $_COPY_LIB missing (partial checkout?) — nothing moved"; return 1; }
+  if [ "$(ob_copy_phys "$REPO")" = "$(ob_copy_phys "$_rl_dest")" ]; then
+    _rl_say "  ✓ the client already runs from its own copy ($_rl_dest)"; return 1
+  fi
+  if [ "$_rl_mode" = "auto" ] && [ -f "$CLIENT_DIR/in-place" ]; then return 1; fi
+  # Only an INSTALLED client moves, and only the one installed from here: the
+  # tool server opencode runs must be this checkout's.
+  _rl_tools="$(ob_copy_tools_repo "$PY_BIN" "$OC_CONFIG")"
+  if [ -z "$_rl_tools" ] || [ "$(ob_copy_phys "$_rl_tools")" != "$(ob_copy_phys "$REPO")" ]; then
+    _rl_say "  - opencode's openbeast-tools does not run from $REPO (${_rl_tools:-not wired}) — nothing to move"
+    return 1
+  fi
+  if ! ob_copy_is_checkout "$REPO"; then
+    _rl_say "  ! $REPO is not a git checkout — no commit to make the copy from; nothing moved"
+    return 1
+  fi
+  _rl_dirty="$(ob_copy_dirty "$REPO" | sed -n '1,5p')"
+  if [ -n "$_rl_dirty" ] && [ "$_rl_mode" = "auto" ]; then
+    echo "  ! the client still runs in place from $REPO: it has uncommitted changes that"
+    echo "    a copy would not carry. Commit them and run 'openbeast-client relocate', or"
+    echo "    keep it this way for good: $REPO/scripts/setup-client.sh --in-place"
+    return 1
+  fi
+  ob_copy_seed "$REPO" "$_rl_dest" || { echo "  ! could not make the client copy — still running from $REPO"; return 1; }
+  _rl_wired="$(ob_copy_rewire "$PY_BIN" "$OC_CONFIG" "$REPO" "$_rl_dest" 2>/dev/null || true)"
+  # The CLI symlink follows, when it is ours (it resolves into this checkout).
+  _rl_bin="$HOME/.local/bin/openbeast-client"
+  if [ -L "$_rl_bin" ]; then
+    _rl_t="$(readlink "$_rl_bin")"
+    if [ "$(ob_copy_phys "$(dirname "$_rl_t")")" = "$(ob_copy_phys "$REPO/scripts")" ]; then
+      ln -sf "$_rl_dest/scripts/client.sh" "$_rl_bin" 2>/dev/null || true
+    fi
+  fi
+  rm -f "$CLIENT_DIR/in-place"
+  [ "$_rl_wired" = "rewired" ] && echo "  ✓ opencode's openbeast-tools now runs from the copy"
+  echo "  ✓ the client runs from its own copy now ($_rl_dest), not from $REPO."
+  echo "    Restart opencode to pick it up. $REPO is untouched and no longer needed by"
+  echo "    the client; agent transcripts written so far stay in $REPO/agents/logs."
+  if [ -n "$_rl_dirty" ]; then
+    echo "  ! uncommitted changes in $REPO are NOT in the copy:"
+    printf '%s\n' "$_rl_dirty" | sed 's/^/      /'
+  fi
+  return 0
+}
+
+_refresh_oc_catalog() {
+  [ -d "$AS_SNAP" ] && { _as_snapshot || echo "  ! could not refresh the autosync copy in $AS_SNAP"; }
+  [ -f "$OC_CONFIG" ] || { echo "  ! no opencode config at $OC_CONFIG — run scripts/setup-client.sh"; return 0; }
+  _rp="$REPO/scripts/lib/client_rigs.py"
+  if [ ! -f "$_rp" ]; then
+    echo "  ! $_rp missing (partial checkout?) — catalog unchanged"; return 0
+  fi
+  if [ -f "$RIG_REGISTRY" ]; then
+    # Every registered rig is probed (in parallel); each gets its own
+    # provider, openbeast-rig mirrors the active one (scripts/lib/client_rigs.py).
+    _rigs sync || echo "  ! catalog refresh failed (config left untouched)"
+  else
+    # Driven on its own (no registry context): the openbeast-rig provider's
+    # rows only, from its own baseURL/key; nothing but $OC_CONFIG is touched.
+    "$PY_BIN" "$_rp" sync-legacy --oc "$OC_CONFIG" || echo "  ! catalog refresh failed (config left untouched)"
+  fi
+}
+
+# autosync's job definitions carry paths ($HOME, the venv): escaped for the
+# format they land in, so an & or < in a path cannot break the plist and a
+# space or % cannot split or expand a systemd value.
+_xml_esc() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' -e "s/'/\&apos;/g"; }
+_sd_q() { printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/%/%%/g')"; }
+_sd_path() { printf '%s' "$1" | sed -e 's/%/%%/g'; }
 
 CMD="${1:-status}"
 [ $# -gt 0 ] && shift
+
+# First run after the multi-rig update: fold the single-rig env file into the
+# registry (named after its key file or host). Quiet, best-effort, never fatal.
+case "$CMD" in
+  -h|--help|help|uninstall) : ;;
+  *) if [ -f "$ENV_FILE" ] && [ -f "$RIGS_PY" ] && [ ! -f "$RIG_REGISTRY" ]; then
+       _rigs migrate 2>/dev/null || true
+     fi ;;
+esac
 
 # Bearer via lib/curl_auth.sh: the device key rides a curl --config on an fd,
 # never curl's argv (world-readable through ps on a shared box).
@@ -186,21 +253,6 @@ _curl_auth() {
   # _curl_auth <url> [extra curl args…] — bearer added when keyed.
   _u="$1"; shift
   ob_curl_bearer "${OPENBEAST_API_KEY:-}" -s -m 5 "$@" "$_u"
-}
-
-_http_code() {
-  # _http_code <url> — the HTTP status alone, or 000 when nothing answered.
-  # Grepping bodies collapsed four different failures into one wrong message:
-  # a REVOKED device, a rig that is down, a rig still loading a 27B model, and
-  # a TLS/clock problem all printed "rig model API not answering". beast-gate
-  # already distinguishes them (401 vs 502 vs 504), so read the status.
-  # NOTE: curl PRINTS '000' and ALSO exits non-zero when it cannot connect, so
-  # a trailing `|| echo 000` yields '000000' and the 000 branch never matches.
-  # Capture, ignore the exit status, and default only when the output is empty.
-  _u="$1"
-  _c=$(ob_curl_bearer "${OPENBEAST_API_KEY:-}" -s -o /dev/null \
-    -w '%{http_code}' -m 8 "$_u" 2>/dev/null) || true
-  echo "${_c:-000}"
 }
 
 case "$CMD" in
@@ -221,12 +273,32 @@ case "$CMD" in
     else
       echo "  ✗ no $ENV_FILE — run scripts/setup-client.sh"; bad=$((bad+1))
     fi
-    if [ -x "$VENV/bin/python3" ] && "$VENV/bin/python3" -c "import mcp, openai" 2>/dev/null; then
-      echo "  ✓ venv imports mcp + openai"; ok=$((ok+1))
+    # Installed and resolvable, without importing them: a full `import mcp,
+    # openai` costs ~0.65 s on every doctor run. setup-client.sh does the full
+    # import once, at install; here the dist metadata + import spec catch a
+    # missing or half-removed package, which is what goes wrong in practice.
+    if [ -x "$VENV/bin/python3" ] && "$VENV/bin/python3" -c '
+import importlib.metadata as m, importlib.util as u, sys
+for p in ("mcp", "openai"):
+    m.version(p)
+    if u.find_spec(p) is None:
+        sys.exit(1)' 2>/dev/null; then
+      echo "  ✓ venv has mcp + openai"; ok=$((ok+1))
     elif [ ! -x "$VENV/bin/python3" ]; then
       echo "  ✗ no venv at $VENV — run scripts/setup-client.sh"; bad=$((bad+1))
     else
-      echo "  ✗ venv broken (mcp/openai do not import) — re-run scripts/setup-client.sh"; bad=$((bad+1))
+      echo "  ✗ venv broken (mcp/openai missing) — re-run scripts/setup-client.sh"; bad=$((bad+1))
+    fi
+    # Which rig this client is pointed at (several may be registered).
+    if [ -f "$RIGS_PY" ]; then
+      _act="$(_rigs active 2>/dev/null || true)"
+      _a1="$(printf '%s\n' "$_act" | sed -n '1p')"
+      case "$_a1" in
+        *'|'*'|'*)
+          _an="${_a1%%|*}"; _rest="${_a1#*|}"; _ah="${_rest%%|*}"; _anum="${_rest#*|}"
+          echo "  ✓ active rig: $_an ($_ah) — $_anum registered; list: openbeast-client rigs"; ok=$((ok+1))
+          printf '%s\n' "$_act" | sed -n '2,$p' | sed 's/^/    /' ;;
+      esac
     fi
     if [ -n "$TS_BIN" ] && "$TS_BIN" status >/dev/null 2>&1; then
       echo "  ✓ tailscale up"; ok=$((ok+1))
@@ -237,9 +309,25 @@ case "$CMD" in
       bad=$((bad+1))
     fi
     BASE="${OPENBEAST_AGENT_INFERENCE_URL:-}"
+    # Timeout for the remaining network probes. When the rig did not answer
+    # at all, the slot and search probes each used to wait their full 5 s
+    # (23 s to report a down rig): 2 s is plenty to tell "up" from "not".
+    PROBE_T=5
     if [ -n "$BASE" ]; then
       HURL="$(echo "$BASE" | sed 's|/v1$||')/health"
-      if _curl_auth "$HURL" | grep -q "ok"; then
+      # ONE request for body and status. A failed probe used to ask the same
+      # URL again (-m 8) only to read its status: 13 s on a blackholed host.
+      # The STATUS is what names the failure: grepping bodies collapsed a
+      # REVOKED device, a rig that is down, a rig still loading a 27B model
+      # and a TLS/clock problem into "not answering"; beast-gate tells them
+      # apart (401 vs 502 vs 504). curl prints 000 AND exits non-zero when it
+      # cannot connect, so capture, ignore the exit status, and default.
+      _ho="$(_curl_auth "$HURL" -w '\n%{http_code}' 2>/dev/null)" || true
+      HCODE="${_ho##*$'\n'}"; HBODY="${_ho%$'\n'*}"
+      [ "$HBODY" = "$_ho" ] && HBODY=""
+      case "$HCODE" in [0-9][0-9][0-9]) : ;; *) HCODE=000 ;; esac
+      [ "$HCODE" = "000" ] && PROBE_T=2
+      if printf '%s' "$HBODY" | grep -q "ok"; then
         # /health is public even on a keyed server, so it proves reachability
         # but NOT that our key is accepted. Probe a protected endpoint too,
         # otherwise a wrong/revoked key looks perfectly healthy here and only
@@ -253,7 +341,7 @@ case "$CMD" in
         fi
       else
         # Say WHICH failure this is. "Not answering" was wrong for most of them.
-        case "$(_http_code "$HURL")" in
+        case "$HCODE" in
           401|403)
             echo "  ✗ rig rejected this device (401/403) — key wrong, or your"
             echo "    device was revoked. Ask the rig owner to re-enroll:"
@@ -279,13 +367,27 @@ case "$CMD" in
     fi
     if [ -n "${OPENBEAST_SLOT_URL:-}" ]; then
       # beast-slot contract v2 (docs/BEAST_SLOT.md). Line 1 is the summary;
-      # any further lines are version warnings, printed indented below it.
-      SLOT="$(curl -s -m 5 "$OPENBEAST_SLOT_URL" 2>/dev/null | "$PY_BIN" -c '
-import json, sys
+      # any further lines are warnings, printed indented below it.
+      # The STATUS is read too: a busy dashboard (503, documented as "retry,
+      # not an outage"), a dashboard that is not running (502), a path that
+      # is not published (404) and nothing answering in 5 s all used to print
+      # the same "not published — run --publish-slot", the wrong fix for
+      # three of them. A 503 is retried once, after its Retry-After.
+      _slot_get() {
+        _o="$(curl -s -m "$PROBE_T" -w '\n%{http_code}' "$OPENBEAST_SLOT_URL" 2>/dev/null)" || true
+        SLOT_CODE="${_o##*$'\n'}"; SLOT_BODY="${_o%$'\n'*}"
+        case "$SLOT_CODE" in [0-9][0-9][0-9]) : ;; *) SLOT_CODE=000 ;; esac
+      }
+      _slot_get
+      if [ "$SLOT_CODE" = "503" ]; then sleep 1; _slot_get; fi
+      SLOT="$(printf '%s' "$SLOT_BODY" | OB_OC_CONFIG="$OC_CONFIG" "$PY_BIN" -c '
+import json, os, sys
 CLIENT_V = 2   # the contract version THIS client understands
 try:
     d = json.load(sys.stdin)
 except Exception:
+    sys.exit(0)
+if not isinstance(d, dict) or "beast_slot" not in d:
     sys.exit(0)
 m, s = d.get("model") or {}, d.get("slots") or {}
 c = d.get("capacity") or {}
@@ -322,18 +424,65 @@ elif isinstance(rig_v, int) and rig_v > CLIENT_V:
     print("! rig publishes beast-slot v%d, this client reads v%d — fields"
           " above are still correct, newer ones are ignored;"
           " openbeast-client update to see them" % (rig_v, CLIENT_V))
+# An id-strict server (vLLM; hydra with unknown_model = "404") answers 404 to
+# a model id it does not serve. llama-server ignores the id, so only a rig
+# that names a non-llama backend is checked. The default comes from the
+# static llama catalog whenever the live probe failed at install time.
+backend = d.get("backend") or "llama"
+served = m.get("id")
+if backend != "llama" and served:
+    try:
+        cur = str(json.load(open(os.environ["OB_OC_CONFIG"])).get("model") or "")
+    except Exception:
+        cur = ""
+    if cur.startswith("openbeast-rig/") and cur.split("/", 1)[1] != served:
+        print("! opencode default %s is not the id this %s rig serves (%s) —"
+              " an id-strict server 404s it; run: openbeast-client refresh-config"
+              % (cur, backend, served))
 ' || true)"
       if [ -n "$SLOT" ]; then
         echo "  ✓ beast-slot: $(printf '%s\n' "$SLOT" | sed -n '1p')"; ok=$((ok+1))
         printf '%s\n' "$SLOT" | sed -n '2,$p' | sed 's/^/    /'
       else
-        echo "  ! beast-slot status not published (optional — rig:"
-        echo "      ./scripts/setup-tailscale.sh --publish-slot)"
+        # Informational either way (the slot API is optional), but name the
+        # failure that actually happened.
+        case "$SLOT_CODE" in
+          503)
+            echo "  ! beast-slot busy (503 twice): the rig's dashboard is at its"
+            echo "    connection cap. It is not an outage. Retry shortly" ;;
+          502|504)
+            echo "  ! beast-slot is published, but the dashboard behind it is not"
+            echo "    running (HTTP $SLOT_CODE). On the rig: ./scripts/ext.sh enable dashboard,"
+            echo "    then restart the stack" ;;
+          404)
+            echo "  ! beast-slot status not published (optional — rig:"
+            echo "      ./scripts/setup-tailscale.sh --publish-slot)" ;;
+          000)
+            echo "  ! beast-slot did not answer within 5 s ($OPENBEAST_SLOT_URL)."
+            echo "    Either :8444 is not published (rig: ./scripts/setup-tailscale.sh"
+            echo "    --publish-slot), the rig is unreachable, or its dashboard is stalled" ;;
+          200)
+            echo "  ! beast-slot answered, but not with a beast-slot document"
+            echo "    ($OPENBEAST_SLOT_URL). Is OPENBEAST_SLOT_URL the rig's :8444/api/slot?" ;;
+          *)
+            echo "  ! beast-slot answered HTTP $SLOT_CODE ($OPENBEAST_SLOT_URL)" ;;
+        esac
       fi
     fi
     if [ -n "${SEARXNG_URL:-}" ]; then
-      if curl -s -m 5 "$SEARXNG_URL/search?q=test&format=json" 2>/dev/null | grep -q '"results"'; then
+      # No real search: `?q=test` sent a live query out to SearXNG's upstream
+      # engines on every doctor run (0.8-1.2 s, and egress an islanded or
+      # offline-first setup does not want). /healthz proves it is up; a
+      # query-less `format=json` request proves JSON output is enabled, which
+      # web_search needs: SearXNG answers 400 "No query" when it is, 403 when
+      # search.formats lacks json — and contacts no engine either way.
+      _sx_h="$(curl -s -m "$PROBE_T" "$SEARXNG_URL/healthz" 2>/dev/null)" || true
+      _sx_f="$(curl -s -o /dev/null -w '%{http_code}' -m "$PROBE_T" "$SEARXNG_URL/search?format=json" 2>/dev/null)" || true
+      if [ "$_sx_h" = "OK" ] && [ "$_sx_f" = "400" ]; then
         echo "  ✓ search reachable ($SEARXNG_URL)"; ok=$((ok+1))
+      elif [ "$_sx_h" = "OK" ] && [ "$_sx_f" = "403" ]; then
+        echo "  ✗ search is up but its JSON output is off — add json to search.formats"
+        echo "    in SearXNG's settings.yml ($SEARXNG_URL)"; bad=$((bad+1))
       else
         echo "  ✗ search not answering ($SEARXNG_URL)"; bad=$((bad+1))
       fi
@@ -351,6 +500,30 @@ elif isinstance(rig_v, int) and rig_v > CLIENT_V:
     else
       echo "  ✗ opencode.json not wired — re-run scripts/setup-client.sh"; bad=$((bad+1))
     fi
+    # Wired is not enough on macOS: a tool server under ~/Documents (and the
+    # like) cannot be opened by the background process that starts it, while
+    # everything checked from this terminal passes.
+    if [ -f "$_COPY_LIB" ] && [ -f "$OC_CONFIG" ]; then
+      _tr="$(ob_copy_tools_repo "$PY_BIN" "$OC_CONFIG")"
+      if [ -n "$_tr" ] && ob_copy_protected "$(ob_copy_phys "$_tr")"; then
+        echo "  ✗ the tool server runs from $_tr, a folder macOS keeps from"
+        echo "    background processes (opencode shows 'Operation not permitted')."
+        echo "    Fix: openbeast-client relocate"; bad=$((bad+1))
+      fi
+    fi
+    # The soul (the rig's WebUI system prompt, via opencode `instructions`).
+    # Informational: a session without it still works, it just is not OpenBeast.
+    if [ -f "$OC_CONFIG" ] && [ -f "$RIGS_PY" ]; then
+      _src=0
+      _sl="$(OB_REPO="$REPO" "$PY_BIN" "$RIGS_PY" soul --check --oc "$OC_CONFIG" 2>/dev/null)" || _src=$?
+      if [ "$_src" -eq 0 ] && [ -n "$_sl" ]; then
+        echo "  ✓ $_sl"; ok=$((ok+1))
+      elif [ -n "$_sl" ]; then
+        echo "  $_sl"
+      fi
+    fi
+    # Informational: without it opencode keeps a switched rig's old model.
+    "$_self" autosync status 2>/dev/null | head -1 || true
     echo ""
     if [ $bad -eq 0 ]; then
       echo "client: $ok ok — ready. (cd <project> && opencode)"
@@ -404,8 +577,36 @@ elif isinstance(rig_v, int) and rig_v > CLIENT_V:
     # the README documents it printed "pull it yourself" and then said "client
     # updated." regardless. So the remedy the version-skew warning in `status`
     # points users to did nothing, and reported success while doing it.
+    # Offline route (docs/BEAST_APPS.md § Offline client): update the checkout
+    # by other means (`git pull /media/usb/openbeast.bundle main`), then
+    #   openbeast-client update --no-pull --wheelhouse /media/usb/wheels
+    # which installs the same hash-pinned closure with no index contacted.
+    _no_pull=0; _wheels="${OPENBEAST_WHEELHOUSE:-}"
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --no-pull)   _no_pull=1 ;;
+        --wheelhouse)
+          [ $# -ge 2 ] && [ -n "$2" ] || { echo "--wheelhouse needs a directory" >&2; exit 2; }
+          _wheels="$2"; shift ;;
+        *) echo "usage: client.sh update [--no-pull] [--wheelhouse <dir>]" >&2; exit 2 ;;
+      esac
+      shift
+    done
+    # A venv an older install built with python 3.10 (accepted back then)
+    # cannot take the lock (starlette, jiter, rpds-py need >=3.11): say so,
+    # instead of letting pip die with a resolver error that reads like a
+    # hostile mirror.
+    if [ -x "$VENV/bin/python3" ] && ! "$VENV/bin/python3" -c \
+         'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+      echo "  x $VENV is $("$VENV/bin/python3" -V 2>&1 | head -1); the pinned deps need Python 3.11+." >&2
+      echo "    Re-run the installer, which rebuilds the venv with a vetted interpreter:" >&2
+      echo "      $REPO/scripts/setup-client.sh --host <rig-fqdn>" >&2
+      exit 1
+    fi
     _pulled=0
-    if [ -d "$REPO/.git" ]; then
+    if [ "$_no_pull" -eq 1 ]; then
+      echo "  - --no-pull: using the checkout as it is ($REPO)"
+    elif [ -d "$REPO/.git" ]; then
       if git -C "$REPO" pull --ff-only; then
         _pulled=1
       else
@@ -415,6 +616,12 @@ elif isinstance(rig_v, int) and rig_v > CLIENT_V:
       fi
     else
       echo "  ! $REPO is not a git checkout, so the source cannot be updated." >&2
+    fi
+    # A client an older installer left running from this checkout moves to its
+    # own copy now, seeded from what was just pulled; the rest of the update
+    # (deps, catalog, the autosync copy) then runs from there.
+    if _relocate auto; then
+      REPO="$CLIENT_DIR/repo"; RIGS_PY="$REPO/scripts/lib/client_rigs.py"
     fi
     # Same install as setup-client.sh step 3: the hash-pinned closure from
     # agents/requirements.lock via pydeps.sh. A plain `pip install -r
@@ -430,7 +637,10 @@ elif isinstance(rig_v, int) and rig_v > CLIENT_V:
     # runs on macOS.)
     if [ -x "$VENV/bin/pip" ]; then
       _pd_rc=0
-      if [ -x "$REPO/scripts/pydeps.sh" ]; then
+      if [ -x "$REPO/scripts/pydeps.sh" ] && [ -n "$_wheels" ]; then
+        # --from must come first: pydeps.sh stops reading its own flags at -q
+        OPENBEAST_PYTHON="$VENV/bin/python3" "$REPO/scripts/pydeps.sh" install --from "$_wheels" -q || _pd_rc=$?
+      elif [ -x "$REPO/scripts/pydeps.sh" ]; then
         OPENBEAST_PYTHON="$VENV/bin/python3" "$REPO/scripts/pydeps.sh" install -q || _pd_rc=$?
       else
         _pd_rc=127
@@ -454,7 +664,8 @@ elif isinstance(rig_v, int) and rig_v > CLIENT_V:
         echo "  ! the hash-pinned install failed on this python, and NOT on a hash (see above) —" >&2
         echo "    OPENBEAST_PIP_STRICT=0: falling back to agents/requirements.txt, which pins" >&2
         echo "    VERSIONS but not content." >&2
-        if ! "$VENV/bin/pip" install -q -r "$REPO/agents/requirements.txt"; then
+        _fl=""; [ -n "$_wheels" ] && _fl="--no-index"
+        if ! "$VENV/bin/pip" install -q ${_fl:+$_fl --find-links "$_wheels"} -r "$REPO/agents/requirements.txt"; then
           echo "  x dependency install failed." >&2
           exit 1
         fi
@@ -479,16 +690,160 @@ elif isinstance(rig_v, int) and rig_v > CLIENT_V:
     _refresh_oc_catalog
     ;;
 
+  autosync)
+    # The rig can switch models under a running client (on the Sparks:
+    # beastglm / beastds). opencode only knows what opencode.json says, so
+    # without this the picker kept the old model's name and context window
+    # until someone ran `use` or refresh-config (seen 2026-11-18). The timer
+    # runs `autosync run`: two small GETs to the active rig, and a full sync
+    # only when what it serves changed. Offline rigs change nothing.
+    _as_label="ai.openbeast.client-autosync"
+    _as_plist="$HOME/Library/LaunchAgents/$_as_label.plist"
+    _as_unit="openbeast-client-autosync"
+    _as_udir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+    _as_log="$CLIENT_DIR/autosync.log"
+    _as_sub="${1:-status}"
+    case "$_as_sub" in
+      run)
+        [ -f "$RIGS_PY" ] || exit 0
+        _rigs sync --if-changed
+        ;;
+      install)
+        mkdir -p "$CLIENT_DIR"
+        _as_snapshot || { echo "  x could not copy the autosync files into $AS_SNAP" >&2; exit 1; }
+        if [ "$(uname -s)" = Darwin ]; then
+          mkdir -p "$(dirname "$_as_plist")"
+          _x_py="$(_xml_esc "$PY_BIN")"; _x_snap="$(_xml_esc "$AS_SNAP")"
+          _x_ts="$(_xml_esc "$TS_BIN")"; _x_log="$(_xml_esc "$_as_log")"
+          cat > "$_as_plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$_as_label</string>
+  <key>ProgramArguments</key>
+  <array><string>$_x_py</string><string>$_x_snap/scripts/lib/client_rigs.py</string><string>sync</string><string>--if-changed</string></array>
+  <key>EnvironmentVariables</key>
+  <dict><key>OB_REPO</key><string>$_x_snap</string><key>OB_TS_BIN</key><string>$_x_ts</string></dict>
+  <key>StartInterval</key><integer>30</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>$_x_log</string>
+  <key>StandardErrorPath</key><string>$_x_log</string>
+</dict>
+</plist>
+PLIST
+          launchctl bootout "gui/$(id -u)/$_as_label" >/dev/null 2>&1 || true
+          launchctl bootstrap "gui/$(id -u)" "$_as_plist"
+          echo "  ok autosync: launchd agent $_as_label, every 30 s (log: $_as_log)"
+        elif command -v systemctl >/dev/null 2>&1; then
+          mkdir -p "$_as_udir"
+          printf '[Unit]\nDescription=OpenBeast client: re-sync opencode when the rig switches models\n\n[Service]\nType=oneshot\nEnvironment=%s %s\nExecStart=%s %s sync --if-changed\nStandardOutput=append:%s\nStandardError=append:%s\n' \
+            "$(_sd_q "OB_REPO=$AS_SNAP")" "$(_sd_q "OB_TS_BIN=$TS_BIN")" "$(_sd_q "$PY_BIN")" \
+            "$(_sd_q "$AS_SNAP/scripts/lib/client_rigs.py")" "$(_sd_path "$_as_log")" "$(_sd_path "$_as_log")" \
+            > "$_as_udir/$_as_unit.service"
+          printf '[Unit]\nDescription=OpenBeast client autosync every 30 s\n\n[Timer]\nOnBootSec=30s\nOnUnitActiveSec=30s\nAccuracySec=5s\n\n[Install]\nWantedBy=timers.target\n' \
+            > "$_as_udir/$_as_unit.timer"
+          systemctl --user daemon-reload && systemctl --user enable --now "$_as_unit.timer" >/dev/null
+          echo "  ok autosync: systemd user timer $_as_unit.timer, every 30 s (log: $_as_log)"
+        else
+          echo "  ! autosync: neither launchd nor systemd here; run 'openbeast-client refresh-config' after a rig switches models" >&2
+          exit 1
+        fi
+        ;;
+      uninstall)
+        if [ "$(uname -s)" = Darwin ]; then
+          launchctl bootout "gui/$(id -u)/$_as_label" >/dev/null 2>&1 || true
+          rm -f "$_as_plist"
+        elif command -v systemctl >/dev/null 2>&1; then
+          systemctl --user disable --now "$_as_unit.timer" >/dev/null 2>&1 || true
+          rm -f "$_as_udir/$_as_unit.service" "$_as_udir/$_as_unit.timer"
+          systemctl --user daemon-reload >/dev/null 2>&1 || true
+        fi
+        rm -rf "$AS_SNAP"
+        rm -f "$CLIENT_DIR/autosync.notice"
+        echo "  ok autosync removed"
+        ;;
+      status)
+        _as_on=0
+        if [ "$(uname -s)" = Darwin ]; then
+          if _as_p="$(launchctl print "gui/$(id -u)/$_as_label" 2>/dev/null)"; then
+            _as_on=1
+            echo "  ok autosync: on (launchd $_as_label, every 30 s)"
+            _as_rc="$(printf '%s\n' "$_as_p" | sed -n 's/^[[:space:]]*last exit code = \(.*\)$/\1/p' | head -1)"
+            case "$_as_rc" in
+              "") : ;;
+              0|"(never exited)") echo "  ok last run: exit ${_as_rc}" ;;
+              *) echo "  ! last run: exit $_as_rc — see $_as_log" ;;
+            esac
+          else echo "  ! autosync: off — openbeast-client autosync install"; fi
+        elif systemctl --user is-active --quiet "$_as_unit.timer" 2>/dev/null; then
+          _as_on=1
+          echo "  ok autosync: on ($_as_unit.timer, every 30 s)"
+          _as_res="$(systemctl --user show -p Result --value "$_as_unit.service" 2>/dev/null || true)"
+          _as_st="$(systemctl --user show -p ExecMainStatus --value "$_as_unit.service" 2>/dev/null || true)"
+          case "$_as_res" in
+            "") : ;;
+            success) echo "  ok last run: success (exit ${_as_st:-0})" ;;
+            *) echo "  ! last run: $_as_res (exit ${_as_st:-?}) — see $_as_log" ;;
+          esac
+        else echo "  ! autosync: off — openbeast-client autosync install"; fi
+        # The job runs the COPY in $AS_SNAP: say when it lags this checkout.
+        if [ "$_as_on" = 1 ] || [ -d "$AS_SNAP" ]; then
+          _as_stale=""
+          for _f in $AS_FILES; do
+            [ -f "$REPO/$_f" ] || continue
+            cmp -s "$REPO/$_f" "$AS_SNAP/$_f" || _as_stale="$_as_stale $_f"
+          done
+          if [ -n "$_as_stale" ]; then echo "  ! autosync copy in $AS_SNAP differs from this checkout:$_as_stale — openbeast-client autosync install"
+          else echo "  ok autosync copy matches this checkout"; fi
+        fi
+        [ -s "$_as_log" ] && echo "  last: $(tail -1 "$_as_log")"
+        ;;
+      *) echo "usage: openbeast-client autosync [install|uninstall|status|run]" >&2; exit 2 ;;
+    esac
+    ;;
+
+  rigs)
+    [ -f "$RIGS_PY" ] || { echo "$RIGS_PY missing — openbeast-client update" >&2; exit 1; }
+    _rigs list "$@"
+    ;;
+
+  use)
+    [ $# -ge 1 ] || { echo "usage: openbeast-client use <rig> [--force]   (list: openbeast-client rigs)" >&2; exit 2; }
+    [ -f "$RIGS_PY" ] || { echo "$RIGS_PY missing — openbeast-client update" >&2; exit 1; }
+    _rigs use "$@"
+    ;;
+
+  rig)
+    [ -f "$RIGS_PY" ] || { echo "$RIGS_PY missing — openbeast-client update" >&2; exit 1; }
+    _sub="${1:-}"; [ $# -gt 0 ] && shift
+    case "$_sub" in
+      add|remove|detect) _rigs "$_sub" "$@" ;;
+      *) echo "usage: openbeast-client rig add <name> [--host <fqdn>] [--api-key-stdin | --key-file F] [--search rig|local|none] [--model ID]" >&2
+         echo "       openbeast-client rig remove <name> | rig detect" >&2
+         exit 2 ;;
+    esac
+    ;;
+
+  relocate)
+    # --auto: what client_rigs.py's sync runs, so that a client installed in
+    # place moves on its first `update` even though that update is still
+    # executing the OLD client.sh (bash had read it before the pull).
+    if [ "${1:-}" = "--auto" ]; then _relocate auto || true; exit 0; fi
+    [ $# -eq 0 ] || { echo "usage: openbeast-client relocate" >&2; exit 2; }
+    _relocate asked || true
+    ;;
+
   uninstall)
     exec "$REPO/scripts/setup-client.sh" --uninstall
     ;;
 
   -h|--help|help)
-    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,52p' "$_self" | sed 's/^# \{0,1\}//'
     ;;
 
   *)
-    echo "unknown command: $CMD (status|agent|search|update|refresh-config|uninstall)" >&2
+    echo "unknown command: $CMD (status|rigs|use|rig|agent|search|update|refresh-config|autosync|relocate|uninstall)" >&2
     exit 2
     ;;
 esac

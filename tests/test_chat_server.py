@@ -62,6 +62,16 @@ if not os.path.isfile(os.path.join(AGENTS, "sessions.py")):
 import chat_server  # noqa: E402
 import sessions  # noqa: E402  agents/sessions.py — the real ledger
 
+# Some guards here read Linux /proc (boot_id, /proc/meminfo, start ticks).
+# CI is Linux; on a developer Mac these used to FAIL, burying real
+# regressions in the same files under 7 known-red tests (review 2026-11-16).
+LINUX_PROC = os.path.exists("/proc/self/stat")
+needs_proc = pytest.mark.skipif(not LINUX_PROC,
+                                reason="reads Linux /proc (boot_id/meminfo)")
+# A command that exists and exits 0 everywhere (/bin/true is /usr/bin/true
+# on macOS).
+TRUE_CMD = [sys.executable, "-c", ""]
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -453,7 +463,7 @@ def test_reconcile_moves_a_dead_pid_to_lost(rig):
     never executed by any test.
     """
     # 1. a real child that really exited
-    proc = subprocess.Popen(["/bin/true"], start_new_session=True)
+    proc = subprocess.Popen(TRUE_CMD, start_new_session=True)
     pid = proc.pid
     proc.wait()                      # reap it: no zombie to confuse /proc
     sid = rig.session(kind="agent", state="running", pid=pid)
@@ -818,6 +828,29 @@ def test_escalation_escalates_to_sigkill_when_term_is_ignored(rig, victim):
     rec = sessions.get(sid)
     assert rec["state"] == "stopped", rec
     assert "SIGKILL" in (rec["summary"] or "")
+
+
+def test_escalation_never_files_an_undelivered_sigkill_as_stopped(rig, victim):
+    """Review finding: `sent_kill = True` was set whatever signal_session
+    returned, so a session reconcile still calls alive but that the identity
+    guard refuses to signal (no pid_start on file) was finalized `stopped`
+    while it ran on — and /stop then answered "already finished" for good."""
+    proc = victim("sleep 60")
+    sid = rig.session(kind="agent", state="running", pid=proc.pid)
+    path = sessions.record_path(sid)
+    rec = json.load(open(path))
+    rec["meta"].pop("pid_start", None)        # a pre-start-time record
+    assert sessions._write_record(rec)
+    events = []
+    t = chat_server.start_escalation(sid, 30.0, 0.1, poll=0.02,
+                                     on_event=events.append)
+    t.join(timeout=10)
+    assert not t.is_alive()
+    assert proc.poll() is None                 # nothing was signalled
+    assert sessions.get(sid)["state"] == "running"
+    assert not any(e.get("outcome") == "finalized" for e in events), events
+    assert not any(e.get("outcome") == "signal" for e in events), events
+    assert any(e.get("outcome") == "undelivered" for e in events), events
 
 
 def test_signal_session_refuses_a_recycled_or_unproven_pid(rig, victim):
@@ -1252,7 +1285,7 @@ def test_reap_session_finalizes_from_the_exit_status_directly(rig):
 def test_the_reaper_does_not_overwrite_a_terminal_state_its_owner_wrote(rig):
     """An agent stopped cooperatively writes `stopped` and then exits 0. The
     exit status must not relabel that `done`."""
-    proc = subprocess.Popen(["/bin/true"], start_new_session=True)
+    proc = subprocess.Popen(TRUE_CMD, start_new_session=True)
     sid = rig.session(kind="agent", state="running", pid=proc.pid)
     proc.wait()
     sessions.finalize(sid, "stopped", summary="operator stop, went quietly")
@@ -1522,6 +1555,10 @@ def test_health_says_only_ok_without_a_credential(rig):
     assert full["sessions_dir"] == str(rig.sdir)
     assert full["running"] == 1
     assert full["reads"] == "operators"
+    # who may assert a login: doctor reads this to warn about host-network
+    # containers on the loopback default (review: chat login-from-loopback)
+    assert full["login_from"] == "loopback"
+    assert bare.json() == {"status": "ok"}          # never to the anonymous
 
 
 def test_the_listing_limit_is_not_a_route_oracle(rig):
@@ -1816,6 +1853,34 @@ def test_the_operator_list_reloads_from_a_file_too(rig):
     os.utime(path, (time.time() + 1, time.time() + 1))
     assert c.get("/api/chat/sessions", headers=HDR_OK).status_code == 200
     assert c.get(f"/api/chat/sessions/{sid}", headers=HDR_OK).status_code == 200
+
+
+def test_removing_the_last_reader_from_the_file_revokes_not_opens(rig):
+    """Review finding: the allowlist was `env | file` and an EMPTY union meant
+    open mode, so emptying (or commenting out, or deleting) the hot-revocable
+    file to cut off its last reader turned enforcement OFF and every tailnet
+    login read everything. The file existing is what enforces; once seen, its
+    disappearance fails closed."""
+    path = rig.run / "chat-operators"
+    path.write_text(f"{OTHER}\n")
+    c = rig.client
+    assert c.get("/api/chat/sessions", headers=HDR_BAD).status_code == 200
+    assert c.get("/api/chat/sessions", headers=HDR_OK).status_code == 404
+
+    path.write_text(f"# revoked {OTHER}\n")             # all comments
+    os.utime(path, (time.time() + 1, time.time() + 1))
+    assert c.get("/api/chat/sessions", headers=HDR_BAD).status_code == 404
+    assert c.get("/api/chat/sessions", headers=HDR_OK).status_code == 404
+
+    path.write_text("")                                 # editor truncation
+    os.utime(path, (time.time() + 2, time.time() + 2))
+    assert c.get("/api/chat/sessions", headers=HDR_OK).status_code == 404
+
+    path.unlink()                                       # lockdown by delete
+    assert c.get("/api/chat/sessions", headers=HDR_BAD).status_code == 404
+    assert c.get("/api/chat/sessions", headers=HDR_OK).status_code == 404
+    # a local caller still reads: the box owner is never locked out
+    assert c.get("/api/chat/sessions", headers=rig.local).status_code == 200
 
 
 def test_paused_is_a_first_class_event(rig):
@@ -2158,6 +2223,7 @@ def test_stop_still_works_when_the_inbox_write_fails(rig, monkeypatch):
 # the kill path needs the boot, not just the pid (review [54])
 # ---------------------------------------------------------------------------
 
+@needs_proc
 def test_signalling_refuses_a_record_from_another_boot(rig):
     """meta['pid_start'] is ticks since BOOT, so across a reboot the equality
     compares two different clocks and can match by coincidence — the
@@ -2422,6 +2488,7 @@ def test_a_spawned_job_leaves_the_stacks_unit(tmp_path, monkeypatch, rig,
     assert "systemd-run" not in json.dumps(rec)
 
 
+@needs_proc
 def test_a_scoped_job_carries_its_own_memory_cap(tmp_path, monkeypatch):
     """Leaving the stack's unit leaves its MemoryMax; an UNBOUNDED phone job is
     the OOM incident the stack cap exists to prevent. The probe carries the
@@ -2440,6 +2507,7 @@ def test_a_scoped_job_carries_its_own_memory_cap(tmp_path, monkeypatch):
     assert not [a for a in chat_server._probe_scope() if "Memory" in a]
 
 
+@needs_proc
 def test_a_scope_oom_kills_only_the_offender(tmp_path, monkeypatch):
     """B-chat-2: a user scope's default OOMPolicy=stop SIGTERMs the whole
     scope after the kernel kills the biggest process — job.sh filed the OOM
@@ -2478,6 +2546,7 @@ def _stub_systemctl(bindir, tmp_path, rc):
     return log
 
 
+@needs_proc
 def test_scoped_jobs_share_one_capped_slice(tmp_path, monkeypatch):
     """Review 2026-09-29: every scope got its own 50%-of-RAM cap and no shared
     parent, so two runaway phone jobs (or one plus the stack) could still

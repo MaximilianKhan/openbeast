@@ -9,8 +9,8 @@ cloud model, no API keys: inference never leaves hardware you own.**
 
 Most local-model tools stop at "chat with a model." OpenBeast is the whole
 stack, and it is the only one that **measures** what it ships: an
-OpenAI-compatible model server tuned to your card, an autonomous agent with an
-18-tool arsenal, a browser chat UI *and* a terminal coding agent, a phone
+OpenAI-compatible model server tuned to your card, an autonomous agent with a
+19-tool arsenal, a browser chat UI *and* a terminal coding agent, a phone
 console for the rig's own long jobs, publishable pages, a compiler in the
 agent loop, one-command encrypted remote access, family-grade multi-user
 permissions, and an install path that works with the network cable unplugged.
@@ -19,7 +19,7 @@ class of hardware.
 
 **One GPU box, every device you own.** Install the **rig** on the machine with
 the graphics card, then install the **client** on any laptop (no GPU, no
-weights). It runs the same agent and the same 18 tools against *its own* files,
+weights). It runs the same agent and the same 19 tools against *its own* files,
 with only the thinking crossing your private tailnet. Your laptop stays a
 laptop; your rig does the reasoning. **Outgrowing one card?** Point the same
 stack at a vLLM or TensorFold server spanning two NVIDIA DGX Sparks, and bring
@@ -42,22 +42,28 @@ line in `openbeast.conf`.
 | | What it is | Since |
 |---|---|---|
 | **The rig** | llama.cpp serving the biggest model your GPU holds, MTP speculative decoding, Open WebUI, private SearXNG, the identity tool server (RBAC, per-user shards, audit; added in v1.1), health-monitored daemon with fast boot and model-load rollback | v1.0 |
-| **beast-slot** 🎰 | Client mode: any Mac/Linux laptop runs OpenCode + the full 18-tool arsenal on *its own* files; only inference crosses the tailnet. `/api/slot` publishes what the rig is really serving | v1.1 |
+| **beast-slot** 🎰 | Client mode: any Mac/Linux laptop runs OpenCode + the full 19-tool arsenal on *its own* files; only inference crosses the tailnet. `/api/slot` publishes what the rig is really serving. Since #204 one client knows several rigs: `openbeast-client rigs` lists them, `use <rig>` switches OpenCode, the tools and search in one atomic step, and each rig's context window comes from its `/api/slot` | v1.1 · unreleased |
 | **beast-gate** 🛡️ *opt-in* | Identity-aware inference edge: per-device keys, OpenAI-route allowlist, rate + in-flight caps, an inference audit trail | v1.1 |
 | **beast-assist** 🔧 *opt-in* | The compiler joins the agent loop: every source-file write gets the language's real checker verdict pushed back into the tool result | v1.2 |
 | **beast-artifact** 🎨 *opt-in* | A durable, versioned URL for anything the model renders (reports, dashboards, small tools), served from an opaque-origin sandbox under CSP. Since v1.7: one `rig` owner for everything the rig publishes, admins, pin/tag/share/delete from a phone, version pruning and opt-in retention, a paged and searchable gallery, links back to the session that made a page | v1.3 · v1.7 |
 | **beast-chat** 📱 *opt-in* | Watch and steer the rig's own sessions from a phone: live transcripts that reattach by byte offset, `say` to a running agent, stop it, start a job. Since v1.7: a new-session sheet with presets, pause/resume, an installable PWA, push notifications through an ntfy extension, transcript export to beast-artifact, a rig status strip | v1.4 · v1.7 |
 | **beast-lang** 📚 | The offline language library: acquired docs, the installed toolchain introspected as ground truth, every claim compile-verified, a `language_reference` tool, (opt-in, `BEAST_ESCALATE`) a compile error that arrives with its confirmed fix, and the measured zig 0.16 awareness pack handed to agents on zig tasks (`LANG_PACK_CONTEXT`) | v1.5 · v1.7 |
+| **beast-docs** 📗 | Current Apple (SwiftUI, UIKit, Swift, Xcode, App Review) and Android (Compose, Kotlin, AGP) developer docs, mirrored offline from the publishers' own DocC JSON / markdown, every answer stamped with its URL and fetch date; live fetch when online, island-aware; a `platform_docs` tool and `scripts/docs.sh` ([docs](docs/BEAST_DOCS.md)) | unreleased |
+| **beast-apps** 🧰 | A capability catalog for external apps (Xcode / iOS Simulator, Gradle + adb, mobile UI driving, Blender, Figma, 3D printers, ROS) through pinned MCP servers: `scripts/apps.sh check` probes what is installed and prints the exact fix, `enable` merges a passing server into opencode (v1 or v2 config) with a backup, `refresh` notices upstream changes ([docs](docs/BEAST_APPS.md)) | unreleased |
 | **Air-gap ready** 🔌 | `OFFLINE=true`, a hash-pinned Python lockfile with a wheelhouse, and a signed offline bundle: build it connected, install it from a USB stick | v1.5 |
+| **beast-island** 🏝️ | Runtime offline mode for a power outage: the rig notices the internet is gone (about 90 to 120 s), web tools answer "offline" at once instead of stalling, and everything else keeps running locally. A launch with no route boots islanded; `./start.sh -d --offline` forces it | v1.8 |
+| **spark-hydra** 🐉🐉 *opt-in* | Two DGX Sparks serve DeepSeek-V4.1-Flash (Mia EXL3) on TensorFold across two ConnectX-7 rails, with four streams, a 524,288-token window and thinking on: the default since 2026-11-18, #1 on the v5 board (65/71 with its best agent setup, `AGENT_PROFILE=deepseek-best`). The command center and authenticated client gateway run on spark-1. GLM-5.3-Flash (1,048,576-token window) is staged as the alternative, one command away. [Spark runbook](docs/SPARK_HYDRA.md#quickstart) | v1.9 |
 | **beast-campaign** 🧪 | A GPU lease so two measurements cannot share the card, an eval *era* hash so rows from different code are never compared as if they were the same, and a harness that refuses to bank an infrastructure failure (a dead server, an exhausted thread pool, a full disk) as a model failure | v1.5 |
 | **Multi-engine inference** 🟩 *opt-in* | `INFERENCE_BACKEND=vllm\|tensorfold`: the whole stack (WebUI, tools, agents, gate, `/api/slot`) talks to a vLLM or TensorFold server, e.g. tensor-parallel across two DGX Sparks. Any new checkpoint is inspected, pinned by commit, sha256-locked and conformance-tested before OpenBeast uses it | v1.6 |
-| **beast-hydra** 🐉 + **beast-instinct** 🧿 *opt-in* | `HYDRA=true`: one router on `:8095` in front of the rig's engine and any tailnet engines, choosing per request by the `model` field, with health checks and failover before the first byte; every consumer (WebUI, gate, agents) goes through it. `INSTINCT=true`: a calibrated decision service on `:8094` that hydra and the router can consult, shadow-only until a decision passes its gate, and deciding on a full 27B (the rig's own now, Open-Jev-27B on its own GPU next). The fleet is uncensored-only, enforced: hydra never answers from a stock model; the Sparks serve GLM-5.3-Flash uncensored on TensorFold. Tested against simulated fleets, not yet on the Sparks | v1.7 |
+| **Engine plane** ⚙️ | `scripts/engine.sh`: list, swap, install, update, pin and roll back llama.cpp, vLLM or TensorFold with one command, every install verified and every one with an offline path (`stage` on a connected box, `install --from` on a closed one); one adapter file per engine ([docs](docs/ENGINES.md)) | unreleased |
+| **beast-recipe** 📜 | OpenBeast's own end-to-end serving recipes for 1 to 8 DGX Sparks (one rank each): `scripts/beast-recipe.sh init` turns any Hugging Face model (or a local folder) and a Spark count into `recipes/<name>/recipe.env`; `plan` gives the memory fit per Spark, the engine and why, TP/EP, drafter options with their licences, KV, a verdict (SERVABLE-NOW / SERVABLE-WITH-WORK with the gap list and effort / NEEDS-MORE-HARDWARE with how many Sparks and why / BLOCKED) and every command end to end; `engine`, `stage`, `up`, `check`, `adopt` and `rollback` apply it through the tools OpenBeast already has (`beast-spark <name>` switches). Dry run by default, `--run` acts, `--json` everywhere. Seven worked examples in `recipes/`; built and tested off-hardware, hardware runs pending ([docs](docs/BEAST_RECIPE.md)) | unreleased (main, after v1.9) |
+| **beast-hydra** 🐉 + **beast-instinct** 🧿 *opt-in* | `HYDRA=true`: one router on `:8095` in front of the rig's engine and any tailnet engines, choosing per request by the `model` field, with health checks and failover before the first byte; every consumer (WebUI, gate, agents) goes through it. `INSTINCT=true`: a calibrated decision service on `:8094` that hydra and the router can consult, shadow-only until a decision passes its gate, and deciding on a full 27B (the rig's own now, Open-Jev-27B on its own GPU next). The fleet policy is uncensored-preferred (Max, 2026-11-19): stock models such as the Spark pair's DeepSeek default may serve, and at equal priority hydra tries an uncensored model first. `family_policy = "uncensored-only"` restores the strict rule ([BEAST_HYDRA.md](docs/BEAST_HYDRA.md#family-policy)). Tested against simulated fleets, not yet on the Sparks | v1.7 |
 
 Walkthroughs for the v1.1–v1.5 features → [docs/TUTORIALS.md](docs/TUTORIALS.md).
 Capability breakdown through v1.5 → [docs/FEATURES.md](docs/FEATURES.md).
-v1.6–v1.7 → [BEAST_HYDRA.md](docs/BEAST_HYDRA.md),
+v1.6–v1.9 → [BEAST_HYDRA.md](docs/BEAST_HYDRA.md),
 [BEAST_INSTINCT.md](docs/BEAST_INSTINCT.md),
-[DGX_SPARK_PLAN.md](docs/DGX_SPARK_PLAN.md).
+[SPARK_HYDRA.md](docs/SPARK_HYDRA.md).
 
 ## Install
 
@@ -87,7 +93,8 @@ disk. The shipped contexts are measured on a 32 GB RTX 5090; on a 24 GB card
 (computed from the scaling formula, not measured on a 24 GB card).
 
 `bootstrap.sh` detects your GPU, builds llama.cpp, installs the hash-pinned
-Python closure, downloads the default model, and launches the full stack with
+Python closure, downloads the llama.cpp default model (Qwen3.8 27B Uncensored
+MTP Q5, the fallback on an RTX 5090), and launches the full stack with
 **all tools wired and no login wall** — the complete demo, out of the box. It
 checks the heavy prerequisites (NVIDIA driver, CUDA, Docker) and tells you
 exactly what to install if anything's missing.
@@ -101,6 +108,11 @@ exactly what to install if anything's missing.
   over — see [Air-gap](#air-gap--the-rig-that-never-sees-the-internet-).
 - **On your phone, securely?** `./scripts/setup-tailscale.sh` puts the stack on
   your private tailnet with automatic HTTPS in ~5 minutes ([below](#remote-access-tailscale)).
+- **On an RTX 5090?** Its default model is **Inkling 2 Mini with SC117's abliteration** on the
+  Basalt engine (since 2026-11-25; the stock pack is the rollback), a second step after bootstrap, offline-capable:
+  `scripts/engine.sh install basalt`, the pack built by `scripts/engines/inkling-sc117-pack.sh` (no single download),
+  then `scripts/engine.sh use default` and `AGENT_PROFILE=inkling-best`
+  ([INSTALL.md](docs/INSTALL.md#rtx-5090-the-default-model-inkling-2-mini-sc117-abliterated-on-basalt)).
 - **Already installed?** `git pull --ff-only` updates OpenBeast itself.
   `./scripts/update.sh` is a different thing: it moves the upstream pins
   (llama.cpp, container images, Python deps) and rewrites tracked files
@@ -120,7 +132,7 @@ every model — is in **[docs/INSTALL.md](docs/INSTALL.md)**.
 ### 💻 A client (use a rig from your laptop)
 
 Turns any Mac or Linux machine into a full OpenBeast workstation with **no GPU
-and no model download**. OpenCode and the entire 18-tool arsenal run *on the
+and no model download**. OpenCode and the entire 19-tool arsenal run *on the
 laptop*, so `bash`, `grep` and file edits act on the laptop's own files; only
 the thinking happens on the rig.
 
@@ -170,7 +182,9 @@ opencode                            # terminal coding agent (run from this check
 ```
 
 Daemon controls: `./start.sh -d` (background), `./start.sh --status`,
-`./stop.sh`, `./start.sh doctor`. Pick a specific model with
+`./stop.sh`, `./start.sh doctor`. No internet (power outage, router dark)?
+`./start.sh -d --offline` boots in [island mode](docs/BEAST_ISLAND.md); a
+plain `./start.sh -d` also islands by itself when the internet drops. Pick a specific model with
 `./start.sh serve-<model>.sh`, or set your default via `SERVE_SCRIPT` in
 `openbeast.conf`.
 
@@ -179,7 +193,8 @@ on a Mac (`~/.local/share/opencode/opencode.db`). `./scripts/opencode-sessions.s
 shows them all per project, and `… clear` (a dry run until `--go`) removes them
 safely: it refuses while opencode is running, backs up first, deletes through
 opencode's own cascade, and then reclaims the space. `--dir` limits it to one
-project.
+project. It drives opencode 1.x and refuses on 2.x, which has no `opencode db`
+([REFERENCE.md](docs/REFERENCE.md)).
 
 **On a client** — same agent, same tools, acting on *this* machine's files:
 
@@ -187,7 +202,9 @@ project.
 opencode                                   # tools run here, thinking runs on the rig
 openbeast-client agent "refactor utils.py" # autonomous agent, local files
 openbeast-client status                    # rig's real model, context, busy slots
-openbeast-client update                    # reinstall pinned deps (pulls too, on a slim checkout)
+openbeast-client rigs                      # every registered rig, * = active
+openbeast-client use <rig>                 # switch OpenCode, tools and search to another rig
+openbeast-client update                    # git pull the client's copy, reinstall pinned deps, refresh models
 ```
 
 **On your phone:** the chat UI is a PWA ("Add to Home Screen"), and with
@@ -335,6 +352,26 @@ when the index actually knows that member. Model-drafted claims go through the s
 they can ever be served.
 → [`docs/BEAST_LANG_PLAN.md`](docs/BEAST_LANG_PLAN.md)
 
+### beast-island — the rig that just lost the internet 🏝️
+
+*(main.)* The power goes out, the router goes dark, and the rig keeps going on
+its UPS. With the default `ISLAND=auto`, a watcher notices roughly 90 to 120 s
+after the route dies. From then on the model's `web_search` and `fetch` tools
+answer *"ISLAND MODE … do not retry"* immediately instead of stalling while the
+model retries. The model, the other tools, OpenCode and Open WebUI carry on as
+normal (Open WebUI's own Web Search toggle is not covered). When the route
+comes back, the rig rejoins by itself. Booting with no internet starts
+islanded, so Open WebUI doesn't stall on model downloads and compose doesn't
+try a registry; a rig that booted that way keeps Open WebUI offline until its
+next restart.
+
+```bash
+./start.sh -d --offline            # islanded from launch
+python3 agents/island.py status    # what state are we in?
+```
+
+→ [`docs/BEAST_ISLAND.md`](docs/BEAST_ISLAND.md)
+
 ### Air-gap — the rig that never sees the internet 🔌
 
 *(v1.5.0.)* An installed rig already serves fine offline; **installing** is what
@@ -361,11 +398,14 @@ payload, which is why `sign` exists.
 
 *(v1.5.0.)* Two small tools that exist because their absence cost real
 GPU-hours: `scripts/gpu-lease.sh` is an advisory **lease on the card** (pid +
-start time, never pid alone), so a build agent cannot start compiling inside a
-measurement's window and the watchdog will not relaunch the stack's model into
-someone else's run; `scripts/eval-era.sh` prints the **era hash** of the six
-files that define what an eval unit sees, so two rows are compared only when
-they were produced by the same code.
+start time, never pid alone) that every GPU-loading caller asks first — eval
+sweeps, VRAM/MTP profiling, start/stop/update, the watchdog — so none of them
+loads a model into someone else's run. It protects only callers that ask: the
+agent `bash` tool and `start_agent` do not consult it, so a model-driven build
+can still compile inside a measurement's window (the concurrency budget that
+would close that is planned, not built); `scripts/eval-era.sh` prints the
+**era hash** of the files that define what an eval unit sees, so two rows are
+compared only when they were produced by the same code.
 
 The harness also refuses to cache what the model did not do. A unit whose
 server died mid-task (the runner now reports `API_ERRORS: n`), or whose
@@ -376,41 +416,95 @@ verdict is refused on an incomplete row. Each of these guards exists because the
 failure it catches once distorted a published verdict; the re-audit that found
 them is in [`docs/TODO.md`](docs/TODO.md).
 
-## Beyond one GPU: vLLM, TensorFold and DGX Spark 🟩
+## Serving from DGX Sparks (spark-hydra) 🐉🐉
 
-*(v1.6.0, opt-in.)* The rig's own inference is llama.cpp, and that stays the
-default byte for byte. Set `INFERENCE_BACKEND=vllm` or `tensorfold` and
-`INFERENCE_URL` in `openbeast.conf`, and the stack talks to that server instead.
-The WebUI, the tool servers, agents, beast-gate and `/api/slot` all follow it.
-The rig never launches, supervises or kills a server it doesn't own. If the
-server isn't up yet, the stack still comes up with a warning and logs the
-moment it becomes ready.
+*(v1.9.0, opt-in.)* **spark-hydra** is two NVIDIA DGX Sparks (`spark-1` +
+`spark-2`) serving DeepSeek-V4.1-Flash (Mia EXL3) with TensorFold TP 2 and four streams (the default since 2026-11-18, Max's decision after testing; the v5 board's #1: 61/71 with the thinking-first composite (arm T), 65/71 with `AGENT_PROFILE=deepseek-best`, arm T2; GLM-5.3-Flash is staged as the alternative, `beastglm`). The OpenBeast command center runs on spark-1. Its backend listens on loopback and outside callers use beast-gate on `:8443` with a per-device key.
 
-The launch scripts run **on the inference nodes**; the reference setup is two
-NVIDIA DGX Sparks running tensor-parallel over their ConnectX-7 link. It is
-built for models **nobody here has seen**, so nothing is hard-wired to a
-checkpoint:
+**Quickstart.** The full version, with every command, is
+[docs/SPARK_HYDRA.md § Quickstart](docs/SPARK_HYDRA.md#quickstart).
+
+1. **Everyday (the pair is built).** On spark-1, run
+   `~/openbeast/scripts/healthcheck.sh` and expect "All 9 services healthy".
+   Start, stop and restart only through the `systemctl --user` units on
+   spark-1: the enabled inference unit drives both ranks (it starts rank 1 on
+   spark-2 over ssh, then rank 0): `deepseek-v41-inference` for DeepSeek, the
+   default, or `spark-hydra-inference` for GLM. `beastds` / `beastglm`
+   switch, and `openbeast` is the command center.
+   Never `docker stop` a rank.
+2. **Use it from a client.** Open WebUI is at
+   `https://spark-1.<tailnet>.ts.net`. For a Mac or Linux box, enroll a device
+   key on spark-1 (`scripts/clients.sh enroll`), then run
+   `scripts/setup-client.sh --host spark-1.<tailnet>.ts.net --name spark-hydra --api-key-stdin`.
+   That gives you OpenCode with the tools running locally;
+   `openbeast-client use beast` and `use spark-hydra` switch between this
+   pair and the 5090 rig. Any OpenAI-compatible tool can use
+   `https://spark-1.<tailnet>.ts.net:8443/v1` with that key as a bearer token.
+   The Mac's active OpenCode model follows the pair: `openbeast-rig/DeepSeek-V4.1-Flash-1017` with the default, `openbeast-rig/GLM-5.3-Flash-EXL3` while GLM is selected (`openbeast-client autosync`, PR #215, keeps it in step after a switch).
+3. **First build from bare boxes (the GLM recipe first, then DeepSeek, the default, on top).** Follow the ordered checklist,
+   [Install everything, fresh](docs/SPARK_HYDRA.md#install-everything-fresh):
+   root setup, firewall, fabric MTU, weights, the recipe and its unit, the
+   command center, the client, then the optional toolchains, docs mirror and
+   ark drive, each step online and offline.
+4. **Update a built pair.** [§G6](docs/SPARK_HYDRA.md#g6-updating) is the
+   "update everything" checklist: pull both Sparks, the pinned Python deps,
+   the command-center restart, and every step a recent change added.
+
+**Bringing up another model or engine.** The rig's own inference is llama.cpp,
+and that stays the default byte for byte. Set `INFERENCE_BACKEND=vllm` or
+`tensorfold` and `INFERENCE_URL` in `openbeast.conf`, and the WebUI, tool
+servers, agents, beast-gate and `/api/slot` all follow that server. The stack
+never launches, supervises or kills a multi-node server it does not own.
+Nothing is hard-wired to a checkpoint:
 
 ```bash
 scripts/backends/model-inspect.sh <repo@sha | /models/dir> --write-profile mymodel
-                                              # what it is, fits 1 or 2 Sparks?, parsers, engine support
+                                              # what it is, how many Sparks it needs, parsers, engine support
 scripts/backends/model-fetch.sh --profile mymodel     # sha256-lock the weights (local copy or Hub)
-scripts/backends/vllm/spark-node.sh --profile mymodel --rank 1   # then --rank 0 on the head
+scripts/backends/spark-cluster.sh start --profile mymodel   # every rank from the head (ranks N-1..1, then 0)
 scripts/backends/conformance.sh --model mymodel       # chat, stream, reasoning, a real tool-call round trip
-scripts/backends/use-model.sh --profile mymodel       # point OpenBeast at it (only behind a pass)
+scripts/engine.sh use tensorfold --unmanaged --url http://127.0.0.1:8000 --profile mymodel
+                                              # point the command center at it
 ```
 
 - **Per-model profiles** are parsed as data and never sourced. A Hub revision
-  must be a full commit SHA; `trust_remote_code` needs an acknowledgement tied
-  to that revision; extra engine flags are checked against an allow list
+  must be a full commit SHA. `trust_remote_code` needs an acknowledgement tied
+  to that revision. Extra engine flags are checked against an allow list
   vendored from each engine's source.
 - **The lock is the pin.** A second Spark, or a re-copy, must reproduce it byte
   for byte before a launcher will serve it.
-- **Conformance, not assumptions.** Tool arguments a server sends as strings
-  (TensorFold does) are coerced to the tool's schema types.
+- **Conformance, not assumptions.** Tool arguments that a server sends as
+  strings (TensorFold does) are coerced to the tool's schema types.
+- **Engines.** `scripts/engine.sh` installs, pins, swaps and rolls back
+  llama.cpp, vLLM and TensorFold. It works offline from staged files.
 
-Every engine detail not yet measured on real Sparks is listed as such in the
-plan. → [`docs/DGX_SPARK_PLAN.md`](docs/DGX_SPARK_PLAN.md) (the runbook is §14)
+**Or let beast-recipe do all of it.** *(main, after v1.9.)*
+[`scripts/beast-recipe.sh`](docs/BEAST_RECIPE.md) answers "can we serve this
+model, on this many Sparks, and what does it take?" and then wires the steps
+above (and the Hy4 vLLM kit, and a Mia image's unit where that is the only
+engine) into one dry-run-by-default pipeline:
+
+```bash
+scripts/beast-recipe.sh init https://huggingface.co/ORG/REPO/tree/<sha> --sparks 2   # recipes/<name>/recipe.env + the plan
+scripts/beast-recipe.sh plan <name> --sparks 1,2,3,4   # fit per Spark, engine and why, verdict, gaps + effort, every command
+scripts/beast-recipe.sh engine|stage|up|check <name>   # each prints what it would do; --run acts
+scripts/beast-recipe.sh adopt <name> --run && beast-spark <name>   # the switch; beast-recipe rollback --run goes back
+```
+
+The verdicts are SERVABLE-NOW, SERVABLE-WITH-WORK (the gap list says what,
+and how long), NEEDS-MORE-HARDWARE (how many Sparks, and why) and BLOCKED.
+The engine/family matrix, with sources, is
+`scripts/backends/data/recipe-engines.json`. The worked examples (Hy4-flash
+on vLLM and on TensorFold, GLM on our own native launcher, DeepSeek at 2.9 and
+4.0 bpw, Qwen3.8-27B on one Spark, MiniMax-M3.1-Flash) are in `recipes/`.
+
+The launchers (`spark-node.sh`, `spark-cluster.sh`, 1 to 8 Sparks) are in
+[SPARK_HYDRA.md §D2](docs/SPARK_HYDRA.md#d2-native-tensorfold-through-spark-nodesh--spark-clustersh),
+and the engine plane is in
+[§D3](docs/SPARK_HYDRA.md#d3-the-engine-plane-scriptsenginesh). The matrix of
+engines and hosts is in [docs/ENGINES.md](docs/ENGINES.md). The original
+design notes are kept, for history only, in
+[DGX_SPARK_PLAN.md](docs/DGX_SPARK_PLAN.md).
 
 ## Architecture
 
@@ -425,7 +519,7 @@ flowchart TB
       coc["⌨️ <b>OpenCode</b><br/>terminal agent"]
       ccli["🧰 <b>openbeast-client</b><br/>status · agent<br/>search · update"]
       cmcp["🔌 <b>MCP server</b><br/>stdio · no port"]
-      ctools["⚙️ <b>18 tools</b><br/>bash · files · grep<br/><b>act on THIS disk</b>"]
+      ctools["⚙️ <b>19 tools</b><br/>bash · files · grep<br/><b>act on THIS disk</b>"]
       coc --> cmcp
       cmcp --> ctools
     end
@@ -451,7 +545,7 @@ flowchart TB
       subgraph TOOLPLANE["🔑 TOOL PLANE — acts on the rig · never published"]
         direction TB
         idsrv["🔑 <b>tool server</b> · :3001<br/>RBAC · user shards · audit<br/><i>authenticates the HUMAN</i>"]
-        mcp["🔌 <b>MCP surface — 18 tools</b><br/>skill · agent ctl · publish_artifact<br/>language_reference"]
+        mcp["🔌 <b>MCP surface — 19 tools</b><br/>skill · agent ctl · publish_artifact<br/>language_reference · platform_docs"]
         prim["⚙️ <b>primitives — 8</b><br/>bash · r/w/edit/ls · grep · fetch · search<br/>+ <b>beast-assist</b>: checker verdict on every write"]
         idsrv --> mcp
         mcp --> prim
@@ -482,7 +576,7 @@ flowchart TB
       subgraph ASSETS["💾 ON DISK — yours, never uploaded"]
         direction LR
         weights["💾 <b>weights/</b><br/>GGUF · sha256-pinned"]
-        skills["📚 <b>skills/</b> · 24"]
+        skills["📚 <b>skills/</b> · 27"]
         evals["📊 <b>evals/</b><br/>leaderboard · era hash"]
         store["🗂️ <b>artifacts/</b> · <b>sessions/</b>"]
       end
@@ -677,7 +771,7 @@ least to most feature parity** with OpenBeast (the rightmost reference):
 
 ⁷ Deliberately **out of scope**. OpenBeast maximizes one model rather than bundling services. Bolt these on via the [extension system](extensions/README.md) if you want them.
 
-⁸ Hermes is *itself* client-side and consumes a remote endpoint, so it shares the shape. What it doesn't do is install as a second role of the same distribution: one command turning any laptop into a peer of the rig, with the same 18-tool arsenal and model list, per-device keys, and an inference audit trail on the rig side when beast-gate is on.
+⁸ Hermes is *itself* client-side and consumes a remote endpoint, so it shares the shape. What it doesn't do is install as a second role of the same distribution: one command turning any laptop into a peer of the rig, with the same 19-tool arsenal and model list, per-device keys, and an inference audit trail on the rig side when beast-gate is on.
 
 **Ollama** (and the same-archetype LM Studio, text-generation-webui, GPT4All) is
 a bare model runner: it serves a model and stops there. OpenBeast *includes* a
@@ -747,13 +841,97 @@ downloads any of them, staged and sha256-verified before it lands.
 
 ## Evals & benchmarking
 
-A reproducible suite of **291 test units** (137 base tasks, 31 with variants
-across 6 languages) spanning 12 domains — software engineering, math, physics,
-ML/LLM internals, distributed systems, security, and more. Every task ships
-its own fixtures and a scripted check (the suite's known gaps, including live
-`fetch`/`web_search` under eval and two defective validators, are listed in
-[evals/README.md](evals/README.md#known-validator-defects-v4)), and the multi-model runner produces a
-**capability-ranked** leaderboard (`SCORE = 0.75·problem-solving + 0.25·language-breadth`).
+The current suite is **v5.0: 71 scored units over 34 base tasks** in all
+12 domains (software engineering, math, physics, ML/LLM internals,
+distributed systems, security, and more) and all six languages, run in
+three language-assistance arms inside a 4-hour budget
+([evals/README.md, v5](evals/README.md#v5--the-current-suite)). Every unit
+is proven without a model, the answer key and the web are sealed from the
+measured agent, and the solution runs confined. The multi-model runner
+produces a **capability-ranked** leaderboard
+(`SCORE = 0.75·problem-solving + 0.25·language-breadth`; on v5 the language
+axis counts multi-language tasks only).
+
+### v5 leaderboard
+
+Each model's **best** configuration on v5.0 (71 scored units, 34 base tasks,
+six languages plus one shell unit), one row per model. The configuration
+that earned the row is named in it; every configuration measured so far is
+in [`docs/RESULTS.md`](docs/RESULTS.md#v5-leaderboard--best-configuration-per-model).
+DeepSeek-V4.1-Flash (Mia EXL3), Hy4-flash (NVFP4) and GLM-5.3-Flash run on the DGX Spark pair (`--jobs 4`, from the Mac harness host).
+Inkling 2 Mini (stock and Derisked, on Basalt; the stock row is the RTX 5090 default since 2026-11-24) and Qwen3.8 27B Uncensored MTP (the previous default, now the fallback) ran on one RTX 5090 (`--jobs 1`) from the rig's
+eval-host container, calibrated against the Mac by inference (one DeepSeek arm on harness9). Claude Opus 5.5 is a
+**reference ceiling, not a peer**: a different scaffold (Claude Code's own
+tools, no turn cap), and its solver never saw validator output.
+DeepSeek's row is campaign arm T2. Its nine other arms through 2026-11-21
+(the seed-noise run, a 4K cap, and the harness10 arms U, UP, UPA, U_8k,
+UP_8k and UPA_8k: 59-65/71) are listed in `docs/RESULTS.md`, and none beat
+T2 ([final report](docs/reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md)).
+Hy4-flash's row is arm H_T2, T2 exactly on the same harness and pair: 5 units
+behind DeepSeek, single seed; under GLM-C's configuration (arm H_C, the
+ablation) it scored 55/71, so T2's setup helped by 5 on Hy4
+([report](docs/reports/V5_HY4_FLASH-2026-11-22.md));
+GLM-5.3-Flash's row is arm UP, DeepSeek's UP run unchanged on GLM (the GLM control; harness10, the same era and pair
+as DeepSeek's UP): 56/71, against 51/71 scored for its earlier best C, which is +2 over the 68 units both measured
+cleanly (within noise; the other 3 were C's integrity exclusions), across a harness version, bundled and single seed;
+6 behind DeepSeek's UP (62/71) ([report](docs/reports/V5_GLM_UP-2026-11-23.md));
+the RTX 5090 row is arm Q_T2, T2's switches at one stream: 51/71 scored (52 until the 2026-11-25 integrity rescan), against 39/71
+for its bare L0 baseline (a harness10 row, so that pair crosses an era as well as the arm), single seed
+([report](docs/reports/V5_QWEN38_RTX5090-2026-11-22.md)). Q_T2 was the 5090's default agent setup from
+2026-11-23 to 2026-11-24: one line in `openbeast.conf`, `AGENT_PROFILE=qwen38-best` (the same switch table as the
+Spark pair's `deepseek-best`; a key on its own line still wins; [MODELS.md](docs/MODELS.md)).
+Inkling 2 Mini Derisked ran the same arm on the same rig (I_T2, Basalt v0.5.7): 49/71 scored, one place above
+Qwen3.8 on SCORE (level on problem-solving, wider on languages) with 3 fewer passes, and 6 behind it over the 65
+units both measured cleanly (p 0.07), single seed; it ran the arm in 4.5 h against ~13.5. On Basalt's stock Inkling
+pack the same arm passed 53/71 (SCORE 78.2, now the top RTX 5090 row): level with Qwen3.8 on the units both measured
+cleanly (−2, p 0.69), single seed, and a seed repeat of the Derisked arm moved 2 units, so the gaps are within noise.
+DeepSeek's UP_8k setup on the Derisked pack (INK-UP8K, harness10) passed 49/71, level with T2 (3 units each way), and
+its forced-act turns kept thinking on Basalt, so T2 stays Inkling's setup ([report](docs/reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md) §10.9).
+**Since 2026-11-24 the stock Inkling 2 Mini on Basalt is the RTX 5090's default** (Max's decision: level with
+Qwen3.8 on the units both measured, the arm about 3× faster, no unit lost; `scripts/engines/basalt.sh`, profile
+`inkling2-mini-stock`, `AGENT_PROFILE=inkling-best`), with Qwen3.8 on llama.cpp as the fallback and the rollback path
+([decision](docs/reports/DECISIONS-2026-11-24.md#10-stock-inkling-2-mini-on-basalt-is-the-rtx-5090-default),
+[report](docs/reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md) §10, the shipped default per platform:
+[RESULTS.md](docs/RESULTS.md#shipped-default-per-platform)).
+**Since 2026-11-25 the default is Inkling 2 Mini with SC117's abliteration** (Max's decision, the uncensored-preferred
+policy: [DECISIONS-2026-11-25 §7](docs/reports/DECISIONS-2026-11-25.md#7-sc117s-abliterated-inkling-2-mini-is-the-rtx-5090-default)): the stock pack with SC117's 20 edited
+attention-output matrices, built offline by `scripts/engines/inkling-sc117-pack.sh`, profile `inkling2-mini-sc117`;
+51/71 (row INK-T2-SC117) against the stock pack's 53/71 on the same arm, within noise (1 gained, 3 lost, p 0.63), at the
+same speed ([report](docs/reports/V5_INKLING2_MINI_SC117-2026-11-25.md)). The stock pack (`inkling2-mini-stock`) is the
+first rollback, Qwen3.8 on llama.cpp the second.
+
+<!-- v5-board:start -->
+<!-- generated by evals/v5_board.py: do not hand-edit -->
+
+| # | Model | Weights | Host | Best configuration | Passed | SCORE | Py | Go | C | C++ | Rust | Zig | Sh | Mean / unit | Date | Result file | Status |
+|---:|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|
+| 1 | **DeepSeek-V4.1-Flash (Mia EXL3)** | EXL3 2.9 bpw · Mia EAQ v1.1 -v2 · stock · [local pack @04c13f12](docs/RESULTS.md#weights-used) | DGX Spark pair, TensorFold, Mia EXL3 (2.9 bpw) | thinking on, campaign arm T2: T + 8192-token per-turn thinking cap + act nudge; harness9 (review 1118 sandbox + partial stats + eval fetch guard) | **65/71** | **94.9** | 30/32 | 7/8 | 7/8 | 7/8 | 8/8 | 5/6 | 1/1 | 20.7 min | 2026-11-19 | [eval-deepseek-v4-1-flash-v5-thinking-first-t2-20261119-013846.json](evals/boards/v5/eval-deepseek-v4-1-flash-v5-thinking-first-t2-20261119-013846.json) | experiment arm (beast-assist diagnostics, awareness packs, wall-scaled turns, wall ×2) |
+| 2 | **Hy4-flash (NVFP4)** | NVFP4 · atakans build · stock · [atakans/Hy4-flash-NVFP4@30f201ac](https://huggingface.co/atakans/Hy4-flash-NVFP4/tree/30f201acf0b4f9ba178817bcbc04ccfa3ec473f9) | DGX Spark pair, vLLM TP2 + EP, NVFP4 | thinking on (reasoning_effort high, Hy4's default), campaign arm H_T2 = T2 exactly: T + 8192-token per-turn thinking cap + act nudge; harness9 (review 1118 sandbox + partial stats + eval fetch guard) | **60/71** | **83.4** | 26/32 | 6/8 | 7/8 | 8/8 | 8/8 | 4/6 | 1/1 | 19.9 min | 2026-11-21 | [eval-hy4-flash-nvfp4-v5-thinking-first-h-t2-20261121-224152.json](evals/boards/v5/eval-hy4-flash-nvfp4-v5-thinking-first-h-t2-20261121-224152.json) | experiment arm (beast-assist diagnostics, awareness packs, wall-scaled turns, wall ×2) |
+| 3 | **GLM-5.3-Flash** | EXL3 4 bpw · Mia TensorFold-Ablit · abliterated · [Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit@57edefd2](https://huggingface.co/Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit/tree/57edefd2f5d9b371c8345883304d5af68b52fa24) | DGX Spark pair, TensorFold, EXL3 | thinking on, campaign arm UP: U + planning lines (harness10, 16K cap) | **56/71** | **81.9** | 24/32 | 7/8 | 7/8 | 7/8 | 6/8 | 4/6 | 1/1 | 28.5 min | 2026-11-23 | [eval-glm-5-3-flash-v5-thinking-first-up-20261123-101944.json](evals/boards/v5/eval-glm-5-3-flash-v5-thinking-first-up-20261123-101944.json) | experiment arm (beast-assist diagnostics, awareness packs, wall-scaled turns, wall ×2) |
+| 4 | **Inkling 2 Mini (Basalt NVFP4-MX8)** | Basalt NVFP4-MX8 pack · Basalt's official pack · stock · [jesdga/Inkling-2-Mini-Basalt@c2afac3a](https://huggingface.co/jesdga/Inkling-2-Mini-Basalt/blob/c2afac3adb772e14d77b2ea2ac7068ad4460e932/Inkling-2-Mini-NVFP4-MX8.basalt) | 1× RTX 5090, Basalt v0.5.7 + DSpark, --parallel 1; rig eval-host container; calibrated 2026-11-23 against the Mac host (with DeepSeek on this same harness9 tree; carried to this model and server by inference) | thinking on, campaign arm I_T2_stock = I_T2 on Basalt's stock pack: T2's switches at one stream (--jobs 1 --slots 1), T + 8192-token per-turn cap (Basalt thinks up to 6,144 of it) + act nudge; harness9 (review 1118 sandbox + partial stats + eval fetch guard) | **53/71**\* | **78.2** | 24/32 | 6/8 | 7/8 | 6/8 | 5/8 | 4/6 | 1/1 | 3.6 min | 2026-11-24 | [eval-inkling-2-mini-basalt-nvfp4-mx8-stock-v5-thinking-first-i-t2-stock-20261124-140740.json](evals/boards/v5/eval-inkling-2-mini-basalt-nvfp4-mx8-stock-v5-thinking-first-i-t2-stock-20261124-140740.json) | experiment arm (beast-assist diagnostics, awareness packs, wall-scaled turns, wall ×2) |
+| 5 | **Inkling 2 Mini Derisked (Basalt NVFP4-MX8)** | Basalt NVFP4-MX8 pack · Blackfrost Derisked · abliterated · [local file sha256 d2b01bcc](docs/RESULTS.md#weights-used) | 1× RTX 5090, Basalt v0.5.7 + DSpark, --parallel 1; rig eval-host container; calibrated 2026-11-23 against the Mac host (with DeepSeek on this same harness9 tree; carried to this model and server by inference) | thinking on, campaign arm I_T2 = T2's switches at one stream (--jobs 1 --slots 1): T + 8192-token per-turn cap (Basalt thinks up to 6,144 of it) + act nudge; harness9 (review 1118 sandbox + partial stats + eval fetch guard) | **49/71**\*\* | **76.5** | 23/32 | 6/8 | 5/8 | 6/8 | 5/8 | 3/6 | 1/1 | 3.8 min | 2026-11-24 | [eval-inkling-2-mini-derisked-basalt-nvfp4-mx8-v5-thinking-first-i-t2-20261124-045843.json](evals/boards/v5/eval-inkling-2-mini-derisked-basalt-nvfp4-mx8-v5-thinking-first-i-t2-20261124-045843.json) | experiment arm (beast-assist diagnostics, awareness packs, wall-scaled turns, wall ×2) |
+| 6 | **Inkling 2 Mini SC117 abliterated (Basalt NVFP4-MX8)** | Basalt NVFP4-MX8 pack · SC117 abliterated, transplanted into the release · abliterated · [local file sha256 6eaa50d3](docs/RESULTS.md#weights-used) | 1× RTX 5090, Basalt v0.5.7 + DSpark, --parallel 1; rig eval-host container; calibrated 2026-11-23 against the Mac host (with DeepSeek on this same harness9 tree; carried to this model and server by inference) | thinking on, campaign arm I_T2_sc117 = I_T2_stock on SC117's abliterated weights (Basalt pack from the transplanted checkpoint): T2's switches at one stream (--jobs 1 --slots 1), T + 8192-token per-turn cap (Basalt thinks up to 6,144 of it) + act nudge; harness9 (review 1118 sandbox + partial stats + eval fetch guard) | **51/71**\*\*\* | **75.3** | 23/32 | 6/8 | 6/8 | 6/8 | 5/8 | 4/6 | 1/1 | 4.0 min | 2026-11-25 | [eval-inkling-2-mini-sc117-abliterated-basalt-nvfp4-mx8-v5-thinking-first-i-t2-sc117-20261125-184538.json](evals/boards/v5/eval-inkling-2-mini-sc117-abliterated-basalt-nvfp4-mx8-v5-thinking-first-i-t2-sc117-20261125-184538.json) | experiment arm (beast-assist diagnostics, awareness packs, wall-scaled turns, wall ×2) |
+| 7 | **Qwen3.8 27B Uncensored MTP** | GGUF Q5_K_M · JonathanColetti Uncensored (MTP head kept) · abliterated · [JonathanColetti/Qwen3.8-27B-Uncensored-GGUF@45d0fc0a](https://huggingface.co/JonathanColetti/Qwen3.8-27B-Uncensored-GGUF/blob/45d0fc0ad6cfcf9eeee6008ddaea925536409b18/Qwen3.8-27B-Uncensored-Q5_K_M.gguf) | 1× RTX 5090, llama.cpp MTP, -np 1; rig eval-host container; calibrated 2026-11-23 against the Mac host (with DeepSeek on this same harness9 tree; carried to this model and server by inference) | thinking on, campaign arm Q_T2 = T2's switches at one stream (--jobs 1 --slots 1): T + 8192-token per-turn thinking cap + act nudge; harness9 (review 1118 sandbox + partial stats + eval fetch guard) | **51/71**\*\*\*\* | **75.0** | 23/32 | 6/8 | 6/8 | 6/8 | 6/8 | 3/6 | 1/1 | 9.6 min | 2026-11-23 | [eval-qwen3-8-27b-uncensored-mtp-q5-k-m-v5-thinking-first-q-t2-20261123-115749.json](evals/boards/v5/eval-qwen3-8-27b-uncensored-mtp-q5-k-m-v5-thinking-first-q-t2-20261123-115749.json) + 1 repair | experiment arm (beast-assist diagnostics, awareness packs, infrastructure rows (3 server_error), wall-scaled turns, wall ×2); 3 units lost to infrastructure, counted as fails |
+| ref | *Claude Opus 5.5* (reference) | Anthropic API · hosted, weights not public | Anthropic API | Claude Code tools, no turn cap, wall ×2 (68/71 at the 1× wall); solver never saw validator output | *71/71*\*\*\*\*\* | *100.0* | 32/32 | 8/8 | 8/8 | 8/8 | 8/8 | 6/6 | 1/1 | 3.7 min | 2026-11-16 | [reference-claude-opus-5-5-v5-20261116.jsonl](evals/boards/v5/reference-claude-opus-5-5-v5-20261116.jsonl) | reference ceiling, not ranked: a different scaffold |
+| — | Qwen3.6 27B (v4 #1) |  |  | not yet run on v5 |  |  |  |  |  |  |  |  |  |  |  |  | |
+
+\* Inkling 2 Mini (Basalt NVFP4-MX8), INK-T2-STOCK: 122_gemm_blocked_d is a stop at the binary check on std's dlsym (Linux host): verdict not measured; replayed under the proposed next-era rule (docs/HARNESS_NOTES.md): verdict PASS, 6 hidden cases; not adjusted.  
+\*\* Inkling 2 Mini Derisked (Basalt NVFP4-MX8), INK-T2: 122_gemm_blocked_d is a stop at the binary check on std's dlsym (Linux host): verdict not measured; replayed under the proposed next-era rule (docs/HARNESS_NOTES.md): verdict PASS, 6 hidden cases; not adjusted.  
+\*\*\* Inkling 2 Mini SC117 abliterated (Basalt NVFP4-MX8), INK-T2-SC117: 122_gemm_blocked_d is a stop at the binary check on std's dlsym (Linux host): verdict not measured; replayed under the proposed next-era rule (docs/HARNESS_NOTES.md): verdict PASS, 6 hidden cases; not adjusted.  
+\*\*\*\* Qwen3.8 27B Uncensored MTP, Q38U-T2: 54/71 raw; 5 units (122_gemm_blocked_d, 123_nbody_b, 124_rkf45, 126_hmac_scratch, 168_linearizability_kv_c) excluded contaminated: the integrity scan flagged off-host access from the agent's shell (integrity scan 2026-11-23; on Linux the agent shell has no network deny, evals/README.md residual gaps); contaminated: the review-1124 rescan flagged a package install from the agent's shell whose output was discarded (counted as a read, as Q38U-L0's 163_bigint_divmod_e, though the eval-host user cannot install system packages; a fail, so no score effect; integrity rescan 2026-11-25); contaminated: the review-1124 rescan flagged off-host access from the agent's shell (a package install from the public index, which the 2026-11-23 scan did not check; integrity rescan 2026-11-25). 122_gemm_blocked_d is a stop at the binary check on std's dlsym (Linux host), not a measured verdict; replayed under the proposed next-era rule (docs/HARNESS_NOTES.md): verdict PASS, 6 hidden cases; not adjusted.  
+\*\*\*\*\* Claude Opus 5.5, OPUS-REF: 117_iter_refinement is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 126_hmac_scratch is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 153_coroutine_scheduler is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 49_markov_steady_state is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted.
+<!-- v5-board:end -->
+
+Status: "board protocol (L0)" is the v5 headline protocol (bare harness,
+each unit's own wall and turn budget); an "experiment arm" changed the
+budget or the harness, and says how. Refresh after a new run:
+`python3 evals/v5_board.py --add <run-id> --model <name> --config "<short config>" <result files>`.
+
+### v4 leaderboard (the previous suite)
+
+The frozen **v4** suite (291 units over 137 tasks; its known gaps are in
+[evals/README.md](evals/README.md#known-validator-defects-v4)). v4 and v5
+scores are not comparable.
 
 **v4 leaderboard** (RTX 5090 ×1 — methodology in [`docs/RESULTS.md`](docs/RESULTS.md)):
 
@@ -819,13 +997,19 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 
 ## Documentation
 
+The map of every document, with a reading order for a local model working
+offline, is **[docs/README.md](docs/README.md)**. The commands, by machine,
+are in **[docs/COMMANDS.md](docs/COMMANDS.md)**.
+
 **Start here**
 
 | Doc | What's in it |
 |---|---|
+| [docs/README.md](docs/README.md) | Which doc to read for what |
+| [COMMANDS.md](docs/COMMANDS.md) | Commands cheat sheet: Mac client, spark-1 and spark-2 operations, tests, git online and offline, evals, benches, recovery |
 | [TUTORIALS.md](docs/TUTORIALS.md) | One copy-pasteable walkthrough per beast-* feature, with what you should see |
 | [INSTALL.md](docs/INSTALL.md) | Step-by-step install, prerequisites, per-model downloads, the offline/air-gap path, troubleshooting |
-| [FEATURES.md](docs/FEATURES.md) | The complete capability breakdown |
+| [FEATURES.md](docs/FEATURES.md) | The capability breakdown through v1.5 (later features: What ships, above) |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Trust model, service map, project layout |
 | [BEAST_SLOT.md](docs/BEAST_SLOT.md) | Client/server: the `/api/slot` contract, beast-gate, device enrollment, using someone else's rig |
 
@@ -838,6 +1022,7 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 | [BEAST_HYDRA.md](docs/BEAST_HYDRA.md) | Routing inference across engines: what `HYDRA=true` re-points, `hydra.toml`, `hydra.sh`, env knobs |
 | [BEAST_INSTINCT.md](docs/BEAST_INSTINCT.md) | Calibrated routing decisions: contracts, invariants, lifecycle, what answers today |
 | [BEAST_LANG_PLAN.md](docs/BEAST_LANG_PLAN.md) | The offline language library: layers, verifier, escalation, synthesis, status |
+| [BEAST_ISLAND.md](docs/BEAST_ISLAND.md) | Runtime offline mode: auto/force/off, what changes when islanded, the state file, known limits |
 | [LANG_AWARENESS_PLAN.md](docs/LANG_AWARENESS_PLAN.md) | beast-assist: push-diagnostics and awareness packs, with the A/B results |
 | [BEAST_CAMPAIGN_PLAN.md](docs/BEAST_CAMPAIGN_PLAN.md) | The GPU lease and the eval era |
 
@@ -849,7 +1034,7 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 | [REFERENCE.md](docs/REFERENCE.md) | Config keys, measured VRAM tables, per-variant details |
 | [TOOLS.md](docs/TOOLS.md) | Every tool a model can call: inventory, provenance, hardening, RBAC |
 | [HARDWARE_PROFILES.md](docs/HARDWARE_PROFILES.md) | GPU detection and per-tier configs |
-| [RESULTS.md](docs/RESULTS.md) | Eval leaderboards (v4 + v3.5), distribution, cross-host results |
+| [RESULTS.md](docs/RESULTS.md) | Eval leaderboards (v5 + v4 + v3.5), distribution, cross-host results |
 | [evals/README.md](evals/README.md) | Eval suite: schema, scoring, the CLI, pitfalls |
 
 **Operating it**
@@ -860,7 +1045,14 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 | [LLAMACPP_WATCH.md](docs/LLAMACPP_WATCH.md) | Upstream llama.cpp changes we must plan for, and per-upgrade tripwires |
 | [REMOTE_ACCESS_PLAN.md](docs/REMOTE_ACCESS_PLAN.md) | Tailscale design, VPN coexistence, verification |
 | [EGRESS_PRIVACY.md](docs/EGRESS_PRIVACY.md) | Obscuring outbound traffic with a Tailscale exit node, and why not to stack a second VPN |
-| [DGX_SPARK_PLAN.md](docs/DGX_SPARK_PLAN.md) | vLLM / TensorFold backends on DGX Spark: topology, security, onboarding a new model (§14), the day-of runbook |
+| [SPARK_HYDRA.md](docs/SPARK_HYDRA.md) | The DGX Spark pair (spark-hydra): a quickstart, then bare boxes to a serving pair, day-2 operations, fully offline. Historical design notes: [DGX_SPARK_PLAN.md](docs/DGX_SPARK_PLAN.md) |
+| [OPENBEAST-SERVING.md](docs/OPENBEAST-SERVING.md) | One page: check, start, stop and switch the Spark pair's models and packs |
+| [SELF_DEVELOPMENT.md](docs/SELF_DEVELOPMENT.md) | The local model developing OpenBeast with the network off: clients, test map, era rule, git, and the offline git hub on spark-1 |
+| [ENGINES.md](docs/ENGINES.md) | llama.cpp / vLLM / TensorFold / Maya through `scripts/engine.sh` |
+| [BEAST_RECIPE.md](docs/BEAST_RECIPE.md) | beast-recipe: any model + a Spark count to a verdict, the plan and the recipe, applied end to end (init, plan, engine, stage, up, check, adopt, rollback), with seven worked examples |
+| [MODEL_CAMPAIGN.md](docs/MODEL_CAMPAIGN.md) | A new model on the Sparks, from onboarding to its final report |
+| [PYTHON_OFFLINE.md](docs/PYTHON_OFFLINE.md) · [TAILSCALE_OFFLINE.md](docs/TAILSCALE_OFFLINE.md) | Python packages offline on a Spark; reaching the gate when the tailnet or WAN is down |
+| [BEAST_DOCS.md](docs/BEAST_DOCS.md) · [BEAST_APPS.md](docs/BEAST_APPS.md) · [BEAST_ARK.md](docs/BEAST_ARK.md) | Offline platform docs; external apps through MCP; pinned software on a drive |
 | [SANDBOXING.md](docs/SANDBOXING.md) | The optional kernel-level sandbox for the bash tool |
 | [SOC2_READINESS.md](docs/SOC2_READINESS.md) | Control mapping against the Trust Services Criteria, with an honest gap list |
 | [extensions/README.md](extensions/README.md) | The optional-service extension system |
@@ -870,7 +1062,7 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 
 [TODO.md](docs/TODO.md) (roadmap, completed work, review records) ·
 [RESEARCH_FINDINGS.md](docs/RESEARCH_FINDINGS.md) (MTP, profiling, model comparisons) ·
-[research/FINDINGS.md](research/FINDINGS.md) (the two research programs: what was found, what was not run) ·
+[research/FINDINGS.md](research/FINDINGS.md) (the two research programs: what was found, what was not run) · [research/README.md](research/README.md) (index of every research note, with status) ·
 [the beast-rank paper](research/lowrank/paper/final/paper.pdf) (quantization repair in llama.cpp) ·
 [DISTRIBUTED_AGENTS_PLAN.md](docs/DISTRIBUTED_AGENTS_PLAN.md) ·
 [SKILLS_PLAN.md](docs/SKILLS_PLAN.md) ·
@@ -881,7 +1073,8 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 
 | Version | Headline | Notes |
 |---|---|---|
-| `main` (next) | remote-skill import gate (`scripts/skill-import.sh`) + nine imported skills, off the always-on menu · the 2026-10-09 review fixes: inference is never published keyless by accident, inline-media-only and host-pinned proxies, a pinned llama.cpp commit and strict hash-pinned installs, a RAM-sized prompt cache, `start.sh` preflights and command words, an honest eval board (T/O, †/‡) | [EXTERNAL_SKILLS_PLAN.md](docs/EXTERNAL_SKILLS_PLAN.md) · [TODO.md](docs/TODO.md) |
+| v1.9.0 | spark-hydra 🐉🐉 (two DGX Sparks live as one pair: GLM-5.3-Flash Ablit on TensorFold TP 2, speculative decoding, command center on spark-1, boot units, root setup) · TensorFold gets the inference key (native auth) · native TensorFold engine + signed offline installer · GB10 / unified-memory detection | [RELEASE_NOTES_v1.9.0.md](docs/RELEASE_NOTES_v1.9.0.md) |
+| v1.8.0 | beast-island 🏝️ (runtime offline mode for outages: islands in ~90-120 s, web tools answer at once, boots offline, rejoins by itself; adversarially reviewed) · remote-skill import gate (`scripts/skill-import.sh`) + nine imported skills, off the always-on menu · the 2026-10-09 review fixes: inference is never published keyless by accident, inline-media-only and host-pinned proxies, a pinned llama.cpp commit and strict hash-pinned installs, a RAM-sized prompt cache, `start.sh` preflights and command words, an honest eval board (T/O, †/‡) · the beast-rank paper | [RELEASE_NOTES_v1.8.0.md](docs/RELEASE_NOTES_v1.8.0.md) |
 | v1.7.0 | beast-hydra 🐉 (route across rig + DGX Sparks + 3090 Ti, uncensored-only fleet, GLM-5.3-Flash on TensorFold) · beast-instinct 🧿 (typed decisions on a full 27B; Open-Jev-27B target) · the zig awareness pack in production (Tier-3 FRESH SHIP, net +24; record corrected) · beast-artifact + beast-chat upgrades (rig owner + admins, phone lifecycle, new-session sheet, PWA, ntfy, export) · the 09-30 double pass (75 findings) · upgrade notes: [UPDATING.md](docs/UPDATING.md#upgrading-past-v160-beast-artifact-and-beast-chat) | [RELEASE_NOTES_v1.7.0.md](docs/RELEASE_NOTES_v1.7.0.md) |
 | v1.6.0 | the review 🔬 (118 findings fixed, a research verdict re-audited) · multi-engine inference 🟩 (vLLM / TensorFold, DGX Spark, model onboarding) · beast-lang escalation wired · opencode session tooling | [RELEASE_NOTES_v1.6.0.md](docs/RELEASE_NOTES_v1.6.0.md) |
 | v1.5.0 | beast-lang 📚 · air-gap 🔌 · beast-campaign 🧪 · the review | [RELEASE_NOTES_v1.5.0.md](docs/RELEASE_NOTES_v1.5.0.md) |
@@ -892,7 +1085,7 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 | v1.0 | the rig | — |
 
 Everything in [What ships](#what-ships) is in a tagged release; work that
-lands on `main` after v1.7.0 is marked `main` there until the next one.
+lands on `main` after v1.9.0 is marked `main` there until the next one.
 
 ## Uninstall
 

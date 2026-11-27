@@ -55,6 +55,11 @@ ob_backend_normalize() {
     vllm)                 printf 'vllm\n' ;;
     tensorfold)           printf 'tensorfold\n' ;;
     *)
+      # An engine added as an adapter file (scripts/engines/<name>.sh,
+      # docs/ENGINES.md "Adapter contract") is a backend too.
+      if [[ "$tok" =~ ^[a-z][a-z0-9-]*$ && -f "$(dirname "${BASH_SOURCE[0]}")/../engines/$tok.sh" ]]; then
+        printf '%s\n' "$tok"; return 0
+      fi
       echo "WARNING: INFERENCE_BACKEND='$raw' is not one of: $OB_BACKENDS — using llama." >&2
       printf 'llama\n' ;;
   esac
@@ -97,7 +102,12 @@ ob_backend_label() {
   case "${1:-${INFERENCE_BACKEND:-llama}}" in
     vllm)       printf 'vLLM\n' ;;
     tensorfold) printf 'TensorFold\n' ;;
-    *)          printf 'llama.cpp server\n' ;;
+    llama)      printf 'llama.cpp server\n' ;;
+    *)
+      # An adapter-only engine names itself (eng_<name>_label).
+      if declare -F ob_engine_call >/dev/null 2>&1 \
+         && ob_engine_call "${1:-${INFERENCE_BACKEND:-llama}}" label 2>/dev/null; then :
+      else printf 'llama.cpp server\n'; fi ;;
   esac
 }
 
@@ -110,7 +120,8 @@ ob_inference_managed() { [[ "${INFERENCE_MANAGED:-true}" == "true" ]]; }
 # llama keeps ob_llama_ready's exact semantics (200 + {"status":"ok"}; a 503
 # "Loading model" is NOT ready). vllm: any HTTP 200 (the body is empty).
 # tensorfold: HTTP 200 whose body says ok. /health needs no key on any of the
-# three (vLLM's --api-key guards /v1 only), so none is sent.
+# three (vLLM's --api-key guards /v1 only; TensorFold's --api-key-file leaves
+# /health open with less detail), so none is sent.
 ob_backend_ready() {
   local url="${1%/}" backend="${2:-${INFERENCE_BACKEND:-llama}}" body
   case "$backend" in
@@ -120,8 +131,18 @@ ob_backend_ready() {
       body="$(curl -fsS -m 3 "$url/health" 2>/dev/null)" || return 1
       [[ "$body" =~ \"ok\"[[:space:]]*:[[:space:]]*true \
          || "$body" =~ \"status\"[[:space:]]*:[[:space:]]*\"ok\" ]] ;;
-    *)
+    llama)
       ob_llama_ready "$url" ;;
+    *)
+      # An adapter-only engine (docs/ENGINES.md): its eng_<name>_ready, else
+      # the plain OpenAI-server answer — HTTP 200 on /health.
+      if declare -F ob_engine_has >/dev/null 2>&1 && ob_engine_has "$backend" ready; then
+        ob_engine_call "$backend" ready "$url"
+      elif [[ -f "$(dirname "${BASH_SOURCE[0]}")/../engines/$backend.sh" ]]; then
+        curl -fsS -m 3 -o /dev/null "$url/health" 2>/dev/null
+      else
+        ob_llama_ready "$url"
+      fi ;;
   esac
 }
 
@@ -145,13 +166,11 @@ ob_hydra_answering() {
 # ob_backend_models <base-url> — the served model ids, one per line (empty
 # output = none or unreachable; exit 1 when the request failed). Presents
 # LLAMA_API_KEY when set, through lib/curl_auth.sh (never argv) when that is
-# loaded — vLLM with --api-key guards /v1/models. Never to TensorFold.
+# loaded — vLLM with --api-key and native TensorFold (>= 1.0) with
+# --api-key-file both guard /v1/models.
 ob_backend_models() {
   local url="${1%/}" body
-  # TensorFold has no auth at all: a key sent there buys nothing and is one
-  # more place it can be logged.
-  if [[ "${INFERENCE_BACKEND:-llama}" != "tensorfold" ]] \
-     && declare -F ob_curl_bearer >/dev/null 2>&1; then
+  if declare -F ob_curl_bearer >/dev/null 2>&1; then
     body="$(ob_curl_bearer "${LLAMA_API_KEY:-}" -fsS -m 5 "$url/v1/models" 2>/dev/null)" || return 1
   else
     body="$(curl -fsS -m 5 "$url/v1/models" 2>/dev/null)" || return 1
@@ -169,10 +188,21 @@ except Exception:
 
 # ob_backend_na <what> — the one-line "not applicable" notice llama-only
 # steps print instead of failing on a non-llama (or unowned) backend.
+# A managed non-llama engine (Basalt on the RTX 5090, a one-host vLLM) IS run
+# by this stack; the step is llama.cpp's, so the notice says that instead.
 ob_backend_na() {
   local why
   if [[ "${INFERENCE_BACKEND:-llama}" != "llama" ]]; then
     why="INFERENCE_BACKEND=${INFERENCE_BACKEND}"
+    if [[ "${INFERENCE_MANAGED:-false}" == "true" ]]; then
+      # An adapter-only engine names itself only once lib/engine.sh is
+      # loaded; before that ob_backend_label falls back to llama's label.
+      local label; label="$(ob_backend_label "$INFERENCE_BACKEND")"
+      [[ "$label" == "llama.cpp server" ]] && label="$INFERENCE_BACKEND"
+      printf '%s: not applicable for %s (this stack runs %s at %s, not llama-server).\n' \
+        "$1" "$why" "$label" "${INFERENCE_URL:-?}"
+      return 0
+    fi
   else
     why="INFERENCE_MANAGED=false"
   fi

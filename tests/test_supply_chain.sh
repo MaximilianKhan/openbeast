@@ -198,7 +198,14 @@ echo ""
 echo "3. land-dependabot.sh — approves only THIS repo's held runs for the PR head:"
 # ===========================================================================
 if ! command -v jq >/dev/null 2>&1; then
-  echo "  SKIP: jq not installed (the gh stub evaluates -q filters with it)"
+  # CI=true turns a skip into a failure (ci.yml), as section 4 does for
+  # PyYAML: otherwise every approval/merge guard here could stop running in
+  # CI with the job still green.
+  if [[ "${CI:-}" == "true" ]]; then
+    fail "jq not installed under CI=true — the land-dependabot guards did not run"
+  else
+    echo "  SKIP: jq not installed (the gh stub evaluates -q filters with it)"
+  fi
 else
   LB="$T/bin_land"; mkdir -p "$LB"
   printf '#!/bin/bash\nexit 0\n' > "$LB/sleep"          # the script waits in 15-30 s steps
@@ -248,6 +255,11 @@ case "$*" in
       if [[ "$n" -gt 0 ]]; then
         echo $((n - 1)) > "$S/no_checks"
         echo "no checks reported on the 'dependabot/pip/agents/openai-9' branch"; exit 1
+      fi
+      # $S/checks_fail: a non-required check (lock-fresh) went red; gh says
+      # so and exits 1, as the real one does.
+      if [[ -f "$S/checks_fail" ]]; then
+        printf 'Some checks were not successful\n1 failing, 5 successful\nX  Lock matches a fresh resolve  1m  https://x\n'; exit 1
       fi
       echo "All checks were successful" ;;
   "pr list"*)
@@ -326,6 +338,18 @@ STUB
     fail "lock open truncated its target (rc=$_rc): '$(cat "$T/state/victim")' / '$(cat "$T/state/victim_tmp")'"
   fi
   rm -f "$LR/.run/land-dependabot.lock" "$T/land_tmp/openbeast-land-dependabot.lock"
+  # One at a time, on Linux (flock(1)) and on macOS (no flock(1): perl's
+  # flock(2)). A second run while the lock is held stops before any gh call.
+  perl -MFcntl=:flock -e 'open(F, ">>", $ARGV[0]) or die; flock(F, LOCK_EX) or die; sleep 15' "$LR/.run/land-dependabot.lock" & _holder=$!
+  for _ in $(seq 1 50); do [[ -f "$LR/.run/land-dependabot.lock" ]] && break; sleep 0.1; done; sleep 0.3
+  land 7
+  kill "$_holder" 2>/dev/null; wait "$_holder" 2>/dev/null
+  if [[ $_rc -ne 0 ]] && has "$_out" "already running" && [[ ! -s "$T/state/gh.log" ]]; then
+    pass "a second land-dependabot.sh while the lock is held refuses before any gh call"
+  else
+    fail "the lock did not exclude a second run (rc=$_rc): $_out"
+  fi
+  rm -f "$LR/.run/land-dependabot.lock"
   # No arguments: only the PRs this chain can land.
   land
   if [[ $_rc -eq 0 ]] && has "$_out" "=== PR 7" && ! has "$_out" "=== PR 8" \
@@ -354,6 +378,18 @@ STUB
     fail "never-appearing checks (rc=$_rc, $(wc -l < "$T/state/checks.calls") calls, merge=$(cat "$T/state/merge.log")): $_out"
   fi
   echo 0 > "$T/state/no_checks"
+  # A RED check is not a green one (install-supply-chain finding): gh's exit
+  # status was discarded, so a failed non-required check was printed and the
+  # PR squash-merged anyway.
+  : > "$T/state/checks_fail"
+  land 7
+  if [[ $_rc -ne 0 && ! -s "$T/state/merge.log" ]] && has "$_out" "checks did NOT all pass" \
+     && has "$_out" "NOT merging"; then
+    pass "a failing check stops the run with NO merge attempted"
+  else
+    fail "red checks (rc=$_rc, merge=$(cat "$T/state/merge.log")): $_out"
+  fi
+  rm -f "$T/state/checks_fail"
 fi
 
 # ===========================================================================
@@ -454,7 +490,7 @@ echo "5. client SearXNG — pins the SAME image digest as the rig:"
 # drifted (252cfb5b vs the rig's 892cf809) with a comment claiming lockstep.
 _rig="$(sed -n 's/^[[:space:]]*image:[[:space:]]*\(searxng\/searxng[^[:space:]]*\).*/\1/p' "$REPO_DIR/docker-compose.yml")"
 _cli="$(sed -n 's/^[[:space:]]*image:[[:space:]]*\(searxng\/searxng[^[:space:]]*\).*/\1/p' "$REPO_DIR/scripts/client-searxng.compose.yml")"
-if [[ "$_rig" == *@sha256:* && "$(wc -l <<< "$_rig")" == "1" ]]; then
+if [[ "$_rig" == *@sha256:* && $(( $(wc -l <<< "$_rig") )) -eq 1 ]]; then
   pass "control: the rig compose has exactly one digest-pinned searxng image (${_rig##*@sha256:})"
 else
   fail "control: could not read one pinned searxng image from docker-compose.yml: '$_rig'"

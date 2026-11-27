@@ -1,0 +1,25 @@
+{
+  "task": "179_git_bisect_revert",
+  "note": "Exec-mode prover arms (prove.py): every solution is a shell script run with cwd = the fixture repository, the way an agent works in it. Each regex must match the validator's last output line. fixture_refs is the exact ref set setup may create; fixture_top is the exact content of /tmp/eval_bisect.",
+  "dest": "/tmp/eval_bisect/semver",
+  "fixture_top": ["semver"],
+  "fixture_refs": ["refs/heads/main", "refs/tags/v0.3.0"],
+  "repeat": 5,
+  "ref": "ref.sh",
+  "wrong": [
+    ["wrong_suite_bisect.sh", "^FAIL: the commit message does not name the first bad commit"],
+    ["wrong_args_bisect.sh", "^FAIL: the commit message does not name the first bad commit"],
+    ["wrong_hedge.sh", "^FAIL: the commit message names other commits"],
+    ["wrong_full_revert.sh", "^FAIL: the (diff touches lines outside the offending hunk|commit must change semver.sh and nothing else)"],
+    ["wrong_mechanical_hunk.sh", "^FAIL: tests/run.sh fails on the committed tree"],
+    ["wrong_lenonly.sh", "^FAIL: hidden case \\d+ mismatch$"],
+    ["wrong_arith.sh", "^FAIL: (tests/run.sh fails on the committed tree|hidden case \\d+ mismatch$)"],
+    ["wrong_amend.sh", "^FAIL: main must be exactly one new non-merge commit"],
+    ["wrong_still_bisecting.sh", "^FAIL: a git bisect session is still in progress"],
+    ["wrong_uncommitted.sh", "^FAIL: no new commit on main$"],
+    ["wrong_promisor.sh", "^FAIL: the original history is gone"]
+  ],
+  "empty_expect": "^FAIL: no new commit on main$",
+  "leak": ["leak.sh", "^FAIL: the commit message does not name the first bad commit"],
+  "slow": ["slow.sh", "^FAIL: tests/run.sh timed out on the committed tree \\((cpu|wall) budget\\)$"]
+}

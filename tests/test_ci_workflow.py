@@ -314,7 +314,7 @@ def _pins(path: Path) -> dict[str, tuple[str, int]]:
     return out
 
 
-@pytest.mark.parametrize("name", ["test", "lint", "audit", "variants"])
+@pytest.mark.parametrize("name", ["test", "lint", "audit"])
 def test_ci_tool_requirements_are_exact_and_hashed(name):
     wanted = _pins(CI_REQS / f"{name}.in")
     assert wanted, f"{name}.in pins nothing"
@@ -352,22 +352,15 @@ def test_the_unpinned_install_check_can_fail():
 
 
 def test_zig_is_downloaded_from_ziglang_and_checked_before_it_is_unpacked():
-    jobs = _jobs(CI)
-    steps = [(n, s) for n, job in jobs.items() for s in job["steps"]
-             if "zig" in str(s.get("name", "")).lower()]
-    assert steps, "no CI step installs zig"
-    # Every zig install (the pytest job's, the variants job's) is the SAME
-    # release with the SAME sha256: two copies are two pins to keep in step.
-    assert len({s["env"]["ZIG_VERSION"] for _n, s in steps}) == 1, "zig steps disagree on ZIG_VERSION"
-    assert len({s["env"]["ZIG_SHA256"] for _n, s in steps}) == 1, "zig steps disagree on ZIG_SHA256"
-    for _n, step in steps:
-        assert re.fullmatch(r"[0-9a-f]{64}", step["env"]["ZIG_SHA256"])
-        run = step["run"]
-        assert "https://ziglang.org/download/${ZIG_VERSION}/" in run
-        assert run.index("sha256sum -c") < run.index("tar -x") < run.index("GITHUB_PATH")
-    # one job that gets zig is the one that runs the zig-gated tests
-    assert any("pytest --timeout=300 tests/ -q" in " ".join(_runs(jobs[n]).split())
-               for n, _s in steps), "the full pytest job does not install zig"
+    (step,) = [s for job in _jobs(CI).values() for s in job["steps"]
+               if "zig" in str(s.get("name", "")).lower()]
+    assert re.fullmatch(r"[0-9a-f]{64}", step["env"]["ZIG_SHA256"])
+    run = step["run"]
+    assert "https://ziglang.org/download/${ZIG_VERSION}/" in run
+    assert run.index("sha256sum -c") < run.index("tar -x") < run.index("GITHUB_PATH")
+    # the job that gets zig is the one that runs the zig-gated tests
+    (owner,) = [n for n, job in _jobs(CI).items() if step in job["steps"]]
+    assert "pytest --timeout=300 tests/ -q" in " ".join(_runs(_jobs(CI)[owner]).split())
 
 
 # ---------------------------------------------------------------------------
@@ -375,11 +368,32 @@ def test_zig_is_downloaded_from_ziglang_and_checked_before_it_is_unpacked():
 # ---------------------------------------------------------------------------
 
 def test_a_changed_lock_is_checked_against_a_fresh_resolve():
-    checkers = [n for n, job in _jobs(QUALITY).items() if "pydeps.sh check" in _runs(job)]
-    assert checkers, "no PR-quality job runs ./scripts/pydeps.sh check"
-    job = _jobs(QUALITY)[checkers[0]]
+    """...and the check is under the REQUIRED `test` gate (install-supply-chain
+    finding): in pr-quality.yml it was not a required status check, so a PR
+    whose lock it rejected could merge with it red."""
+    checkers = [n for n, job in _jobs(CI).items() if "pydeps.sh check" in _runs(job)]
+    assert checkers, "no CI job runs ./scripts/pydeps.sh check"
+    job = _jobs(CI)[checkers[0]]
     assert "agents/requirements.lock agents/requirements.txt" in _runs(job)
     assert not job.get("continue-on-error")
+    assert checkers[0] in _jobs(CI)["test"]["needs"]
+    assert not [n for n, j in _jobs(QUALITY).items() if "pydeps.sh check" in _runs(j)], \
+        "a second, non-required copy would only invite reading the wrong one"
+
+
+def test_the_lock_is_installed_on_targets_it_was_not_resolved_on():
+    """Install-supply-chain finding: the comment said the 3.12/ubuntu install
+    proved the lock on 'a python and platform that are NOT the box it was
+    generated on' — but the lock IS resolved on 3.12/ubuntu. The rig's 3.14
+    and a Mac client get a hash-checked dry run of their own."""
+    jobs = _jobs(CI)
+    job = jobs["lock-installs"]
+    legs = {(i["os"], i["python"]) for i in job["strategy"]["matrix"]["include"]}
+    assert ("ubuntu-latest", "3.14") in legs
+    assert any(os_.startswith("macos") for os_, _ in legs)
+    assert "--require-hashes -r agents/requirements.lock" in " ".join(_runs(job).split())
+    assert "lock-installs" in jobs["test"]["needs"]
+    assert "NOT the box it was generated on" not in CI.read_text()
 
 
 def test_the_relock_is_rechecked_by_a_job_that_cannot_push():
@@ -408,7 +422,10 @@ def test_shellcheck_covers_every_tracked_shell_script():
     if tracked.returncode != 0 or not tracked.stdout.strip():
         pytest.skip("not a git checkout")
     # scratch/ and research/ hold one-off campaign scripts, never shipped.
-    want = {p for p in tracked.stdout.split() if not p.startswith(("scratch/", "research/", "docs/"))}
+    # evals/refs/<task>/ holds eval fixtures (179's solutions and wrong
+    # solutions are shell scripts, defective on purpose); ruff.toml skips them too.
+    want = {p for p in tracked.stdout.split()
+            if not p.startswith(("scratch/", "research/", "docs/", "evals/refs/"))}
     assert sorted(want - covered) == [], "shell scripts ShellCheck never reads"
 
 

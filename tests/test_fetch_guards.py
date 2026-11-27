@@ -167,6 +167,21 @@ class TestDNSRebindingPin(unittest.TestCase):
         fetch("http://pin.example/")
         self.assertEqual(dialed["ip"], "93.184.216.34")
 
+    def test_falls_back_to_the_next_vetted_address(self):
+        # The pin dialed only ips[0]: an unreachable first record (AAAA on
+        # a v6-less box, one dead node of a multi-A set) failed the fetch.
+        dialed = []
+        socket.getaddrinfo = lambda h, p, *a, **k: [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2606:2800:220:1::1", p or 80, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", p or 80))]
+
+        def cc(addr, *a, **k):
+            dialed.append(addr[0])
+            raise OSError("stub dial")
+        socket.create_connection = cc
+        fetch("http://dual.example/")
+        self.assertEqual(dialed, ["2606:2800:220:1::1", "93.184.216.34"])
+
     def test_connect_time_flip_to_loopback_is_refused(self):
         n = {"i": 0}
 
@@ -299,11 +314,12 @@ class _FakeResp:
 
 
 class _FakeOpener:
-    def __init__(self, body: bytes):
+    def __init__(self, body: bytes, ctype="text/html; charset=utf-8"):
         self.body = body
+        self.ctype = ctype
 
     def open(self, req, timeout=None):
-        return _FakeResp(self.body)
+        return _FakeResp(self.body, self.ctype)
 
 
 class TestHtmlStripIsLinear(unittest.TestCase):
@@ -351,6 +367,115 @@ class TestHtmlStripIsLinear(unittest.TestCase):
         self.assertIn("next & last", out)
         for gone in ("SECRET_JS", "color:red", "SCRIPT_TAIL", "<b>", "<p>"):
             self.assertNotIn(gone, out)
+
+    def test_a_utf8_bom_neither_hides_html_nor_survives(self):
+        # Review 2026-11-16: str.strip() keeps U+FEFF, so a BOM'd page with
+        # no HTML Content-Type failed the <!doctype sniff and came back raw.
+        page = (b"\xef\xbb\xbf<!DOCTYPE html><html><head><script>var x=1;</script>"
+                b"</head><body><p>Hello</p></body></html>")
+        for ctype in ("", "text/plain", "text/html; charset=utf-8",
+                      "text/plain; charset=utf-8-sig"):
+            self.tools._fetch_opener = _FakeOpener(page, ctype=ctype)
+            out = self.tools.fetch("http://bom.example/")
+            self.assertEqual(out, "Hello", ctype)
+
+
+class TestFetchByteCapCut(unittest.TestCase):
+    """The read stops at a byte budget. A cut inside a big inline <script>
+    used to come back as '(empty response)', and a cut page whose stripped
+    text was short came back with no marker at all."""
+
+    def setUp(self):
+        import tools
+        self.tools = tools
+        self._opener = tools._fetch_opener
+        self._blocked = tools._fetch_url_blocked
+        tools._fetch_url_blocked = lambda url: None  # no DNS: body is stubbed
+
+    def tearDown(self):
+        self.tools._fetch_opener = self._opener
+        self.tools._fetch_url_blocked = self._blocked
+
+    def _fetch(self, body: bytes, max_length=50_000):
+        self.tools._fetch_opener = _FakeOpener(body)
+        return self.tools.fetch("http://big.example/", max_length)
+
+    def test_big_head_script_does_not_empty_the_page(self):
+        body = (b"<html><head><script>" + b"var a=1;" * 30000
+                + b"</script></head><body><h1>Title</h1>"
+                + b"<div><p>row</p></div>" * 2000
+                + b"<p>THE CONCLUSION</p></body></html>")
+        out = self._fetch(body)
+        self.assertNotEqual(out, "(empty response)")
+        self.assertIn("Title", out)
+        self.assertIn("THE CONCLUSION", out)
+
+    def test_cut_page_with_short_text_is_marked(self):
+        body = b"<html><body>" + b'<div class="aaaa"></div>' * 200_000 + b"<p>END</p>"
+        out = self._fetch(body)
+        self.assertIn("page cut", out)
+        self.assertNotIn("END", out)
+        self.assertNotIn("<div", out)  # no half tag left at the cut
+
+    def test_cut_inside_a_long_tag_leaks_no_markup(self):
+        # The dangling-tag strip only looked 1024 chars back: a cut inside a
+        # longer tag (a base64 data: URI) leaked '<img src="data:…' raw.
+        lim = self.tools._FETCH_MIN_READ_BYTES
+        body = (b"<html><body><p>KEPT</p>" + b"<i></i>" * ((lim - 3000) // 7)
+                + b'<img src="data:image/png;base64,' + b"A" * 5000 + b'">after')
+        out = self._fetch(body)
+        self.assertIn("KEPT", out)
+        self.assertIn("page cut", out)
+        for gone in ("<img", "data:image", "AAAA"):
+            self.assertNotIn(gone, out)
+
+    def test_cut_inside_a_tag_with_gt_in_a_quoted_attribute(self):
+        # Review 2026-11-16: the strip searched for an opener after the LAST
+        # '>' — inside the cut tag when an earlier quoted attribute held one
+        # (alt="a > b", an SVG data: URI), so the base64 tail leaked.
+        lim = self.tools._FETCH_MIN_READ_BYTES
+        pad = b"<i></i>" * ((lim - 3000) // 7)
+        for tag in (b'<img alt="a > b" src="data:image/png;base64,',
+                    b'<img src="data:image/svg+xml;utf8,<svg xmlns=\'x\'><path d=\'M0\'/>',
+                    b"<a onclick='if(a>b)go()' title=don't href=\"data:text/plain,"):
+            body = b"<html><body><p>KEPT</p>" + pad + tag + b"A" * 5000 + b'">after'
+            out = self._fetch(body)
+            self.assertIn("KEPT", out)
+            self.assertIn("page cut", out)
+            for gone in ("AAAA", "data:", "<img", "<svg", "base64"):
+                self.assertNotIn(gone, out, tag)
+
+    def test_unterminated_tag_scan_is_linear(self):
+        import time
+        f = self.tools._unterminated_tag_start
+        for text in ("<a" * 1_000_000, '<a ="' * 400_000, "<a=" * 600_000,
+                     "<" * 2_000_000, "<a>" * 600_000, "= " * 1_000_000):
+            t0 = time.monotonic()
+            f(text)
+            self.assertLess(time.monotonic() - t0, 1.5, text[:12])
+        self.assertIsNone(f("<a title=don't>ok</a> a < b"))
+        self.assertEqual(f('<p>x</p><img alt="a > b" src="x'), 8)
+
+    def test_cut_html_keeps_prose_lt_in_tail(self):
+        lim = self.tools._FETCH_MIN_READ_BYTES
+        body = b"<html><body><p>x</p>if a < b then " + b"z " * lim
+        out = self._fetch(body, 200_000)
+        self.assertIn("if a < b then", out)
+
+    def test_cut_plain_text_keeps_body_after_early_lt(self):
+        # The dangling-tag strip once ran on every content type, unbounded:
+        # one early 'a < b' with no later '>' deleted the whole 2 MB read.
+        self.tools._fetch_opener = _FakeOpener(
+            b"if a < b: total += 1\n" + b"some log line with numbers 12345\n" * 80000,
+            ctype="text/plain; charset=utf-8")
+        out = self.tools.fetch("http://big.example/", 50_000)
+        self.assertIn("if a < b", out)
+        self.assertGreater(len(out), 50_000)
+        self.assertIn("truncated at 50000", out)
+
+    def test_whole_page_has_no_cut_marker(self):
+        out = self._fetch(b"<html><body><p>small</p></body></html>")
+        self.assertEqual(out, "small")
 
 
 class TestFetchTotalDeadline(unittest.TestCase):
@@ -443,6 +568,97 @@ class TestFetchTotalDeadline(unittest.TestCase):
                     b"Content-Length: 5\r\n\r\nhello", b"", 0)
         out, _ = self._timed_fetch()
         self.assertEqual(out, "hello")
+
+    def test_redirect_hop_straddling_the_deadline_is_cut(self):
+        # The watchdog fires once: a socket a redirect hop opens AFTER it
+        # fired (slow hop-2 DNS) used to escape it, leaving only the 30 s
+        # per-op timeout while hop 2 dripped headers indefinitely.
+        import threading
+        import time
+        hop2 = socket.socket()
+        hop2.bind(("127.0.0.1", 0))
+        hop2.listen(1)
+        p2 = hop2.getsockname()[1]
+        self.addCleanup(hop2.close)
+
+        def run2():
+            try:
+                conn, _ = hop2.accept()
+            except OSError:
+                return
+            with conn:
+                try:
+                    conn.recv(65536)
+                    conn.sendall(b"HTTP/1.1 200 OK\r\n")
+                    while not self.stop.wait(0.1):
+                        conn.sendall(b"X-a: b\r\n")
+                except OSError:
+                    return
+        t = threading.Thread(target=run2, daemon=True)
+        t.start()
+        self.threads.append(t)
+
+        def resolve(host, port, scheme):
+            if port == p2:
+                time.sleep(0.8)  # hop-2 resolve runs across the deadline
+            return ["127.0.0.1"], None
+        self.tools._resolve_vetted = resolve
+
+        def run1():
+            try:
+                conn, _ = self.srv.accept()
+            except OSError:
+                return
+            with conn:
+                conn.recv(65536)
+                self.stop.wait(0.5)
+                conn.sendall(f"HTTP/1.1 302 Found\r\nLocation: "
+                             f"http://127.0.0.1:{p2}/\r\nContent-Length: 0"
+                             f"\r\n\r\n".encode())
+                self.stop.wait(10)
+        t1 = threading.Thread(target=run1, daemon=True)
+        t1.start()
+        self.threads.append(t1)
+        res = {}
+        th = threading.Thread(target=lambda: res.setdefault(
+            "out", self.tools.fetch(f"http://127.0.0.1:{self.port}/")),
+            daemon=True)
+        t0 = time.monotonic()
+        th.start()
+        th.join(8)
+        self.assertFalse(th.is_alive(), "fetch outlived its deadline")
+        self.assertLess(time.monotonic() - t0, 5.0)
+        self.assertIn("deadline", res["out"])
+
+    def test_socket_registered_after_expiry_is_shut_down(self):
+        # A connect that completes after the watchdog fired must not escape
+        # it: registration itself shuts the late socket down.
+        import threading
+        a, b = socket.socketpair()
+        self.addCleanup(a.close)
+        self.addCleanup(b.close)
+        st = self.tools._fetch_state
+        ev = threading.Event()
+        ev.set()
+        st.socks, st.expired = [], ev
+        try:
+            self.tools._fetch_track(a)
+        finally:
+            for s_ in st.socks:
+                s_.close()
+            st.socks = st.expired = None
+        a.settimeout(2)
+        self.assertEqual(a.recv(1), b"")  # EOF now, not a 2 s wait
+
+    def test_slow_initial_dns_is_cut_at_the_deadline(self):
+        # getaddrinfo cannot be interrupted, so the up-front resolve used to
+        # run before (and outside) the watchdog.
+        import time
+        self.tools._fetch_url_blocked = lambda url: time.sleep(4) or None
+        t0 = time.monotonic()
+        out = self.tools.fetch(f"http://127.0.0.1:{self.port}/")
+        self.assertLess(time.monotonic() - t0, 3.0, out)
+        self.assertIn("deadline", out)
 
 
 class TestFetchThroughProxy(unittest.TestCase):

@@ -28,7 +28,14 @@ git add skills/<skill> skills/REMOTE_PROVENANCE.md      # one commit
 **No row, no skill** — a remote skill landing without a ledger entry is
 a tree-state bug, not a forgivable oversight. `./scripts/skill-import.sh
 verify` (also run by `./start.sh doctor` and `tests/test_scripts.sh`) fails
-when a row and the files on disk disagree.
+when a row and the files on disk disagree, and for every `skills/<dir>/SKILL.md`
+— hidden directories included — that is in neither this ledger nor
+`IN_HOUSE_SKILLS.txt`, is not a valid skill name, or whose frontmatter `name`
+is not `<dir>`. The loader serves only `skills/<name>/SKILL.md` naming itself
+`<name>`, so a directory can never claim another skill's name. A directory
+with no SKILL.md (skill-creator's `<skill>-workspace/`) is never loaded and
+never counted, and a local `__pycache__/` is left out of the tree hash (an
+import never carries one: promote refuses it).
 
 A scanner finding is accepted only by naming its rule id (`--accept TM1,PE3`),
 and the accepted ids are written into the row's notes. The scan is static

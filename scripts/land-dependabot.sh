@@ -37,11 +37,19 @@ set -uo pipefail
 # a world-writable directory opened with truncation — where
 # fs.protected_symlinks is off, a symlink planted there gets its target
 # emptied by whoever runs this.
+#
+# macOS has no flock(1), and the lock used to be skipped there altogether
+# (no single-instance guard on Max's Mac, the one box that runs this). Perl
+# is on both: flock(2) on the inherited fd 8 locks the open file
+# description, which this shell keeps open, so the lock outlives perl.
+_run_dir="$(cd "$(dirname "$0")/.." && pwd)/.run"
+[[ -d "$_run_dir" ]] || (umask 077; mkdir -p "$_run_dir")
+exec 8>>"$_run_dir/land-dependabot.lock"
 if command -v flock >/dev/null 2>&1; then
-  _run_dir="$(cd "$(dirname "$0")/.." && pwd)/.run"
-  [[ -d "$_run_dir" ]] || (umask 077; mkdir -p "$_run_dir")
-  exec 8>>"$_run_dir/land-dependabot.lock"
   flock -n 8 || { echo "another land-dependabot.sh is already running" >&2; exit 1; }
+else
+  perl -MFcntl=:flock -e 'open(my $f, ">>&=", 8) or exit 2; flock($f, LOCK_EX | LOCK_NB) or exit 1' \
+    || { echo "another land-dependabot.sh is already running (or the lock could not be taken)" >&2; exit 1; }
 fi
 R="$(gh repo view --json nameWithOwner -q .nameWithOwner)" || { echo "gh is not authenticated" >&2; exit 1; }
 if [[ $# -eq 0 ]]; then
@@ -67,28 +75,29 @@ fi
 # only fail (2026-10-09: it gave up on the third PR of a batch while the
 # relock workflow was still pending). Wait for them, bounded (10 min).
 #
-# Returns 0 when every check passed, 1 when none ever appeared, 2 when a check
-# finished red. gh's exit status used to be thrown away here (the output was
-# printed and 0 returned whatever it said), so a PR with a red check that
-# branch protection does not require — "Lock matches a fresh resolve", say —
-# was squash-merged without a word.
+# THE RESULT IS gh's EXIT STATUS, not its text. This used to return 0 for any
+# output without "no checks reported", so a RED check (gh exits 1) was
+# printed and the PR merged anyway; only branch protection stood between,
+# and only for the required checks. gh pr checks: 0 all passed, 8 still
+# pending (retried), anything else = a check failed or was cancelled.
+# Returns 0 green, 1 no checks appeared, 2 a check did not pass.
 _watch_checks() { # _watch_checks <pr>
   local out n rc
   for n in $(seq 1 30); do
-    out="$(gh pr checks "$1" --watch --interval 30 2>&1)"; rc=$?
+    rc=0; out="$(gh pr checks "$1" --watch --interval 30 2>&1)" || rc=$?
     if [[ "$out" != *"no checks reported"* ]]; then
       printf '%s\n' "$out" | tail -4
-      if [[ $rc -ne 0 ]]; then
-        echo "PR $1: not every check passed (gh pr checks exit $rc):"
-        printf '%s\n' "$out" | grep -E $'\t(fail|cancel)' | sed 's/^/    /' || true
+      [[ $rc -eq 0 ]] && return 0
+      if [[ $rc -ne 8 ]]; then
+        echo "PR $1: checks did NOT all pass (gh pr checks exit $rc)"
         return 2
       fi
-      return 0
+    else
+      [[ $n -eq 1 ]] && echo "PR $1: no checks reported yet — waiting for them to appear"
     fi
-    [[ $n -eq 1 ]] && echo "PR $1: no checks reported yet — waiting for them to appear"
     sleep 20
   done
-  echo "PR $1: no checks appeared within 10 min"
+  echo "PR $1: no checks appeared (or finished) within 10 min"
   return 1
 }
 # The open Dependabot PRs that touch agents/requirements.txt: the only ones
@@ -144,8 +153,8 @@ for pr in "$@"; do
     gh api -X POST "repos/$R/actions/runs/$id/approve" >/dev/null && echo "approved run $id"
   done
   sleep 20
-  _watch_checks "$pr"; wrc=$?
-  [[ $wrc -eq 1 ]] && { echo "PR $pr: nothing to wait for — stopping"; exit 1; }
+  _wrc=0; _watch_checks "$pr" || _wrc=$?
+  [[ $_wrc -ne 1 ]] || { echo "PR $pr: nothing to wait for — stopping"; exit 1; }
   # A CANCELLED run is not a failed check (a late Dependabot force-push does
   # it): re-run those once before giving up.
   head="$(gh pr view "$pr" --json headRefOid -q .headRefOid)"
@@ -155,18 +164,15 @@ for pr in "$@"; do
   if [[ -n "$redo" ]]; then
     for id in $redo; do gh run rerun "$id" >/dev/null 2>&1 && echo "re-ran cancelled run $id"; done
     sleep 30
-    _watch_checks "$pr"; wrc=$?
+    _watch_checks "$pr" || { echo "PR $pr: checks not green after the re-run — NOT merging"; exit 1; }
   elif [[ "$head" != "$_head" ]]; then
     # The head moved while we were waiting: the checks just watched belong to
     # a commit that is no longer the PR. Watch the one about to be merged.
     echo "PR $pr: head moved during the wait (${_head:0:12} -> ${head:0:12}) — watching the new commit"
-    _watch_checks "$pr"; wrc=$?
+    _watch_checks "$pr" || { echo "PR $pr: checks not green on the new head — NOT merging"; exit 1; }
+  elif [[ $_wrc -ne 0 ]]; then
+    echo "PR $pr: a check failed (none was merely cancelled) — NOT merging"; exit 1
   fi
-  case $wrc in
-    0) ;;
-    1) echo "PR $pr: nothing to wait for — stopping"; exit 1 ;;
-    *) echo "PR $pr: a check is red — not merging; stopping"; exit 1 ;;
-  esac
   # --match-head-commit: merge exactly the commit read above, whose checks
   # were watched after it was read. A push that lands between "checks green"
   # and this line makes GitHub REFUSE the merge instead of landing a commit

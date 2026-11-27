@@ -34,6 +34,8 @@ REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 PARSER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 LINE_RE = re.compile(r"^([A-Z][A-Z0-9_]*)=(.*)$")
+MAX_SPARKS = 8                                   # a cluster is 1..8 DGX Sparks, one GPU (TP rank) each
+TP_SIZES = tuple(str(n) for n in range(1, MAX_SPARKS + 1))
 
 # key -> one-line meaning (also the allow list)
 KEYS = {
@@ -41,7 +43,7 @@ KEYS = {
     "SOURCE": "Hugging Face repo id (owner/name) or an absolute local directory",
     "REVISION": "full 40-hex commit SHA of SOURCE (required for a Hugging Face SOURCE)",
     "SERVED_MODEL_NAME": "the model id /v1/models lists and clients send",
-    "TENSOR_PARALLEL_SIZE": "1 (one Spark) or 2 (both Sparks)",
+    "TENSOR_PARALLEL_SIZE": "1..8 — one rank per Spark (1 = one Spark, 2 = a pair; default 2)",
     "MAX_MODEL_LEN": "context window in tokens (empty = the engine's default from config.json)",
     "DTYPE": "vLLM --dtype: auto | bfloat16 | float16 | float32",
     "QUANTIZATION": "vLLM --quantization (empty = from the checkpoint's quantization_config)",
@@ -56,6 +58,14 @@ KEYS = {
     "EXTRA_ARGS": "JSON array of extra engine arguments (allow-listed flags; others need EXTRA_ARGS_ACK)",
     "EXTRA_ARGS_ACK": "must equal REVISION to pass EXTRA_ARGS flags outside the allow list",
     "TENSORFOLD_PARALLEL": "TensorFold --parallel: auto | N",
+    "TENSORFOLD_KV_CACHE": "native TensorFold --kv-cache: bf16 | fp8 (empty = the engine's default, bf16; the container "
+                           "engine refuses it)",
+    "TENSORFOLD_MEMORY_RESERVE_GIB": "native TensorFold TENSORFOLD_MEMORY_RESERVE_GIB: GiB the CUDA startup keeps free "
+                                     "(empty = the engine's default; the container engine refuses it)",
+    "TENSORFOLD_REQUIRES": "native TensorFold release this profile was planned for (e.g. 1.2.10): the launcher "
+                           "refuses another binary",
+    "TENSORFOLD_RANK_ENV": "native TensorFold per-family engine variables set on every rank, a JSON object such as "
+                           "{\"TF_GLM_DENSE_BITS\":\"4\"} (allow-listed names and values: RANK_ENV_ALLOW)",
     "DRAFTER_SOURCE": "TensorFold draft model repo id (fetched and pinned like SOURCE)",
     "DRAFTER_REVISION": "full 40-hex commit SHA of DRAFTER_SOURCE",
     "FETCH_INCLUDE": "JSON array of globs model-fetch downloads (default: everything)",
@@ -84,7 +94,19 @@ NEVER_WHY = {
 }
 VLLM_ONLY = ("DTYPE", "QUANTIZATION", "TOOL_CALL_PARSER", "REASONING_PARSER", "CHAT_TEMPLATE",
              "TRUST_REMOTE_CODE", "GPU_MEMORY_UTILIZATION", "MAX_NUM_SEQS", "SPECULATIVE_CONFIG")
-TF_ONLY = ("TENSORFOLD_PARALLEL", "DRAFTER_SOURCE", "DRAFTER_REVISION")
+TF_ONLY = ("TENSORFOLD_PARALLEL", "DRAFTER_SOURCE", "DRAFTER_REVISION", "TENSORFOLD_KV_CACHE",
+           "TENSORFOLD_MEMORY_RESERVE_GIB", "TENSORFOLD_REQUIRES", "TENSORFOLD_RANK_ENV")
+# TENSORFOLD_RANK_ENV: the per-family engine variables a profile may set on every native rank, as
+# name -> (the model_type that reads it, the values it takes). An allow list, like EXTRA_ARGS': the
+# launcher owns the placement variables (TF_GLM_RANK / _WORLD, NCCL_*), and a typo'd name would be
+# ignored by the engine without a word. spark-node.sh refuses a name whose model_type is not the
+# checkpoint's. A new knob is one line here plus its recipe key (pylib/recipe.py FAMILY_ENV_KEYS) and
+# the engine family's "env" entry in data/recipe-engines.json.
+RANK_ENV_ALLOW: dict[str, tuple[str, tuple[str, ...]]] = {
+    # native 1.2.10 renders GLM-5.3-Flash's dense linears at these bits (empty = bf16, the engine's
+    # default): docs/reports/GLM_SERVING_WINDOW-2026-11-23.md (4 = 82.36 GiB vs 87.69, 42.2 vs 30.7 tok/s)
+    "TF_GLM_DENSE_BITS": ("glm5_next", ("4", "6", "8", "16")),
+}
 # Files model-fetch never downloads unless FETCH_INCLUDE names them: pickled
 # weights execute code on load, and GGUF/ONNX/"original" copies are dead weight
 # for a safetensors engine.
@@ -105,6 +127,7 @@ class Profile:
     fetch_include: list[str] = field(default_factory=list)
     fetch_exclude: list[str] = field(default_factory=list)
     speculative: dict | None = None
+    rank_env: dict[str, str] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
     def get(self, key: str, default: str = "") -> str:
@@ -266,6 +289,17 @@ def check_extra_args(args: list[str], engine: str, rev: str, ack: str) -> tuple[
     return errs, warns
 
 
+
+def _unique_pairs(pairs: list[tuple[str, object]]) -> dict:
+    """json object_pairs_hook: refuse a repeated key. json.loads keeps the last one silently,
+    so {"TF_GLM_DENSE_BITS":"4","TF_GLM_DENSE_BITS":"16"} would pass review as 4 and serve 16."""
+    out: dict = {}
+    for k, v in pairs:
+        if k in out:
+            raise ValueError(f"duplicate key {k!r}")
+        out[k] = v
+    return out
+
 def validate(p: Profile, backend: str | None = None) -> Profile:
     errs: list[str] = []
 
@@ -297,8 +331,8 @@ def validate(p: Profile, backend: str | None = None) -> Profile:
     elif len(name) > 200:
         err("SERVED_MODEL_NAME is longer than 200 characters")
     tp = p.get("TENSOR_PARALLEL_SIZE", "2")
-    if tp not in ("1", "2"):
-        err(f"TENSOR_PARALLEL_SIZE={tp!r} — 1 (one Spark) or 2 (both)")
+    if tp not in TP_SIZES:
+        err(f"TENSOR_PARALLEL_SIZE={tp!r} — 1..{MAX_SPARKS} (one rank per Spark)")
     for key in ("MAX_MODEL_LEN", "MAX_NUM_SEQS"):
         if p.get(key) and not re.match(r"^[1-9][0-9]*$", p.get(key)):
             err(f"{key}={p.get(key)!r} is not a positive integer")
@@ -358,6 +392,36 @@ def validate(p: Profile, backend: str | None = None) -> Profile:
     par = p.get("TENSORFOLD_PARALLEL")
     if par and not re.match(r"^(auto|[1-9][0-9]*)$", par):
         err(f"TENSORFOLD_PARALLEL={par!r} — auto or a positive integer")
+    kvc = p.get("TENSORFOLD_KV_CACHE")
+    if kvc and kvc not in ("bf16", "fp8"):
+        err(f"TENSORFOLD_KV_CACHE={kvc!r} — bf16 or fp8 (native TensorFold's --kv-cache choices)")
+    mres = p.get("TENSORFOLD_MEMORY_RESERVE_GIB")
+    if mres:
+        try:
+            if not 0 < float(mres) <= 64:
+                raise ValueError
+        except ValueError:
+            err(f"TENSORFOLD_MEMORY_RESERVE_GIB={mres!r} — a GiB amount above 0 and at most 64")
+    renv = p.get("TENSORFOLD_RANK_ENV")
+    if renv:
+        try:
+            obj = json.loads(renv, object_pairs_hook=_unique_pairs)
+            if not isinstance(obj, dict) or not obj or not all(isinstance(v, str) for v in obj.values()):
+                raise ValueError("not a non-empty object of strings")
+        except ValueError as e:
+            err(f"TENSORFOLD_RANK_ENV must be a JSON object of strings, e.g. {{\"TF_GLM_DENSE_BITS\":\"4\"}} ({e})")
+        else:
+            for k, v in obj.items():
+                if k not in RANK_ENV_ALLOW:
+                    err(f"TENSORFOLD_RANK_ENV: {k!r} is not an allowed rank variable (allowed: "
+                        f"{', '.join(sorted(RANK_ENV_ALLOW))})")
+                elif v not in RANK_ENV_ALLOW[k][1]:
+                    err(f"TENSORFOLD_RANK_ENV: {k}={v!r} — one of {', '.join(RANK_ENV_ALLOW[k][1])}")
+                else:
+                    p.rank_env[k] = v
+    treq = p.get("TENSORFOLD_REQUIRES")
+    if treq and not re.match(r"^[0-9]+\.[0-9]+\.[0-9]+$", treq):
+        err(f"TENSORFOLD_REQUIRES={treq!r} — a release version such as 1.2.10")
     dsrc, drev = p.get("DRAFTER_SOURCE"), p.get("DRAFTER_REVISION")
     if dsrc and not REPO_RE.match(dsrc):
         err(f"DRAFTER_SOURCE={dsrc!r} is not owner/name")
@@ -413,6 +477,10 @@ def resolved_pairs(p: Profile) -> list[tuple[str, str]]:
     out.append(("CHAT_TEMPLATE", str(ct) if ct else ""))
     for a in p.extra_args:
         out.append(("EXTRA_ARG", a))
+    # TENSORFOLD_RANK_ENV is emitted as is above (the container engine refuses it by name) and, parsed,
+    # as RANK_ENV "<model_type>:<NAME>=<value>": spark-node.sh checks the model_type against the checkpoint's
+    for k, v in sorted(p.rank_env.items()):
+        out.append(("RANK_ENV", f"{RANK_ENV_ALLOW[k][0]}:{k}={v}"))
     return out
 
 

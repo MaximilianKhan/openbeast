@@ -19,17 +19,15 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# FOUR JOBS IN PARALLEL, THEN ONE GATE. This was a single serial job of ~15.5
+# FIVE JOBS IN PARALLEL, THEN ONE GATE. This was a single serial job of ~15.5
 # minutes. Branch protection requires a check named exactly `test`, so the
 # last job keeps that name and only reports on the others: renaming it, or
 # dropping it, would leave every PR waiting on a check that never arrives.
 #
 # CI=true (set by the runner) turns a suite's "SKIP … exit 0" into a failure:
 # everything a suite needs is installed here, so a skip means it stopped
-# running. The pytest side holds the same rule through tests/conftest.py: under
-# CI=true a skip whose reason is not on its SKIP_ALLOWLIST (network off, no
-# llama-server build, toolchain versions that are not the rig's) fails the
-# session, and every pytest call carries -rs so the log names each skip.
+# running. pytest has no such rule: the main pytest calls carry -rs, so the log
+# at least names every skip and its reason instead of a bare "8 skipped".
 # Every pytest call carries --timeout (pytest-timeout), so a hang
 # fails on a named test instead of ending as a cancelled job.
 jobs:
@@ -40,17 +38,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
-      # INSTALL FROM THE LOCK, with hashes enforced. This is the one place
-      # that proves the lockfile is installable on a python and platform that
-      # are NOT the box it was generated on (CI is 3.12/ubuntu; the rig is
-      # 3.14/arch) — which is the whole reason it lists every file of each
-      # release rather than just the wheel one machine happened to resolve.
-      # If this step ever fails, the lock's cross-platform claim is false and
-      # a Mac client install would fail the same way.
+      # INSTALL FROM THE LOCK, with hashes enforced. This is 3.12/ubuntu —
+      # the SAME python the lock is resolved on (its header; the relock job
+      # too), so it proves the lock installs where it was made, not anywhere
+      # else. The other targets (the rig's 3.14, a Mac client) are the
+      # `lock-installs` job below, on every change that touches the lock.
       #
       # pytest itself is hash-pinned too (.github/ci-requirements/test.txt;
       # it used to be `pip install -U pip pytest`, whatever PyPI served).
@@ -88,6 +84,13 @@ jobs:
           OPENBEAST_SKIP_NETWORK_TESTS: "1"
         run: python -m pytest --timeout=300 tests/test_tools.py -q -rs
 
+      # beast-apps (scripts/apps.sh, agents/apps/): catalog validation, probes
+      # against stub toolchains, opencode v1/v2 merge + backup + disable,
+      # refresh/upgrade against a stub stdio MCP server and a local registry,
+      # offline degradation. Hermetic: no network, no real opencode config.
+      - name: beast-apps tests
+        run: python -m pytest --timeout=300 tests/test_apps.py -q
+
       # Everything a NAMED pytest step runs (this job's tools step, and the
       # pytest-named job's two) is left out here. Keep this list in step with
       # them: a file named there and not ignored here just runs twice; one
@@ -103,7 +106,8 @@ jobs:
           --ignore=tests/test_use_model.py
           --ignore=tests/test_hydra_core.py --ignore=tests/test_hydra_proxy.py
           --ignore-glob='tests/test_instinct_*.py' --ignore=tests/test_router_instinct.py
-          --ignore=tests/test_tools.py
+          --ignore=tests/test_beast_docs.py --ignore=tests/test_platform_docs_tool.py
+          --ignore=tests/test_tools.py --ignore=tests/test_apps.py
 
   pytest-named:
     name: pytest (hydra, instinct, onboarding)
@@ -130,17 +134,15 @@ jobs:
             echo "OPENBEAST_I8_BASE=none" >> "$GITHUB_ENV"
           fi
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
-      # INSTALL FROM THE LOCK, with hashes enforced. This is the one place
-      # that proves the lockfile is installable on a python and platform that
-      # are NOT the box it was generated on (CI is 3.12/ubuntu; the rig is
-      # 3.14/arch) — which is the whole reason it lists every file of each
-      # release rather than just the wheel one machine happened to resolve.
-      # If this step ever fails, the lock's cross-platform claim is false and
-      # a Mac client install would fail the same way.
+      # INSTALL FROM THE LOCK, with hashes enforced. This is 3.12/ubuntu —
+      # the SAME python the lock is resolved on (its header; the relock job
+      # too), so it proves the lock installs where it was made, not anywhere
+      # else. The other targets (the rig's 3.14, a Mac client) are the
+      # `lock-installs` job below, on every change that touches the lock.
       #
       # pytest itself is hash-pinned too (.github/ci-requirements/test.txt;
       # it used to be `pip install -U pip pytest`, whatever PyPI served).
@@ -163,14 +165,28 @@ jobs:
       - name: beast-hydra / beast-instinct tests
         run: python -m pytest --timeout=300 tests/test_hydra_core.py tests/test_hydra_proxy.py tests/test_instinct_*.py tests/test_router_instinct.py -q -rs
 
+      # beast-docs (docs/BEAST_DOCS.md): the DocC / HTML / markdown adapters
+      # by golden file, incremental sync (304 = no rewrite), robots refusal,
+      # search ranking, offline/island fallback, the tarball round trip, and
+      # the platform_docs tool. A stub HTTP server on loopback; no network.
+      - name: beast-docs tests
+        run: python -m pytest --timeout=300 tests/test_beast_docs.py tests/test_platform_docs_tool.py -q
+
+  # THE SHELL SUITES, IN TWO PARALLEL JOBS. As one serial job they took
+  # 12.2 min and set CI's wall time on their own (run 43834747518: Script
+  # structure 197 s, inference backends 89 s, llama-serving 64 s, then two
+  # dozen smaller suites). Split by measured time, about 6 min each, so the
+  # full pytest job is the critical path again. Every suite still runs in
+  # exactly one of them (tests/test_ci_workflow.py checks every suite is run
+  # and that the `test` gate needs every job).
   shell:
-    name: shell suites
+    name: shell suites (structure, serving, backends)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -182,6 +198,45 @@ jobs:
 
       - name: Script structure tests
         run: bash tests/test_scripts.sh
+
+      # serve.sh, run.sh, the instinct scorer, measure-vram.sh and the MTP
+      # profilers against stub llama-server / llama-cli / nvidia-smi / curl;
+      # sparse files stand in for weights. Loopback python servers only.
+      - name: llama-serving tests (serve.sh, run.sh, scorer, profilers)
+        run: bash tests/test_llama_serving.sh
+
+      # INFERENCE_BACKEND / unmanaged-backend paths: a loopback python stub
+      # plays llama-server, vLLM and TensorFold; pkill/pgrep/docker are
+      # recording stubs.
+      - name: Inference backend tests (vLLM / TensorFold, unmanaged)
+        run: bash tests/test_backends.sh
+
+      - name: Shell syntax sweep
+        run: |
+          rc=0
+          # extensions/*/*.sh too: extension launchers (dashboard/run.sh
+          # serves /api/slot) were outside every shell gate.
+          for f in bootstrap.sh start.sh stop.sh agent.sh scripts/*.sh scripts/lib/*.sh scripts/backends/*.sh scripts/backends/*/*.sh tests/*.sh extensions/*/*.sh; do
+            bash -n "$f" || { echo "SYNTAX FAIL: $f"; rc=1; }
+          done
+          exit $rc
+
+  shell-ops:
+    name: shell suites (ops, offline, hydra, spark)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      # The shell suites drive python helpers (hydra's simulated fleet needs
+      # httpx/uvicorn, the artifact round trip fastapi): the same hash-pinned
+      # lock as the pytest jobs. No pytest here.
+      - name: Install Python dependencies (hash-pinned lock)
+        run: python -m pip install -q --require-hashes -r agents/requirements.lock
 
       # Fully stubbed (hf/pip/docker/git/curl record their calls): the
       # fetch-weight staging, bundle install and stale-lock paths cannot be
@@ -208,15 +263,22 @@ jobs:
       - name: SSD wear tests (scripts/ssd-wear.sh)
         run: bash tests/test_ssd_wear.sh
 
+      # beast-ark (scripts/ark.sh, agents/ark/): CLI exit codes, the real
+      # catalog's lint, the offline refusal, and a drive's ./ark on a PATH
+      # with no python (it must unpack the archived CPython after checking
+      # SHA256SUMS, and refuse a tampered one). The python half,
+      # tests/test_ark.py, runs in the full pytest step. No network.
+      - name: beast-ark shell tests (scripts/ark.sh)
+        run: bash tests/test_ark.sh
+
       # Client venv / agent.sh hash-pinned installs, land-dependabot's run
       # approval filter, workflow action pinning, client image pin parity.
       # Stubbed pip / pydeps / gh; nothing is installed or approved.
       - name: Supply-chain tests
         run: bash tests/test_supply_chain.sh
 
-      # The 2026-10-27 review's script fixes: land-dependabot's red-check and
-      # no-relock paths, the Spark launchers' OFFLINE / mirror / token
-      # handling, install-skills' link listing. Stub gh/docker; nothing runs.
+      # The 2026-10-27 review's land-dependabot fixes: the red-check and
+      # no-relock paths. Stub gh (answered through jq); nothing is merged.
       - name: Review 2026-10-27 script tests
         run: bash tests/test_review1027_ci.sh
 
@@ -241,6 +303,19 @@ jobs:
       - name: Shell ops tests (doctor, tailscale, conf, keys)
         run: bash tests/test_shell_ops.sh
 
+      # setup-tailscale.sh --publish-slot: /api/slot-only mount, no fall-open
+      # to the whole dashboard when that mount fails. A stubbed tailscale.
+      - name: beast-slot publish tests (setup-tailscale.sh --publish-slot)
+        run: bash tests/test_publish_slot.sh
+
+      - name: beast-chat unix-socket login (CHAT_LOGIN_FROM)
+        run: bash tests/test_chat_unix_login.sh
+
+      - name: tailnet machine name (TS_HOSTNAME)
+        run: bash tests/test_tailscale_hostname.sh
+      - name: raw :8443 target follows INFERENCE_URL (setup-tailscale.sh)
+        run: bash tests/test_tailscale_raw_inference.sh
+
       # beast-chat / beast-artifact ops: port ownership at start, watchdog
       # restart logs, job-log rotation + retention, doctor's :8446/:8447 and
       # notification rows, publish-verdict.sh, scoring.py --html. Loopback
@@ -248,11 +323,57 @@ jobs:
       - name: beast-chat / beast-artifact ops tests
         run: bash tests/test_ops_chat_artifact.sh
 
-      # INFERENCE_BACKEND / unmanaged-backend paths: a loopback python stub
-      # plays llama-server, vLLM and TensorFold; pkill/pgrep/docker are
-      # recording stubs.
-      - name: Inference backend tests (vLLM / TensorFold, unmanaged)
-        run: bash tests/test_backends.sh
+      # The engine plane (docs/ENGINES.md): scripts/engine.sh list / status /
+      # use / install / update / stage / rollback, and managed single-host
+      # vLLM / TensorFold through start.sh / stop.sh. docker, the llama.cpp
+      # build and the GitHub API are stubs; TensorFold releases are signed
+      # with a per-run ed25519 key (OpenSSL 3 on ubuntu-latest).
+      - name: Engine plane tests (swap / pin / update / rollback)
+        run: bash tests/test_engines.sh
+      # The switch restarts on the NEW conf, not on the old conf's exports
+      # (rig 2026-11-25: engine.sh use default relaunched the old llama).
+      - name: Engine switch environment tests
+        run: bash tests/test_engine_switch_env.sh
+
+      # Weight streaming (docs/WEIGHT_STREAMING.md): the per-profile memory
+      # scope, the MoE-cache and big-mode serve profiles, every serve-script
+      # flag against llama.cpp v1.0.0's option list, and the tok/s gate.
+      # Portable bash and stdlib python; no GPU, no network.
+      - name: Weight streaming tests (scope, profiles, v1.0.0 flags, tok/s gate)
+        run: bash tests/test_weight_streaming.sh
+
+      # spark-cluster.sh for 1 to 8 nodes: ssh and the node probes are stubs
+      # that answer per node, so topology, ordering and refusals run here.
+      - name: DGX Spark cluster tests (1-8 nodes)
+        run: bash tests/test_spark_cluster.sh
+
+      # spark-guard.sh (the nftables guard for the Sparks' rendezvous ports)
+      # and the Spark supply chain (install-native.sh's signature binding,
+      # spark-root-setup.sh's pinned .debs and Tailscale key). Stubs only;
+      # the real nft loads the rendered ruleset in a throwaway network
+      # namespace (sudo unshare -n), never the runner's own ruleset.
+      - name: DGX Spark guard + supply-chain tests
+        run: |
+          command -v nft >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq nftables >/dev/null; }
+          bash tests/test_spark_guard.sh
+          bash tests/test_spark_supply.sh
+
+      # spark-fabric-mtu.sh (MTU 9000 on the ConnectX fabric, a netplan drop-in
+      # staged for the next reboot): every mode against fakes under a scratch
+      # SPARK_FABRIC_ROOT, plus the merge through the runner's real netplan
+      # (`netplan generate --root-dir`, scratch dir only; never apply).
+      - name: DGX Spark fabric MTU tests
+        run: bash tests/test_spark_fabric_mtu.sh
+
+      # The spark-hydra operator tools, all over stubs: backup / restore, beast-spark,
+      # the DeepSeek pack swap, the intake preflight, Hy4-flash (NVFP4, vLLM TP2) staging.
+      - name: DGX Spark operator tool tests
+        run: |
+          bash tests/test_spark_backup.sh
+          bash tests/test_spark_beast.sh
+          bash tests/test_spark_deepseek_pack.sh
+          bash tests/test_spark_model_intake.sh
+          bash tests/test_spark_hy4.sh
 
       # The Tier-3 campaign harness in a stub repo: the benchmark, era,
       # engine and verdict are stubs, so no GPU or server is touched.
@@ -305,6 +426,11 @@ jobs:
       - name: beast-lang escalation conf tests
         run: bash tests/test_escalate_conf.sh
 
+      # AGENT_PROFILE and the daily-agent switches (v5 T2 as DeepSeek's
+      # default): conf.sh exports, precedence, and the real readers agree.
+      - name: agent profile conf tests
+        run: bash tests/test_agent_profile_conf.sh
+
       # The remote-skill import gate (scripts/skill-import.sh): the checks on
       # what may enter skills/ — open findings, the in-house overwrite and
       # symlink refusals, both `verify` hash comparisons. run_tests.sh ran it
@@ -319,27 +445,23 @@ jobs:
       - name: Client installer tests (scripts/setup-client.sh)
         run: bash tests/test_setup_client.sh
 
+      # The installed client runs from ~/.openbeast-client/repo, never from the
+      # checkout: the copy, the installer's use of it, and relocating a client
+      # an older installer left in place. Throwaway HOME and git checkouts.
+      - name: Client copy tests (scripts/lib/client_copy.sh)
+        run: bash tests/test_client_copy.sh
+
       - name: Operator script tests
         run: bash tests/test_operator_scripts.sh
-
-      - name: Shell syntax sweep
-        run: |
-          rc=0
-          # extensions/*/*.sh too: extension launchers (dashboard/run.sh
-          # serves /api/slot) were outside every shell gate.
-          for f in bootstrap.sh start.sh stop.sh agent.sh scripts/*.sh scripts/lib/*.sh scripts/backends/*.sh scripts/backends/*/*.sh tests/*.sh extensions/*/*.sh; do
-            bash -n "$f" || { echo "SYNTAX FAIL: $f"; rc=1; }
-          done
-          exit $rc
 
   variants:
     name: variant audit + doc drift
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -351,50 +473,122 @@ jobs:
       - name: Doc-drift check (suite counts)
         run: python evals/suite_stats.py --check
 
-      # The variant audit runs every reference solution through its task's
-      # validation. It ran with --advisory (always green) and, worse, without
-      # the tools it needs: on main every zig variant failed `zig: not found`
-      # and 63_det / 122_gemm_blocked failed on a missing numpy — 40 [FAIL]
-      # rows a run, all environmental, so no zig variant and no reference of
-      # those two tasks was verified anywhere. With zig and numpy installed
-      # the audit passes in full (measured 2026-10-27 on the rig: 185 PASS,
-      # 0 FAIL, ~5.5 min), so it is a GATE now: a [FAIL] fails this job.
-      #
-      # The same zig release and sha256 as the pytest job's step: keep the
-      # two in step (tests/test_ci_workflow.py should check they agree).
-      - name: Install zig 0.16.0 (sha256-pinned) for the variant audit
-        env:
-          ZIG_VERSION: "0.16.0"
-          ZIG_SHA256: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
-        run: |
-          f="zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$f" "https://ziglang.org/download/${ZIG_VERSION}/$f"
-          echo "${ZIG_SHA256}  $RUNNER_TEMP/$f" | sha256sum -c -
-          tar -xJf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/zig-x86_64-linux-${ZIG_VERSION}/zig" version
+      # The v5 board in README.md and docs/RESULTS.md is generated from the
+      # committed inputs in evals/boards/v5/; a hand edit or a new run
+      # recorded without --write fails here.
+      - name: Doc-drift check (v5 board)
+        run: python evals/v5_board.py --check
 
-      # numpy, hash-pinned (.github/ci-requirements/variants.txt). Only this
-      # job gets it: the pytest jobs keep the agents lock alone.
-      - name: Install the audit's python tools (hash-pinned numpy)
-        run: python -m pip install -q --require-hashes -r .github/ci-requirements/variants.txt
-
-      # Every toolchain a variant needs must be HERE before the audit runs:
-      # a missing one would turn every variant of that language into a
-      # [FAIL] that says nothing about the variant. Checked up front so the
-      # failure reads "the job is missing X", not 30 red variants.
-      - name: Audit toolchains present
-        run: |
-          rc=0
-          for t in python3 go gcc g++ rustc zig; do
-            command -v "$t" >/dev/null || { echo "::error::$t is not on PATH — the variant audit needs it"; rc=1; }
-          done
-          python -c 'import numpy' || { echo "::error::numpy is not importable"; rc=1; }
-          exit $rc
-
+      # ADVISORY for now. The audit used to print [FAIL] and exit 0 whatever
+      # happened; it now exits 1 on a failed variant, and --advisory keeps
+      # this step green (with a warning annotation per failure) until a run
+      # here has shown which variants pass on the runner's toolchains. There
+      # is no zig in this job, so the zig variants are expected to fail.
+      # Drop --advisory to make it a gate.
       - name: Variant spec audit
-        timeout-minutes: 12
-        run: python tests/audit_variants.py
+        run: python tests/audit_variants.py --advisory
+
+  lock-fresh:
+    # `pydeps.sh verify` (CI's test job) proves the lock is self-consistent
+    # and covers every direct pin. It accepts ANY extra package and any hash:
+    # a lock carrying `evil-pkg==6.6.6 --hash=<its real hash>` verifies. Only
+    # a fresh resolve can say "this is exactly the closure pip produces", so
+    # whenever a change touches the lock or its input, re-resolve and diff.
+    #
+    # Not on every PR: it needs the index, and it compares against PyPI as it
+    # is NOW — on an untouched lock it would turn unrelated PRs red the day a
+    # transitive dependency ships a release. A red run here on a PR that DID
+    # touch the lock means one of two things: the lock holds something the
+    # resolver does not produce (read the diff it prints), or the index moved
+    # since it was generated (regenerate: ./scripts/pydeps.sh lock).
+    #
+    # IN ci.yml, UNDER THE REQUIRED `test` GATE (it lived in pr-quality.yml,
+    # which branch protection does not require, so a red run there did not
+    # block a merge). Safe to require: on a change that touches neither
+    # file its steps are skipped and the job succeeds. `check` exits 1 for a
+    # WRONG closure and 4 for OUTDATED (index moved; regenerate) and says
+    # which; both fail the gate.
+    name: Lock matches a fresh resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Did this change touch the lock or requirements.txt?
+        id: touched
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]]; then
+            echo "no base to compare with (manual run or a new branch): checking"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            git fetch --no-tags --depth=1 origin "$BASE_SHA"
+            if git diff --quiet "$BASE_SHA" HEAD -- agents/requirements.lock agents/requirements.txt; then
+              echo "neither file changed — nothing to re-resolve"
+              echo "run=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "run=true" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+          # Resolve on the python the lock says it was resolved on: the SET
+          # of packages depends on it (environment markers), so another
+          # python reports a correct lock as stale.
+          py="$(sed -n 's/^# resolver: .* on python \([0-9]*\.[0-9]*\).*/\1/p' agents/requirements.lock | head -n 1)"
+          echo "python=${py:-3.12}" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: steps.touched.outputs.run == 'true'
+        with:
+          python-version: ${{ steps.touched.outputs.python }}
+      # Wheels only (pydeps_lock.py resolves with --only-binary :all:), so no
+      # package's build code runs here; the token is read-only regardless.
+      - name: ./scripts/pydeps.sh check
+        if: steps.touched.outputs.run == 'true'
+        run: OPENBEAST_PYTHON=python ./scripts/pydeps.sh check
+
+  # THE LOCK ON THE PYTHONS AND PLATFORMS IT WAS NOT RESOLVED ON. The lock is
+  # resolved on 3.12/linux; the rig runs 3.14 and Mac clients install it too
+  # (scripts/setup-client.sh prefers 3.13). Listing every file of each
+  # release covers other wheels, NOT a package that joins the closure only
+  # under a 3.14 or darwin marker — that fails `--require-hashes` there while
+  # every 3.12 job stays green. A hash-checked dry run on each, whenever the
+  # lock or requirements.txt changes (skipped, and green, otherwise).
+  lock-installs:
+    name: lock installs on ${{ matrix.os }} / python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, python: "3.14" }
+          - { os: macos-latest, python: "3.13" }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Did this change touch the lock or requirements.txt?
+        id: touched
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            git fetch --no-tags --depth=1 origin "$BASE_SHA"
+            if git diff --quiet "$BASE_SHA" HEAD -- agents/requirements.lock agents/requirements.txt; then
+              echo "neither file changed — nothing to check"
+              echo "run=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "run=true" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: steps.touched.outputs.run == 'true'
+        with:
+          python-version: ${{ matrix.python }}
+      - name: The lock installs here, hash-checked (dry run)
+        if: steps.touched.outputs.run == 'true'
+        run: |
+          python -m pip install -q --dry-run --ignore-installed \
+            --require-hashes -r agents/requirements.lock
 
   # The required check. It runs nothing itself: it fails unless every job
   # above succeeded (a cancelled or skipped one counts as a failure — `needs`
@@ -402,7 +596,7 @@ jobs:
   test:
     name: test
     if: ${{ always() }}
-    needs: [pytest, pytest-named, shell, variants]
+    needs: [pytest, pytest-named, shell, shell-ops, variants, lock-fresh, lock-installs]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

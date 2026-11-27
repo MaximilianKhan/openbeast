@@ -2,7 +2,6 @@
 """Pytest fixtures shared across the test suite."""
 
 import os
-import re
 import stat
 import tempfile
 
@@ -40,84 +39,86 @@ def _install_probe_stubs() -> None:
 
 _install_probe_stubs()
 
+# --- eval host provisioning ----------------------------------------------------
+# run_eval / profile / benchmark_all main() install missing eval toolchains
+# (scripts/eval-host.sh setup: hundreds of MB into ~/.local/opt) and re-exec
+# under the eval venv. A test run must never do either, so for the whole
+# session provisioning is off: they only check and report. Tests of the
+# provisioning itself (tests/test_eval_host.py) delete the variable and point
+# the script at a temp prefix and a fake lock.
+os.environ["OPENBEAST_EVAL_NO_PROVISION"] = "1"
+
 
 def pytest_configure(config):
     config.addinivalue_line(
         "markers", "host_probes: run with the real nvidia-smi / pgrep / tailscale "
                    "on PATH (the default is a stub that finds nothing)")
+    config.addinivalue_line(
+        "markers", "linux_only(reason): needs the Linux userland the rigs and Sparks run "
+                   "(/proc, GNU stat/sed/grep -P, bash >= 4, ss); skipped elsewhere, so a Mac run's "
+                   "baseline is 0 failed and any failure there is new")
+
+
+# --- linux_only ------------------------------------------------------------------
+# Some tests drive scripts written for the Linux hosts (they read /proc, call GNU
+# `stat -c`, GNU sed, `grep -P`, bash 4 arrays under set -u, ss). On macOS they
+# failed every run (~24 a run), so "25 failed" was the normal state and a real
+# regression hid in the count (#317: 42 = 25 + 17 real). They run on Linux, in
+# scripts/gate.sh --linux, and on the rig / spark-2 (tests/run_tests.sh).
+_LINUX_USERLAND = None
+
+
+def _linux_userland_missing() -> str:
+    """'' when this host has the Linux userland, else what is missing."""
+    global _LINUX_USERLAND
+    if _LINUX_USERLAND is not None:
+        return _LINUX_USERLAND
+    import shutil
+    import subprocess
+    import sys
+    miss = []
+    if not sys.platform.startswith("linux"):
+        miss.append(f"platform {sys.platform}")
+    if not os.path.isdir("/proc/self"):
+        miss.append("/proc")
+
+    def ok(cmd):
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            return None
+    r = ok(["stat", "--version"])
+    if not r or "GNU" not in r.stdout:
+        miss.append("GNU stat")
+    r = ok(["sed", "--version"])
+    if not r or "GNU" not in r.stdout:
+        miss.append("GNU sed")
+    r = ok(["grep", "-P", "x", "/dev/null"])
+    if not r or r.returncode not in (0, 1):
+        miss.append("grep -P")
+    bash = shutil.which("bash")
+    r = ok([bash, "-c", "echo ${BASH_VERSINFO[0]}"]) if bash else None
+    if not r or not r.stdout.strip().isdigit() or int(r.stdout.strip()) < 4:
+        miss.append("bash >= 4")
+    _LINUX_USERLAND = ", ".join(miss)
+    return _LINUX_USERLAND
+
+
+def pytest_collection_modifyitems(config, items):
+    marked = [it for it in items if it.get_closest_marker("linux_only")]
+    if not marked:
+        return
+    missing = _linux_userland_missing()
+    if not missing:
+        return
+    for it in marked:
+        why = it.get_closest_marker("linux_only").kwargs.get("reason", "the Linux userland")
+        it.add_marker(pytest.mark.skip(reason=f"linux_only ({why}): this host lacks {missing}"))
 
 
 def pytest_unconfigure(config):
     import shutil
     shutil.rmtree(_PROBE_DIR, ignore_errors=True)
-
-
-# --- skip gate (CI) -----------------------------------------------------------
-# The shell suites turn "SKIP … exit 0" into a failure under CI=true; pytest had
-# no equivalent, and CI ran with -q, so its log said "8 skipped" and never
-# which. Dozens of tests skip when chrome or zig is missing, so a runner image
-# that dropped chrome, or a zig step whose PATH broke, would go green.
-#
-# Under CI=true a skip whose reason matches none of the patterns below FAILS the
-# session (it is listed, with ::error annotations on GitHub). The allowlist is
-# the skips that are correct on a CI runner: the network is off by policy,
-# there is no llama-server build, and the runner's toolchain versions are not
-# the rig's. A missing tool CI installs (chrome, zig, go, gcc, node, jq, a
-# python dependency) is NOT on it — that is exactly what this catches.
-# OPENBEAST_SKIP_GATE=off|warn|strict overrides (default: strict under
-# CI=true, off otherwise).
-SKIP_ALLOWLIST = (
-    r"network tests disabled",
-    r"llama-server not built here",
-    r"toolchain is not the indexed version",
-    r"no indexed toolchain here",
-    r"too few toolchains here to measure",
-    r"could not reproduce low pipe fds here",
-    r"every candidate module is importable on this platform",
-    r"kernel does not report a boot id",
-    r"cannot make a file unreadable here",
-)
-_UNEXPECTED_SKIPS: list = []
-
-
-def _skip_gate_mode() -> str:
-    v = os.environ.get("OPENBEAST_SKIP_GATE", "").strip().lower()
-    if v in ("off", "warn", "strict"):
-        return v
-    return "strict" if os.environ.get("CI") == "true" else "off"
-
-
-def _skip_reason(report) -> str:
-    lr = report.longrepr
-    reason = lr[2] if isinstance(lr, tuple) and len(lr) == 3 else str(lr)
-    return reason[len("Skipped: "):] if reason.startswith("Skipped: ") else reason
-
-
-def pytest_runtest_logreport(report):
-    if report.skipped and not hasattr(report, "wasxfail"):
-        reason = _skip_reason(report)
-        if not any(re.search(p, reason) for p in SKIP_ALLOWLIST):
-            _UNEXPECTED_SKIPS.append((report.nodeid, reason))
-
-
-def pytest_sessionfinish(session, exitstatus):
-    if _UNEXPECTED_SKIPS and _skip_gate_mode() == "strict" and exitstatus == 0:
-        session.exitstatus = 1
-
-
-def pytest_terminal_summary(terminalreporter, exitstatus, config):
-    mode = _skip_gate_mode()
-    if mode == "off" or not _UNEXPECTED_SKIPS:
-        return
-    tr = terminalreporter
-    tr.section(f"skips outside the CI allowlist ({mode}; tests/conftest.py SKIP_ALLOWLIST)")
-    level = "error" if mode == "strict" else "warning"
-    for nodeid, reason in _UNEXPECTED_SKIPS:
-        tr.write_line(f"{nodeid}: {reason}")
-        if os.environ.get("GITHUB_ACTIONS") == "true":
-            tr.write_line(f"::{level}::skipped in CI: {nodeid}: {reason}")
-    if mode == "strict":
-        tr.write_line(f"{len(_UNEXPECTED_SKIPS)} unexpected skip(s): the session FAILS under CI=true")
 
 
 @pytest.fixture(autouse=True)
@@ -155,3 +156,58 @@ def _isolated_tool_audit(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("OPENBEAST_TOOL_AUDIT_PATH",
                        str(tmp_path / "tool-audit" / "tool-audit.jsonl"))
+
+
+# --- child subreaper ---------------------------------------------------------
+# vlib.run_solution makes ITS CALLER a child subreaper on Linux, so a
+# validator keeps its solution's orphans in view. Called in-process by the
+# eval isolation tests, that turned the whole pytest process into a
+# subreaper: every later test's orphaned grandchild became pytest's unreaped
+# zombie, signal 0 still found it, and the reap tests in test_proc_hygiene,
+# test_tools and test_steering failed only in a full, ordered run. Undo it
+# after every test.
+@pytest.fixture(autouse=True)
+def _no_lingering_subreaper():
+    yield
+    import sys
+    if not sys.platform.startswith("linux"):
+        return
+    mod = sys.modules.get("vlib")
+    if mod is None or not getattr(mod, "_SUBREAPER", None):
+        return
+    try:
+        import ctypes
+        ctypes.CDLL(None).prctl(36, 0, 0, 0, 0)     # PR_SET_CHILD_SUBREAPER off
+    except OSError:
+        pass
+    mod._SUBREAPER = None
+
+
+# --- harness modules re-imported by a test ----------------------------------
+# Several eval tests pop run_eval / cache from sys.modules, re-import them and
+# point the fresh module at a temp tree (TASKS_DIR, RESULTS_DIR, CACHE_DIR)
+# without undoing it. A later test that imports run_eval lazily then got that
+# module and saw an empty task library (test_fast_suite failed in a full
+# ordered run, never alone). Put the module objects back after every test.
+_HARNESS_MODULES = ("run_eval", "cache", "suite_manifest", "scoring", "make_fast_suite")
+
+
+_HARNESS_PATHS = ("TASKS_DIR", "RESULTS_DIR", "SUITES_DIR", "CACHE_DIR", "STRIKES_DIR")
+
+
+@pytest.fixture(autouse=True)
+def _restore_harness_modules():
+    # tests/prove_task.py --tasks-dir also sets run_eval.TASKS_DIR on the
+    # shared module itself, so the path attributes are restored as well.
+    import sys
+    saved = {k: sys.modules.get(k) for k in _HARNESS_MODULES}
+    paths = {k: {a: getattr(m, a) for a in _HARNESS_PATHS if hasattr(m, a)}
+             for k, m in saved.items() if m is not None}
+    yield
+    for k, mod in saved.items():
+        if mod is None:
+            sys.modules.pop(k, None)
+        else:
+            sys.modules[k] = mod
+            for a, v in paths[k].items():
+                setattr(mod, a, v)

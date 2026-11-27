@@ -213,7 +213,7 @@ def test_vllm_like_server_passes(tmp_path, stub_factory):
 
 def test_tensorfold_like_server_passes_with_caveats(tmp_path, stub_factory, monkeypatch):
     s = stub_factory("tensorfold")
-    monkeypatch.setenv("LLAMA_API_KEY", "sk-should-not-travel")
+    monkeypatch.setenv("LLAMA_API_KEY", "sk-tf")
     rc, doc = run(tmp_path, s.url, "--backend", "tensorfold", "--concurrency", "3")
     r = by_name(doc)
     assert rc == 0
@@ -222,7 +222,7 @@ def test_tensorfold_like_server_passes_with_caveats(tmp_path, stub_factory, monk
     assert r["tools"]["status"] == "pass" and "STRING" in r["tools"]["detail"]
     assert doc["facts"]["tool_arguments_string_values"] is True
     assert r["parallel"]["status"] == "warn" and r["concurrency"]["status"] == "pass"
-    assert set(s.auth) == {None}, "the key must never be sent to TensorFold"
+    assert set(s.auth) == {"Bearer sk-tf"}, "native TensorFold takes the key like vLLM"
     assert any("arrive as strings" in x and "Handled" in x for x in doc["recommendations"])
     assert "handled on our side" in r["tools"]["detail"]
 

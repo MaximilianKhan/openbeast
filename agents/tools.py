@@ -12,6 +12,7 @@ import difflib
 import errno
 import functools
 import glob
+import hashlib
 import html
 import http.client
 import ipaddress
@@ -69,6 +70,14 @@ _CHILD_AS_LIMIT = 32 * 1024**3
 # below current usage yet still stops a bomb a few thousand tasks in.
 _CHILD_NPROC_MARGIN = 4096
 
+# Platforms without prlimit(2) (Darwin): setrlimit(RLIMIT_AS) is accepted or
+# refused but never ENFORCED there, and NPROC/FSIZE/CPU are not applied at
+# all, so a memory or fork bomb in a Mac client's bash ran unbounded. A
+# parent-side guard polls the command's group instead and SIGKILLs it past
+# the RSS cap (the same number as the AS cap) or this many processes.
+_GROUP_GUARD_POLL = 0.5
+_GROUP_GUARD_MAX_PROCS = 1024
+
 
 def _uid_task_count(uid: int | None = None) -> int | None:
     """Tasks (processes + threads) whose REAL uid is `uid` — the quantity the
@@ -122,7 +131,12 @@ def _killpg(proc):
     """SIGKILL the whole process group, then reap the leader."""
     try:
         os.killpg(proc.pid, signal.SIGKILL)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
+        # PermissionError: Darwin answers killpg with EPERM when every member
+        # left in the group is a zombie (killed, not yet reaped by launchd) —
+        # nothing is left to kill. Uncaught, it escaped the timeout path and
+        # the bash tool reported a hung command it had just killed as
+        # "[Errno 1] Operation not permitted" (runner v2, audit 2026-11-16).
         pass
     proc.kill()  # belt-and-suspenders if the leader left its group
     try:
@@ -148,6 +162,51 @@ def _group_alive(pgid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _session_pids(sid: int) -> list:
+    """Every live pid in session `sid` (start_new_session: sid == the
+    command's pid). /proc on Linux, `ps -A` elsewhere; getsid() reads any
+    pid's session on both."""
+    if os.path.isdir("/proc/self"):
+        try:
+            pids = [int(n) for n in os.listdir("/proc") if n.isdigit()]
+        except OSError:
+            return []
+    else:
+        try:
+            out = subprocess.run(["ps", "-A", "-o", "pid="], capture_output=True,
+                                 text=True, timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            return []
+        pids = [int(x) for x in out.split() if x.isdigit()]
+    me = os.getpid()
+    found = []
+    for pid in pids:
+        if pid in (me, sid):
+            continue
+        try:
+            if os.getsid(pid) == sid:
+                found.append(pid)
+        except OSError:
+            pass
+    return found
+
+
+def _kill_session(sid: int) -> None:
+    """SIGKILL whatever is left in the command's session. The group kill
+    misses jobs that moved to their own process group (`set -m`, setpgid)
+    but stayed in the session. A few passes: a survivor may fork while we
+    scan."""
+    for _ in range(3):
+        pids = _session_pids(sid)
+        if not pids:
+            return
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
 
 
 def kill_live_children(grace: float = 2.0) -> int:
@@ -236,9 +295,68 @@ def run_reaped(command, timeout, as_limit=None, **popen_kw):
         _LIVE_GROUPS.pop(proc.pid, None)
 
 
+def _group_usage(pgid: int):
+    """(total RSS bytes, process count) of the command's process group, or
+    None if ps fails. start_new_session makes session == group == pid, so
+    `ps -g` selects it on both BSD (group) and procps (session)."""
+    try:
+        out = subprocess.run(["ps", "-o", "rss=", "-g", str(pgid)],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    rows = [int(x) for x in out.split() if x.isdigit()]
+    return sum(rows) * 1024, len(rows)
+
+
+def _start_group_guard(proc, as_limit):
+    """Parent-side memory/process backstop for prlimit-less platforms (see
+    _GROUP_GUARD_POLL). Returns (stop_event, verdict_list)."""
+    stop = threading.Event()
+    verdict: list = []
+
+    def run():
+        while not stop.wait(_GROUP_GUARD_POLL):
+            if proc.poll() is not None:
+                return
+            usage = _group_usage(proc.pid)
+            if usage is None:
+                continue
+            rss, nprocs = usage
+            if rss > as_limit:
+                why = (f"memory cap: group RSS {rss // 1024**2} MB over "
+                       f"{as_limit // 1024**2} MB")
+            elif nprocs > _GROUP_GUARD_MAX_PROCS:
+                why = (f"process cap: {nprocs} processes over "
+                       f"{_GROUP_GUARD_MAX_PROCS}")
+            else:
+                continue
+            verdict.append(why)
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            return
+    threading.Thread(target=run, daemon=True).start()
+    return stop, verdict
+
+
 def _reap(proc, command, timeout, _as_limit, _nproc):
     """run_reaped's body after the spawn (split out so the live-group
     registry is always cleared, whatever raises)."""
+    guard = None
+    if not hasattr(resource, "prlimit"):
+        guard = _start_group_guard(proc, _as_limit)
+    try:
+        rc, out = _reap_body(proc, command, timeout, _as_limit, _nproc)
+    finally:
+        if guard:
+            guard[0].set()
+    if guard and guard[1]:
+        out += f"\n[killed by the {guard[1][0]}]"
+    return rc, out
+
+
+def _reap_body(proc, command, timeout, _as_limit, _nproc):
     if hasattr(resource, "prlimit"):
         # NPROC/FSIZE/CPU joined AS in the 2026-09-10 hardening: fork bombs,
         # disk-fill, and pure-CPU spins previously ran free until the wall
@@ -302,13 +420,23 @@ def _reap(proc, command, timeout, _as_limit, _nproc):
         raise subprocess.TimeoutExpired(command, timeout,
                                         output=_assemble()) from None
     finally:
+        # The no-orphans policy the bash tool documents: background
+        # processes (trailing &, nohup) die when the command returns. Kill
+        # whatever is left of the session's group NOW — not only when a
+        # grandchild still holds the pipe (that both let the usual
+        # `cmd >log 2>&1 &` idiom run on unsupervised past every timeout
+        # and cost a fixed 5 s join first). Output already in the pipe is
+        # still drained below. A job in its own group (`set -m`, setpgid)
+        # is still in the session, so the session is swept too; only a
+        # deliberate setsid escapes.
+        if proc.poll() is not None:
+            if _group_alive(proc.pid):
+                _killpg(proc)
+            _kill_session(proc.pid)
         reader.join(timeout=5)
         if reader.is_alive():
-            # The shell exited but a backgrounded grandchild still holds the
-            # stdout pipe — the reader would block forever (and so would we).
-            # Killing the group unblocks it AND enforces the no-orphans
-            # policy: nothing outlives the tool call. Long-lived daemons must
-            # detach properly (setsid + redirect away from the pipe).
+            # A grandchild still holds the stdout pipe — the reader would
+            # block forever (and so would we). Kill the group (again).
             _killpg(proc)
             reader.join(timeout=2)
         if reader.is_alive():
@@ -490,27 +618,80 @@ def _scrubbed_env() -> dict:
     return env
 
 
+def _bash_shell() -> str:
+    """The shell the bash tool runs commands with: /bin/bash when present,
+    else /bin/sh.
+
+    Runner v2 (2026-11-16). Models write bash: process substitution `<(...)`,
+    `[[ ]]`, brace expansion, `set -o pipefail`, `$'...'`, arrays. /bin/sh is
+    dash on the Debian/Ubuntu rig and bash 3.2 in POSIX mode on macOS, and
+    both reject some of those, which cost GLM-5.3-Flash turns in the v5
+    audit. A POSIX sh command means the same under bash with one common
+    exception: dash's `echo` expands backslash escapes and bash's needs -e,
+    which is what models already expect. The grep and diagnostics helpers keep /bin/sh:
+    their commands are written here, not by the model."""
+    return "/bin/bash" if os.access("/bin/bash", os.X_OK) else "/bin/sh"
+
+
+#: Resolved once, so the tool schema, the runner's platform line and every
+#: call name the same shell.
+BASH_SHELL = _bash_shell()
+
+
+def _timeout_message(timeout, partial=None) -> str:
+    """The one wording of a bash-tool timeout, with the tail of any output."""
+    if isinstance(partial, bytes):
+        partial = partial.decode("utf-8", errors="replace")
+    tail_note = ""
+    if partial and partial.strip():
+        tail_note = ("\n--- partial output before the kill (tail) ---\n"
+                     + partial[-10_000:])
+    return (f"Error: command timed out after {timeout}s (the bash tool's "
+            f"timeout; the whole process group was killed){tail_note}")
+
+
 def bash(command: str, timeout: int = 120) -> str:
     """Run a shell command and return stdout + stderr.
 
     Enforced safety: child process group is SIGKILLed on timeout,
     RLIMIT_AS caps the child's address space, and output is capped.
     """
+    start = time.monotonic()
     try:
         # Arsenal Phase 1 hook: OPENBEAST_BASH_WRAPPER is a command prefix
         # (e.g. "sandlock --profile openbeast --") that wraps every model
         # shell command in a kernel-level sandbox. Unset (the default and
         # the eval-validated configuration) runs the command directly.
         # Read per-call so a server doesn't need a restart to toggle it.
+        sealed = _seal_command_refusal(command)
+        if sealed:
+            return sealed
+        _verify_note_bash(command)   # G9; a no-op unless VERIFY_DONE is on
+        # Under eval, confine the shell so a read of the sealed trees fails in
+        # the kernel, not just on a command-text match (reported on 164/U4).
+        seal_prefix = _eval_read_deny_prefix()
+        shell = BASH_SHELL
+        if seal_prefix:
+            command = " ".join(shlex.quote(a) for a in seal_prefix) + \
+                f" {shell} -c {shlex.quote(command)}"
         wrapper = os.environ.get("OPENBEAST_BASH_WRAPPER", "").strip()
         if wrapper:
-            command = f"{wrapper} /bin/sh -c {shlex.quote(command)}"
+            command = f"{wrapper} {shell} -c {shlex.quote(command)}"
+        env = _scrubbed_env()
+        # A non-interactive bash sources $BASH_ENV before the command: an
+        # inherited one would run the operator's file ahead of every call.
+        env.pop("BASH_ENV", None)
+        if _eval_mode():
+            env["PATH"] = shell_path(env.get("PATH", ""))     # G24
         returncode, output = run_reaped(
             command,
             timeout,
             cwd=_base_dir(),
-            env=_scrubbed_env(),
+            env=env,
+            executable=shell,
         )
+        if seal_prefix and "Operation not permitted" in output:
+            output += _SEAL_DENIED_NOTE                       # G24
         if not output.strip():
             output = f"(exit code {returncode})"
         elif returncode != 0:
@@ -527,15 +708,13 @@ def bash(command: str, timeout: int = 120) -> str:
                       + output[-25_000:])
         return output
     except subprocess.TimeoutExpired as e:
-        partial = (e.output or "")
-        if isinstance(partial, bytes):
-            partial = partial.decode("utf-8", errors="replace")
-        tail_note = ""
-        if partial.strip():
-            tail_note = ("\n--- partial output before the kill (tail) ---\n"
-                         + partial[-10_000:])
-        return f"Error: command timed out after {timeout}s{tail_note}"
+        return _timeout_message(timeout, e.output)
     except Exception as e:
+        # Whatever else the kill path raises once the deadline has passed
+        # (an OS error from reaping the group) is still a timeout to the
+        # model: it must never read as a permission problem in its command.
+        if isinstance(timeout, (int, float)) and time.monotonic() - start >= timeout:
+            return _timeout_message(timeout)
         return f"Error: {e}"
 
 
@@ -553,6 +732,9 @@ _PROTECTED_BASENAMES = {
     ".bash_login", ".bash_logout", ".zshenv", ".zprofile", ".zlogin",
     ".zlogout", ".gitconfig", ".pam_environment", ".xprofile", ".xinitrc",
     ".xsession", ".xsessionrc",
+    # Sourced under `set -a` by client.sh: can clear OPENBEAST_BASH_WRAPPER
+    # or set LD_PRELOAD for the next client start.
+    ".openbeast-client.env",
 }
 # Directories under ~ whose files execute (or set the env of) the next
 # login/shell/git/session. Checked as path prefixes relative to HOME.
@@ -565,6 +747,20 @@ _PERSIST_PREFIXES = (
     os.path.join(".config", "environment.d"),
     os.path.join(".config", "hypr"),            # exec-once (Omarchy)
     os.path.join(".config", "uwsm"),            # session env files
+    # Code on the next start, missed until the 2026-11 review: user
+    # site-packages *.pth / usercustomize.py run in every non-isolated
+    # python3 (runner.py and the tool server included; macOS keeps them
+    # under ~/Library/Python), opencode.json can swap the MCP server
+    # command, ~/.openbeast-client is the client install itself, rc.d dirs
+    # are sourced by a loop _SOURCE_RE cannot see, and LaunchAgents are
+    # macOS's login autostart.
+    os.path.join(".local", "lib"),
+    os.path.join("Library", "Python"),
+    os.path.join("Library", "LaunchAgents"),
+    os.path.join(".config", "opencode"),
+    ".openbeast-client",
+    ".bashrc.d",
+    ".zshrc.d",
 )
 # Live shell rc files whose `source X` / `. X` lines extend the protected set:
 # a file the user's ~/.bashrc sources (this box: ~/.bashrc_custom) is as
@@ -606,32 +802,55 @@ def _hazard_path(rp: str) -> bool:
     return any(rp == p or rp.startswith(p + os.sep) for p in _HAZARD_PREFIXES)
 
 
+#: macOS's default APFS volumes are case-insensitive: fold case before
+#: matching protected paths there (a case-sensitive volume only gets a
+#: harmless over-refusal).
+_CASE_INSENSITIVE_FS = sys.platform == "darwin"
+
+
+def _case_key(p: str) -> str:
+    return p.casefold() if _CASE_INSENSITIVE_FS else p
+
+
 def _guard_write_path(path: str):
     """Return an error string if `path` is a protected credential/persistence
     target, else None. Applied to write_file / edit_file only — reads stay
-    open (an agent may legitimately read config)."""
+    open (an agent may legitimately read config), except the eval seal.
+
+    On a case-insensitive filesystem (macOS's default APFS) realpath keeps
+    the caller's spelling, so every comparison is made on case-folded paths
+    there — ~/.SSH/authorized_keys opens the real ~/.ssh."""
+    sealed = _seal_refusal(path)
+    if sealed:
+        return sealed
     rp = os.path.realpath(os.path.expanduser(path))
+    ro = _eval_write_refusal(rp)
+    if ro:
+        return ro
     home = os.path.realpath(os.path.expanduser("~"))
-    rel = os.path.relpath(rp, home)
+    k = _case_key
+    crp = k(rp)
+    rel = os.path.relpath(crp, k(home))
     inside_home = rel != os.pardir and not rel.startswith(os.pardir + os.sep)
     if inside_home:
-        if rel.split(os.sep)[0] in _PROTECTED_DIRS:
+        if rel.split(os.sep)[0] in {k(d) for d in _PROTECTED_DIRS}:
             return f"Error: refusing to write inside a credential store ({rp})"
-        if rel in _PROTECTED_BASENAMES:
+        if rel in {k(b) for b in _PROTECTED_BASENAMES}:
             return f"Error: refusing to write protected file {rp}"
     if inside_home:
         # Persistence/execution targets (2026-09-10 hardening): a hook fires
         # on the next git command, autostart/systemd-user on next login, and
         # ~/.local/bin shadows real binaries on PATH.
-        for pfx in _PERSIST_PREFIXES:
+        for pfx in map(k, _PERSIST_PREFIXES):
             if rel == pfx or rel.startswith(pfx + os.sep):
                 return f"Error: refusing to write a persistence target ({rp})"
-        if rp in _rc_sourced_files(home):
+        if crp in {k(f) for f in _rc_sourced_files(home)}:
             return (f"Error: refusing to write a file your shell rc sources "
                     f"({rp})")
-    if rp == "/etc" or rp.startswith("/etc/"):
-        return f"Error: refusing to write under /etc ({rp})"
-    parts = rp.split(os.sep)
+    for etc in ("/etc", "/private/etc"):  # macOS: /etc -> /private/etc
+        if crp == etc or crp.startswith(etc + "/"):
+            return f"Error: refusing to write under /etc ({rp})"
+    parts = crp.split(os.sep)
     if ".git" in parts:
         # Anywhere under a .git dir — including submodule and worktree
         # gitdirs (.git/modules/<m>/config, .git/modules/<m>/hooks/*), which
@@ -646,6 +865,459 @@ def _guard_write_path(path: str):
     return None
 
 
+# ---------------------------------------------------------------------------
+# Oracle seal (v5 eval brief §6.3). While a unit is MEASURED (OPENBEAST_EVAL=1,
+# set by evals/run_eval.py in every agent child) the agent's tools refuse the
+# eval suite's own answer key: evals/tasks/ (every validator, hence every
+# hidden-test generator and oracle), evals/refs/ (reference solutions) and
+# evals/suites/ (the manifest). A v4 agent could `read_file` the JSON of the
+# very task it was solving. Production agents (no marker) are unaffected.
+# File tools refuse by resolved path; grep and list_files drop sealed paths
+# from results. For bash, the textual check alone was bypassable by shell
+# quote-splitting (`cat ta""sks/164.json`, `git show HEAD:evals/re""fs/...`,
+# `cd evals; cat tasks/*`) — reported on 164. So under eval, the bash command
+# is additionally run inside a sandbox that DENIES READS of the sealed trees by
+# construction (macOS sandbox-exec; Linux Landlock where the host offers it),
+# and the text check is applied to a quote-stripped copy of the command and
+# extended to `git` blob refs (`:evals/...`). The sealed paths never enter a
+# unit's OPENBEAST_TASK_PATHS either. [ERA NOTE: agents/tools.py is era-hashed;
+# this v5 hardening is intentionally confined to the seal block below.]
+# ---------------------------------------------------------------------------
+
+_REPO_ROOT = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+_SEALED_SUBDIRS = ("tasks", "refs", "suites")
+_SEALED_TEXT_RE = re.compile(r"(?:\b|:)evals/+(?:tasks|refs|suites)\b")
+
+# G24 (2026-11-17): the seal covered only the answer key. In arm C's 122_b,
+# GLM-5.3-Flash, hunting for why the done-check refused (the trailing-dot path
+# bug, evals/run_eval.task_paths), read Claude Code workflow journals under
+# ~/.claude/projects, the harness source (evals/run_eval.py, agents/tools.py)
+# and a cached validation of an earlier run (evals/cache/: "FAIL: mismatch at
+# case 0"). Under eval the agent now may not read any of:
+#   * a checkout's whole evals/ (tasks, refs, suites, results, cache, vlib,
+#     the harness), agents/logs (every transcript) and tests/ -- this
+#     checkout's and every `git worktree list` checkout's -- and the shared
+#     git dir (it holds every committed validator);
+#   * the same trees in any other clone, by pattern (_EVAL_DENY_PATTERNS);
+#   * ~/.claude (session and workflow journals of the operator's agents);
+#   * Claude Code's private scratch dirs, /tmp/claude-<uid> (where arm
+#     worktrees, results and ledgers of a campaign live).
+# The task's /tmp/eval* dirs, $TMPDIR, the toolchains and the system stay
+# readable. Plain POSIX ERE (no (?:), no lookaround): the same strings go
+# into the macOS sandbox profile.
+_EVAL_DENY_REPO = ("evals", os.path.join("agents", "logs"), "tests")
+_EVAL_DENY_PATTERNS = (
+    r"/evals/(tasks|refs|suites|results|cache|reference|audit|campaigns|decisions|scripts)(/|$)",
+    r"/evals/(vlib|run_eval|cache|campaign)\.py$",
+    r"/agents/logs(/|$)",
+    r"^/(private/)?tmp/claude-[0-9]+(/|$)",
+)
+_EVAL_ALLOW_PATTERNS = (r"^/(private/)?tmp/eval[^/]*(/|$)",)
+# Review 1118: the answer key, in ANY tree -- re-denied AFTER the allow-backs
+# above, so a clone of the repo into a task dir (/tmp/eval_x/clone/evals/refs)
+# or into $TMPDIR cannot be read back through the /tmp/eval* or exempt-root
+# allow. Only the answer key: a fixture may keep its own evals/cache etc.
+_EVAL_KEY_PATTERNS = (r"/evals/(tasks|refs|suites)(/|$)",)
+_EVAL_DENY_RE = re.compile("|".join(f"(?:{x})" for x in _EVAL_DENY_PATTERNS),
+                           re.IGNORECASE if _CASE_INSENSITIVE_FS else 0)
+_EVAL_ALLOW_RE = re.compile("|".join(f"(?:{x})" for x in _EVAL_ALLOW_PATTERNS),
+                            re.IGNORECASE if _CASE_INSENSITIVE_FS else 0)
+_EVAL_KEY_RE = re.compile("|".join(f"(?:{x})" for x in _EVAL_KEY_PATTERNS),
+                          re.IGNORECASE if _CASE_INSENSITIVE_FS else 0)
+_GIT_SEAL_CACHE: list | None = None
+
+
+def _eval_mode() -> bool:
+    return os.environ.get("OPENBEAST_EVAL", "").strip() == "1"
+
+
+def _git_seal_roots() -> list[str]:
+    """Every checkout of this repository (`git worktree list`) and the shared
+    git dir. Asked once per process; [] without git."""
+    global _GIT_SEAL_CACHE
+    if _GIT_SEAL_CACHE is not None:
+        return list(_GIT_SEAL_CACHE)
+    out: list[str] = []
+
+    def git(*args):
+        try:
+            r = subprocess.run(["git", "-C", _REPO_ROOT, *args], capture_output=True,
+                               text=True, timeout=10, stdin=subprocess.DEVNULL)
+            return r.stdout if r.returncode == 0 else ""
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+
+    common = git("rev-parse", "--path-format=absolute", "--git-common-dir").strip()
+    if common:
+        out.append(common)
+    for line in git("worktree", "list", "--porcelain").splitlines():
+        if line.startswith("worktree "):
+            out.append(line[len("worktree "):])
+    _GIT_SEAL_CACHE = out
+    return list(out)
+
+
+def _sealed_roots() -> list[str]:
+    """Realpaths of the directories a measured agent may not read: this
+    checkout's evals/, agents/logs and tests/, the same in every other
+    checkout and the git dir, ~/.claude, plus any in
+    OPENBEAST_EVAL_SEALED_DIRS (os.pathsep list -- another checkout, a test)."""
+    checkouts = [_REPO_ROOT]
+    extra: list[str] = []
+    for r in _git_seal_roots():
+        (extra if r.rstrip(os.sep).endswith(".git") else checkouts).append(r)
+    roots = [os.path.join(c, d) for c in dict.fromkeys(checkouts) for d in _EVAL_DENY_REPO]
+    roots += extra
+    roots.append(os.path.join(os.path.expanduser("~"), ".claude"))
+    roots += [r for r in os.environ.get("OPENBEAST_EVAL_SEALED_DIRS", "").split(os.pathsep)
+              if r.strip()]
+    out = []
+    for r in roots:
+        rp = os.path.realpath(os.path.expanduser(r))
+        if rp not in out:
+            out.append(rp)
+    return out
+
+
+_TOOLCHAIN_NAMES = ("zig", "go", "rustc", "cargo", "cc", "gcc", "clang", "python3")
+_EXEMPT_CACHE: dict = {}
+
+
+def _eval_exempt_roots() -> list[str]:
+    """Readable even where a deny PATTERN matches (never over an explicit
+    root): $TMPDIR, which compilers need, and the trees of the toolchains on
+    PATH (a binary's dir, or its parent when that dir is bin/: the zig of
+    the 2026-11-16 runs lived in a Claude Code scratch dir, lib/std beside
+    it). Only those a pattern would deny are listed."""
+    key = (os.environ.get("TMPDIR", ""), os.environ.get("PATH", ""),
+           os.environ.get("OPENBEAST_EVAL_PY", ""))
+    if key in _EXEMPT_CACHE:
+        return list(_EXEMPT_CACHE[key])
+    cands = [os.environ.get("TMPDIR", "").strip() or tempfile.gettempdir()]
+    for n in _TOOLCHAIN_NAMES:
+        exe = shutil.which(n)
+        if exe:
+            d = os.path.dirname(os.path.realpath(exe))
+            cands.append(os.path.dirname(d) if os.path.basename(d) == "bin" else d)
+    for var in ("RUSTUP_HOME", "CARGO_HOME", "GOROOT", "OPENBEAST_EVAL_PREFIX"):
+        if os.environ.get(var, "").strip():
+            cands.append(os.environ[var].strip())
+    out = []
+    for c in cands:
+        rp = os.path.realpath(os.path.expanduser(c))
+        if _EVAL_DENY_RE.search(rp) and rp not in out:
+            out.append(rp)
+    _EXEMPT_CACHE[key] = out
+    return list(out)
+
+
+def _under(rp: str, roots) -> bool:
+    k = _case_key(rp)
+    return any(k == _case_key(r) or k.startswith(_case_key(r).rstrip(os.sep) + os.sep)
+               for r in roots)
+
+
+def _is_sealed(rp: str, roots: list[str] | None = None) -> bool:
+    """Whether a measured agent may not read realpath `rp`. Mirrors the
+    macOS profile: explicit roots and the answer key (evals/tasks|refs|suites
+    in any tree, a task dir included) always; the other patterns unless the
+    path is in a task's /tmp/eval* dir or $TMPDIR. `roots`: _sealed_roots(),
+    when the caller already has it (a filter over many lines)."""
+    if _under(rp, _sealed_roots() if roots is None else roots):
+        return True
+    if _EVAL_KEY_RE.search(rp):
+        return True
+    if _EVAL_ALLOW_RE.search(rp) or _under(rp, _eval_exempt_roots()):
+        return False
+    return bool(_EVAL_DENY_RE.search(rp))
+
+
+_SEAL_WHAT = ("the eval suite and harness (evals/: tasks, refs, results, caches), "
+              "tests/, agent transcripts (agents/logs), ~/.claude and private "
+              "scratch dirs are sealed while a unit is measured (OPENBEAST_EVAL=1); "
+              "work in the task's /tmp/eval* directories")
+
+
+def _seal_refusal(path: str) -> str | None:
+    """The refusal for `path` under eval, else None."""
+    if not _eval_mode():
+        return None
+    rp = os.path.realpath(os.path.expanduser(path))
+    if _is_sealed(rp):
+        return f"Error: refusing to access {rp} — {_SEAL_WHAT}"
+    return None
+
+
+def _strip_shell_quotes(command: str) -> str:
+    """Remove the shell quoting a command uses only to split a banned token
+    across string boundaries (`ta""sks`, `re''fs`, `evals\\/refs`). What the
+    shell would actually open is the de-quoted path, so match on that."""
+    return command.replace('"', "").replace("'", "").replace("\\", "")
+
+
+def _seal_command_refusal(command: str) -> str | None:
+    if not _eval_mode():
+        return None
+    probe = _strip_shell_quotes(command)
+    if (_SEALED_TEXT_RE.search(probe) or _SEALED_TEXT_RE.search(command)
+            or any(r in probe for r in _sealed_roots())):
+        return ("Error: refusing to run a command that names a sealed path — "
+                + _SEAL_WHAT)
+    return None
+
+
+_EVAL_SBPL_SEAL = None
+#: Appended to a sandboxed command's output when the kernel refused a read.
+_SEAL_DENIED_NOTE = ("\n[eval sandbox: 'Operation not permitted' means a sealed path — "
+                     + _SEAL_WHAT + "; this repository, the eval python and the eval "
+                     "toolchains are read-only; the network is loopback-only]")
+
+
+def _sbpl_str(p: str) -> str:
+    return p.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _eval_venv_root() -> str | None:
+    """The eval venv (OPENBEAST_EVAL_PY's), when it is one: write-denied to
+    the agent, since the validators run on it."""
+    py = _eval_python()
+    if not py:
+        return None
+    root = os.path.dirname(os.path.dirname(py))
+    return os.path.realpath(root) if os.path.isfile(os.path.join(root, "pyvenv.cfg")) else None
+
+
+def _eval_prefix_root() -> str:
+    """The eval toolchain prefix (scripts/eval-host.sh): OPENBEAST_EVAL_PREFIX,
+    else its default."""
+    return (os.environ.get("OPENBEAST_EVAL_PREFIX", "").strip()
+            or os.path.join(os.path.expanduser("~"), ".local", "opt", "openbeast-eval"))
+
+
+def _host_pack_dir() -> str:
+    """Where run_eval writes the host/language pack a unit gets as its
+    --context-file (agents/lang/host_pack.write)."""
+    return (os.environ.get("OPENBEAST_HOST_PACK_DIR", "").strip()
+            or os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
+                            "openbeast", "host-pack"))
+
+
+def _eval_write_deny_roots() -> list[str]:
+    """Review 1118: what a measured agent may not WRITE, by file tool or
+    shell: every checkout of this repository (its harness, runner, tools,
+    system prompt, packs; a task's dirs are under /tmp/eval*, never here),
+    the eval venv and its python shim, the eval toolchain prefix, this
+    interpreter's own prefixes (its stdlib) and the pack files run_eval hands
+    later units. A correct solution writes none of them. [] outside eval.
+    A root that holds the home dir, /tmp or $TMPDIR is never listed."""
+    if not _eval_mode():
+        return []
+    cands = [_REPO_ROOT, *_git_seal_roots(), _eval_venv_root(), _EVAL_PY_SHIM.get("dir"),
+             _eval_prefix_root(), sys.base_prefix, sys.prefix, _host_pack_dir()]
+    py = _eval_python()
+    if py:
+        try:   # the eval venv's base interpreter (pyvenv.cfg `home` = <base>/bin)
+            with open(os.path.join(os.path.dirname(os.path.dirname(py)), "pyvenv.cfg")) as f:
+                for ln in f:
+                    k, _, v = ln.partition("=")
+                    if k.strip() == "home" and v.strip():
+                        cands.append(os.path.dirname(v.strip()))
+        except OSError:
+            pass
+    keep = [os.path.realpath(os.path.expanduser("~")), "/tmp", "/private/tmp",
+            os.path.realpath(os.environ.get("TMPDIR", "").strip() or tempfile.gettempdir())]
+    out: list[str] = []
+    for c in cands:
+        if not c:
+            continue
+        rp = os.path.realpath(os.path.expanduser(c))
+        if rp == os.sep or rp in out or any(_under(k, [rp]) for k in keep):
+            continue
+        out.append(rp)
+    return out
+
+
+def _eval_write_refusal(rp: str) -> str | None:
+    """The file tools' refusal for a write to realpath `rp` under eval."""
+    if not _eval_mode() or _EVAL_ALLOW_RE.search(rp):
+        return None
+    if _under(rp, _eval_write_deny_roots()):
+        return (f"Error: refusing to write {rp} — while a unit is measured "
+                f"(OPENBEAST_EVAL=1) the harness, the eval toolchains and python, "
+                f"and this repository are read-only; work in the task's /tmp/eval* "
+                f"directories")
+    return None
+
+
+def _eval_read_deny_prefix() -> list[str]:
+    """Under eval on macOS, a sandbox-exec prefix that denies the confined
+    shell any READ of the sealed paths (_sealed_roots, _EVAL_DENY_PATTERNS)
+    in THIS checkout and in any other (a glob across worktrees, reported on
+    U4), so `cat` cannot reach them however the command text is spelled.
+    It also denies writes to the harness, the eval venv, toolchains and
+    python (_eval_write_deny_roots) and every outbound connection except to
+    loopback (review 1118). [] when not on macOS or when sandbox-exec is
+    unavailable. On Linux the agent's shell has no kernel read-deny and no
+    network deny (the file tools and the command-text check still refuse;
+    see evals/README.md, residual gaps; the integrity scan flags network
+    commands)."""
+    global _EVAL_SBPL_SEAL
+    if not _eval_mode() or sys.platform != "darwin":
+        return []
+    _eval_python_dir()              # the shim exists before its write-deny
+    rules = ['(version 1)', '(allow default)']
+    # Later rules win: patterns, then the allow-backs, then the answer key
+    # again (review 1118: so no allow-back re-opens a cloned evals/refs),
+    # then explicit roots.
+    for pat in _EVAL_DENY_PATTERNS:
+        rules.append(f'(deny file-read* (regex #"{_sbpl_str(pat)}"))')
+    for pat in _EVAL_ALLOW_PATTERNS:
+        rules.append(f'(allow file-read* (regex #"{_sbpl_str(pat)}"))')
+    for r in _eval_exempt_roots():
+        rules.append(f'(allow file-read* (subpath "{_sbpl_str(r)}"))')
+    for pat in _EVAL_KEY_PATTERNS:
+        rules.append(f'(deny file-read* (regex #"{_sbpl_str(pat)}"))')
+    for r in _sealed_roots():
+        rules.append(f'(deny file-read* (subpath "{_sbpl_str(r)}"))')
+    # Review 1118: the harness, the eval venv and toolchains, this
+    # interpreter's stdlib and the next units' pack files are read-only.
+    for r in _eval_write_deny_roots():
+        rules.append(f'(deny file-write* (subpath "{_sbpl_str(r)}"))')
+    # Review 1118: no network but loopback. A measured agent could
+    # `git clone` the public repo (its evals/refs) or fetch any answer;
+    # loopback stays open for units that serve and probe local HTTP (176).
+    rules.append('(deny network-outbound (remote ip "*:*"))')
+    rules.append('(allow network-outbound (remote ip "localhost:*"))')
+    # The harness's per-agent tag file: denying it marks every process this
+    # shell starts, in the kernel, so run_eval can find one that detached and
+    # scrubbed its environment (sandbox_check; evals/run_eval.py AgentWatch).
+    tag = os.environ.get("OPENBEAST_AGENT_TAG_FILE", "")
+    if tag and os.path.isabs(tag):
+        rules.append(f'(deny file-read* (literal "{_sbpl_str(tag)}"))')
+    if _EVAL_SBPL_SEAL is None:
+        try:
+            _EVAL_SBPL_SEAL = subprocess.run(
+                ["/usr/bin/sandbox-exec", "-p", "(version 1)(allow default)", "/usr/bin/true"],
+                capture_output=True, timeout=10).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            _EVAL_SBPL_SEAL = False
+    if not _EVAL_SBPL_SEAL:
+        return []
+    return ["/usr/bin/sandbox-exec", "-p", "".join(rules)]
+
+
+# G24: the agent's `python3` is the validators' python. The tool shell
+# inherited the operator's PATH, where `python3` was anaconda 3.9.13 while
+# every validator runs on OPENBEAST_EVAL_PY (3.12): a 3.11+ task
+# (asyncio.timeout, TaskGroup) tested fine by the validator failed in the
+# agent's own tests (B 173 spent its first turns finding a 3.11). Under eval
+# the bash tool puts a private dir first on PATH whose python / python3 /
+# python3.X exec OPENBEAST_EVAL_PY. Only those names: the venv's other
+# entry points (pip) stay off PATH, and the venv is write-denied on macOS.
+# Outside eval nothing changes.
+_EVAL_PY_SHIM: dict = {}
+
+
+def _eval_python() -> str | None:
+    """OPENBEAST_EVAL_PY (or <OPENBEAST_EVAL_PREFIX>/venv/bin/python) under
+    eval, when it is an executable absolute path; else None."""
+    if not _eval_mode():
+        return None
+    py = os.environ.get("OPENBEAST_EVAL_PY", "").strip()
+    if not py:
+        pre = os.environ.get("OPENBEAST_EVAL_PREFIX", "").strip()
+        py = os.path.join(pre, "venv", "bin", "python") if pre else ""
+    if py and os.path.isabs(py) and os.path.isfile(py) and os.access(py, os.X_OK):
+        return py
+    return None
+
+
+def _shim_cleanup() -> None:
+    d = _EVAL_PY_SHIM.get("dir")
+    if d:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def _eval_python_dir() -> str | None:
+    """The private shim dir for _eval_python(), made once per process."""
+    py = _eval_python()
+    if not py:
+        return None
+    if _EVAL_PY_SHIM.get("py") == py and os.path.isdir(_EVAL_PY_SHIM.get("dir") or ""):
+        return _EVAL_PY_SHIM["dir"]
+    names = {"python", "python3"}
+    try:
+        names |= {n for n in os.listdir(os.path.dirname(py))
+                  if re.fullmatch(r"python3\.\d+", n)}
+    except OSError:
+        pass
+    try:
+        d = os.path.realpath(tempfile.mkdtemp(prefix="ob-evalpy-"))
+        for n in sorted(names):
+            fp = os.path.join(d, n)
+            with open(fp, "w") as f:
+                f.write(f"#!/bin/sh\nexec {shlex.quote(py)} \"$@\"\n")
+            os.chmod(fp, 0o755)
+    except OSError:
+        return None
+    _shim_cleanup()
+    _EVAL_PY_SHIM.update(py=py, dir=d)
+    if not _EVAL_PY_SHIM.get("atexit"):
+        import atexit
+        atexit.register(_shim_cleanup)
+        _EVAL_PY_SHIM["atexit"] = True
+    return d
+
+
+def shell_path(path: str | None = None) -> str:
+    """The PATH the bash tool's commands see: `path` (default: this
+    process's), with the eval python shim first under eval (G24)."""
+    path = os.environ.get("PATH", "") if path is None else path
+    d = _eval_python_dir()
+    if not d:
+        return path
+    rest = [p for p in path.split(os.pathsep) if p and p != d]
+    return os.pathsep.join([d] + rest)
+
+
+#: grep's `path:N:` / `path-N-` (context) separators: every prefix of a line
+#: that ends before one is a candidate path (a file name may hold ':' or '-').
+_GREP_SEP_RE = re.compile(r"[:-]\d+[:-]")
+
+
+def _line_paths(ln: str) -> list[str]:
+    """The absolute paths an output line may begin with: the line itself (a
+    listing), each prefix before a grep separator, and the path of a
+    `grep: <path>: <error>` line."""
+    out = [ln]
+    if ln.startswith("grep: "):
+        out.append(ln[6:].rsplit(": ", 1)[0])
+    out += [ln[:m.start()] for m in _GREP_SEP_RE.finditer(ln)]
+    return [p for p in out if p.startswith(os.sep)]
+
+
+def _seal_filter_lines(text: str) -> str:
+    """Drop output lines that begin with a sealed path (grep / list_files
+    over an ancestor directory). Review 1118: every line's path is checked
+    with _is_sealed (realpath, the explicit roots AND the deny patterns), not
+    only the explicit roots: a pattern-sealed tree under the searched dir
+    (another clone's evals/refs, a cloned copy in a task dir) leaked."""
+    if not _eval_mode() or not text:
+        return text
+    roots = _sealed_roots()
+    memo: dict = {}
+
+    def sealed(p: str) -> bool:
+        if p not in memo:
+            memo[p] = _is_sealed(os.path.realpath(p), roots)
+        return memo[p]
+
+    kept = [ln for ln in text.splitlines()
+            if not any(ln == r or ln.startswith(r + os.sep) for r in roots)
+            and not any(sealed(p) for p in _line_paths(ln))]
+    return "\n".join(kept)
+
+
 def read_file(path: str, offset: int = 1, limit: int = 500) -> str:
     """Read lines from a file.
 
@@ -657,6 +1329,9 @@ def read_file(path: str, offset: int = 1, limit: int = 500) -> str:
     """
     try:
         path = _resolve(path)
+        sealed = _seal_refusal(path)
+        if sealed:
+            return sealed
         # Pseudo-filesystems (procfs/sysfs/devfs) present as regular files but
         # can be infinite, blocking, or side-effecting to read — e.g. a 0-size
         # /proc file that streams unbounded content, or /dev/zero. _resolve
@@ -767,16 +1442,68 @@ _DIAG_TIMEOUT = 10
 _DIAG_MAX_LINES = 30
 _DIAG_MAX_BYTES = 2048
 _DIAG_AS_LIMIT = 4 * 1024**3   # tighter than _CHILD_AS_LIMIT (§3.3)
-_DIAG_SLOTS = threading.BoundedSemaphore(2)  # N-jobs × checkers RAM cap
+# At most 2 checkers at once IN THIS PROCESS (an MCP server's threads). Not
+# an aggregate cap: each eval/agent runner is its own process with its own
+# semaphore and dispatches tools one at a time, so `--jobs N` runs up to N
+# checkers, each bounded only by _DIAG_AS_LIMIT and _DIAG_TIMEOUT — worst
+# case N × 4 GiB. (A cross-process limiter would make busy-skips depend on
+# --jobs, i.e. change what an A/B arm measures.)
+_DIAG_SLOTS = threading.BoundedSemaphore(2)
+
+
+def _ancestor_has(path: str, name: str) -> bool:
+    """Whether `name` exists in path's directory or any directory above it."""
+    d = os.path.dirname(os.path.abspath(path))
+    while True:
+        if os.path.exists(os.path.join(d, name)):
+            return True
+        parent = os.path.dirname(d)
+        if parent == d:
+            return False
+        d = parent
+
+
+_GO_MAIN_RE = re.compile(r"^func\s+main\s*\(\s*\)", re.M)
+
+
+def _go_has_main(path: str) -> bool:
+    try:
+        with open(path, errors="replace") as f:
+            return _GO_MAIN_RE.search(f.read(_DIAG_MAX_BYTES * 64)) is not None
+    except OSError:
+        return False
+
+
+def _go_standalone_mains(path: str) -> bool:
+    """A module-less directory of independent programs (hello.go and
+    solver.go, each with its own main). Vetting the siblings together then
+    reports a made-up `main redeclared in this block` on every write, though
+    each file builds on its own with `go run file.go`."""
+    if not _go_has_main(path) or _ancestor_has(path, "go.mod"):
+        return False
+    d = os.path.dirname(path) or "."
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return False
+    here = os.path.basename(path)
+    return any(n.endswith(".go") and not n.endswith("_test.go") and n != here
+               and _go_has_main(os.path.join(d, n)) for n in names)
 
 
 def _diag_checker(path: str):
     """(lang, command, extra_env, scratch_dirs) for a source path, or None.
 
-    Commands mirror the eval validators' flags (docs/LANG_AWARENESS_PLAN.md
-    §3.2 — measured on the rig). A missing toolchain returns None: the
-    feature silently no-ops rather than degrading the write."""
+    Under eval (OPENBEAST_EVAL, set by run_eval for every agent) the
+    commands mirror the eval validators' flags (docs/LANG_AWARENESS_PLAN.md
+    §3.2 — measured on the rig), so a unit is checked the way it is graded.
+    Outside eval those pins MADE UP errors for code the installed toolchain
+    builds fine — -std=c11 hides POSIX's CLOCK_MONOTONIC/strdup, -std=c++17
+    rejects std::span, bare rustc is a 2015-edition binary crate — so
+    production uses the compiler's own defaults. A missing toolchain returns
+    None: the feature silently no-ops rather than degrading the write."""
     ext = os.path.splitext(path)[1]
+    under_eval = bool(os.environ.get("OPENBEAST_EVAL", "").strip())
     q = shlex.quote(path)
     qdir = shlex.quote(os.path.dirname(path) or ".")
     if ext == ".zig":
@@ -804,10 +1531,26 @@ def _diag_checker(path: str):
     if ext == ".rs":
         if not shutil.which("rustc"):
             return None
+        flags = ""
+        if not under_eval:
+            # A file in a cargo crate (lib.rs, a module, anything using a
+            # dependency) cannot be judged by single-file rustc — E0601 /
+            # E0432 on correct code — and `cargo check` would RUN build
+            # scripts and proc macros. Say nothing rather than something false.
+            if _ancestor_has(path, "Cargo.toml"):
+                return None
+            try:
+                with open(path, errors="replace") as f:
+                    has_main = re.search(r"\bfn\s+main\s*\(",
+                                         f.read(_DIAG_MAX_BYTES * 64)) is not None
+            except OSError:
+                has_main = True
+            flags = f"--edition 2021 --crate-type {'bin' if has_main else 'lib'} "
         scratch = tempfile.mkdtemp(prefix="diagrs")
         # NOT -o /dev/null (rustc can't create temp files there — measured
-        # failing on CLEAN code). No --edition pin: mirrors the validator.
-        return ("rust", f"rustc --emit=metadata --out-dir {shlex.quote(scratch)} {q}",
+        # failing on CLEAN code). Under eval no --edition pin: mirrors the
+        # validator.
+        return ("rust", f"rustc {flags}--emit=metadata --out-dir {shlex.quote(scratch)} {q}",
                 {}, [scratch])
     if ext == ".go":
         if not shutil.which("go"):
@@ -817,24 +1560,48 @@ def _diag_checker(path: str):
         # download (GOTOOLCHAIN), network (GOPROXY) and cgo channels.
         env = {"GOTOOLCHAIN": "local", "GOPROXY": "off",
                "GOFLAGS": "-mod=readonly", "CGO_ENABLED": "0"}
-        return ("go", f"cd {qdir} && go vet ./*.go", env, [])
+        target = "./*.go"
+        if _go_standalone_mains(path):
+            # ...unless that would vet several standalone programs as one.
+            target = "./" + shlex.quote(os.path.basename(path))
+        return ("go", f"cd {qdir} && go vet {target}", env, [])
     if ext == ".c":
         if not shutil.which("gcc"):
             return None
-        return ("c", f"gcc -fsyntax-only -std=c11 -Wall -Wextra -I{qdir} {q}", {}, [])
+        std = "-std=c11 " if under_eval else ""
+        return ("c", f"gcc -fsyntax-only {std}-Wall -Wextra -I{qdir} {q}", {}, [])
     if ext in (".cpp", ".cc", ".cxx"):
         if not shutil.which("g++"):
             return None
-        return ("c++", f"g++ -fsyntax-only -std=c++17 -Wall -Wextra -I{qdir} {q}", {}, [])
+        std = "-std=c++17 " if under_eval else ""
+        return ("c++", f"g++ -fsyntax-only {std}-Wall -Wextra -I{qdir} {q}", {}, [])
     if ext == ".py":
         # -I (isolated) is a SECURITY requirement: bare python executes
         # model-writable .pth files from user site-packages at startup.
-        return ("python", f"{shlex.quote(sys.executable)} -I -m py_compile {q}", {}, [])
+        # `-m py_compile FILE` WROTE __pycache__/*.pyc next to the source —
+        # into the user's workspace / file shard, on every write (-I and
+        # PYTHONDONTWRITEBYTECODE do not stop an explicit compile). The
+        # bytecode now goes to a scratch dir; the error text is py_compile's
+        # own, exactly as `-m py_compile` printed it.
+        scratch = tempfile.mkdtemp(prefix="diagpy")
+        cfile = shlex.quote(os.path.join(scratch, "x.pyc"))
+        return ("python", f"{shlex.quote(sys.executable)} -I -c {shlex.quote(_PY_CHECK)} "
+                f"{q} {cfile}", {}, [scratch])
     if ext == ".sh":
         if not shutil.which("shellcheck"):
             return None
         return ("shell", f"shellcheck -S warning {q}", {}, [])
     return None
+
+
+_PY_CHECK = (
+    "import sys, py_compile\n"
+    "try:\n"
+    "    py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)\n"
+    "except py_compile.PyCompileError as e:\n"
+    "    sys.stderr.write(e.msg); sys.exit(1)\n"
+    "except OSError as e:\n"
+    "    sys.stderr.write(str(e)); sys.exit(1)\n")
 
 
 def diagnostics_enabled() -> bool:
@@ -868,9 +1635,14 @@ def diagnostics_enabled() -> bool:
 # ---------------------------------------------------------------------------
 
 _ESC_MAX_BYTES = 600             # its share of the 2 KB block, budgeted first
-# The diagnostics layer's language names -> beast-lang's.
-_ESC_LANG = {"zig": "zig", "c": "c", "c++": "cpp", "python": "python",
-             "rust": "rust", "go": "go"}
+# The diagnostics layer's language names -> beast-lang's. NOT python: its
+# checker is py_compile, which only ever reports a SyntaxError, and the index
+# records python's SyntaxError shape as `generic` (decoys produce it too) —
+# every python signature that can select a card is ModuleNotFoundError /
+# AttributeError / ImportError wording, which a parse never prints. The entry
+# could never attach a card; python's cards reach a model through the
+# beast-lang pull surface and the packs instead.
+_ESC_LANG = {"zig": "zig", "c": "c", "c++": "cpp", "rust": "rust", "go": "go"}
 
 
 def escalation_enabled() -> bool:
@@ -902,20 +1674,49 @@ def _escalation_for(lang: str, rc: int, out: str | None) -> str:
     return text
 
 
-def _diag_log_timing(lang: str, ms: float, status: str) -> None:
+def _diag_log_timing(lang: str, ms: float, status: str, rc: int | None = None,
+                     errors: int | None = None, hint_fired: bool = False,
+                     card_fired: bool = False) -> None:
     """Append one JSONL timing row when OPENBEAST_DIAG_TIMING_LOG is set.
     The per-write latency clause of the beast-assist ship rule was
     unmeasurable in the first A/B rounds — this closes that gap. Must
-    never raise: timing is telemetry, not behavior."""
+    never raise: timing is telemetry, not behavior.
+
+    Exposure telemetry (v5 brief §6.4): the row also names the measured
+    unit (OPENBEAST_EVAL_UNIT / _ARM, set per child by run_eval), the
+    checker's return code and error count, and whether a curated fix hint
+    or an escalation card was attached — so a null A/B result can be told
+    apart from a mechanism that never fired."""
     log = os.environ.get("OPENBEAST_DIAG_TIMING_LOG", "").strip()
     if not log:
         return
+    row = {"ts": time.time(), "lang": lang, "ms": round(ms, 1), "status": status}
+    unit = os.environ.get("OPENBEAST_EVAL_UNIT", "").strip()
+    if unit:
+        row["unit"] = unit
+        arm = os.environ.get("OPENBEAST_EVAL_ARM", "").strip()
+        if arm:
+            row["arm"] = arm
+    if rc is not None:
+        row.update({"rc": rc, "errors": errors or 0,
+                    "hint_fired": bool(hint_fired), "card_fired": bool(card_fired)})
     try:
         with open(log, "a") as f:
-            f.write(json.dumps({"ts": time.time(), "lang": lang,
-                                "ms": round(ms, 1), "status": status}) + "\n")
+            f.write(json.dumps(row) + "\n")
     except OSError:
         pass
+
+
+def _diag_lang_allowed(lang: str) -> bool:
+    """OPENBEAST_DIAG_LANGS (comma list of checker names: zig, rust, go, c,
+    c++, python, shell): diagnostics run only for those languages. Unset =
+    every language (the pre-v5 behavior). run_eval sets it per unit so a
+    diag arm's checker matches the cache key's assist scope exactly."""
+    raw = os.environ.get("OPENBEAST_DIAG_LANGS", "").strip()
+    if not raw:
+        return True
+    allowed = {x.strip().lower() for x in raw.split(",") if x.strip()}
+    return "all" in allowed or lang.lower() in allowed
 
 
 # ---------------------------------------------------------------------------
@@ -955,7 +1756,9 @@ _DIAG_ERROR_RES = {
     "c": re.compile(r"^\S+:\d+:\d+:\s+(?:fatal )?error:", re.M),
     "c++": re.compile(r"^\S+:\d+:\d+:\s+(?:fatal )?error:", re.M),
     "rust": re.compile(r"^error(?:\[E\d+\])?:(?! aborting due to)", re.M),
-    "go": re.compile(r"^\S+:\d+:\d+: ", re.M),
+    # `go vet` prefixes its findings with "vet: " (18 rc=1 rows counted 0
+    # errors in the 2026-11-16 L2 run, G17).
+    "go": re.compile(r"^(?:vet: )?\S+:\d+:\d+: ", re.M),
     "python": re.compile(r"^\w*Error:", re.M),
     "shell": re.compile(r"\(error\):", re.M),
 }
@@ -1235,8 +2038,59 @@ def _zig_extras(body: str, checked_path: str = "",
     return extras
 
 
+def diag_edit_hint_enabled() -> bool:
+    """G13 switch, OPENBEAST_DIAG_EDIT_HINT=1 (read per call; off by default).
+    Evidence (2026-11-16 L2 audit): a failing push-diagnostic on a write
+    result was followed by a full rewrite in 9/29 cases vs 2/31 after a failed
+    build without one, and the rewrite re-rolled correctness (167_b and 163_d
+    regressed). When on, a failing block ends with one line pointing the
+    model at edit_file and the first error's line."""
+    return os.environ.get("OPENBEAST_DIAG_EDIT_HINT", "").strip() == "1"
+
+
+# No `^`: used with .match(out, pos), which anchors at pos already (a `^`
+# would only match at the real start of the string).
+_DIAG_LINE_AT_RE = re.compile(r"(?:vet: )?\S+?:(\d+):\d+")
+_RUST_ARROW_RE = re.compile(r"^\s*--> \S+?:(\d+):\d+", re.M)
+_SHELL_IN_RE = re.compile(r"^In .+ line (\d+):\s*$", re.M)
+_PY_LINE_RE = re.compile(r"\bline (\d+)")
+
+
+def _diag_first_error_line(lang: str, out: str | None) -> int | None:
+    """The source line of the FIRST error in a checker's raw output, or None.
+    Pure. zig/c/c++/go print `file:line:col: error:` (go vet with a `vet: `
+    prefix); rustc puts it on the ` --> file:line:col` line under the error;
+    py_compile says `line N`; shellcheck heads each finding `In f line N:`."""
+    out = out or ""
+    try:
+        if lang == "shell":
+            m = _SHELL_IN_RE.search(out)
+            return int(m.group(1)) if m else None
+        if lang == "python":
+            m = _PY_LINE_RE.search(out)
+            return int(m.group(1)) if m else None
+        rx = _DIAG_ERROR_RES.get(lang)
+        m = rx.search(out) if rx else None
+        if lang == "rust":
+            a = _RUST_ARROW_RE.search(out, m.start() if m else 0)
+            return int(a.group(1)) if a else None
+        if m:
+            at = _DIAG_LINE_AT_RE.match(out, m.start())
+            if at:
+                return int(at.group(1))
+        return None
+    except (ValueError, AttributeError):
+        return None
+
+
+def _diag_edit_hint_line(lang: str, out: str | None) -> str:
+    n = _diag_first_error_line(lang, out)
+    where = f" at line {n}" if n else ""
+    return f"Fix the first error with edit_file{where}; don't rewrite the file"
+
+
 def _diag_format(lang: str, rc: int, out: str | None, path: str = "",
-                 escalation: str = "") -> str:
+                 escalation: str = "", edit_hint: bool = False) -> str:
     """Render one checker verdict — pure, testable without any toolchain.
     Extras (did-you-mean + fix hints, zig only) are budgeted before the
     body so truncation can never eat the remedy; the whole block stays
@@ -1272,48 +2126,216 @@ def _diag_format(lang: str, rc: int, out: str | None, path: str = "",
         block += "\n" + extra_txt
     if escalation:
         block += "\n" + escalation
-    return f"\n── diagnostics ({lang}) ──\n{block}\n── {label} ──"
+    tail = ("\n" + _diag_edit_hint_line(lang, out)) if edit_hint and (n or rc != 0) else ""
+    return f"\n── diagnostics ({lang}) ──\n{block}\n── {label} ──{tail}"
 
 
-def _run_diagnostics(path: str) -> str:
-    """Checker verdict for `path`, formatted for appending to a tool result.
-    Returns "" when diagnostics are off, no checker applies, or the checker
-    itself breaks — a broken checker must never fail a write."""
-    if not diagnostics_enabled():
-        return ""
-    checker = None
-    t0 = time.monotonic()
-    lang = "?"
+class _DiagBusy(Exception):
+    """No checker slot within 5 s."""
+
+
+def _diag_raw(path: str, meta: dict) -> tuple[str, int, str] | None:
+    """Run the checker for `path`: (lang, rc, raw output), or None when no
+    checker applies or its language is out of scope. Raises on a timeout
+    (subprocess.TimeoutExpired), a busy pool (_DiagBusy) or a broken
+    checker; meta["lang"] is set as soon as the language is known."""
+    checker = _diag_checker(path)
+    if checker is None:
+        return None
     try:
-        checker = _diag_checker(path)
-        if checker is None:
-            return ""
-        lang, cmd, extra_env, scratches = checker
+        lang, cmd, extra_env, _scratches = checker
+        meta["lang"] = lang
+        if not _diag_lang_allowed(lang):
+            return None
+        # Review 1118: under eval the checker runs in bash()'s kernel
+        # read-deny, so `#include "/.../evals/refs/..."` cannot quote a
+        # sealed file back in its diagnostics.
+        seal_prefix = _eval_read_deny_prefix()
+        if seal_prefix:
+            cmd = " ".join(shlex.quote(a) for a in seal_prefix) + \
+                f" /bin/sh -c {shlex.quote(cmd)}"
         wrapper = os.environ.get("OPENBEAST_BASH_WRAPPER", "").strip()
         if wrapper:
             cmd = f"{wrapper} /bin/sh -c {shlex.quote(cmd)}"
         env = _scrubbed_env()
         env.update(extra_env)
         if not _DIAG_SLOTS.acquire(timeout=5):
-            _diag_log_timing(lang, (time.monotonic() - t0) * 1000, "busy")
-            return "\ndiagnostics: unavailable (busy)"
+            raise _DiagBusy()
         try:
-            rc, out = run_reaped(cmd, _DIAG_TIMEOUT, as_limit=_DIAG_AS_LIMIT, env=env)
+            # cwd = the file's directory: under a BASH_WRAPPER (Sandlock's
+            # `-w "$PWD"`) the checker is granted where the file lives, as
+            # bash() grants its workdir — not the tool server's launch dir.
+            rc, out = run_reaped(cmd, _DIAG_TIMEOUT, as_limit=_DIAG_AS_LIMIT,
+                                 env=env, cwd=os.path.dirname(path) or None)
         finally:
             _DIAG_SLOTS.release()
+        return lang, rc, out or ""
+    finally:
+        for d in checker[3]:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# G15 — edit_file reports only NEW lint findings (a fix; default on).
+# shellcheck re-reported a script's pre-existing warnings after every edit, so
+# a one-line fix came back carrying findings the model had not caused and
+# (on 179, 2026-11-16 L2 audit) spent a turn on them. For edit_file the
+# findings are diffed against the file as it was before the edit, keyed on
+# (source line text, SC code, message) so they survive line shifts.
+#
+# Lint only. A compiler error that persists across an edit is not noise — the
+# file still does not build — so compiled languages are never filtered.
+# The pre-edit verdict is memoized per path by content hash from the last
+# check (the model's previous write/edit already ran it), so an edit costs a
+# second checker run only when the file changed outside the tools.
+# ---------------------------------------------------------------------------
+_DIAG_DIFF_LANGS = frozenset({"shell"})
+_DIAG_DIFF_EXTS = frozenset({".sh"})       # the shell checker's own trigger
+_DIAG_SEEN: dict[str, tuple[str, str]] = {}   # realpath -> (sha, raw output)
+_DIAG_SEEN_MAX = 256
+_SC_FINDING_RE = re.compile(r"\^-*\^?\s+(SC\d+)\s+\((\w+)\):\s?(.*)$")
+_SC_MORE_RE = re.compile(r"^\s*https?://\S*/(SC\d+)\b")
+
+
+def _text_sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def _diag_memo(path: str, lang: str, out: str) -> None:
+    if lang not in _DIAG_DIFF_LANGS:
+        return
+    try:
+        with open(path, "r", newline="") as f:
+            text = f.read()
+    except (OSError, UnicodeDecodeError):
+        return
+    key = os.path.realpath(path)
+    _DIAG_SEEN.pop(key, None)
+    _DIAG_SEEN[key] = (_text_sha(text), out)
+    while len(_DIAG_SEEN) > _DIAG_SEEN_MAX:
+        _DIAG_SEEN.pop(next(iter(_DIAG_SEEN)))
+
+
+def _diag_baseline(path: str, before: str) -> str | None:
+    """The checker's raw output for `path` as it was BEFORE an edit (text
+    `before`), for languages whose findings are diffable; None when
+    diagnostics are off, the language is not diffable, or it cannot be
+    determined (then nothing is filtered). Must run before the write."""
+    if not diagnostics_enabled():
+        return None
+    if os.path.splitext(path)[1].lower() not in _DIAG_DIFF_EXTS:
+        return None
+    hit = _DIAG_SEEN.get(os.path.realpath(path))
+    if hit and hit[0] == _text_sha(before):
+        return hit[1]
+    try:
+        raw = _diag_raw(path, {})
+    except Exception:                              # noqa: BLE001
+        return None
+    if raw is None or raw[0] not in _DIAG_DIFF_LANGS:
+        return None
+    return raw[2]
+
+
+def _shellcheck_blocks(out: str) -> tuple[list[tuple[list[str], list[tuple]]], list[str]]:
+    """Split shellcheck's tty output into ([(block lines, finding keys)],
+    trailer lines). A block starts at `In <file> line N:`; its source line is
+    the next line; each caret line is one finding (code, level, message)."""
+    blocks: list[tuple[list[str], list[tuple]]] = []
+    trailer: list[str] = []
+    cur: list[str] | None = None
+    in_trailer = False
+    for ln in out.splitlines():
+        if _SHELL_IN_RE.match(ln):
+            in_trailer = False
+            cur = [ln]
+            blocks.append((cur, []))
+            continue
+        if ln.startswith("For more information:"):
+            in_trailer, cur = True, None
+            trailer.append(ln)
+            continue
+        if in_trailer:
+            trailer.append(ln)
+        elif cur is not None:
+            cur.append(ln)
+    out_blocks = []
+    for lines, _ in blocks:
+        src = lines[1].strip() if len(lines) > 1 else ""
+        keys = [(src,) + m.groups() for m in (_SC_FINDING_RE.search(x) for x in lines[2:]) if m]
+        out_blocks.append((lines, keys))
+    return out_blocks, trailer
+
+
+def _shellcheck_new(before: str, after: str) -> tuple[str, int]:
+    """(output keeping only blocks with a finding absent before, number of
+    pre-existing findings dropped). Duplicates are counted, not collapsed."""
+    from collections import Counter
+    old = Counter(k for _l, keys in _shellcheck_blocks(before)[0] for k in keys)
+    blocks, trailer = _shellcheck_blocks(after)
+    kept: list[str] = []
+    codes: set[str] = set()
+    dropped = 0
+    for lines, keys in blocks:
+        new = []
+        for k in keys:
+            if old[k] > 0:
+                old[k] -= 1
+                dropped += 1
+            else:
+                new.append(k)
+        if new or not keys:
+            kept.extend(lines)
+            codes.update(k[1] for k in keys)
+    if kept and trailer:
+        more = [t for t in trailer[1:]
+                if (m := _SC_MORE_RE.match(t)) and m.group(1) in codes]
+        if more:
+            kept += [trailer[0]] + more
+    return "\n".join(kept).strip("\n"), dropped
+
+
+def _run_diagnostics(path: str, baseline: str | None = None) -> str:
+    """Checker verdict for `path`, formatted for appending to a tool result.
+    Returns "" when diagnostics are off, no checker applies, or the checker
+    itself breaks — a broken checker must never fail a write.
+
+    baseline: edit_file's pre-edit checker output (G15); for a lint language
+    only findings new relative to it are shown."""
+    if not diagnostics_enabled():
+        return ""
+    t0 = time.monotonic()
+    meta: dict = {"lang": "?"}
+    try:
+        raw = _diag_raw(path, meta)
+        if raw is None:
+            return ""
+        lang, rc, out = raw
+        _diag_memo(path, lang, out)
+        if baseline is not None and lang in _DIAG_DIFF_LANGS and rc != 0 and baseline.strip():
+            out, dropped = _shellcheck_new(baseline, out)
+            if not out.strip():
+                _diag_log_timing(lang, (time.monotonic() - t0) * 1000, "ok", rc=rc,
+                                 errors=0)
+                return (f"\ndiagnostics: no new findings ({lang}; {dropped} "
+                        f"pre-existing not repeated)")
         escalation = _escalation_for(lang, rc, out)
-        _diag_log_timing(lang, (time.monotonic() - t0) * 1000, "ok")
-        return _diag_format(lang, rc, out, path, escalation=escalation)
+        rendered = _diag_format(lang, rc, out, path, escalation=escalation,
+                                edit_hint=diag_edit_hint_enabled())
+        hint = lang == "zig" and rc != 0 and bool(_zig_extras(_zig_compact((out or "").strip()), path))
+        _diag_log_timing(lang, (time.monotonic() - t0) * 1000, "ok", rc=rc,
+                         errors=_diag_count_errors(lang, out or ""),
+                         hint_fired=hint, card_fired=bool(escalation))
+        return rendered
+    except _DiagBusy:
+        _diag_log_timing(meta["lang"], (time.monotonic() - t0) * 1000, "busy")
+        return "\ndiagnostics: unavailable (busy)"
     except subprocess.TimeoutExpired:
-        _diag_log_timing(lang, (time.monotonic() - t0) * 1000, "timeout")
+        _diag_log_timing(meta["lang"], (time.monotonic() - t0) * 1000, "timeout")
         return "\ndiagnostics: unavailable (timeout)"
     except Exception as e:
-        _diag_log_timing(lang, (time.monotonic() - t0) * 1000, type(e).__name__)
+        _diag_log_timing(meta["lang"], (time.monotonic() - t0) * 1000, type(e).__name__)
         return f"\ndiagnostics: unavailable ({type(e).__name__})"
-    finally:
-        if checker:
-            for d in checker[3]:
-                shutil.rmtree(d, ignore_errors=True)
 
 
 def _atomic_write_text(path: str, content: str) -> None:
@@ -1393,22 +2415,54 @@ def write_file(path: str, content: str) -> str:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         _atomic_write_text(path, content)
         _manifest_log("write", path, len(content))
+        _verify_note_write(path)
         return (f"Wrote {len(content)} bytes to {path}"
                 + _path_guard_note(path) + _run_diagnostics(path))
     except Exception as e:
         return f"Error: {e}"
 
 
+#: list_files walk budget: most glob matches examined, and wall seconds. The
+#: whole-tree glob + sort ran in-process with no bound (directory='~' or '/'
+#: walked the filesystem, holding a tool-server thread and the GIL), all to
+#: print 200 lines. Under the budget the output is exactly as before.
+_LIST_SCAN_MAX = 20_000
+_LIST_SCAN_SECONDS = 5.0
+
+
 def list_files(directory: str = ".", pattern: str = "**/*") -> str:
     """List files matching a glob pattern."""
     try:
         directory = _resolve(directory)
-        matches = sorted(glob.glob(os.path.join(directory, pattern), recursive=True))
-        files = [m for m in matches if os.path.isfile(m)]
+        sealed = _seal_refusal(directory)
+        if sealed:
+            return sealed
+        files = []
+        scanned = 0
+        stopped = False
+        t_end = time.monotonic() + _LIST_SCAN_SECONDS
+        for m in glob.iglob(os.path.join(directory, pattern), recursive=True):
+            scanned += 1
+            if os.path.isfile(m):
+                files.append(m)
+            if scanned >= _LIST_SCAN_MAX or time.monotonic() >= t_end:
+                stopped = True
+                break
+        files.sort()
+        if _eval_mode():
+            files = [m for m in files if not _is_sealed(os.path.realpath(m))]
         if not files:
+            if stopped:
+                return (f"No files among the first {scanned} matches of "
+                        f"'{pattern}' in {directory} (stopped early — narrow "
+                        f"the directory or pattern)")
             return f"No files matching '{pattern}' in {directory}"
         result = "\n".join(files[:200])
-        if len(files) > 200:
+        if stopped:
+            result += (f"\n... stopped after scanning {scanned} matches "
+                       f"({len(files)} files so far, not a sorted prefix of "
+                       f"the whole tree) — narrow the directory or pattern")
+        elif len(files) > 200:
             result += f"\n... and {len(files) - 200} more"
         return result
     except Exception as e:
@@ -1428,6 +2482,9 @@ def grep(pattern: str, path: str = ".", file_glob: str = "",
     scrubbed env apply — this was the one exec path that bypassed both."""
     try:
         path = _resolve(path)
+        sealed = _seal_refusal(path)
+        if sealed:
+            return sealed
         flags = ["-rn", "-I", "-H",
                  "--exclude-dir=.git", "--exclude-dir=node_modules",
                  "--exclude-dir=__pycache__", "--exclude-dir=build",
@@ -1440,10 +2497,19 @@ def grep(pattern: str, path: str = ".", file_glob: str = "",
             flags.append(f"--include={shlex.quote(file_glob)}")
         cmd = (f"grep {' '.join(flags)} -E -e {shlex.quote(pattern)} -- "
                f"{shlex.quote(path)}")
+        # Review 1118: under eval, grep runs in the same kernel read-deny as
+        # bash(), so a sealed file under the searched dir is never opened
+        # (the line filter below is the second layer, and the only one on
+        # Linux).
+        seal_prefix = _eval_read_deny_prefix()
+        if seal_prefix:
+            cmd = " ".join(shlex.quote(a) for a in seal_prefix) + \
+                f" /bin/sh -c {shlex.quote(cmd)}"
         wrapper = os.environ.get("OPENBEAST_BASH_WRAPPER", "").strip()
         if wrapper:
             cmd = f"{wrapper} /bin/sh -c {shlex.quote(cmd)}"
         _, output = run_reaped(cmd, 30, cwd=_base_dir(), env=_scrubbed_env())
+        output = _seal_filter_lines(output)
         # "No matches" means no path:lineno: rows — grep may still have
         # printed warnings (e.g. "stray \ before d"), which we keep visible.
         has_match = re.search(r"^[^\n:]+:\d+:", output or "", re.M)
@@ -1604,8 +2670,27 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
         if not os.path.isfile(path):
             return f"Error: file not found: {path}"
 
-        with open(path, "r") as f:
+        # newline="": keep the file's own line endings. The universal-newline
+        # read rewrote every \r\n / \r in the file to \n on ANY edit. A file
+        # with one non-LF style is matched in LF form (the model's strings
+        # are normalized the same way) and written back in that style; a
+        # mixed-ending file is matched and written exactly as it is.
+        with open(path, "r", newline="") as f:
             content = f.read()
+        before = content   # the file as it was, for G15's diagnostic diff
+        eol = "\n"
+        if "\r" in content:
+            crlf = content.count("\r\n")
+            lone_cr = content.count("\r") - crlf
+            lone_lf = content.count("\n") - crlf
+            if crlf and not lone_cr and not lone_lf:
+                eol = "\r\n"
+            elif lone_cr and not crlf and not lone_lf:
+                eol = "\r"
+            if eol != "\n":
+                content = content.replace(eol, "\n")
+                old_string = old_string.replace("\r\n", "\n").replace("\r", "\n")
+                new_string = new_string.replace("\r\n", "\n").replace("\r", "\n")
 
         if not old_string:
             return "Error: old_string must not be empty"
@@ -1652,9 +2737,15 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
         else:
             new_content = content.replace(old_string, new_string, 1)
 
-        _atomic_write_text(path, new_content)
+        # G15: what the checker said about the file BEFORE this edit (memo
+        # hit almost always; "" / None when diagnostics are off or the
+        # language's findings are not diffable).
+        baseline = _diag_baseline(path, before)
+        _atomic_write_text(path, new_content if eol == "\n"
+                           else new_content.replace("\n", eol))
         _manifest_log("edit", path, len(new_content))
         _EDIT_FAILS.pop(path, None)
+        _verify_note_write(path)
 
         change_line = content[:content.index(old_string)].count("\n") + 1
         old_lines = old_string.count("\n") + 1
@@ -1665,7 +2756,7 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
                     f"({len(old_string)} → {len(new_string)} chars each)"
                     + _path_guard_note(path)
                     + _edit_window(new_content, change_line, new_lines)
-                    + _run_diagnostics(path))
+                    + _run_diagnostics(path, baseline=baseline))
         else:
             return (
                 f"Edited {path} at line {change_line}: "
@@ -1673,7 +2764,7 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
                 f"with {new_lines} line{'s' if new_lines != 1 else ''}"
                 + _path_guard_note(path)
                 + _edit_window(new_content, change_line, new_lines)
-                + _run_diagnostics(path)
+                + _run_diagnostics(path, baseline=baseline)
             )
     except Exception as e:
         return f"Error: {e}"
@@ -1779,7 +2870,12 @@ def _fetch_track(sock) -> None:
     """Register a freshly connected socket with the in-flight fetch's
     watchdog. A dup is kept (not the object) because TLS wrapping detaches
     the original; shutdown() on the dup still ends the shared connection,
-    which unblocks a recv stuck in another frame of this thread."""
+    which unblocks a recv stuck in another frame of this thread.
+
+    The watchdog fires ONCE: a socket a redirect hop opens after it fired
+    (its resolve or connect straddled the deadline) is shut down here, on
+    registration — append-then-check pairs with _expire's set-then-iterate,
+    so whichever runs second sees the other."""
     socks = getattr(_fetch_state, "socks", None)
     if socks is None:
         return
@@ -1787,21 +2883,88 @@ def _fetch_track(sock) -> None:
         socks.append(sock.dup())
     except OSError:
         pass
+    expired = getattr(_fetch_state, "expired", None)
+    if expired is not None and expired.is_set():
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+
+def _fetch_check_deadline() -> None:
+    """Raise URLError once the in-flight fetch's total deadline has passed
+    (no-op outside a fetch)."""
+    deadline = getattr(_fetch_state, "deadline", None)
+    if deadline is not None and time.monotonic() >= deadline:
+        raise urllib.error.URLError("fetch total deadline exceeded")
+
+
+def _fetch_op_timeout(timeout):
+    """Per-operation socket timeout clamped to what is left of the fetch's
+    total deadline, so a connect that starts late cannot outlast it."""
+    deadline = getattr(_fetch_state, "deadline", None)
+    if deadline is None:
+        return timeout
+    left = max(0.05, deadline - time.monotonic())
+    return left if timeout is None else min(timeout, left)
+
+
+def _fetch_bounded(fn, *args):
+    """Run a resolver call (getaddrinfo cannot be interrupted) on a helper
+    thread and wait at most the fetch's remaining deadline for it. Outside a
+    fetch it is a plain call. The helper is a daemon and finishes on its own
+    when the system resolver gives up; the worker does not wait for it."""
+    deadline = getattr(_fetch_state, "deadline", None)
+    if deadline is None:
+        return fn(*args)
+    box = {}
+
+    def run():
+        try:
+            box["r"] = fn(*args)
+        except BaseException as e:  # surfaced to the caller below
+            box["e"] = e
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(max(0.0, deadline - time.monotonic()))
+    if t.is_alive():
+        raise urllib.error.URLError("fetch total deadline exceeded (DNS)")
+    if "e" in box:
+        raise box["e"]
+    return box["r"]
+
+
+def _dial_pinned(conn, ips):
+    """Connect `conn` to the first reachable of the PRE-VETTED `ips`, in
+    resolver order — what socket.create_connection does for a hostname, but
+    only ever over addresses the SSRF guard approved (an unreachable first
+    record, e.g. AAAA on a v6-less box, no longer fails the fetch). None =
+    dial conn.host (the operator's proxy). Each attempt is held to the
+    fetch's remaining deadline."""
+    last = None
+    for ip in (ips or [None]):
+        _fetch_check_deadline()
+        conn.timeout = _fetch_op_timeout(conn.timeout)
+        try:
+            return socket.create_connection(
+                (ip or conn.host, conn.port), conn.timeout,
+                conn.source_address)
+        except OSError as e:
+            last = e
+    raise last
 
 
 class _PinnedHTTPConnection(http.client.HTTPConnection):
     """HTTPConnection that dials a PRE-VETTED IP instead of re-resolving the
     hostname — the IP the SSRF guard approved is the exact IP we connect to."""
-    def __init__(self, *a, pinned_ip=None, **kw):
+    def __init__(self, *a, pinned_ips=None, **kw):
         super().__init__(*a, **kw)
-        self._pinned_ip = pinned_ip
+        self._pinned_ips = pinned_ips
 
     def connect(self):
-        # pinned_ip None = proxied request: dial the operator's proxy
+        # pinned_ips None = proxied request: dial the operator's proxy
         # (self.host) — see _pinned_open.
-        self.sock = socket.create_connection(
-            (self._pinned_ip or self.host, self.port), self.timeout,
-            self.source_address)
+        self.sock = _dial_pinned(self, self._pinned_ips)
         _fetch_track(self.sock)
         if self._tunnel_host:
             self._tunnel()
@@ -1810,14 +2973,12 @@ class _PinnedHTTPConnection(http.client.HTTPConnection):
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
     """Same pin for TLS. Crucially keeps server_hostname = the ORIGINAL host
     so SNI and certificate validation still check the real name, not the IP."""
-    def __init__(self, *a, pinned_ip=None, **kw):
+    def __init__(self, *a, pinned_ips=None, **kw):
         super().__init__(*a, **kw)
-        self._pinned_ip = pinned_ip
+        self._pinned_ips = pinned_ips
 
     def connect(self):
-        sock = socket.create_connection(
-            (self._pinned_ip or self.host, self.port), self.timeout,
-            self.source_address)
+        sock = _dial_pinned(self, self._pinned_ips)
         _fetch_track(sock)
         if self._tunnel_host:
             self.sock = sock
@@ -1841,15 +3002,19 @@ def _pinned_open(handler, req, conn_class, scheme):
         # name, then dial the proxy, which does its own resolution: the IP
         # pin cannot cover a proxied target (a rebinding answer at the
         # proxy is out of our hands), only the name-level vet can.
-        reason = _fetch_url_blocked(req.full_url)
+        reason = _fetch_bounded(_fetch_url_blocked, req.full_url)
         if reason:
             raise urllib.error.URLError(f"fetch blocked: {reason}")
-        return handler.do_open(conn_class, req, pinned_ip=None)
+        _fetch_check_deadline()
+        return handler.do_open(conn_class, req, pinned_ips=None)
     parsed = urllib.parse.urlparse(req.full_url)
-    ips, reason = _resolve_vetted(parsed.hostname, parsed.port, scheme)
+    ips, reason = _fetch_bounded(_resolve_vetted, parsed.hostname,
+                                 parsed.port, scheme)
     if reason:
         raise urllib.error.URLError(f"fetch blocked: {reason}")
-    return handler.do_open(conn_class, req, pinned_ip=ips[0])
+    _fetch_check_deadline()
+    return handler.do_open(conn_class, req,
+                           pinned_ips=list(dict.fromkeys(ips)))
 
 
 class _PinnedHTTPHandler(urllib.request.HTTPHandler):
@@ -1868,7 +3033,11 @@ class _FetchRedirectHandler(urllib.request.HTTPRedirectHandler):
     pinned handlers when urllib re-opens the redirected request, so this
     early check being one resolution ahead can't be exploited."""
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        reason = _fetch_url_blocked(newurl)
+        _fetch_check_deadline()
+        why = _eval_url_refusal(newurl)
+        if why:
+            raise urllib.error.URLError(f"refusing redirect to {newurl[:200]}: {why}")
+        reason = _fetch_bounded(_fetch_url_blocked, newurl)
         if reason:
             raise urllib.error.URLError(
                 f"fetch blocked: redirect to {newurl}: {reason}")
@@ -1892,6 +3061,8 @@ _fetch_opener = _build_fetch_opener()
 #: agent's history (review efficiency-3). Env OPENBEAST_FETCH_MAX_CHARS
 #: overrides it (read per call).
 _FETCH_MAX_CHARS_DEFAULT = 200_000
+#: Floor on fetch's byte read budget (see _fetch_body).
+_FETCH_MIN_READ_BYTES = 2 * 1024 * 1024
 
 
 def _fetch_max_chars() -> int:
@@ -1904,6 +3075,89 @@ def _fetch_max_chars() -> int:
     return max(1, min(n, 2_000_000))
 
 
+def _eval_web_gate(tool: str, arg: str) -> str | None:
+    """Under eval (OPENBEAST_EVAL=1) the web tools are OFF: an answer looked
+    up online is not the model's, and v4 never even recorded the calls.
+    OPENBEAST_EVAL_WEB=record re-enables them and appends every call to
+    OPENBEAST_EVAL_WEB_LOG (JSONL: ts, unit, tool, arg), so a campaign that
+    wants them can still account for them. Returns the refusal, or None."""
+    if not _eval_mode():
+        return None
+    mode = os.environ.get("OPENBEAST_EVAL_WEB", "").strip().lower()
+    if mode != "record":
+        return (f"Error: {tool} is disabled while an eval unit is measured "
+                f"(OPENBEAST_EVAL=1); solve the task with local tools")
+    log = os.environ.get("OPENBEAST_EVAL_WEB_LOG", "").strip()
+    if log:
+        try:
+            with open(log, "a") as f:
+                f.write(json.dumps({"ts": time.time(), "tool": tool, "arg": str(arg)[:500],
+                                    "unit": os.environ.get("OPENBEAST_EVAL_UNIT", ""),
+                                    "arm": os.environ.get("OPENBEAST_EVAL_ARM", "")}) + "\n")
+        except OSError:
+            pass
+    return None
+
+
+#: The web tools: what OPENBEAST_AGENT_HIDE_WEB=1 leaves out of an eval request.
+WEB_TOOL_NAMES = ("fetch", "web_search")
+
+
+def web_tools_hidden() -> bool:
+    """harness10 (opt-in, OPENBEAST_AGENT_HIDE_WEB=1; key `noweb`): under
+    eval with the web tools off (_eval_web_gate refuses them unless
+    OPENBEAST_EVAL_WEB=record), the runner stops advertising them: their
+    schemas leave the request and their lines leave the system prompt
+    (runner.agent_instructions). Before this, every eval prompt said "use
+    web_search/fetch" for tools that could only refuse. A call made anyway
+    still gets the gate's refusal. Never outside eval, never with record on."""
+    if os.environ.get("OPENBEAST_AGENT_HIDE_WEB", "").strip() != "1" or not _eval_mode():
+        return False
+    return os.environ.get("OPENBEAST_EVAL_WEB", "").strip().lower() != "record"
+
+
+def visible_tool_schemas() -> list:
+    """TOOL_SCHEMAS as sent to the model: without the web tools when
+    web_tools_hidden(), else the list itself (the request is unchanged)."""
+    if not web_tools_hidden():
+        return TOOL_SCHEMAS
+    return [s for s in TOOL_SCHEMAS if s["function"]["name"] not in WEB_TOOL_NAMES]
+
+
+# The eval fetch guard (2026-11-18). Under eval the web tools are off unless
+# OPENBEAST_EVAL_WEB=record turns them on, and the bash sandbox (#224) denies
+# the shell the network. A recorded fetch could still reach this project's
+# own repo, whose evals/refs hold every unit's answer: on DeepSeek-V4.1-Flash
+# (Mia EXL3)'s arm T the agent asked fetch for CPython's source on
+# raw.githubusercontent.com (refused, the web being off). So under eval,
+# whatever the web mode, fetch refuses (and so does every redirect hop) a URL
+# that names the repo on any host (github.com, raw.githubusercontent.com,
+# api.github.com/repos, codeload, a CDN's /gh/ mirror: the owner/name pair,
+# case-insensitive, after percent-decoding) and any URL path into a
+# checkout's evals/ answer trees. web_search refuses a query naming the repo.
+_EVAL_SELF_REPO_RE = re.compile(r"maximiliankhan(?:/|:|%2f)+openbeast(?![\w-])", re.I)
+_EVAL_URL_EVALS_RE = re.compile(r"/evals/(?:tasks|refs|suites|results|cache|reference)(?:/|$)", re.I)
+
+
+def _eval_url_refusal(url: str) -> str | None:
+    """Under eval (OPENBEAST_EVAL=1): why `url` may not be fetched, else None."""
+    if not _eval_mode():
+        return None
+    text = str(url or "")
+    for _ in range(3):                      # %252F -> %2F -> /
+        dec = urllib.parse.unquote(text)
+        if dec == text:
+            break
+        text = dec
+    if _EVAL_SELF_REPO_RE.search(text):
+        return ("this project's own repository (it holds the eval's reference "
+                "solutions) is off limits while an eval unit is measured")
+    path = urllib.parse.urlparse(text).path if "://" in text else text
+    if _EVAL_URL_EVALS_RE.search(path):
+        return "an evals/ path is off limits while an eval unit is measured"
+    return None
+
+
 def fetch(url: str, max_length: int = 50_000) -> str:
     """Fetch content from a URL and return as text.
 
@@ -1912,9 +3166,12 @@ def fetch(url: str, max_length: int = 50_000) -> str:
     hostname resolving to loopback/private/link-local/reserved space is
     blocked, at request time and again on every redirect hop.
     """
-    reason = _fetch_url_blocked(url)
-    if reason:
-        return f"Error: fetch blocked: {reason}"
+    gated = _eval_web_gate("fetch", url)
+    if gated:
+        return gated
+    why = _eval_url_refusal(url)
+    if why:
+        return f"Error: refusing to fetch {str(url)[:200]}: {why}"
     # max_length is model-controlled; without a ceiling, max_length*4 below
     # becomes an attempted multi-GB read into memory — and a result bigger
     # than the context is useless to the model anyway. The truncation marker
@@ -1938,17 +3195,66 @@ def fetch(url: str, max_length: int = 50_000) -> str:
     watchdog = threading.Timer(_FETCH_DEADLINE, _expire)
     watchdog.daemon = True
     _fetch_state.socks = socks
+    _fetch_state.expired = expired
+    _fetch_state.deadline = deadline
     watchdog.start()
     try:
+        # The up-front (friendly-error) resolve runs under the deadline too:
+        # getaddrinfo is uninterruptible, so _fetch_bounded waits for it on a
+        # helper thread for at most the time left.
+        try:
+            reason = _fetch_bounded(_fetch_url_blocked, url)
+        except urllib.error.URLError:
+            return (f"Error: fetch exceeded its {_FETCH_DEADLINE:.0f}s "
+                    f"total deadline (DNS resolution too slow)")
+        if reason:
+            return f"Error: fetch blocked: {reason}"
         return _fetch_body(url, max_length, deadline, expired)
     finally:
         watchdog.cancel()
         _fetch_state.socks = None
+        _fetch_state.expired = None
+        _fetch_state.deadline = None
         for s_ in socks:
             try:
                 s_.close()
             except OSError:
                 pass
+
+
+_TAG_OPEN = re.compile(r"<[A-Za-z/!?]")
+# Inside a tag: its end, or a QUOTED attribute value. A quote only opens a
+# value right after '=' (the HTML attribute-value states), so `title=don't`
+# is not an endless quote.
+_TAG_INNER = re.compile(r"""=\s*(["'])|>""")
+
+
+def _unterminated_tag_start(text: str):
+    """Where the tag left open at the end of `text` starts, or None.
+
+    Walks the tags forward, skipping quoted attribute values whole: a '>'
+    inside one (alt="a > b", an SVG data: URI) does not end the tag. The old
+    "first opener after the last '>'" landed inside such a tag, found no
+    opener, and let megabytes of base64 through as page text (review
+    2026-11-16). Every step moves forward by a regex search or str.find:
+    linear on hostile input."""
+    pos = 0
+    while True:
+        m = _TAG_OPEN.search(text, pos)
+        if not m:
+            return None
+        p = m.end()
+        while True:
+            t = _TAG_INNER.search(text, p)
+            if not t:
+                return m.start()
+            if t.group(0) == ">":
+                pos = t.end()
+                break
+            close = text.find(t.group(1), t.end())
+            if close == -1:
+                return m.start()
+            p = close + 1
 
 
 def _fetch_body(url: str, max_length: int, deadline: float,
@@ -1977,7 +3283,12 @@ def _fetch_body(url: str, max_length: int, deadline: float,
             # Chunked read1() (one recv at most per call), not read(n) —
             # which loops internally until n bytes — so the deadline is
             # checked between every network read.
-            limit = max_length * 4
+            # Byte budget: max_length*4, but never below
+            # _FETCH_MIN_READ_BYTES — at the old bare max_length*4 (200 KB by
+            # default) a big inline <script>/JSON head used up the whole read
+            # and the page came back empty. The char cap still applies after
+            # stripping; the 2M-char ceiling keeps the worst case at 8 MB.
+            limit = max(max_length * 4, _FETCH_MIN_READ_BYTES)
             buf = bytearray()
             read_some = getattr(resp, "read1", resp.read)
             while len(buf) < limit and time.monotonic() < deadline:
@@ -1990,8 +3301,17 @@ def _fetch_body(url: str, max_length: int, deadline: float,
                 if not chunk:
                     break
                 buf += chunk
+            # Stopped at the budget with the body not known to be complete
+            # (http.client's .length is the unread Content-Length; 0 = done).
+            byte_cut = len(buf) >= limit and getattr(resp, "length", None) != 0
             raw_bytes = bytes(buf)
             text = raw_bytes.decode(charset, errors="replace")
+            # A byte-order mark (U+FEFF, whatever the charset label) is not
+            # text, and str.strip() keeps it: a BOM'd page served without an
+            # HTML Content-Type then failed the <!doctype sniff below and
+            # came back as raw markup, scripts included.
+            if text.startswith("\ufeff"):
+                text = text[1:]
         cut_note = ""
         if expired.is_set() or time.monotonic() >= deadline:
             if not raw_bytes:
@@ -1999,7 +3319,9 @@ def _fetch_body(url: str, max_length: int, deadline: float,
                         f"total deadline (server too slow)")
             cut_note = (f"\n\n[fetch stopped at its {_FETCH_DEADLINE:.0f}s total "
                         f"deadline — partial content, {len(raw_bytes)} bytes]")
-
+        elif byte_cut:
+            cut_note = (f"\n\n[page cut at {len(raw_bytes)} bytes — the rest "
+                        f"was not fetched]")
         if "html" in content_type.lower() or text.strip()[:100].lower().startswith(("<!doctype", "<html")):
             # Every pattern here must be LINEAR on hostile input: re holds
             # the GIL, and this runs inside the shared tool server. The old
@@ -2008,6 +3330,14 @@ def _fetch_body(url: str, max_length: int, deadline: float,
             # to hours on an 8 MB page, freezing every user's tools. [^<>]
             # stops each attempt at the next '<', and an unclosed script/style
             # block swallows the rest (as a browser would) in one pass.
+            if cut_note:
+                # The cut can land inside a tag of any length (a base64
+                # data: URI runs to megabytes): drop the unterminated tag —
+                # a browser treats that tail as one tag too. HTML only, and
+                # only '<' + a tag character, so a prose 'a < b' is kept.
+                start = _unterminated_tag_start(text)
+                if start is not None:
+                    text = text[:start]
             text = re.sub(r"<script[^<>]*>.*?(?:</script>|\Z)", "", text, flags=re.DOTALL | re.IGNORECASE)
             text = re.sub(r"<style[^<>]*>.*?(?:</style>|\Z)", "", text, flags=re.DOTALL | re.IGNORECASE)
             text = re.sub(r"<(br|hr|/p|/div|/h[1-6]|/li|/tr)[^<>]*>", "\n", text, flags=re.IGNORECASE)
@@ -2029,12 +3359,12 @@ def _fetch_body(url: str, max_length: int, deadline: float,
             pass
         return f"HTTP {e.code} {e.reason}" + (f"\n{body}" if body else "")
     except urllib.error.URLError as e:
-        if expired.is_set():
+        if expired.is_set() or time.monotonic() >= deadline:
             return (f"Error: fetch exceeded its {_FETCH_DEADLINE:.0f}s "
                     f"total deadline (server too slow)")
         return f"URL error: {e.reason}"
     except Exception as e:
-        if expired.is_set():
+        if expired.is_set() or time.monotonic() >= deadline:
             return (f"Error: fetch exceeded its {_FETCH_DEADLINE:.0f}s "
                     f"total deadline (server too slow)")
         return f"Error: {e}"
@@ -2051,6 +3381,12 @@ def web_search(query: str, max_results: int = 10, pageno: int = 1,
     (`pageno` ≥ 1; `time_range` ∈ day|month|year) — invalid values are
     dropped rather than erroring, so a model's stray guess still searches.
     """
+    gated = _eval_web_gate("web_search", query)
+    if gated:
+        return gated
+    if _eval_mode() and _EVAL_SELF_REPO_RE.search(urllib.parse.unquote(str(query or ""))):
+        return ("Error: refusing to search for this project's own repository while an "
+                "eval unit is measured (it holds the eval's reference solutions)")
     searxng_url = os.environ.get("SEARXNG_URL", "http://localhost:8888")
     try:
         query_params = {
@@ -2073,6 +3409,14 @@ def web_search(query: str, max_results: int = 10, pageno: int = 1,
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # Before URLError (its base class): SearXNG IS running and answered
+        # — 429 is its limiter, 403 usually means `json` is missing from
+        # search.formats in settings.yml. "Not running, docker run …" sent
+        # the model (and client-mode users) down the wrong fix.
+        return (f"Error: SearXNG returned HTTP {e.code} {e.reason}"
+                + (" (rate limited — wait and retry)" if e.code == 429 else "")
+                + (" (is `json` enabled in search.formats?)" if e.code == 403 else ""))
     except urllib.error.URLError:
         return (
             "Error: SearXNG is not running. Start it with:\n"
@@ -2113,7 +3457,9 @@ def _task_expected_paths() -> list[str]:
         return []
     try:
         paths = json.loads(raw)
-        return [p for p in paths if isinstance(p, str)]
+        # G24: a sentence-final period is never part of a task path (the
+        # harness strips it too: evals/run_eval.task_paths).
+        return [p.rstrip(".") for p in paths if isinstance(p, str)]
     except json.JSONDecodeError:
         return []
 
@@ -2181,7 +3527,7 @@ def plan_block() -> str:
     if not steps:
         return ""
     done = sum(1 for s in steps if s["status"] == "done")
-    return (f"[plan — {done}/{len(steps)} done; keep it current with update_plan]\n"
+    return (f"[plan — {done}/{len(steps)} done; update_plan only when a step changes status]\n"
             + _plan_render(steps))
 
 
@@ -2223,6 +3569,17 @@ def update_plan(steps=None, explanation: str = "") -> str:
         return (f"Error: steps {', '.join(map(str, active))} are all in_progress — "
                 f"only ONE step may be in_progress at a time; mark the others "
                 f"pending or done")
+    if clean == _PLAN_STATE.get():
+        # Runner v2: GLM-5.3-Flash re-sent an identical plan up to 15 times in
+        # one v5 unit (60% of its turns). A nudge, not a free turn: the call
+        # still costs its iteration, so the budget and every model's turn
+        # count mean the same thing; the reply only says why it was useless.
+        cur = next((s["step"] for s in clean if s["status"] == "in_progress"), None)
+        return ("Plan unchanged — identical to the current plan, which is "
+                "already shown to you every turn. Do not re-send it; "
+                + (f"work on the in_progress step ({cur})" if cur else
+                   "act on the next step")
+                + " and call update_plan again only when a step's status changes.")
     _PLAN_STATE.set(clean)
     done = sum(1 for s in clean if s["status"] == "done")
     current = clean[active[0] - 1]["step"] if active else None
@@ -2234,6 +3591,90 @@ def update_plan(steps=None, explanation: str = "") -> str:
     if explanation:
         head += f" ({str(explanation).strip()[:200]})"
     return head + "\n" + _plan_render(clean)
+
+
+# ---------------------------------------------------------------------------
+# G9 — "test before done" (opt-in, OPENBEAST_AGENT_VERIFY_DONE=1; off = the
+# tools behave exactly as before). Evidence, 2026-11-16 v5 L0 audit: several
+# failed units had a working fix in a SCRATCH file that was never written
+# back to the graded destination (36_c, 36_d, 143). Builds on the R1 guard
+# below (OPENBEAST_TASK_PATHS, the missing-file refusal): once the expected
+# files exist, a task_done is answered ONCE with a nudge when a destination
+# source file the agent wrote has not been run since the last write of ANY
+# file through write_file/edit_file — "run" meaning a bash command that names
+# it (path, basename, or stem: `./sol`, `test_sol.py`). Never blocking: the
+# second task_done is accepted whatever the state. Runner-only in practice
+# (task_done is not on the MCP surface); state is per run (reset_verify_done).
+# ---------------------------------------------------------------------------
+_VERIFY_SRC_EXTS = frozenset({
+    ".py", ".go", ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".rs", ".zig",
+    ".sh", ".bash", ".js", ".mjs", ".ts", ".rb", ".pl", ".lua", ".java",
+    ".kt", ".swift"})
+_VERIFY_STATE: ContextVar = ContextVar("openbeast_verify_done", default=None)
+
+
+def verify_done_enabled() -> bool:
+    """Read per call, like diagnostics_enabled()."""
+    return os.environ.get("OPENBEAST_AGENT_VERIFY_DONE", "").strip() == "1"
+
+
+def reset_verify_done() -> None:
+    _VERIFY_STATE.set(None)
+
+
+def _verify_state() -> dict:
+    st = _VERIFY_STATE.get()
+    if st is None:
+        st = {"seq": 0, "last_write": 0, "wrote": {}, "ran": {}, "nudged": False}
+        _VERIFY_STATE.set(st)
+    return st
+
+
+def _verify_note_write(path: str) -> None:
+    if not verify_done_enabled():
+        return
+    st = _verify_state()
+    st["seq"] += 1
+    st["last_write"] = st["seq"]
+    st["wrote"][os.path.realpath(path)] = st["seq"]
+
+
+def _verify_mentions(command: str, dest: str) -> bool:
+    base = os.path.basename(dest)
+    stem = os.path.splitext(base)[0]
+    return (dest in command or base in command
+            or (len(stem) >= 3 and stem in command))
+
+
+def _verify_note_bash(command: str) -> None:
+    if not verify_done_enabled():
+        return
+    expected = _task_expected_paths()
+    if not expected:
+        return
+    st = _verify_state()
+    st["seq"] += 1
+    for e in expected:
+        if _verify_mentions(str(command), e):
+            st["ran"][e] = st["seq"]
+
+
+def _verify_untested(expected: list[str]) -> list[str]:
+    """Destinations to nudge about (sorted), or [] — and [] always after the
+    first nudge of a run, or with the switch off."""
+    if not verify_done_enabled() or not expected:
+        return []
+    st = _verify_state()
+    if st["nudged"]:
+        return []
+    out = [e for e in expected
+           if os.path.splitext(e)[1].lower() in _VERIFY_SRC_EXTS
+           and os.path.exists(e)
+           and os.path.realpath(e) in st["wrote"]
+           and st["ran"].get(e, 0) <= st["last_write"]]
+    if out:
+        st["nudged"] = True
+    return sorted(out)
 
 
 def task_done(summary: str) -> str:
@@ -2250,6 +3691,13 @@ def task_done(summary: str) -> str:
                 "exist yet: " + ", ".join(sorted(missing)) +
                 ". Create them at exactly these paths, then call task_done "
                 "again.")
+    # G9 (opt-in): the files exist, but were they tested as they now stand?
+    untested = _verify_untested(expected)
+    if untested:
+        return ("Before finishing: re-run your test against "
+                + ", ".join(untested) + " itself. A file was written after "
+                "your last run of it, so what is there now is untested. Then "
+                "call task_done again (this check runs once).")
     return f"TASK_DONE: {summary}"
 
 
@@ -2267,7 +3715,7 @@ _TOOL_REGISTRY: list[tuple[Any, dict]] = [
             "type": "function",
             "function": {
                 "name": "bash",
-                "description": "Run a shell command (/bin/sh) and return its output. Use for building, testing, git operations, installing packages, or any system task. Facts: stdout and stderr are MERGED into one stream; each call is a FRESH shell — cd, exported variables and functions do not carry over to the next call (chain steps with && or cd inside the same command); output over 50 KB keeps the head and tail with an elision marker; a nonzero exit appends '(exit code N)'; background processes (servers, trailing &, nohup) are killed when the command returns, so this tool cannot keep a server running — start and test it in the same command.",
+                "description": f"Run a shell command ({BASH_SHELL} -c) and return its output. Use for building, testing, git operations, installing packages, or any system task. Facts: stdout and stderr are MERGED into one stream; each call is a FRESH shell — cd, exported variables and functions do not carry over to the next call (chain steps with && or cd inside the same command); output over 50 KB keeps the head and tail with an elision marker; a nonzero exit appends '(exit code N)'; background processes (servers, trailing &, nohup) are killed when the command returns, so this tool cannot keep a server running — start and test it in the same command.",
                 "parameters": {
                     "type": "object",
                     "properties": {

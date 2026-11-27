@@ -1,0 +1,120 @@
+# evals/host/Containerfile — the v5 eval HARNESS HOST as a container (Linux).
+#
+# Built and run by scripts/eval-host-container.sh (build | save | load | check
+# | shell | run); docs/MODEL_CAMPAIGN.md "Eval host in a container (Linux)".
+#
+# WHY. The harness runs the agents' tools, the compilers and the validators on
+# the machine it runs on. evals/vlib.py pins ROOT-OWNED compilers first
+# (pin_toolchain, _TRUSTED_DIRS), so a measured agent cannot plant one; on a
+# box whose distro ships another go or rustc in /usr/bin (the RTX 5090 rig:
+# Arch, go 1.27, rustc 1.99) those win and `eval-host.sh check` says
+# `blocked`. Here the pinned toolchains of evals/toolchains.lock ARE the
+# root-owned ones, and no other go, rustc or zig exists.
+#
+# WHAT IS IN IT.
+#   /opt/openbeast-eval      the eval prefix, root-owned and read-only to the
+#                            harness user: zig, go, rust (the standalone
+#                            installer), cpython + the eval venv, installed BY
+#                            scripts/eval-host.sh setup itself (every file
+#                            sha256-checked against the lock, the venv from
+#                            agents/requirements.lock with --require-hashes)
+#   /usr/local/bin           root-owned links to them, and python3 -> the
+#                            prefix's cpython (fixture setups run `python3`)
+#   /usr/bin                 the distro's gcc, g++, git, make, shellcheck,
+#                            sqlite3, bc, file, procps; never go/rust/zig
+#   user `eval`              uid/gid from the build args (the operator's, so
+#                            the mounted checkout stays writable and git owns it)
+#
+# The repository is NOT baked in: the wrapper mounts the checkout at its own
+# path, so the harness that runs is the mounted tree's (its era hashes, its
+# tasks). The build context is only the files below (the wrapper stages
+# them), so the image depends on the pins and nothing else.
+#
+# Changing toolchains.lock or agents/requirements.lock means a rebuild: the
+# check compares the venv's stamp with the mounted tree's lock, and
+# OPENBEAST_EVAL_NO_PROVISION=1 stops the harness trying to install into the
+# read-only prefix.
+
+# debian:trixie-slim (13.7), linux/amd64 + arm64 index digest, 2026-11-04.
+ARG BASE=debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
+FROM ${BASE}
+
+ARG EVAL_UID=1000
+ARG EVAL_GID=1000
+# Optional: an apt snapshot (e.g. 20261115T000000Z) for byte-identical
+# distro packages; empty = the release's current packages (their versions are
+# recorded in /opt/openbeast-eval/PACKAGES.txt either way).
+ARG DEBIAN_SNAPSHOT=
+
+ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+    PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN set -eux; \
+    if [ -n "$DEBIAN_SNAPSHOT" ]; then \
+      sed -i "s#^URIs: .*debian-security.*#URIs: http://snapshot.debian.org/archive/debian-security/$DEBIAN_SNAPSHOT#; \
+              s#^URIs: http://deb.debian.org/debian\$#URIs: http://snapshot.debian.org/archive/debian/$DEBIAN_SNAPSHOT#" \
+          /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      ca-certificates curl xz-utils \
+      gcc g++ make libc6-dev binutils \
+      git shellcheck sqlite3 bc file procps less; \
+    rm -rf /var/lib/apt/lists/*; \
+    # nothing that could outrank (or shadow) a pinned toolchain
+    for t in go gofmt rustc cargo zig python3 python; do \
+      ! command -v "$t" || { echo "unexpected system $t: $(command -v "$t")" >&2; exit 1; }; \
+    done
+
+# Only the pins and the installers (staged by the wrapper).
+COPY evals/toolchains.lock      /src/evals/toolchains.lock
+COPY agents/requirements.lock   /src/agents/requirements.lock
+COPY agents/requirements.txt    /src/agents/requirements.txt
+COPY scripts/eval-host.sh       /src/scripts/eval-host.sh
+COPY scripts/pydeps.sh          /src/scripts/pydeps.sh
+COPY scripts/lib/usage.sh       /src/scripts/lib/usage.sh
+COPY scripts/lib/pydeps_lock.py /src/scripts/lib/pydeps_lock.py
+
+ENV OPENBEAST_EVAL_PREFIX=/opt/openbeast-eval
+
+# The repo's own installer, as root, into the prefix. Rust goes in from the
+# standalone installer (the offline path: no rustup proxies to resolve), so
+# the files are fetched into the prefix's .downloads first (sha256-checked
+# there by `fetch`, and again by `setup` before unpacking); python packages
+# come from the index under --require-hashes.
+RUN set -eux; \
+    P=/opt/openbeast-eval; \
+    bash /src/scripts/eval-host.sh fetch --to "$P/.downloads"; \
+    bash /src/scripts/eval-host.sh setup --prefix "$P" --from "$P/.downloads" --only zig,go,rust; \
+    bash /src/scripts/eval-host.sh setup --prefix "$P" --only python; \
+    rm -rf "$P/.downloads" "$P/.setup.lock"; \
+    # rust's HTML docs (1.1 GB): no validator or agent reads them
+    rm -rf "$P"/rust-*/share/doc; \
+    V="$(awk '$1 == "cpython" {print $3; exit}' /src/evals/toolchains.lock)"; \
+    for t in zig go gofmt rustc cargo; do ln -s "$P/bin/$t" "/usr/local/bin/$t"; done; \
+    ln -s "$P/cpython-$V/bin/python3" /usr/local/bin/python3; \
+    chown -R root:root "$P"; chmod -R go-w "$P"; \
+    dpkg-query -W -f '${Package} ${Version}\n' > "$P/PACKAGES.txt"; \
+    cp /src/evals/toolchains.lock "$P/toolchains.lock"; \
+    rm -rf /src /root/.cache
+
+RUN set -eux; \
+    groupadd -o -g "$EVAL_GID" eval; \
+    useradd -o -m -u "$EVAL_UID" -g "$EVAL_GID" -s /bin/bash -d /home/eval eval
+
+# PATH: the prefix first (what `eval-host.sh env` would export), then the
+# root-owned system dirs only; no user-writable dir anywhere on it.
+ENV PATH=/opt/openbeast-eval/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin \
+    OPENBEAST_EVAL_PY=/opt/openbeast-eval/venv/bin/python \
+    OPENBEAST_EVAL_NO_PROVISION=1 \
+    OPENBEAST_EVAL_CONTAINER=1 \
+    GOTOOLCHAIN=local \
+    HOME=/home/eval
+
+LABEL org.opencontainers.image.title="openbeast-eval-host" \
+      org.opencontainers.image.description="OpenBeast v5 eval harness host: evals/toolchains.lock toolchains, root-owned" \
+      org.opencontainers.image.source="https://github.com/MaximilianKhan/openbeast"
+
+USER eval
+WORKDIR /home/eval
+CMD ["bash"]

@@ -107,6 +107,12 @@ cmd_fetch() {
   IFS=$'\t' read -r sha bytes _name repo remote <<< "$row"
   [[ "$remote" == "-" || -z "$remote" ]] && remote="$name"
   dest="$WEIGHTS_DIR/$name"
+  # A "derived" row is a file built here from other pinned files (the fifth column names the script that rebuilds
+  # it offline); it is on no Hub repo, so there is nothing to download. Present: verify it as any other.
+  if [[ "$repo" == "derived" ]]; then
+    [[ -f "$dest" ]] && exec "$SCRIPT_DIR/verify-weights.sh" --file "$name"
+    die "$name is built locally, not downloaded: run $remote (see its header), then put it at $dest"
+  fi
 
   say "weight:  $name"
   say "repo:    $repo  (remote name: $remote)"
@@ -222,7 +228,7 @@ cmd_fetch() {
   # never exists under a name a serve script would load.
   if [[ "$sha" != "PENDING" ]]; then
     local got_bytes got_sha
-    got_bytes="$(stat -c%s "$staged")"
+    got_bytes="$(stat -L -c%s "$staged")"
     if [[ "$got_bytes" != "$bytes" ]]; then
       rm -f "$staged"
       die "SIZE MISMATCH for $name: got $got_bytes, pinned $bytes. Deleted — a corrupt
@@ -247,9 +253,9 @@ cmd_fetch() {
   [[ -f "$dest" ]] || die "could not move $staged -> $dest"
 
   if [[ "$sha" == "PENDING" ]]; then
-    warn "UNVERIFIED: downloaded $name ($(stat -c%s "$dest") bytes) WITHOUT any hash check —"
+    warn "UNVERIFIED: downloaded $name ($(stat -L -c%s "$dest") bytes) WITHOUT any hash check —"
     warn "its registry row is PENDING. Treat it as unvetted until you pin it."
-    say "  Pin it:  sha256sum '$dest'  &&  stat -c%s '$dest'   then edit $REGISTRY"
+    say "  Pin it:  sha256sum '$dest'  &&  stat -L -c%s '$dest'   then edit $REGISTRY"
     return 0
   fi
   ok "downloaded and verified against the pin"

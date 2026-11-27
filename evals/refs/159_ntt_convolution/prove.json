@@ -1,0 +1,10 @@
+{
+  "task": "159_ntt_convolution",
+  "note": "Failure classes for tests/prove_task.py against the v4 validators (units a..e; the zig unit f is out of v5: its prompt carries zig API tutoring). ntt.* are the v4 refs (copies of evals/refs/ntt.*). Each wrong is the ref with one bug: wrong_noscale skips the 1/n scaling of the inverse transform; wrong_fwdroot runs the inverse transform with the forward root w instead of w^-1 (an index-reversed result). Both first differ at case 1 ([1,2]*[1,2], the first case with n > 1). slow.* is a correct Karatsuba convolution mod p instead of an NTT (cutoff py 48, compiled 20000), rejected by the validator's own wall-clock gate (py 5.0 s, go 2.0 s, c/cpp/rs 1.5 s). leak.* dumps every fixture file except input.txt and the solution.",
+  "timed": true,
+  "expect": {
+    "wrong_noscale": "case \\d+ mismatch",
+    "wrong_fwdroot": "case \\d+ mismatch"
+  },
+  "slow_expect": "too slow: "
+}

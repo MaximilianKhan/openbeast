@@ -19,9 +19,13 @@ Description=OpenBeast local AI stack
 # NOTE: docker.service here is aspirational only — a USER manager cannot
 # order against SYSTEM units, so this line is ignored at boot. The real
 # boot-race handling is start.sh's docker-info wait loop; don't "fix" a
-# race by editing this ordering.
-After=network-online.target docker.service
-Wants=network-online.target
+# race by editing this ordering. network-online.target is not here for the
+# same reason: a user manager has no such unit (`systemctl --user list-units
+# network-online*` = not-found), and the system one is reached before DHCP
+# has a default route anyway. beast-island's launch probe re-tries for
+# up to 20 s instead (OPENBEAST_ISLAND_LAUNCH_WAIT), so a slow uplink is
+# not an outage.
+After=docker.service
 
 [Service]
 Type=oneshot
@@ -41,6 +45,13 @@ ExecStop="@REPO@/stop.sh"
 # openbeast` no longer ran ExecStop, and the next start said "already
 # running". No fixed number here can track a raised load grace either.
 TimeoutStartSec=infinity
+# The stop's budget: stop.sh waits up to 20 s for the supervisor, up to 30 s
+# for openbeast-stack (start.sh's OB_STACK_STOP_TIMEOUT_S), then takes the
+# containers down. Unset, it was systemd's default 90 s, which a stack stop
+# that used its own whole 90 s (before 2026-11-23) exhausted: the restart of
+# every model switch then failed. Change it here, then re-run the Install
+# lines above (the installed unit is a copy).
+TimeoutStopSec=120
 
 [Install]
 WantedBy=default.target

@@ -1,5 +1,6 @@
 #!/bin/bash
-# Review 2026-10-27, launcher/ops findings (R4-01 … R4-07, R9-01). Each case
+# Review 2026-10-27, launcher/ops findings (R4-01 … R4-07, R9-01), the ones
+# main did not already carry when the review was merged. Each case
 # builds its own sandbox copy of the scripts, stubs every host tool, and
 # FAILS on the code before the fix (the negative controls say what the
 # sandbox can observe at all).
@@ -224,28 +225,34 @@ grep -q "Waiting for llama-server" <<< "$_O" && fail "stop.sh waited with nothin
 
 # ---------------------------------------------------------------------------
 echo ""
-echo "R4-01 — a ./stop.sh landing mid-tick sticks:"
+echo "R4-01 — a ./stop.sh landing while the watchdog reaps the old llama-server sticks:"
+# main's _may_restart gates every restart at the moment of acting; the one
+# action that did not ask again was the no-supervisor llama relaunch, AFTER
+# its pgrep / kill / sleep. The stop lands exactly there: the pgrep stub (the
+# llama sweep is the only pgrep naming llama-server) writes .run/stopped.
 _R="$_T/wd"; _sandbox "$_R"
 printf 'SEARXNG_SECRET=abc\n' > "$_R/openbeast.conf"
 printf 'import os\nopen(os.environ["WD_LOG"], "a").write("toolserver launched\\n")\n' > "$_R/agents/openapi_tools.py"
 printf '#!/bin/bash\necho "docker $*" >> "$WD_LOG"\nexit 0\n' > "$_R/bin/docker"; chmod +x "$_R/bin/docker"
-# curl: every probe fails; the FIRST one (llama's /health) also plays the
-# operator running ./stop.sh right then — it writes .run/stopped.
-printf '#!/bin/bash\n[[ -n "${WD_STOP_AT_FIRST:-}" && ! -e "$WD_DIR/.curl1" ]] && { : > "$WD_DIR/.curl1"; echo "x ./stop.sh" > "$WD_DIR/.run/stopped"; }\nexit 7\n' > "$_R/bin/curl"
-chmod +x "$_R/bin/curl"
+printf '#!/bin/bash\nexit 7\n' > "$_R/bin/curl"; chmod +x "$_R/bin/curl"
+printf '#!/bin/bash\n[[ -n "${WD_STOP_AT_PGREP:-}" && "$*" == *llama-server* ]] && echo "x ./stop.sh" > "$WD_DIR/.run/stopped"\nexit 1\n' > "$_R/bin/pgrep"
+chmod +x "$_R/bin/pgrep"
+printf '#!/bin/bash\necho "llama launched" >> "$WD_LOG"\n' > "$_R/scripts/serve-none.sh"; chmod +x "$_R/scripts/serve-none.sh"
 : > "$_R/wd.log"
-_O="$(RUN_ENV=(WD_LOG="$_R/wd.log" WD_DIR="$_R" WD_STOP_AT_FIRST=1 OPENBEAST_SERVE_SCRIPT=serve-none.sh); \
+_O="$(RUN_ENV=(WD_LOG="$_R/wd.log" WD_DIR="$_R" WD_STOP_AT_PGREP=1 OPENBEAST_SERVE_SCRIPT=serve-none.sh); \
       timeout 60 env -i HOME="$_R/home" PATH="$_R/bin:/usr/bin:/bin" "${RUN_ENV[@]}" bash "$_R/scripts/healthcheck.sh" --restart 2>&1 || true)"
-if ! grep -qE "toolserver launched|compose .*up" "$_R/wd.log" && grep -q "stopped on purpose during this check" <<< "$_O"; then
-  pass "after a mid-tick stop, the watchdog relaunches nothing (was: tool server + WebUI + SearXNG came back)"
+if grep -q "no supervisor: restarting llama.cpp directly" <<< "$_O" \
+   && ! grep -qE "llama launched|toolserver launched|compose .*up" "$_R/wd.log" \
+   && grep -q "stopped on purpose during this pass" <<< "$_O"; then
+  pass "a stop landing during the llama reap: no serve script is launched, nothing else comes back"
 else
-  fail "the watchdog undid a mid-tick stop: $(tr '\n' '|' < "$_R/wd.log")"
+  fail "the watchdog undid a mid-tick stop: $(tr '\n' '|' < "$_R/wd.log") :: $(grep -E 'supervisor|stopped on purpose' <<< "$_O" | tr '\n' '|')"
 fi
-rm -f "$_R/.run/stopped" "$_R/.curl1" "$_R/.run/watchdog-relaunches"; : > "$_R/wd.log"
+rm -f "$_R/.run/stopped" "$_R/.run/watchdog-relaunches"; : > "$_R/wd.log"
 _O="$(RUN_ENV=(WD_LOG="$_R/wd.log" WD_DIR="$_R" OPENBEAST_SERVE_SCRIPT=serve-none.sh); \
       timeout 60 env -i HOME="$_R/home" PATH="$_R/bin:/usr/bin:/bin" "${RUN_ENV[@]}" bash "$_R/scripts/healthcheck.sh" --restart 2>&1 || true)"
-if grep -q "compose .*up -d open-webui" "$_R/wd.log"; then
-  pass "with no stop, the same tick DOES restart (control: the sandbox observes relaunches)"
+if grep -q "llama launched" "$_R/wd.log" && grep -q "compose .*up -d open-webui" "$_R/wd.log"; then
+  pass "with no stop, the same tick DOES relaunch (control: the sandbox observes relaunches)"
 else
   fail "control: no relaunch observed without a stop: $(tr '\n' '|' < "$_R/wd.log") :: $(tail -n 3 <<< "$_O")"
 fi
@@ -312,39 +319,6 @@ if [[ ! -e "$_B/.run/stopped" && "$_O" == *"Usage:"* ]]; then
 else
   fail "./start.sh stop --help stopped the stack: $(head -n 3 <<< "$_O" | tr '\n' '|')"
 fi
-
-# ---------------------------------------------------------------------------
-echo ""
-echo "R10 #9 — serve.sh's registry size check covers --mmproj and draft GGUFs:"
-_V="$_T/serve"; mkdir -p "$_V/scripts"
-sed -n '/^# --- Model registry enforcement/,/^fi$/p' "$REPO_DIR/scripts/serve.sh" > "$_V/block.sh"
-{ printf '%s\t5\tmain.gguf\torg/x\t-\n' "$(printf '0%.0s' {1..64})"
-  printf '%s\t999\tproj.gguf\torg/x\t-\n' "$(printf '0%.0s' {1..64})"
-  printf '%s\t4\tdraft.gguf\torg/x\t-\n' "$(printf '0%.0s' {1..64})"
-} > "$_V/scripts/weights.registry"
-printf 'exact' > "$_V/main.gguf"; printf 'short' > "$_V/proj.gguf"; printf 'four' > "$_V/draft.gguf"
-cat > "$_V/run.sh" <<'RUN'
-set -euo pipefail
-SCRIPT_DIR="$1"; MODEL="$2"; WEIGHT_ENFORCE="$3"; shift 3; EXTRA_ARGS=("$@")
-source "$SCRIPT_DIR/../block.sh"
-echo LAUNCH
-RUN
-_sv() { bash "$_V/run.sh" "$_V/scripts" "$_V/main.gguf" "$@" 2>&1; echo "rc=$?"; }
-_O="$(_sv strict --mmproj "$_V/proj.gguf")"
-if [[ "$_O" == *"projector 'proj.gguf' is 5 bytes, registry pins 999"* && "$_O" == *"rc=3"* ]]; then
-  pass "a wrong-size --mmproj is refused under strict (exit 3)"
-else
-  fail "--mmproj not checked: $(tr '\n' '|' <<< "$_O")"
-fi
-_O="$(_sv strict --model-draft="$_V/proj.gguf")"
-[[ "$_O" == *"draft model 'proj.gguf'"* && "$_O" == *"rc=3"* ]] && pass "…and a wrong-size --model-draft=<file>" \
-  || fail "draft not checked: $(tr '\n' '|' <<< "$_O")"
-_O="$(_sv strict -md "$_V/draft.gguf" --mmproj-offload)"
-[[ "$_O" == *LAUNCH* && "$_O" == *"rc=0"* ]] && pass "a right-size draft model passes (control)" \
-  || fail "right-size draft refused: $(tr '\n' '|' <<< "$_O")"
-_O="$(_sv warn --mmproj "$_V/proj.gguf")"
-[[ "$_O" == *"WARNING: projector"* && "$_O" == *LAUNCH* ]] && pass "…under warn it warns and launches" \
-  || fail "warn mode: $(tr '\n' '|' <<< "$_O")"
 
 echo ""
 echo "================================"

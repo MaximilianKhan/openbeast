@@ -1,0 +1,131 @@
+# What a DGX Spark backup holds, and what a restore puts back.
+# Read by scripts/backends/spark-backup.sh and spark-restore.sh
+# (engine: scripts/backends/pylib/spark_backup.py). docs/SPARK_BACKUP_RESTORE.md
+#
+#   CLASS  ROLES  PATH      # note
+#
+# PATH is relative to the account's home (~max), never absolute, never "..".
+# A trailing / means a directory (copied whole). `*` matches inside one path
+# component. {SERVING_REV8} is the first 8 hex digits of the DeepSeek pack
+# local.sh selects (MODEL_REVISION in the recipe's runtime/scripts/local.sh,
+# or SPARK_BACKUP_SERVING_REV); {SERVING_WCD} is the folder name of that
+# pack's rank-1 cache (the basename of local.sh's WORKER_CACHE_DIR:
+# worker-rank-cache-<REV8>, or worker-rank-cache for the stock pack). A line
+# using a value that is unknown is skipped.
+#
+# ROLES: head | worker | all. A restore for a role copies the lines for that
+# role and `all`. A backup copies every line it can (it is taken on the head,
+# so it can populate both roles). For image lines, `opt` means only with
+# --with-optional-images.
+#
+# CLASSES
+#   keep       backed up, restored
+#   secret     backed up, restored; must be 0600/0700 (checked, never printed)
+#   weights    backed up, restored; big, hard-linked across trees (rsync -H)
+#   rankcache  backed up (unless --no-rank-caches), restored. No line uses it
+#              since 2026-11-18 (Max: never back up what rebuilds offline); kept
+#              so older generations, and a deliberate faster-restore line, work
+#   node       backed up for the record; NEVER copied by a restore — the
+#              restore regenerates it for the node it runs on
+#   rebuild    NOT backed up; recomputed OFFLINE from what is kept (the doc's
+#              §3.5 and `spark-restore.sh rebuild` say how, and how long)
+#   skip       NOT backed up; caches, desktop noise, sockets
+#   image      a docker image (repo:tag pattern, or compose:NAME = the image
+#              docker-compose.yml pins for that service), saved with docker save
+#   volume     a named docker volume, exported with tar (containers paused)
+#
+# Every top-level entry of the home directory should be claimed by some line:
+# `spark-backup.sh inventory` lists what is not, so nothing is missed silently.
+# First match wins for nested paths: a skip line inside a kept tree excludes it.
+
+# ── The OpenBeast checkout and its node-specific files ───────────────────────
+skip      all     openbeast/.run/                     # sockets and pid files of the running stack
+skip      all     openbeast/**/__pycache__/           # bytecode
+node      all     openbeast/scripts/backends/spark.env    # per node: SPARK_NODE_IP, SPARK_IFACE, SPARK_IB_HCA
+node      all     openbeast/scripts/backends/cluster.env  # head: the node list in rank order
+secret    head    openbeast/openbeast.conf            # the command center's settings, with credentials
+keep      all     openbeast/                          # the checkout, .git and UNCOMMITTED changes included
+secret    head    openbeast.conf.bak-*                # earlier openbeast.conf copies
+keep      head    *.log                               # bring-up logs in ~
+keep      head    backups/                            # earlier Open WebUI volume exports
+
+# ── Secrets and per-account configuration ───────────────────────────────────
+secret    head    .config/openbeast/gate-keys/        # beast-gate device keys: the head serves the gate
+secret    head    .config/openbeast/webui-*           # Open WebUI admin password
+secret    all     .config/openbeast/                  # tensorfold-api-key, hf-token (both roles)
+node      all     .config/systemd/user/*.wants/       # which units start at boot: the restore enables per ROLE instead
+keep      all     .config/systemd/user/               # unit files: openbeast, deepseek-v41-inference, spark-hydra-inference, timers
+keep      all     .config/opencode/                   # opencode settings
+keep      all     .config/NVIDIA/                     # NVIDIA Sync's per-account state
+secret    all     .ssh/authorized_keys                # the Mac's key and the cluster key
+secret    all     .ssh/id_ed25519*                    # the cluster key NVIDIA Sync made (the same on every Spark)
+node      all     .ssh/config                         # NVIDIA Sync's peer entries; the restore merges a managed block for the fleet
+node      all     .ssh/known_hosts                    # host keys are new on a reinstalled node
+secret    all     .gnupg/                             # gpg keyring
+keep      all     .bashrc                             # shell setup, beast-spark aliases
+keep      all     .profile
+skip      all     .bash_history                       # can hold pasted secrets; not worth carrying
+skip      all     .viminfo
+skip      all     .bash_logout
+skip      all     .sudo_as_admin_successful
+
+# ── Installed tools (all user-level, no root) ────────────────────────────────
+keep      all     .local/bin/                         # tensorfold link, beast-spark, hf, opencode link
+keep      all     .local/opt/                         # native TensorFold 1.2.7 (signed release) and its sha256
+keep      all     .local/lib/                         # pip --user packages (hf CLI)
+keep      all     .local/share/opencode/              # opencode sessions and auth
+skip      all     .local/share/                       # desktop state (keyrings, trash, gnome)
+skip      all     .local/state/
+keep      all     .opencode/                          # opencode v2.3.2 binary
+keep      head    .venvs/                             # spark-tools venv (hf, bench tools)
+keep      all     .openbeast/                         # beast-docs mirror
+keep      head    openbeast-files/                    # beast-artifact files and per-user uploads
+keep      all     offline-stage/                      # staged .debs (libnccl2, tailscale) and TensorFold release, when present
+keep      all     openbeast-backups/                  # earlier ad-hoc copies (spark-2: kilobytes)
+keep      head    git/                                # the offline git hub (~/git/openbeast.git, SELF_DEVELOPMENT 11): the only trunk while GitHub is unreachable
+keep      all     live-aside/                         # local copies set aside before a checkout update (SELF_DEVELOPMENT 0.2)
+rebuild   all     obvenv/                             # the test venv (~150 MB): python3 -m venv ~/obvenv, then pip install the repo's test deps
+skip      all     scratch*                            # scratch clones of the repo (spark-2): re-clone from the hub
+skip      all     obtest-*                            # test clones (spark-2)
+skip      all     obengine-scratch-*                  # engine scratch trees (spark-2)
+
+# ── Recipes (head only: start.sh starts rank 1 over ssh) ─────────────────────
+keep      head    openbeast-recipes/                  # deepseek-prep (runtime, rollback, conformance records), glm53
+
+# ── Weights: one rsync -H pass, so Documents/, the HF caches and
+#    openbeast-models/ stay hard links of each other ──────────────────────────
+weights   all     Documents/                          # model folders (hard links into the HF caches), notes, opencode tarball
+weights   all     openbeast-models/glm53-flash-ablit-exl3/   # GLM checkpoint (hard links)
+weights   all     openbeast-models/deepseek-hf/hub/   # DeepSeek base (Engram shards) and the EXL3 packs
+keep      all     openbeast-models/deepseek-hf/tensorfold-dsv41/kit-*/  # the kernel kit, .git INCLUDED: the offline rebuild refuses a kit without it (it would git-fetch)
+rebuild   all     openbeast-models/deepseek-hf/tensorfold-dsv41/*/   # per pack: rank 0 file (~106 GB), token map, served-folder links: spark-deepseek-prepare-local.sh, offline
+rebuild   all     openbeast-models/deepseek-hf/worker-rank-cache*/   # per pack: rank 1 file (~106 GB), built on the head and rsynced to the worker by the same script
+keep      all     openbeast-models/*.lock             # model-fetch locks, when kept beside the weights
+weights   all     .cache/huggingface/                 # GLM HF-cache layout (hard links) and the DFlash2 drafter blobs
+keep      all     .cache/tensorfold-glm53/logs/       # GLM start logs
+rebuild   all     .cache/tensorfold-glm53/            # GLM's compiled CUDA kernels (~170 MB per image): recompiled offline on the first start, a few minutes
+keep      all     .cache/dsv41-tensorfold/            # DeepSeek logs
+skip      all     .cache/                             # pip, browser, mesa, thumbnails: rebuildable
+
+# ── Desktop and system noise ─────────────────────────────────────────────────
+skip      all     snap/
+skip      all     .nv/                                # CUDA JIT cache
+skip      all     .docker/                            # buildx state (no registry credentials here)
+skip      all     .config/                            # the rest: browser, gnome, dconf
+skip      all     Desktop/
+keep      head    Downloads/                          # small; whatever was fetched by hand
+skip      all     Music/
+skip      all     Pictures/
+skip      all     Public/
+skip      all     Templates/
+skip      all     Videos/
+skip      all     .local/
+
+# ── Docker ───────────────────────────────────────────────────────────────────
+image     all     tensorfold-glm53:*                  # GLM-5.3-Flash recipe image (the staged alternative)
+image     all     tensorfold-dsv41:*                  # DeepSeek V4.1 Flash engine image (serving: the pair's default)
+image     head    compose:open-webui                  # pinned by digest in docker-compose.yml
+image     head    compose:searxng
+image     head    alpine:latest                       # tar helper for volume export/import
+image     head    nvcr.io/nvidia/pytorch:*            # 24 GB base of the container engine / native build (Max, 2026-11-18: include it; re-pulling is online)
+volume    head    openbeast_open-webui-data           # users, chats, settings (SQLite)

@@ -34,20 +34,3 @@ updates:
     labels: [dependencies]
     cooldown:
       default-days: 7
-
-  # The compose images are pinned tag@sha256 digest and had no watcher. ONE
-  # grouped PR across the three files: docker-compose.yml and
-  # scripts/client-searxng.compose.yml must carry the SAME searxng digest
-  # (tests/test_supply_chain.sh checks the parity), so separate per-directory
-  # PRs would each fail it. These PRs do not touch agents/requirements.txt:
-  # land them with ./scripts/land-dependabot.sh <PR> (rebase only, no relock).
-  - package-ecosystem: docker-compose
-    directories: [/, /scripts, /extensions/ntfy]
-    schedule:
-      interval: weekly
-    labels: [dependencies]
-    cooldown:
-      default-days: 7
-    groups:
-      compose-images:
-        patterns: ["*"]

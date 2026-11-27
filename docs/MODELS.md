@@ -1,18 +1,239 @@
 # Models
 
-OpenBeast ships **23 pre-configured models** (one `scripts/serve-*.sh` each,
-excluding the 0.6B fast-boot bridge), every one VRAM/context-measured on
-the RTX 5090 reference card. Swap any of them in with one argument to
+OpenBeast ships **25 pre-configured model profiles** for the single-GPU rig
+(one `scripts/serve-*.sh` each; not counted: the 0.6B fast-boot bridge
+`serve-bootstrap.sh` and beast-instinct's `serve-instinct-scorer.sh` and
+`serve-openjev.sh`), every one VRAM/context-measured on the RTX 5090
+reference card except the opt-in GLM-5.3-Flash big mode (unmeasured, below). Swap any of them in with one argument to
 `start.sh` (e.g. `./start.sh serve-qwen-27b-q5.sh`) or set your `beastup`
 default via `SERVE_SCRIPT` in `openbeast.conf`. Capability rankings (where a
 model has been benchmarked) are in the [eval leaderboard](RESULTS.md) and
 [`evals/README.md`](../evals/README.md).
 
-The default is **Qwen3.8 27B Uncensored MTP Q5_K_M** at the full native 262K
-context (changed 2026-08-19 from Heretic v2 27B MTP Q5_K_M, which it beats on
+**The RTX 5090's default since 2026-11-25 is Inkling 2 Mini with SC117's
+abliteration, on Basalt** (Max's decision,
+[DECISIONS-2026-11-25 §7](reports/DECISIONS-2026-11-25.md#7-sc117s-abliterated-inkling-2-mini-is-the-rtx-5090-default)):
+Basalt v0.5.7 (`400b411c`) through `scripts/engines/basalt.sh`, profile
+`inkling2-mini-sc117` (`Inkling-2-Mini-SC117-abliterated-NVFP4-MX8.basalt`,
+sha256 `6eaa50d3…9b`, built offline by `scripts/engines/inkling-sc117-pack.sh`
+from the release @ `b85c3cfa` and SC117's pack @ `ae324ac3`; it differs from
+the stock pack only in the 20 attention-output matrices SC117 edited;
+`--parallel 1 --max-context 262144 --kv fp8`, DSpark at the pack default,
+answer room auto), agent setup `AGENT_PROFILE=inkling-best`: the serve args
+and agent setup of board row `INK-T2-SC117`, **51/71 scored, SCORE 75.3**,
+2026-11-25, single seed, 0 lost, 0 excluded. Against the stock pack on the
+same arm (`INK-T2-STOCK`, 53/71, SCORE 78.2): 1 gained, 3 lost, p 0.63,
+within noise, at the same speed. Max's reason: the uncensored-preferred
+policy (professionals such as legal firms and medical practices served
+unaligned, neutral answers; quoted in the decision). **Not exactly that
+row:** a build through the adapter is the pin plus the PR #632 patch
+(DECISIONS-2026-11-24 §11, profile key `PATCHES`), and `INK-T2-SC117` ran
+the unpatched pin (as `INK-T2-STOCK` did); no board row has measured pin +
+#632 at answer room auto on either pack ([TODO.md](TODO.md) "Basalt after
+the switch"). **Before it, 2026-11-24 to 2026-11-25:** the stock pack
+(profile `inkling2-mini-stock`, `jesdga/Inkling-2-Mini-Basalt` @ `c2afac3a`,
+`28ec7072…1b99`; [DECISIONS-2026-11-24 §10](reports/DECISIONS-2026-11-24.md#10-stock-inkling-2-mini-on-basalt-is-the-rtx-5090-default)),
+now the first rollback; Qwen3.8 on llama.cpp the second. How to switch and
+roll back: [below](#switching-the-rtx-5090-to-its-default-and-back); a
+fresh install (the pack build): [INSTALL.md](INSTALL.md#rtx-5090-the-default-model-inkling-2-mini-sc117-abliterated-on-basalt).
+**Applied on the reference rig** 2026-11-25 17:03 PST, from a plain ssh shell in `~/Documents/openbeast` at `97363559`: the pack hard-linked into `weights/` (`verify-weights.sh --file Inkling-2-Mini-SC117-abliterated-NVFP4-MX8.basalt`: 1 verified, 0 failures), conf backed up (`~/openbeast-runs/openbeast.conf.before-sc117-20261125-1702`, and `use`'s own `.engines/conf-backups/openbeast.conf.20261125T170301.2136450`), `engine.sh use default --dry-run` showed `ENGINE_PROFILE=inkling2-mini-sc117` and the SC117 pack mount, then `engine.sh use default`: `engine.sh status` basalt v0.5.7 + #632, profile `inkling2-mini-sc117`, ready, serving `inkling-2-mini`; `docker inspect` mounts `weights/Inkling-2-Mini-SC117-abliterated-NVFP4-MX8.basalt` read-only, `ReadonlyRootfs true`, `CapDrop [ALL]`, `Dns [127.0.0.1]`, `PidsLimit 256`, `Memory 32 GiB`, port `127.0.0.1:8080` only (`ss`: loopback listener only); the launch log's sandbox probe: 9 of 9 checks FAIL (no DNS, no TCP out, no raw DNS answer); conformance PASS (reasoning in `reasoning_content`, tools, parallel calls); through beast-gate over Tailscale (`https://beast…:8443`) `/v1/models` 200 and a chat with thinking on answered (416 characters of reasoning); the dashboard's `/api/slot` shows `inkling-2-mini`, 1 slot, backend basalt; `AGENT_PROFILE=inkling-best` unchanged. Log: `~/openbeast-runs/sc117-basalt.log`.
+The source of truth for "the rig's default" is `evals/boards/v5/board.json`
+`"defaults"` ([RESULTS.md](RESULTS.md#shipped-default-per-platform)).
+
+**The llama.cpp default, and the RTX 5090's fallback, is Qwen3.8 27B
+Uncensored MTP Q5_K_M** at the full native 262K context: what an unset
+`openbeast.conf` serves, what `bootstrap.sh` downloads, the default on every
+other rig GPU, and the rollback path from Inkling (changed 2026-08-19 from Heretic v2 27B MTP Q5_K_M, which it beats on
 speed *and* headroom — see the Qwen3.8-27B-Uncensored section below); the dense
-**Qwen3.6-27B Q5_K_XL** tops the capability board, and the **35B-A3B MoE**
-variants trade a little accuracy for 30–50% more speed per token.
+**Qwen3.6-27B Q5_K_XL** tops the v4 capability board (the rig lineup), and the **35B-A3B MoE**
+variants trade a little accuracy for 30–50% more speed per token. The DGX
+Spark pair serves its own models (below); its default, DeepSeek-V4.1-Flash
+(Mia EXL3), leads the v5 board.
+
+**Qwen3.8's v5 result (2026-11-23; the 5090 default until 2026-11-24):** 51/71 scored (54 raw), SCORE
+75.0 (52/71, 75.6 until the integrity rescan of 2026-11-25 excluded two more units, one a pass), under campaign arm Q_T2 (T2's switches at one stream: thinking on,
+the T assists and packs, an 8,192-token per-turn cap, the act nudge, wall
+×2; harness9), #4 on the [v5 board](RESULTS.md#v5-leaderboard--best-configuration-per-model)
+by SCORE, single seed. Three units were lost to llama-server's HTTP 500 on
+a truncated tool call and count as fails; two passes were excluded by the
+integrity scan (the agent's shell reached the network; on Linux it has no
+network deny). The bare L0 profile (2026-11-22, harness10) scored 39/71
+(SCORE 63.3). Both were driven from the rig's eval-host container,
+calibrated against the Mac on 2026-11-23 by inference. Report:
+[V5_QWEN38_RTX5090-2026-11-22.md](reports/V5_QWEN38_RTX5090-2026-11-22.md).
+
+**Qwen3.8's agent setup is `AGENT_PROFILE=qwen38-best`
+(2026-11-23, Max; the 5090's default setup until 2026-11-24, now its fallback's).** One line in `openbeast.conf`. It sets exactly arm
+Q_T2's switches for this host's own agents (the tool server's
+`start_agent`, beast-chat, `agent.sh`): `INFERENCE_THINKING=on`,
+`AGENT_MAX_TOKENS=8192`, `AGENT_ACT_NUDGE=1`, `BEAST_ASSIST=1`,
+`DIAG_EDIT_HINT=1`, `AGENT_VERIFY_DONE=1`, `AGENT_ENV_BLOCK=1`,
+`AGENT_WALL_WARN=1`, `LANG_PACK_VARIANT=v3`. Why: Q_T2 is the model's
+best measured row, 51/71 scored (SCORE 75.0, board row `Q38U-T2`; 52/71, 75.6 before the
+2026-11-25 integrity rescan) against
+39/71 (SCORE 63.3) for the bare L0 baseline, +12 gained / 1 lost on the 59
+units with a verdict in both (p 0.003). Caveats: single seed; the pair
+crosses a harness era (L0 harness10, Q_T2 harness9) and changes every
+switch at once, so the gain is not attributed to one switch (the doubled
+wall and wall-scaled turns, which have no daily equivalent, are the first
+suspect); the rig's eval-host container is calibrated against the Mac by
+inference. These are the same switches as the Spark pair's
+`deepseek-best` (Q_T2 is T2 at one stream), so both names share one table
+in `scripts/lib/conf.sh`. What changes on the rig: agents get thinking on
+(also the host-wide default for Open WebUI chats and beast-gate requests
+that name none), an 8,192-token per-turn cap in place of
+`REASONING_BUDGET` + 12288 (32,768), the act nudge, push diagnostics with
+the edit hint, the first-turn environment block, and the v3 zig pack on zig
+tasks where zig 0.16 is installed. Verify-done and the wall warnings only
+fire inside an eval. The serve script and its flags (`--reasoning-budget
+20480`, MTP, 262K) do not change, and neither does opencode. Precedence,
+per key: env `OPENBEAST_<KEY>` > that key's own line in `openbeast.conf` >
+the profile > the built-in default; the rig's `BEAST_ASSIST=1` line sets
+the same value and does not conflict. **Applied on the rig 2026-11-23
+(19:15 PST)** in `~/Documents/openbeast/openbeast.conf`, verified through
+the gate; what was done and the rollback: [TODO.md](TODO.md) "`AGENT_PROFILE=qwen38-best`
+applied on the 5090 rig".
+
+**Inkling 2 Mini (evaluated 2026-11-23/24; the stock pack is the 5090
+default since 2026-11-24).** The first v5 run served Blackfrost's Derisked
+weights (a refusal-direction edit) converted to a Basalt NVFP4-MX8 pack;
+the default is Basalt's stock pack, served by `scripts/engines/basalt.sh`
+([ENGINES.md](ENGINES.md#basalt-the-rtx-5090-default)). **Its v5 result
+(2026-11-24):** arm I_T2, the default's Q_T2 setup on the same rig, tree
+and container, 49/71 scored, SCORE 76.5, #4 on the board by SCORE (one
+place above the default, level on problem-solving, wider on languages),
+single seed. Over the 63 units both rows measured cleanly (65 before the
+2026-11-25 integrity rescan) the default
+passed 51 and Inkling 45 (1 gained, 7 lost, p 0.07, within churn), so
+**Qwen3.8 stays the default**. Inkling ran the arm in 4.5 h against ~13.5
+for Q_T2 (median unit 47 s against 254 s; about 520 tok/s end to end on
+full 8,192-token replies against 142). Caveats: 203 turns ended empty at
+the cap (Basalt #588), and Basalt's tool-call parsing is more lenient than
+llama.cpp's. Report:
+[V5_INKLING2_MINI_RTX5090-2026-11-24.md](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md);
+engines measured for it (Strata, llama.cpp, vLLM, Basalt):
+[reports/STRATA_INKLING_5090-2026-11-23.md](reports/STRATA_INKLING_5090-2026-11-23.md).
+**Ablations (2026-11-24, report §10):** on **Basalt's stock pack** (no
+behavioural edit, `jesdga/Inkling-2-Mini-Basalt` @ `c2afac3a`) the same arm
+passed **53/71 (SCORE 78.2, row INK-T2-STOCK, the top RTX 5090 row)**, +4
+and +2 against the two Derisked draws and level with the default (−2 over
+63 clean units, p 0.69), single seed, with about half the empty capped
+turns (105). A seed repeat of the Derisked arm (INK-T2-S1, 51/71) flipped 2
+units, so every gap here is within noise. The wrap-up kept Qwen3.8 as the
+default pending an improved arm (stock + Basalt PR #632) and a seed repeat
+(DECISIONS-2026-11-24 §6); **Max overrode that rule the same day and made
+the stock Inkling the default** (§10 there: level with Qwen3.8, about 3×
+faster, no unit lost). The third arm, I_UP8k (DeepSeek's UP_8k setup on
+the Derisked pack, harness10), passed 49/71, level with I_T2 (3 units each
+way), and its forced-act turns kept thinking on Basalt (`enable_thinking=false`
+is only a reasoning-effort hint there, with no thinking budget), so T2's
+`inkling-best` stays the setup (report §10.9). The improved arm `I_T3`
+(report §12; none of UP_8k's switches) passed 52/71 on 2026-11-25 (row
+`INK-T3`, SCORE 77.4): level with `INK-T2-STOCK`, at twice the time, with
+four context overflows; `inkling-best` and the stock default stay
+([report](reports/V5_INKLING2_MINI_I_T3-2026-11-25.md)). **SC117's
+abliterated edit** (`SC117/Inkling-2-Mini-abliterated-Strata` @ `ae324ac3`:
+a rank-1 refusal-direction projection on the attention output of layers
+4-23) was transplanted into the release and converted by Basalt (pack
+`Inkling-2-Mini-SC117-abliterated-NVFP4-MX8.basalt`, `6eaa50d3…`, rebuilt
+offline by `scripts/engines/inkling-sc117-pack.sh`; it differs from the
+stock pack only in those 20 matrices) and ran INK-T2-STOCK's arm exactly:
+51/71 (row `INK-T2-SC117`, SCORE 75.3), level with stock (−2, p 0.63) and
+with Derisked (+2, p 0.63) at the same speed, KLD 0.0354 against stock's
+0.0128 ([report](reports/V5_INKLING2_MINI_SC117-2026-11-25.md),
+[DECISIONS-2026-11-25 §6](reports/DECISIONS-2026-11-25.md#6-sc117s-abliterated-inkling-on-basalt-level-with-stock-the-default-stays-stock)).
+**Max made it the RTX 5090 default the same day** (§7 there: the
+uncensored-preferred policy; the stock pack the rollback). **Applied on the
+rig 2026-11-25 (~09:45-09:50 PST)** in `~/Documents/openbeast/openbeast.conf`
+(`engine.sh use default` + `AGENT_PROFILE=inkling-best`; Basalt v0.5.7 +
+#632, profile `inkling2-mini-stock`), verified through the gate over
+Tailscale (conformance PASS, the sandbox and container limits, a spawned
+agent answering); Qwen3.8 on llama.cpp with `qwen38-best` is the rollback
+below. What was checked and the conf backups: [TODO.md](TODO.md) "Switch
+the 5090 rig to Inkling 2 Mini (Basalt)".
+
+## Switching the RTX 5090 to its default, and back
+
+The switch is the conf keys `engine.sh use` writes plus one
+`AGENT_PROFILE` line; nothing else changes (the gate, the router, WebUI and
+agents follow `INFERENCE_URL` and `INFERENCE_MODEL`). Every `use` first
+copies `openbeast.conf` to `.engines/conf-backups/` (0600).
+
+**Prerequisites, once:** the NVIDIA Container Toolkit (`docker run --gpus`
+works), `scripts/engine.sh install basalt` (or `install basalt --from DIR`
+offline), the default pack built by `scripts/engines/inkling-sc117-pack.sh`
+into `WEIGHTS_DIR` ([INSTALL.md](INSTALL.md#rtx-5090-the-default-model-inkling-2-mini-sc117-abliterated-on-basalt))
+and `scripts/verify-weights.sh --file Inkling-2-Mini-SC117-abliterated-NVFP4-MX8.basalt`
+(sha256, ~1 min per 20 GB); for the stock rollback also
+`scripts/fetch-weight.sh Inkling-2-Mini-NVFP4-MX8.basalt`; nothing else may
+hold the GPU (an eval arm, a bench).
+
+**Switch to Inkling 2 Mini SC117 (Basalt), the default:**
+
+```bash
+cd ~/Documents/openbeast                       # the rig's main checkout, on main (git pull --ff-only)
+sed -i 's/^AGENT_PROFILE=.*/AGENT_PROFILE=inkling-best/' openbeast.conf
+                                               # was qwen38-best: the same switch table, the name
+                                               # records which measured row the rig runs
+scripts/engine.sh use default --dry-run       # read the conf diff and the docker command
+scripts/engine.sh use default                  # on a 5090: stops the stack, writes
+                                               #   INFERENCE_BACKEND=basalt INFERENCE_URL=http://127.0.0.1:8080
+                                               #   INFERENCE_MANAGED=true ENGINE_PROFILE=inkling2-mini-sc117
+                                               #   INFERENCE_MODEL="inkling-2-mini" INFERENCE_SLOTS=1,
+                                               #   then starts it (the tool server reads AGENT_PROFILE then)
+```
+
+Before 2026-11-25 the restart inside `engine.sh use` could relaunch the
+OLD engine (the first rig switch started the Qwen `SERVE_SCRIPT` under the
+basalt conf): if `.run/stack.log`'s supervisor line names a `serve-*.sh`
+after a switch away from llama, `./stop.sh && ./start.sh -d` from a plain
+shell. Fixed in `lib/conf.sh` and `engine.sh` the same day
+(`tests/test_engine_switch_env.sh`).
+
+The launch refuses, and the stack stays down with the reason in the log,
+when the sandbox probe resolves a name or reaches out, the network has NAT,
+the pack is not at its pinned size, the GPU is not sm_120, or the build is
+not the pin. **Check before trusting it:** `scripts/engine.sh status` (basalt
+v0.5.7, the pin, ready, model `inkling-2-mini`); the launch log's `sandbox
+probe: no DNS, no TCP out`; `docker inspect openbeast-engine-basalt-<8hex>`
+(`ReadonlyRootfs true`, `CapDrop [ALL]`, `Dns [127.0.0.1]`, `PidsLimit 256`,
+`Memory 34359738368`, port `127.0.0.1:8080` only); conformance at c=1
+`scripts/backends/conformance.sh --url http://127.0.0.1:8080 --model inkling-2-mini`
+(PASS, `reasoning_content` separated); through beast-gate, `GET /v1/models`
+lists `inkling-2-mini` and a chat answers; the dashboard's slot card shows
+one slot; `docker logs` of the container shows `api-key=on` when
+`LLAMA_API_KEY` is set.
+
+`use default` writes the shipped profile even over a conf that names
+`inkling2-mini-stock` (a rig switched on 2026-11-24); `use basalt` keeps the
+conf's profile.
+
+**Roll back to the stock pack (the 2026-11-24 default), offline and
+immediate once the pack is on disk:**
+
+```bash
+cd ~/Documents/openbeast
+scripts/verify-weights.sh --file Inkling-2-Mini-NVFP4-MX8.basalt   # or scripts/fetch-weight.sh it first
+scripts/engine.sh use basalt --profile inkling2-mini-stock          # AGENT_PROFILE stays inkling-best
+```
+
+**Roll back to Qwen3.8 (llama.cpp), offline and immediate:**
+
+```bash
+cd ~/Documents/openbeast
+sed -i 's/^AGENT_PROFILE=.*/AGENT_PROFILE=qwen38-best/' openbeast.conf
+scripts/engine.sh use llama --serve-script serve-qwen38-27b-uncensored-mtp-q5.sh
+                                               # stops the Basalt container, removes INFERENCE_URL /
+                                               # INFERENCE_MANAGED / INFERENCE_MODEL / INFERENCE_SLOTS /
+                                               # ENGINE_PROFILE, sets INFERENCE_BACKEND=llama and
+                                               # SERVE_SCRIPT, starts the stack on llama-server
+```
+
+or restore the backup `use` took (`.engines/conf-backups/`, newest before
+the switch) and restart. The Basalt build, its image and the pack stay on
+disk, so switching back again is the first block. A Basalt problem (not a
+model one) can also roll the engine alone back to an earlier build:
+`scripts/engine.sh rollback basalt`.
 
 **Qwen reasoning budget (2026-09-09):** every Qwen-family serve script (3.6
 dense + MoE + NVFP4 + all 3.8 variants — not Gemma, and the Qwen-derived
@@ -52,6 +273,26 @@ schema; defaults to the server flag) — an orchestrator can raise or drop the
 cap for exactly one hard call, or grant a subagent a bigger budget, without
 touching the server. This is the designed-for hook for future always-on
 long-horizon jobs.
+
+**DGX Spark pair (spark-hydra):** the pair does not run these serve scripts.
+It serves **DeepSeek-V4.1-Flash (Mia EXL3)** by default (served id
+`DeepSeek-V4.1-Flash-1017`, unit `deepseek-v41-inference`, eight streams
+(`PARALLEL=8` since the 2026-11-23 [tuning session](reports/DEEPSEEK_TUNING-2026-11-23.md); four before),
+524,288-token context of the model's 1,048,576 window, thinking on); its pack
+folder and cache id end in `-v2`. **GLM-5.3-Flash** (`GLM-5.3-Flash-EXL3`) is
+the staged alternative; its best v5 row is arm UP (2026-11-23): 56/71, SCORE
+81.9, #3, single seed, 6 units behind DeepSeek's UP on the same harness
+([report](reports/V5_GLM_UP-2026-11-23.md)). One model serves at a time, and the only supported
+switch is `beast-spark` on spark-1 (`beastds`, `beastglm`, `beastup`,
+`beastdown`, `beaststatus`). The recommended agent setup for DeepSeek is
+`AGENT_PROFILE=deepseek-best` (below). Hy4-flash (NVFP4), Tencent's model in
+atakans' NVFP4 build on vLLM, is staged on the pair (`beasthy4`, never a
+boot default) and measured: 60/71, SCORE 83.4 under arm H_T2 (T2 exactly),
+5 units behind DeepSeek's T2 on the same harness and pair, single seed
+([report](reports/V5_HY4_FLASH-2026-11-22.md)). The runbook is
+[SPARK_HYDRA.md](SPARK_HYDRA.md); the scores are on the
+[v5 board](RESULTS.md#v5-leaderboard--best-configuration-per-model). For
+bringing another EXL3 model to the pair offline, see [EXL3_PLAYBOOK.md](EXL3_PLAYBOOK.md). It covers what drops in, what needs a profile or recipe, the memory and disk math, and the `spark-model-intake.sh` preflight.
 
 ## Core lineup (v4-benchmarked / v3.5-legacy)
 
@@ -269,6 +510,9 @@ lands.
 
 ## Qwen3.8-27B-Uncensored (JonathanColetti) — added + profiled 2026-08-19 ⭐ THE DEFAULT
 
+Default agent setup since 2026-11-23: `AGENT_PROFILE=qwen38-best` (v5 arm
+Q_T2, 51/71 after the 2026-11-25 integrity rescan (52/71 before), board row `Q38U-T2`, single seed; see the top of this file).
+
 [JonathanColetti/Qwen3.8-27B-Uncensored-GGUF](https://huggingface.co/JonathanColetti/Qwen3.8-27B-Uncensored-GGUF)
 — Qwen3.8-27B with the refusal direction abliterated out of `self_attn.o_proj`
 and `mlp.down_proj`, then imatrix-quantized (496 entries / 200 chunks). Same
@@ -416,6 +660,51 @@ as for Qwen3.8-27B; unverified.
 
 **Not benchmarked.** A v5-fast row at ~35 tok/s single-slot is a ~1-day job;
 it is listed in `BENCH_EXCLUDED` with that reason until scheduled.
+
+**Expert-cache result on Beast (2026-11-17).** The cached profile reached 76.84 decode tok/s against 38.76 static on the same short prompt and weights (1.98×). Prefill was 149.3 versus 152.6 tok/s. Both profiles used the normal 75% memory scope. See the [paired measurement](WEIGHT_STREAMING.md#flash-next-on-beast-measured-november-17-2026) for memory and test conditions.
+
+## GLM-5.3-Flash abliterated (huihui-ai) UD-Q2_K_XL: big mode (added 2026-11-15, unmeasured)
+
+[huihui-ai/Huihui-GLM-5.3-Flash-abliterated-GGUF](https://huggingface.co/huihui-ai/Huihui-GLM-5.3-Flash-abliterated-GGUF)
+(rev `c43a9946`): unsloth's dynamic 2-bit quant of zai-org/GLM-5.3-Flash
+(321B total, about 18B active, 288 experts with 8 routed, arch `glm5-next`),
+with huihui's abliteration of layers 15–35. 101.25 GiB in four shards, pinned
+by sha256.
+
+- **Verified uncensored at the tensor level.** Over range reads against
+  unsloth's stock quant, the ablated layers' attention output and shared
+  experts differ, while the routed experts are byte-identical (huihui leaves
+  the experts unablated).
+- **Why this quant.** It is the best uncensored GGUF that fits 128 GB with
+  room for the stack. UD-IQ3_XXS (112.1 GiB) does not fit the 90% scope.
+  orcarouter's Q2_K (108.8 GiB, gated repo) only barely fits it, with no
+  room left for the stack, so it is a fallback, not the pick
+  ([WEIGHT_STREAMING.md](WEIGHT_STREAMING.md), the fit table and the
+  fallback order).
+- **Big mode is opt-in**: `./start.sh -d serve-glm53-flash-abl-q2kxl-big.sh`.
+  - All 94.7 GiB of routed experts sit pinned in host RAM, under the
+    profile's own **90% memory scope, rig only**. A 14 GiB VRAM cache serves
+    the hot ones.
+  - Target **20–30 tok/s**. Anchor: Project Maya measured 25.9–30.1 on our
+    rig class with stock weights.
+  - While it runs the 27B is not served: hydra's rig deployment reads
+    MISMATCH and `routes.beast` falls to the Ti, or returns 503 on a
+    rig-only install.
+  - Back to daily: `./stop.sh && ./start.sh -d`.
+- **Not benchmarked.** It is in `BENCH_EXCLUDED`, and a v5 cell is 2–3 GPU
+  days. The runbook, the acceptance check and the decision path if this quant
+  fails (other published quants first, self-quantizing last) are in
+  [WEIGHT_STREAMING.md](WEIGHT_STREAMING.md).
+
+**DeepSeek-V4.1-Flash does not fit usefully in 128 GB.** Its routed experts
+are about 204 GB at 3 bpw. On 128 GB that means 1-bit experts with zero
+headroom, or NVMe spill at an estimated ~11 tok/s. The rig's RAM is final
+(Max, 2026-11-15), so it stays on the DGX Spark pair
+([SPARK_HYDRA.md](SPARK_HYDRA.md)). There, DeepSeek-V4.1-Flash (Mia EXL3)'s
+recommended agent setup is the v5 arm T2 (65/71, board row DS-T2,
+2026-11-19; no later arm has beaten it; the series is complete,
+and UP_8k ties it at 65/71 with a lower SCORE, 2026-11-21): one line in openbeast.conf, `AGENT_PROFILE=deepseek-best`
+([SPARK_HYDRA.md E2b](SPARK_HYDRA.md#e2b-deepseek-best-configuration-v5-t2)).
 
 ## What the opencode picker shows (and what it doesn't)
 

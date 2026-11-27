@@ -1,0 +1,324 @@
+{
+ "_about": "The model families spark-hydra (spark-1 + spark-2) serves, and the engines it has, for scripts/backends/spark-model-intake.sh. DATA: read, never executed. docs/EXL3_PLAYBOOK.md explains every field. A family is one recipe + one image + one unit; a 'drop-in' for it is a checkpoint with the family's model_type, the family's required quantization fields and the same safetensors index KEY SET as the reference checkpoint (index_sha256 = sha256 of the sorted keys joined by newlines, with a trailing newline). Optional family fields: 'formats' (the checkpoint formats, in native TensorFold's capability vocabulary, the family serves; another format is not a drop-in), 'formats_not_servable' (format -> why that format of this model_type cannot be served on the pair: intake says NOT SERVABLE HERE with it), 'fit_note' (a measured or claimed resident size, shown beside the computed fit).",
+ "_measured": "spark-1, 2026-11-17 (index signatures, sizes, rank files, MemTotal, native capabilities); read-only; hy4-vllm family and native 1.2.10: 2026-11-19 (the NVFP4 index from the Hub at 30f201ac; tensorfold capabilities --json and tensorfold info on spark-1, read-only)",
+ "pair": {
+  "hosts": [
+   "spark-1",
+   "spark-2"
+  ],
+  "mem_total_gib": 121.69,
+  "rank_weight_comfortable_gib": 92,
+  "rank_weight_limit_gib": 100,
+  "rank_weight_factor": 1.008,
+  "notes": "MemTotal 127,598,412 kB on each Spark (MEASURED). The DeepSeek recipe runs 98.8 GiB of weights per rank (rank file 106,120,890,008 B) with ~6 GiB MemAvailable left on the head beside the command center: that is the tight end. GLM runs ~82 GiB per rank plus a 10 GiB KV pool. rank_weight_factor: per-rank bytes = checkpoint safetensors bytes / TP x factor, calibrated on DeepSeek (210,601,036,966 B checkpoint -> 106,120,890,008 B rank-1 file = 0.5039 of it)."
+ },
+ "families": [
+  {
+   "name": "deepseek-v41",
+   "title": "DeepSeek-V4.1-Flash-1017 (Mia two-Spark recipe)",
+   "model_types": [
+    "deepseek_v41"
+   ],
+   "architectures": [
+    "DeepseekV41ForCausalLM"
+   ],
+   "quant": {
+    "quant_method": "exl3"
+   },
+   "index_keys": 192495,
+   "index_sha256": "525efee77b2fa3969040753762ebf58305e313164266b248458c7a37c5be3f98",
+   "reference_dirs": [
+    "~/Documents/Mia-AiLab-DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw-v2",
+    "~/Documents/Mia-AiLab-DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw"
+   ],
+   "known_packs": {
+    "04c13f12b83d57487912d87d0f1677b076810954": "DeepSeek-V4.1-Flash (Mia EXL3), EAQ v1.1 (Documents folder and cache id end in -v2): THE DEFAULT pack, and DeepSeek is the pair's default model since 2026-11-18 (beast-spark ds / up selects it)",
+    "5d70e783511ce99b2691de62a1d3f79032f2b188": "Mia EAQ v1 2.9 bpw (Documents folder): staged as the Hub snapshot 45ee5d0f, selected with 'use stock' (a fallback, superseded by DeepSeek-V4.1-Flash (Mia EXL3))"
+   },
+   "pack_fingerprints": {
+    "04c13f12b83d57487912d87d0f1677b076810954": "5314a93d58e4a0b8a454be6b1d13670ead0417c596b11b381ae75307ec6f89cc",
+    "5d70e783511ce99b2691de62a1d3f79032f2b188": "4456161f89306a82dab9adb0d11865838c656567dc1d3205d54bb302314a0c2a"
+   },
+   "tp": 2,
+   "recipe": "~/openbeast-recipes/deepseek-prep/runtime",
+   "recipe_commit": "c7f2b85100f0a7b099c92a4e21825e30d93c9c51",
+   "engine": "bertholomus/TensorFold Zig fork @ fbbc971 + the recipe's zig/patches (image label tf.patches 8a98ae503d85)",
+   "image": "tensorfold-dsv41:exl3-tp2-8a98ae503d85",
+   "unit": "deepseek-v41-inference",
+   "served_name": "DeepSeek-V4.1-Flash-1017",
+   "hf_cache": "~/openbeast-models/deepseek-hf",
+   "swap": "~/openbeast-recipes/deepseek-prep/spark-deepseek-pack.sh use {dir} --dry-run   (the real swap only while DeepSeek is the model: beast-spark ds first, or DS_PACK={dir} + DS_ID in ~/.config/openbeast/beast-spark.env, then beast-spark ds)",
+   "rank_files": true,
+   "aux": [
+    "Engram tables: deepseek-ai/DeepSeek-V4.1-Flash-1017 @ 1bae0e10 shards 47 and 48 (203,073,077,576 B), already staged on both Sparks; never part of a pack",
+    "DSpark draft blocks and the vision tower are inside the pack (no separate drafter)"
+   ]
+  },
+  {
+   "name": "glm53",
+   "title": "GLM-5.3-Flash (Mia GLM recipe, TensorFold v0.6.0 + patches)",
+   "model_types": [
+    "glm5_next"
+   ],
+   "architectures": [
+    "Glm5NextForConditionalGeneration"
+   ],
+   "quant": {
+    "quant_method": "exl3",
+    "bits": 4,
+    "codebook": "mcg",
+    "scope": "glm53_routed_experts_only"
+   },
+   "index_keys": 150226,
+   "index_sha256": "60b13aad6b8ddaf53775ccb1d3ec975a1dcc5180fbf04f94efbc94d170cefa68",
+   "reference_dirs": [
+    "~/openbeast-models/glm53-flash-ablit-exl3",
+    "~/Documents/GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit"
+   ],
+   "known_packs": {
+    "b2c37cff398e4ba01188b0505e3f3794acfe308f": "Mia GLM-5.3-Flash EXL3 4bpw TensorFold Ablit (staged as the Hub snapshot 57edefd2, ABLIT=1): the GLM pack; GLM is the pair's staged alternative since 2026-11-18 (beast-spark glm)"
+   },
+   "pack_fingerprints": {
+    "b2c37cff398e4ba01188b0505e3f3794acfe308f": "8fc4c5d511be56e82df2d5eaca1599eddc0488d99aac49415fb060ad7c186371"
+   },
+   "tp": 2,
+   "recipe": "~/openbeast-recipes/glm53",
+   "recipe_commit": "33b50fd",
+   "engine": "TensorFold v0.6.0 (Python) + the recipe's patches/ (image label tf.patches 31557ed1cef6)",
+   "image": "tensorfold-glm53:v0.6.0",
+   "unit": "spark-hydra-inference",
+   "served_name": "GLM-5.3-Flash-EXL3",
+   "hf_cache": "~/.cache/huggingface",
+   "swap": "manual for now: docs/EXL3_PLAYBOOK.md, 'A GLM pack, by hand'",
+   "rank_files": false,
+   "aux": [
+    "DFlash2 drafter incoai/GLM-5.3-Flash-DFlash2 @ 6cc6c481 (Apache-2.0; the same weights as bf582e4e) in the HF cache on both Sparks (2.34 GB)"
+   ]
+  },
+  {
+   "name": "hy4-vllm",
+   "title": "Hy4-flash (atakann's NVFP4 build, vLLM TP2 + expert parallel)",
+   "model_types": [
+    "hy_v4_flash"
+   ],
+   "architectures": [
+    "HYV4FlashForConditionalGeneration"
+   ],
+   "quant": {},
+   "formats": [
+    "modelopt-nvfp4"
+   ],
+   "formats_not_servable": {
+    "exl3": "Hy4-flash EXL3 is single-host only: ExLlamaV3's tensor-parallel workers are local processes on one host (model_tp.py, VERIFIED in docs/reviews/HY4_FLASH_ENGINES-2026-11-19.md), so it is NOT servable at TP2 across the pair, and no engine we have serves hy_v4_flash EXL3 at all (native TensorFold refuses hy_v4_flash). On ONE Spark it fits (an 84.87 GiB trunk, 118 GiB of Engram streamed from disk) but runs a pure-PyTorch reference attention with no server. The pack ~/Documents/LibertAIDAI-Hy4-flash-EXL3-4bpw is kept on purpose (Max, 2026-11-19). Serve Hy4 with the NVFP4 build instead: beast-spark hy4 (docs/EXL3_PLAYBOOK.md, case (c) worked example)"
+   },
+   "index_keys": 254168,
+   "index_sha256": "d3cd2ba4704ab3bdd4c1220bac980b7b527a2014e65b64a76758d6f7d37c3f74",
+   "reference_dirs": [
+    "~/Documents/atakans-Hy4-flash-NVFP4"
+   ],
+   "known_packs": {
+    "7b0cbe8144b2309dd3dfcf0c0cb336e67f26d60f": "atakans/Hy4-flash-NVFP4 @ 30f201ac (14 shards, 164,654,390,950 B): the build scripts/backends/spark-hy4-stage.sh stages and verifies against the Hub's LFS sha256"
+   },
+   "pack_fingerprints": {},
+   "tp": 2,
+   "recipe": "scripts/backends/hy4-vllm (installed to ~/openbeast-recipes/hy4-vllm by spark-hy4-stage.sh install)",
+   "recipe_commit": "atakann/dgx-spark-recipes@e764efa3efed3e21fe543c3fffc927eb6a00bff8",
+   "engine": "vLLM 77766db with the Hy4-flash pull request (vllm/vllm-openai:hy4-flash, arm64 sha256:5e2c1bad...) + the recipe's six sm_121 / ModelOpt files",
+   "image": "openbeast/hy4-vllm:e764efa-b486c74ef8b6",
+   "unit": "hy4-vllm-inference",
+   "served_name": "Hy4-flash-NVFP4",
+   "swap": "this exact build: scripts/backends/spark-hy4-stage.sh --check (stages and verifies it on both Sparks), then beast-spark hy4. Another NVFP4 build of Hy4 needs its own revision pin and SHA256SUMS.hub-lfs in scripts/backends/hy4-vllm/ first",
+   "rank_files": false,
+   "fit_note": "CLAIMED by the recipe (atakann, 2026-11-18): ~82 GiB resident a Spark at a 262,144 window with the 6G KV cache (578k tokens); lowest free 12.8 GiB",
+   "aux": [
+    "DFly2 drafter (0.85B, BF16): inside the checkpoint (model.dfly_layers.*), --speculative-config {\"method\":\"dfly\",\"num_speculative_tokens\":5}",
+    "Engram tables (64B parameters): inside the checkpoint, FP8"
+   ]
+  }
+ ],
+ "engines": [
+  {
+   "name": "native-1.2.10",
+   "title": "native TensorFold 1.2.10 (~/.local/bin/tensorfold on both Sparks)",
+   "source": "tensorfold capabilities --json on spark-1, 2026-11-19 (tensorfold-native 1.2.10; was 1.2.7 on 2026-11-17: 1.2.10 adds dots_ocr and qwen3, both bf16)",
+   "launch": "scripts/backends/tensorfold/spark-node.sh / spark-cluster.sh with a profile (docs/SPARK_HYDRA.md D2)",
+   "tp": [
+    1,
+    2,
+    4,
+    8
+   ],
+   "families": {
+    "nemotron_h": [
+     "mlx-q4g64",
+     "modelopt-nvfp4",
+     "modelopt-ggml"
+    ],
+    "nemotron_h_omni": [
+     "mlx-q4g64",
+     "modelopt-nvfp4",
+     "modelopt-ggml"
+    ],
+    "glm5_next": [
+     "modelopt-nvfp4",
+     "modelopt-mixed",
+     "exl3"
+    ],
+    "minimax_m3_vl": [
+     "exl3"
+    ],
+    "qwen3_5": [
+     "mlx-q4g64",
+     "exl3"
+    ],
+    "qwen3_5_moe": [
+     "mlx-q4g64",
+     "modelopt-mixed",
+     "modelopt-nvfp4"
+    ],
+    "qwen4_exp": [
+     "mlx-q4g32",
+     "modelopt-mixed"
+    ],
+    "kolibri1": [
+     "fp8-block"
+    ],
+    "gemma4_unified": [
+     "mlx-q2g64",
+     "mlx-q3g64",
+     "mlx-q4g64",
+     "mlx-q5g64",
+     "mlx-q6g64",
+     "mlx-q8g64"
+    ],
+    "gemma4": [
+     "mlx-q2g64",
+     "mlx-q3g64",
+     "mlx-q4g64",
+     "mlx-q5g64",
+     "mlx-q6g64",
+     "mlx-q8g64"
+    ],
+    "spark2_5": [
+     "mlx-q2g64",
+     "mlx-q3g64",
+     "mlx-q4g64",
+     "mlx-q5g64",
+     "mlx-q6g64",
+     "mlx-q8g64"
+    ],
+    "dory": [
+     "modelopt-nvfp4"
+    ],
+    "dots_ocr": [
+     "bf16"
+    ],
+    "lfm2_moe": [
+     "mlx-q4g64"
+    ],
+    "lfm2_vl": [
+     "bf16"
+    ],
+    "fish_omni": [
+     "fp8-block128"
+    ],
+    "qwen4": [
+     "bf16",
+     "mlx-q4g32",
+     "mlx-q4g64",
+     "mlx-q4g128",
+     "mlx-q8g32",
+     "mlx-q8g64",
+     "mlx-q8g128",
+     "modelopt-fp8",
+     "modelopt-nvfp4"
+    ],
+    "qwen4_text": [
+     "bf16",
+     "mlx-q4g32",
+     "mlx-q4g64",
+     "mlx-q4g128",
+     "mlx-q8g32",
+     "mlx-q8g64",
+     "mlx-q8g128",
+     "modelopt-fp8",
+     "modelopt-nvfp4"
+    ],
+    "qwen3": [
+     "bf16"
+    ]
+   },
+   "rank_notes": {
+    "glm5_next": "2 to 16 ranks (TF_GLM_WORLD); EXL3 only in Mia's TR3 layout (bits 4, mcg, glm53_routed_experts_only), per the vendored 0.x list",
+    "minimax_m3_vl": "2 ranks only (TF_MINIMAX_*), per docs/SPARK_HYDRA.md D2",
+    "qwen3_5": "EXL3 on ONE GPU; two ranks need the MLX affine checkpoint, per the vendored 0.x list"
+   },
+   "refuses": {
+    "deepseek_v41": "tensorfold info: 'no registered Zig family serves model_type deepseek_v41; the 0.6 line may: tensorfold@0.6' (spark-1, 2026-11-17 on 1.2.7; the same on 1.2.10, 2026-11-19). DeepSeek runs only in the recipe image's forked engine.",
+    "hy_v4_flash": "tensorfold info ~/Documents/LibertAIDAI-Hy4-flash-EXL3-4bpw: 'no registered Zig family serves model_type hy_v4_flash; the 0.6 line may: tensorfold@0.6' (spark-1, 1.2.10, 2026-11-19). A native family is in the works upstream (TensorFold#3797 open; #3801, a two-Spark native family, in slices): not in 1.2.10."
+   },
+   "ranks": {
+    "glm5_next": [
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8
+    ],
+    "minimax_m3_vl": [
+     2
+    ],
+    "qwen3_5/exl3": [
+     1
+    ],
+    "qwen3_5": [
+     1,
+     2
+    ],
+    "qwen4_exp": [
+     1,
+     2
+    ],
+    "qwen3_5_moe": [
+     1
+    ],
+    "nemotron_h": [
+     1
+    ]
+   },
+   "exl3_variants": {
+    "glm5_next": {
+     "bits": 4,
+     "codebook": "mcg",
+     "scope": "glm53_routed_experts_only"
+    }
+   },
+   "_ranks_note": "ranks: the cluster sizes this engine runs a family on (family or family/format), from model_inspect.py NATIVE_TF_RANKS, data/tensorfold.json and docs/SPARK_HYDRA.md D2; a family not listed gets [1, 2] marked UNVERIFIED. exl3_variants: the quantization_config fields the engine requires, from data/tensorfold.json (the 0.x list; CLAIMED for native)."
+  },
+  {
+   "name": "vllm-hy4",
+   "title": "vLLM's hy4-flash image + atakann's sm_121 files (scripts/backends/hy4-vllm)",
+   "source": "atakann/dgx-spark-recipes@e764efa3 recipes/llm/hy4-flash-nvfp4-vllm-tp2.yaml; docs/reviews/HY4_FLASH_ENGINES-2026-11-19.md",
+   "launch": "scripts/backends/hy4-vllm/start.sh (unit hy4-vllm-inference; beast-spark hy4)",
+   "profile_backend": "vllm",
+   "tp": [
+    2
+   ],
+   "families": {
+    "hy_v4_flash": [
+     "modelopt-nvfp4"
+    ]
+   },
+   "ranks": {
+    "hy_v4_flash": [
+     2
+    ]
+   },
+   "rank_notes": {
+    "hy_v4_flash": "TP2 with --enable-expert-parallel only: without it each Spark holds every expert and the model does not fit (the recipe's note)"
+   }
+  }
+ ]
+}

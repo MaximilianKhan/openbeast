@@ -53,3 +53,35 @@ cbb841a9ee0636b2ec172f5bb8df2ea8dfeb01e90fe7c6126581d662a0b4e43e	927607488	mmpro
 ebc43c58e2eaeba1d5bdf62c8cb1f0eac198c4dc01941f771921edeebf574bc3	7971004256	Qwen3.8-Flash-Next-Uncensored-IQ4_XS-00003-of-00003.gguf	orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF	-
 ff803fb437e90567c27991fecae2537ea1ed63e8842b0399aa53820f02ae8882	4135893632	Qwen3.8-Flash-Next-Uncensored-MTP-draft.gguf	orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF	-
 PENDING	0	mmproj-Qwen3.8-Flash-Next-Uncensored-F16.gguf	orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF	-
+# GLM-5.3-Flash abliterated (huihui-ai) UD-Q2_K_XL: BIG MODE (serve-glm53-flash-abl-q2kxl-big.sh).
+# unsloth's dynamic 2-bit quant with huihui's abliteration of layers 15-35 (attention output and
+# shared experts; the routed experts are unsloth's byte for byte, compared over range reads
+# 2026-11-15). Repo rev c43a994637c10f5c376b7a471b3afc7663f80b9b. Four split shards, renamed
+# CONSISTENTLY (llama.cpp rebuilds the sibling names from shard 1's prefix) so they never collide
+# with unsloth's stock files of the same remote name; 101.24 GiB in all. Pinned from the Hub's LFS
+# sha256 + size, not yet downloaded on the reference box: fetch-weight.sh checks both before the
+# file gets its local name.
+faf5d5ba25954a2c1cbc78c50760e1a76fdc70c5a4b737adc5b39b4afb549a3d	9430112	Huihui-GLM-5.3-Flash-abliterated-UD-Q2_K_XL-00001-of-00004.gguf	huihui-ai/Huihui-GLM-5.3-Flash-abliterated-GGUF	UD-Q2_K_XL/GLM-5.3-Flash-UD-Q2_K_XL-00001-of-00004.gguf
+31aefea9acef3aac7de7c8f428f4bf610ffdcbf61f04501b67f63668d21a62bc	49294976064	Huihui-GLM-5.3-Flash-abliterated-UD-Q2_K_XL-00002-of-00004.gguf	huihui-ai/Huihui-GLM-5.3-Flash-abliterated-GGUF	UD-Q2_K_XL/GLM-5.3-Flash-UD-Q2_K_XL-00002-of-00004.gguf
+920e266344e8545d085c761214a8060bd80fedaf22631fcfc3c49139ea40901c	49949266176	Huihui-GLM-5.3-Flash-abliterated-UD-Q2_K_XL-00003-of-00004.gguf	huihui-ai/Huihui-GLM-5.3-Flash-abliterated-GGUF	UD-Q2_K_XL/GLM-5.3-Flash-UD-Q2_K_XL-00003-of-00004.gguf
+80797dab6507510f5e4149ea02cc50470a9be2883bcd873c99d2fdc384037671	9466399712	Huihui-GLM-5.3-Flash-abliterated-UD-Q2_K_XL-00004-of-00004.gguf	huihui-ai/Huihui-GLM-5.3-Flash-abliterated-GGUF	UD-Q2_K_XL/GLM-5.3-Flash-UD-Q2_K_XL-00004-of-00004.gguf
+# Inkling 2 Mini, Basalt NVFP4-MX8 pack (stock): the RTX 5090 default
+# 2026-11-24 to 2026-11-25, now the rollback (profile inkling2-mini-stock of scripts/engines/basalt.sh),
+# NOT a GGUF and never loaded by llama.cpp. Basalt's own pack of Thinking
+# Machines' release, published as jesdga/Inkling-2-Mini-Basalt; fetched and
+# verified on the reference rig 2026-11-23 at Hub revision
+# c2afac3adb772e14d77b2ea2ac7068ad4460e932 (sha256 = the sum Basalt's
+# docs/models/inkling2.md publishes at 400b411c), re-hashed 2026-11-24 after
+# the INK-T2-STOCK arm. evals/boards/v5/weights.json
+# inkling2-mini-basalt-nvfp4-mx8-stock has the evidence.
+28ec70723feaa037942a02f55b9d5e898276f3e62a3b1fa083745f932a041b99	19606374189	Inkling-2-Mini-NVFP4-MX8.basalt	jesdga/Inkling-2-Mini-Basalt	-
+# Inkling 2 Mini, SC117's abliterated edit as a Basalt NVFP4-MX8 pack: built here, on no Hub repo ("derived": the
+# fifth column names the script that rebuilds it offline; fetch-weight.sh refuses a download). SC117's edit
+# (SC117/Inkling-2-Mini-abliterated-Strata @ ae324ac3676b97a3f67b475ffc2534c7521ff7c4, Apache-2.0: rank-1 refusal
+# direction removed from attn.wo_ud of layers 4-23) moved, as BF16 bytes, from its SQ-20 into
+# thinkingmachines/Inkling-2-Mini @ b85c3cfa615fc413cc9af3379f491b963f3b586a, converted by Basalt v0.5.7's
+# tools/convert. The same converter rebuilds the stock pack above byte for byte from b85c3cfa; this pack differs from
+# it only in the 20 Q8_0 tensors blk.{4..23}.attn_output.weight and meta.checkpoint.dir. Built and checked on the
+# reference rig 2026-11-25 (docs/reports/V5_INKLING2_MINI_SC117-2026-11-25.md section 2). The RTX 5090 default
+# since 2026-11-25 (Max; DECISIONS-2026-11-25 section 7), profile inkling2-mini-sc117 of scripts/engines/basalt.sh.
+6eaa50d3620a8f3913c726b239b7981880e440f7d9c2dffe0613148b01c6e89b	19606374187	Inkling-2-Mini-SC117-abliterated-NVFP4-MX8.basalt	derived	scripts/engines/inkling-sc117-pack.sh

@@ -1,30 +1,1276 @@
 # TODO
 
-## 🔎 REVIEW 2026-10-27 — open items
+## 🧰 v5 HARNESS + MODEL CAMPAIGN — opened 2026-11-16, refreshed 2026-11-21 (RTX 5090 line 2026-11-24)
 
-Fixes from the 2026-10-27 review are on `review/full-2026-10-27`. These are
-what it left for Max, or for hardware it could not reach.
+**RTX 5090 (2026-11-24):** stock Inkling 2 Mini on Basalt (board row
+INK-T2-STOCK, 53/71, SCORE 78.2) is the 5090 default by decision
+([DECISIONS-2026-11-24 §10](reports/DECISIONS-2026-11-24.md)); Qwen3.8
+(Q38U-T2, 51/71 after the 2026-11-25 integrity rescan) is the fallback. The rig's own switch is still pending
+(its `openbeast.conf` says `AGENT_PROFILE=qwen38-best`). The improved arm
+`I_T3` finished 2026-11-25 at 52/71 (board row INK-T3, SCORE 77.4: level
+with INK-T2-STOCK, 4 context overflows; the default stays stock,
+[DECISIONS-2026-11-25 §4](reports/DECISIONS-2026-11-25.md#4-i_t3-does-not-beat-ink-t2-stock-the-5090-default-stays-stock);
+item below). INK-T2,
+INK-T2-S1 and INK-UP8K are the Derisked pack's rows.
 
-**Owner decisions**
-- **llama.cpp pin ≥ b11393** (CVE-2026-107183, a `chat_parser` use-after-free; R10-01). Deferred until the paper's capability rows, run on b10865, finish. beast-gate strips `chat_parser` and three sibling fields meanwhile; raw `:8443` and loopback callers are not covered.
-- **Open WebUI image → v0.12.3.** `./scripts/update.sh --images` (now follows the release tag, not `:main`), then a smoke test and commit the digest. It migrates the WebUI DB, so back up the `open-webui-data` volume first.
-- **Branch protection:** add "Lock matches a fresh resolve" as a required check on `main` (R5-02); keep "Dependency vulnerability audit" required (it now goes red only on advisories a PR introduces).
-- **Era roll:** draft PR #135 plus the era-roll fixes on branch `rev1027/fb-era-roll`. Merging rolls the eval era off `b5596c660b5ab819`.
-- **Redefine LANG** over variant'd tasks only (R6-4). Today single-language tasks count as fully carried, so real port breadth is ≈ 0.054 of SCORE. Changing it moves every SCORE; the docs now describe the current definition.
-- **R10-04:** llama.cpp crash bugs with no upstream fix: `json_schema`/`response_format` to grammar (CVE-2026-17500/17501, PR #25308 open) and the mirostat sampler (CVE-2026-116467, PR closed unmerged). Any enrolled device can abort llama-server; a pin bump does not fix them. Decide whether beast-gate refuses `mirostat != 0` and oversized schemas (a 400 for legitimate options).
+Where the v5 work stands. Every arm is single seed. The working log is
+[`HARNESS_NOTES.md`](HARNESS_NOTES.md) "Headroom", the runbook is
+[`MODEL_CAMPAIGN.md`](MODEL_CAMPAIGN.md), and the scored rows are in
+[`RESULTS.md`](RESULTS.md#v5-leaderboard--best-configuration-per-model).
 
-**Needs hardware or access**
-- **DGX Spark:** build the derived TensorFold image and pin it by digest (`TENSORFOLD_PREBUILT=true`, recipe in `spark.env.example`; R10-05). Run `python3 -c 'import vllm;print(vllm.__version__)'` in NGC `vllm:26.05-py3` to confirm it is ≥ 0.31.0 (R10-06).
-- **Open-Jev requirement hashes** (R10-07): `pip-compile --generate-hashes` for `scripts/instinct/openjev/requirements.txt` on the build host (py3.12, cu128 torch), then install with `--require-hashes`. The base image is already digest-pinned.
-- **Gated mmproj sha256** (R10-09): the `mmproj-Qwen3.8-Flash-Next-Uncensored-F16.gguf` row stays PENDING until someone with access to the gated HF repo reads its sha256. `fetch-weight.sh` prints UNVERIFIED for it and refuses it under `WEIGHT_ENFORCE=strict`.
-- **Rig zig:** mise says `zig = "0.16"`, but agent shells resolved 0.17.0 first on PATH. Check `zig version` in a fresh login shell; doctor now warns on a mismatch.
-- **CI variants job** now gates on the audit; measured locally (185 PASS), not yet on a GitHub runner, whose go/gcc/rust may differ.
+**DeepSeek-V4.1-Flash (Mia EXL3)** is the pair's default since 2026-11-18. It
+went from arm T at 61/71 (SCORE 88.5, #225) to **T2 at 65/71, SCORE 94.9**,
+the board's #1 (#231). T2 is its default agent setup:
+`AGENT_PROFILE=deepseek-best` (#232; `SPARK_HYDRA.md` E2b). As of
+2026-11-21, on the board: T_s1 61 (noise about ±1), T3 65 (4096 cap, lower
+SCORE), and the harness10 arms U 59, UP 62 (planning lines +3), UPA 59 (the
+pack −3), U_8k 63 (the forced act no better than the nudge), UP_8k 65
+(SCORE 91.4: a tie with T2 on passes) and UPA_8k 62 (the pack −3 again).
+T2 stays the best. The series is complete
+([final report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md)).
 
-**Code follow-ups**
-- **R2-1 remainder:** beast-gate keeps a vanished registry closed only in-process. A gate restarted with no `.run/clients.json` honours `EDGE_ALLOW_ANON` again; a persistent "a registry existed" marker (gate, dashboard, `clients.sh`, docs) would close that.
-- **R1-01 code side:** the file tools (`read_file`, `write_file`, `edit_file`, `list_files`) run in-process and are not sandboxed; only `bash`/`grep` go through `OPENBEAST_BASH_WRAPPER`. The docs now say so.
-- **Move `chat_server.signal_session`** (with its descendant-group sweep) into `agents/sessions.py` and reuse it in `mcp_server.stop_agent`, which today signals the group or pid only (R1-10).
-- **R9-14 remainder:** a real per-tier WebUI prompt needs a guest-scoped model preset, checked against a live WebUI; today one appended paragraph tells the model its attached tools are the ground truth.
+**GLM-5.3-Flash**, the staged alternative:
+L0 26/71 → A 31/71 → B 36/71 → **C 51/71 scored, SCORE 76.7** (54 raw; the
+integrity scan of #195 withheld 122_gemm_blocked_b, _d and _e) → **E 50/71,
+SCORE 74.7** (integrity scan clean; its 122_gemm_blocked_c is a validator
+false FAIL, footnoted, not adjusted). C (thinking on) is the configuration retained for GLM rollback (the serving lines, E2a). Arms D and F were **not run**:
+Max paused the benchmark chain after E. **The GLM UP control (2026-11-23):
+UP 56/71, SCORE 81.9, GLM's best row (GLM-UP), #3**; +2 over C on the 68
+units both measured cleanly, across eras, bundled, single seed; 6 behind
+DeepSeek's UP on the same harness
+([report](reports/V5_GLM_UP-2026-11-23.md)). Claude Opus 5.5 reference ceiling:
+71/71 (68/71 at the 1x wall).
+
+**Done since the 2026-11-17 evening refresh (#205–#233, plus operator steps):**
+
+- [x] **DeepSeek-V4.1-Flash (Mia EXL3) is the pair's default** (Max,
+  2026-11-18, after hands-on testing). It serves from the Mia EAQ v1.1 pack
+  whose folder/cache id ends in "-v2" (#211), as unit
+  `deepseek-v41-inference`: 524,288-token window (the model's own is
+  1,048,576), four streams, thinking on (#230). GLM-5.3-Flash is the staged
+  alternative.
+- [x] **One switch path: `beast-spark`** (`beastup` / `beastdown` /
+  `beastglm` / `beastds` / `beaststatus`), with locks and safe pack staging
+  (#212, #222). The offline intake preflight for a new model folder
+  (`spark-model-intake.sh`) and the EXL3 playbook are in #214.
+- [x] **DeepSeek on the v5 board:** arm T 61/71 (#225), then T2 65/71, SCORE
+  94.9, #1 (#231). T2 became the default agent setup,
+  `AGENT_PROFILE=deepseek-best` (#232). Per-arm jobs/slots and arm T_j2 came
+  in #226. A sealed review of why DeepSeek usually fails one unit is under
+  `evals/audit/` (#233).
+- [x] **harness9** (#227: the act nudge, partial stats on a wall kill, the
+  eval fetch guard; era roll). **Eval integrity, review 1118** (#224: the
+  sandbox network, answer-key and write hardening, the served-model guard,
+  honest infra retry). Validators now lint code, not comments (#223).
+- [x] **Client autosync**: opencode follows the rig when it switches models
+  (#215), and it runs from a copy outside `~/Documents` because of macOS TCC
+  (#218). Client and beast-apps review fixes are in #221. The WebUI system
+  prompt reaches client opencode sessions (#207), and client uninstall writes
+  atomically (#208).
+- [x] **Spark backup and restore:** one backup for N Sparks (#216); a fully
+  offline restore from a golden DGX OS base image, with identity and an
+  offline rebuild of the rank files (#228); `~/git` and `~/live-aside` added to
+  the items (#229). Runbook: [`SPARK_BACKUP_RESTORE.md`](SPARK_BACKUP_RESTORE.md).
+- [x] **Offline self-development:** the offline prerequisite, the deployed
+  pair and a commands sheet (#217, #219; [`SELF_DEVELOPMENT.md`](SELF_DEVELOPMENT.md),
+  [`COMMANDS.md`](COMMANDS.md)). The offline git hub exists on spark-1
+  (`~/git/openbeast.git`, read 2026-11-19; at #222, so refresh it before an
+  offline session). opencode v2.3.2 runs on both
+  Sparks with the provider `spark-hydra-local`; spark-2 reaches the model
+  through its `opencode-model-link` forward.
+- [x] **Ops and engines:** llama.cpp build numbers and rollback are kept
+  across engine upgrades (#209). The Spark serving quickstart is in the repo
+  (#210). The 2026-11-18 reviews of ark, engines and the supply chain are in
+  #220.
+- [x] **openbeast.ai deployed** (first 2026-11-17 evening, website `e72790c`;
+  it runs Next.js 16.4.5, which closes the advisory item). Read live
+  2026-11-22: the deployed build is website #28 (`fa2877a`, Last-Modified
+  18:18 GMT), which names DeepSeek-V4.1-Flash (Mia EXL3) as the pair's
+  default. **Redeployed 2026-11-24** (read live 2026-11-24 evening:
+  Last-Modified Tue, 24 Nov 2026 22:38:39 GMT = 14:38 PST, after website
+  #51 `66bc476` merged at 14:30 PST and before #52; `/models/` says
+  "Inkling 2 Mini on Basalt by default", `/recipes/` answers 200). Website
+  #52 (INK-UP8K) and later are merged but not live; see "Open — process
+  and the website".
+
+**Done since the 2026-11-17 morning refresh (#194–#204, plus operator steps):**
+
+- [x] **Thinking-stall recovery** — a capped think keeps its last 6,000 chars
+  of reasoning and is told to act; the cap stays 16K (#194, moves the era).
+  Measured as an arm: still open (below).
+- [x] **Zig pack v3** (`std.posix.write` is gone in 0.16, and more), #194;
+  the thinking-first campaign measures v3, `v5-harness` keeps v2 so arm E
+  stays reproducible, #197.
+- [x] **Eval integrity G24–G27 + the contamination scan** — the trailing-dot
+  path bug, the eval seal widened to `evals/`, `tests/`, `~/.claude` and the
+  git dir, `evals/audit/integrity_scan.py` over every v5 row: 3 GLM-C passes
+  withheld, everything else clean (#195). Residual gap: on Linux the kernel
+  does not enforce the seal (the file tools and the command-text check do).
+- [x] **A validator interpreter failure is never scored** (#200).
+- [x] **Arm E on the board** — 50/71, SCORE 74.7, scan clean (#201).
+- [x] **Thinking on by default on spark-hydra** — `INFERENCE_THINKING=on` at
+  beast-gate (#202), the Open WebUI "Thinking Default" filter (#203) and
+  this host's own agents; `AGENT_MAX_TOKENS=16384` for the runner on
+  spark-1; eval runs opt out with `X-OpenBeast-Gate-Defaults: off`.
+  Measured cost: first answer token 0.2 s off vs 5.0 s median on (1.9–38.7
+  s); agent tasks about 2.3x longer. `SPARK_HYDRA.md` E2a. Live on spark-1
+  since 2026-11-17.
+- [x] **Multi-rig Mac client** — `openbeast-client rigs`, `use <rig>`,
+  `rig add / remove / detect`; one opencode provider per rig plus the
+  `openbeast-rig` alias; model limits from `/api/slot` (context 1,048,576 on
+  the pair, output 32,768, overridable); `scripts/client-e2e.sh` (#204;
+  `SPARK_HYDRA.md` F2/F3).
+- [x] **RoCE MTU 9000 live on both Sparks** since 2026-11-17 14:20:
+  `spark-fabric-mtu.sh --verify` passed on both (8972-byte don't-fragment
+  pings on both rails, RoCE `active_mtu 4096`). The A/B is still open (below).
+- [x] **Leaked gate key rotated (incident, 2026-11-17).** The Mac's gate
+  device key reached an agent transcript through a BSD `sed` redaction whose
+  `\|` alternation matched nothing on macOS. Rotated the same minute
+  (`clients.sh rotate macbook`; old key 401, new key 200). Lesson recorded in
+  `SPARK_HYDRA.md` G7: never print a secret to redact it, never redact with
+  sed alternation, filter with python if at all.
+- [x] **Website decisions Q5–Q10 recorded** (#198, #199) and the
+  openbeast-website `/benchmarks/` page merged there (website #17, #18; the
+  deploy is still open, below).
+
+**Done (2026-11-16/17, morning):**
+
+- [x] **Runner v2** — the harness frictions from the GLM L0 audit (G1-G4, G8,
+  G11 v1), #179 (moves the era). Arm A.
+- [x] **Wall-scaled turns** — `--turns-per-wall-s`, a turn budget scaled to each
+  unit's wall, #180. Arm B.
+- [x] **Wall-scale** — `--wall-scale`: more time for an arm without changing its
+  turns, #186. Arm C runs at `--wall-scale 2`.
+- [x] **Harness v3 switches** — agent switches keyed in the eval cache plus G9,
+  G13, G15, G16 (#185); the env block (G22) and wall-clock warnings (G23), both
+  opt-in (#187).
+- [x] **Zig pack v2 + the probed host pack** (+ Rust `--edition 2021`), #188;
+  production serves the measured v1 again and v2 is eval-only behind
+  `OPENBEAST_PACK_VARIANT=v2`, #190.
+- [x] **Eval-host provisioning** — `scripts/eval-host.sh` and
+  `evals/toolchains.lock`; a dead interpreter is an infra row, never a FAIL,
+  #189 (HARNESS_NOTES "Eval host provisioning").
+- [x] **The replicable model campaign** — `evals/campaign.py`, audit and
+  reference tooling, the runbook, #191; **thinking-first by default**
+  (`v5-thinking-first`), #192.
+- [x] **spark-hydra quickstart** — `SPARK_HYDRA.md` § Quickstart and the README
+  section, #182.
+- [x] **Install / update checklists for the pair** — "Install everything,
+  fresh", G6 "update everything", F6 the eval harness host, #183.
+- [x] **WebUI regenerate varies** — the `random_seed` Filter gives each unseeded
+  Open WebUI chat a random seed, #181 (other clients: the beast-gate item below).
+- [x] **MTU 9000 script** — `scripts/backends/spark-fabric-mtu.sh`
+  (stage / verify / unstage, never `netplan apply`), #178. Staged, rebooted
+  and verified on both Sparks 2026-11-17 (above).
+
+**Open — the pair (operator steps, Max; state read over ssh 2026-11-19, no sudo):**
+
+- [x] **`AGENT_PROFILE=deepseek-best` live on spark-1** (done 2026-11-19 ~14:50,
+  in the gap after T_s1; `openbeast.conf.bak-20261119` kept).
+  Steps: [`SPARK_HYDRA.md` E2b](SPARK_HYDRA.md#e2b-deepseek-best-configuration-v5-t2)
+  "Apply on spark-1".
+- [x] **DeepSeek tuning session** (**done 2026-11-23 19:04-20:05 PST**, Max's approval, the pair idle;
+  [report](reports/DEEPSEEK_TUNING-2026-11-23.md)). **`PARALLEL=8` is live** (runtime `scripts/local.sh`;
+  `INFERENCE_SLOTS=8` in `openbeast.conf`; backups `*.bak-20261123-tuning`): 147.4 / 133.8 tok/s aggregate at
+  8 / 6 streams against 116.5 at 4 (+27% / +15%), 1-4 streams unchanged (67.9 / 115.0 tok/s, TTFT 0.22 s,
+  prefill ~2.3K), no memory cost (spark-1 lowest 5.16 GiB under a 499K needle with 7 streams decoding),
+  conformance PASS at 4 and 8, gfunc 9/9. **The 1M window works** (needle at 999,059 tokens, 509 s; cache-hit
+  turn 3.1 s) and so does `KV_SHARD=1` (pool 2,101,248, decode -2%), but 1M costs 0.88 GiB a rank on spark-1
+  (lowest 4.26 GiB), so the window stays 524,288 until the items below free that memory. The original scope:
+  - the model's full 1,048,576-token window instead of 524,288;
+  - `KV_SHARD=1`, which cuts the KV pool into one part per Spark, each
+    holding a whole window (documented in the recipe's `scripts/config.sh` on
+    spark-1);
+  - `PARALLEL` above 4.
+
+  Record the memory headroom
+  ([`SPARK_HYDRA.md` G4](SPARK_HYDRA.md#g4-memory-headroom-and-the-gb10-stack-cap)),
+  TTFT and decode for each setting, and keep the current settings unless one
+  setting measures better without costing headroom.
+  - [ ] **spark-1 headless** (Max, sudo, a reboot): `sudo systemctl set-default multi-user.target`.
+    It frees the GNOME session (~0.45 GiB of RSS plus compositor memory) with no architecture change. The
+    first step toward 1M.
+  - [ ] **The Open WebUI off spark-1: Max's decision.** The report recommends spark-2 (+2.6 GiB headroom
+    over spark-1, offline over the fabric, the opencode-model-link tunnel pattern) over the Mac Mini. It needs
+    a new role for spark-2, a URL decision (a new URL, or spark-1's `:443` proxying to spark-2), a
+    remote-WebUI mode in `start.sh` / compose / `configure-webui.sh` / healthcheck, a volume migration
+    outage, and spark-guard rules (sudo). [Plan](reports/DEEPSEEK_TUNING-2026-11-23.md#moving-the-open-webui-off-the-head-node).
+  - [ ] **The 1M re-test** after either step: the report's probe at `CONTEXT=1048576 KV_SHARD=1`. Adopt it
+    if spark-1's lowest reading under the 999K needle and resume stays ≥ 5.1 GiB.
+  - [ ] **Prefill cut-in:** live since 2026-11-25 18:29 (`TF_FILL_CHUNKS=1 TF_FILL_FIRST=1 TF_FILL_CUT_IN=8192`,
+    with spill v2; [report](reports/DEEPSEEK_SERVING_OPT-2026-11-25.md)). Still to measure on an idle pair:
+    a short request's TTFT during a long cold prompt, against `PREFILL_INTERLEAVE_MS=250` (the clean bench below).
+  - [ ] Thinking-on numbers at 6 and 8 streams (the session measured thinking off).
+- [ ] **The backup capture outage window** (Max to pick a time): the capture
+  takes about 20 min, and drill G with the full restore drill 5 on spark-2
+  takes about 2 h. The served model is down for both
+  ([`SPARK_BACKUP_RESTORE.md` §8](SPARK_BACKUP_RESTORE.md#8-decisions-and-open-questions), question 1).
+- [ ] **A second SSD** for an independent backup copy kept elsewhere (§8,
+  question 2). One drive is one copy.
+- [ ] **Firmware download, once, onto the backup SSD** (the one online step,
+  done ahead of time): NVIDIA's latest DGX Spark recovery image (stick 3) and
+  the LVFS `.cab` files for the five devices (§8, questions 3 and 5).
+- [ ] **Rotate the Hugging Face token.** It sits in
+  `~/.config/openbeast/hf-token` on spark-1 and in every encrypted backup.
+  Replace it per
+  [`SPARK_HYDRA.md` G7](SPARK_HYDRA.md#g7-rotating-keys-and-secrets), revoke
+  the old token on huggingface.co, and take a fresh backup.
+
+- [ ] **MTU 9000 performance A/B.** The MTU is live; whether it is faster is
+  unmeasured. Run the `SPARK_HYDRA.md` B4 measurement script (~45K-token TTFT,
+  4-stream decode) at 9000 and record it beside an MTU-1500 run. No speed
+  claim anywhere (README, site) until it is recorded. The MTU change itself
+  is in the 🟩 DGX SPARK section below. Use the model the pair serves at the
+  time, and name it in the record (the 2026-11-13 numbers were GLM's).
+- [ ] **`sudo spark-guard` on both Sparks**: still `STALE` on both, read
+  2026-11-19 with `scripts/backends/spark-guard.sh --status` over ssh (the
+  status readout needs no sudo). The installed rules guard TCP `29501
+  29551-29552 29583-29584`, while the checkout renders `29501-29502
+  29551-29552 29583-29584 29620-29621` (#168 and later). Fix: run
+  `sudo ~/openbeast/scripts/backends/spark-guard.sh` on each Spark, then
+  `--status` should say `rules: current`.
+- [ ] **The artifact login: `ARTIFACT_LOGIN_FROM=unix` + `--publish-artifact`
+  on spark-1.** Still unset on 2026-11-19. Until then beast-artifact honours
+  the login header from any loopback peer (`SPARK_HYDRA.md` G6 "Pending on the
+  live pair", Known issues).
+- [ ] **Plaintext secrets on spark-1:** two key files in
+  `~/.config/openbeast/gate-keys/` and `webui-max-password` are still there
+  (2026-11-19). Shred the keys once the devices hold them (E7); delete the
+  password file once it is changed (E5). The Mac's copy there is also stale
+  since its 2026-11-17 rotation (`SPARK_HYDRA.md` G7).
+  **Re-read 2026-11-24 (review, security-07):** `macbook.key` (Nov 15
+  12:37) and `phone.key` (Nov 15 10:27) are still in
+  `spark-1:~/.config/openbeast/gate-keys/` (0600, max), readable by the
+  admin-tier tools that run as max (E7). Safe any time (no service reads
+  these copies; the gate checks hashes in `~/openbeast/.run/clients.json`):
+  1. Confirm each device holds its key: on the Mac
+     `test -s ~/.config/openbeast/spark-hydra-gate.key && echo present`
+     and a chat through the gate answers 200; the phone's client answers.
+  2. On spark-1: `shred -u ~/.config/openbeast/gate-keys/macbook.key ~/.config/openbeast/gate-keys/phone.key`,
+     then `ls -la ~/.config/openbeast/gate-keys/` (no `.key` left).
+  3. If a device does not hold its key, rotate instead
+     (`clients.sh rotate macbook` / `phone`), carry the new key straight to
+     the device, and do not leave a copy in `gate-keys/`.
+  Never `cat` a key to check it (G7). Rollback: none needed for the shred
+  (the devices hold the keys); a lost device key is fixed by `clients.sh
+  rotate <device>`, which revokes the old hash.
+- [ ] **zig 0.16 and the beast-docs mirror on spark-1** (`SPARK_HYDRA.md` G6
+  step 6): zig is absent and the mirror holds only `tailscale` (2026-11-19).
+- [ ] **A one-command swap to a *new* model on the pair, with rollback**
+  (was `scripts/spark-model.sh use <profile>`). Partly done: `beast-spark`
+  switches between the two staged models with locks and rollback to GLM
+  (#212, #222), and `spark-model-intake.sh` says offline whether a folder is
+  a drop-in (#214). Hy4-flash is the first third model with its own staging,
+  unit and `beast-spark hy4` (with rollback to the previous model; 2026-11-19).
+  Still by hand for any other third model: fetch and verify on both
+  ranks, write the recipe config, add the unit, run conformance, and roll back
+  on failure ([`EXL3_PLAYBOOK.md`](EXL3_PLAYBOOK.md), `SPARK_HYDRA.md` C, D1,
+  G3).
+- [ ] **Scaling review, 1 to 8 ranks** — still open, deliberately parked (Max,
+  2026-11-15); scope in the 🟩 DGX SPARK section below.
+
+**The 5090 rig (operator steps, Max; both done 2026-11-23):**
+
+- [x] **`AGENT_PROFILE=qwen38-best` applied on the 5090 rig (2026-11-23,
+  19:14-19:15 PST)**, right after the Strata bench restored the stack. Why:
+  arm Q_T2, 52/71 scored, SCORE 75.6, board row `Q38U-T2` (single seed)
+  against L0's 39/71; the 5090's default agent setup by Max's decision
+  ([MODELS.md](MODELS.md), #299). What was done, in the rig's live checkout
+  **`~/Documents/openbeast`** (not `~/openbeast`, as the steps below first
+  said; the rig's checkout was at `45ed231b` when read back):
+  - Backup `openbeast.conf.bak-20261123-preq38` (19:14), then the line
+    appended with its comment (conf mtime 19:15):
+    ```text
+    # 2026-11-23: the RTX 5090 default agent setup = v5 arm Q_T2 (board row Q38U-T2, 52/71). Rollback: AGENT_PROFILE=none
+    AGENT_PROFILE=qwen38-best
+    ```
+  - The conf lint was clean, and the read-only resolve
+    (`OB_CONF_READONLY=1`, `scripts/lib/conf.sh`) gave all nine switches
+    with no warning.
+  - Restart with `./stop.sh` then `./start.sh -d`: the rig does not run the
+    `openbeast` user unit (`systemctl --user list-units 'openbeast*'` shows
+    only the watchdog and logrotate units). `.run/stack.log`: "OpenBeast
+    supervisor start: 2026-11-23 19:15:12 (serve-qwen38-27b-uncensored-mtp-q5.sh)".
+  - Verified through the gate (session record, 2026-11-24T03:15Z): `/v1/models`
+    200; a chat answered "391" with the reasoning in `reasoning_content`; the
+    gate process's environment carries the T2 switches (the 8,192 per-turn
+    cap, thinking on, the act nudge); the dashboard 200.
+  - Rollback: `AGENT_PROFILE=none` (or delete the line), then `./stop.sh &&
+    ./start.sh -d`; or restore the backup.
+  - Note: since 19:49 the stack is stopped again (`.run/stopped`) for the
+    Inkling engine investigation, which restores it when it ends; the
+    watchdog unit shows "failed" meanwhile because it finds the services down,
+    which is expected.
+
+  The steps as they were planned (kept for the record; the path is wrong,
+  use `~/Documents/openbeast` on the rig):
+  ```bash
+  cd ~/openbeast && git status --short && git pull --ff-only   # main with the preset
+  cp openbeast.conf openbeast.conf.bak-$(date +%Y%m%d)
+  grep -E '^(INFERENCE_THINKING|AGENT_MAX_TOKENS|AGENT_ACT_NUDGE|BEAST_ASSIST|DIAG_EDIT_HINT|AGENT_VERIFY_DONE|AGENT_ENV_BLOCK|AGENT_WALL_WARN|LANG_PACK_VARIANT|AGENT_PROFILE)=' openbeast.conf   # expect only BEAST_ASSIST=1
+  echo 'AGENT_PROFILE=qwen38-best' >> openbeast.conf
+  OB_CONF_READONLY=1 bash -c 'REPO_DIR=~/openbeast; source ~/openbeast/scripts/lib/conf.sh; env' | grep -E 'AGENT_|DIAG_EDIT|PACK_VARIANT|BEAST_ASSIST|INFERENCE_THINKING'   # read-only check: 9 values, no warning
+  systemctl --user restart openbeast   # or ./stop.sh && ./start.sh -d where the stack is not a user unit
+  ```
+  Expected from the check: `BEAST_ASSIST=1`, `OPENBEAST_INFERENCE_THINKING=on`,
+  `OPENBEAST_AGENT_MAX_TOKENS=8192`, `OPENBEAST_LANG_PACK_VARIANT=v3` and
+  `OPENBEAST_AGENT_{ACT_NUDGE,VERIFY_DONE,ENV_BLOCK,WALL_WARN}=1`,
+  `OPENBEAST_DIAG_EDIT_HINT=1`.
+- [x] **NVIDIA Container Toolkit on the 5090 rig** (Max, 2026-11-23 19:56,
+  `nvidia-container-toolkit` 1.20.1-1; Docker restarted 19:57:17). `--gpus`
+  works in containers now; before it, GPU containers needed the devices passed
+  by hand. Commands, what the restart does, and the offline reinstall from the
+  pacman cache: [INSTALL.md](INSTALL.md#gpu-in-docker-the-nvidia-container-toolkit).
+
+**Open — Inkling 2 Mini on the 5090 (2026-11-23; the 5090 default since 2026-11-24, the rig switch pending, below):**
+
+- [x] **DONE 2026-11-24 01:29 PST: the Inkling 2 Mini v5 run, arm `I_T2`,
+  board row `INK-T2`: 49/71 scored, SCORE 76.5, #4 by SCORE (one above
+  Q38U-T2's 52/71, 75.6), single seed**; 4 h 31 min, no unit lost, integrity
+  scan 0 contaminated; `122_gemm_blocked_d` stopped at the `dlsym` check
+  and replayed under the proposed rule: PASS (validator note, not
+  adjusted); 203 empty capped turns (#588) in 21 units, 17 of them fails;
+  88 capped turns still carried a tool call (lenient parsing). Paired with
+  Q38U-T2 over 65 units: 46 vs 52 (1 gained, 7 lost, p 0.07, within
+  churn). **Qwen3.8 stays the 5090 default** (decision:
+  [DECISIONS-2026-11-24](reports/DECISIONS-2026-11-24.md#1-qwen38-stays-the-rtx-5090-default-after-i_t2)).
+  Report: [V5_INKLING2_MINI_RTX5090-2026-11-24.md](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md).
+  The launcher restored the default stack (`RESTORE OK` 01:29:42, gate
+  `:8091` 200 and a chat). The Basalt server log went with the container
+  (`docker rm -f`, json-file logging), so the counts above are from the
+  transcripts (`evals/audit/capped_turns.py`). The record of the run as
+  it was launched (#306: T2's switches at one stream, as Q_T2 was for
+  Qwen3.8, so the row compares with `Q38U-T2`'s 52/71). Engine and why:
+  [the Strata report §11](reports/STRATA_INKLING_5090-2026-11-23.md#11-pending-native-sq-packs-and-other-engines),
+  [DECISIONS-2026-11-23 §11](reports/DECISIONS-2026-11-23.md#11-basalt-with-the-derisked-pack-for-the-inkling-v5-run).
+  - **Serve:** Basalt v0.5.7 (`400b411c`) from the Blackfrost Derisked pack
+    (`d2b01bcc…`), container `basalt-serve`, alias `inkling-2-mini` on
+    `127.0.0.1:8099`, started by
+    `~/openbeast-runs/inkling-perf-2026-11-23/scripts/inkling-v5.sh start derisked`
+    (switch log `~/openbeast-runs/ink-I_T2-switch-20261123-2057.log`).
+    **The default Qwen stack is stopped** (llama-server, gate `:8091`, Open
+    WebUI, SearXNG) for the whole run.
+  - **Trees:** `~/ob-ink` (a detached worktree of `~/ob-eval-container` at
+    `1199608a`), harness9 tree `~/ob-ink/.claude/worktrees/h9` at `f38a29c7`,
+    container image `openbeast-eval-host:8d1e28442569`.
+  - **Launcher:** `~/openbeast-runs/ink-I_T2-run.sh` (setsid nohup; output
+    `~/openbeast-runs/ink-I_T2-run.out`). Campaign log
+    `~/openbeast-runs/beast-inkling-I_T2-20261123-2058.out`; arm log and state
+    in `~/ob-ink/evals/results/campaigns/v5-thinking-first-inkling-2-mini-derisked-basalt-nvfp4-mx8/`
+    (`arm-I_T2.log`, `campaign.log`, `state.json`). First 8 units in 3 min:
+    7 PASS, GEMM [rust] FAIL at the `dlsym` check (the known harness9
+    validator case, as Q_T2's `122_gemm_blocked_d`: check it by the
+    procedure in MODEL_CAMPAIGN.md before scoring). ETA UNVERIFIED (5-12 h;
+    the campaign's own estimate says 11.5 h).
+  - **Restore (automatic):** when the campaign exits, whatever its exit
+    code, the launcher runs `inkling-v5.sh stop`, `cd ~/Documents/openbeast
+    && ./start.sh -d`, then checks gate `:8091/v1/models` for 200 with
+    `~/.config/openbeast/rig-eval.key` (up to 15 min) plus a gate chat, and
+    logs `RESTORE OK` or `RESTORE FAILED` to `ink-I_T2-run.out`. **By hand**,
+    if the launcher died: `~/openbeast-runs/inkling-perf-2026-11-23/scripts/inkling-v5.sh stop`,
+    then `cd ~/Documents/openbeast && ./start.sh -d`, then
+    `curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $(cat ~/.config/openbeast/rig-eval.key)" http://127.0.0.1:8091/v1/models`
+    (expect 200). Stop the run early: `pkill -f ink-I_T2-run.sh` stops the
+    restore too, so stop the eval container instead (it runs `--rm` in the
+    foreground of the launcher, with a random name):
+    `docker stop $(docker ps -q --filter ancestor=openbeast-eval-host:8d1e28442569)`;
+    the launcher then logs the exit and restores.
+  - **Known serve effect (#588):** some turns that hit the 6,144-token
+    thinking budget end empty at the 8,192 cap (3 of 189 replies by
+    05:11Z, `docker logs basalt-serve | grep -c "no answer"`). Count them
+    per unit in the integrity scan and name them in the row's note
+    ([report §15.6](reports/STRATA_INKLING_5090-2026-11-23.md#156-server-behaviours-that-bear-on-the-eval)).
+  - **After (done 2026-11-24):** integrity scan, the `dlsym` procedure (the
+    replay), the board row, the report, the default decision (Qwen3.8 with
+    `qwen38-best` stays).
+- [x] **DONE 2026-11-24: two of the three ablation arms, wrapped up**
+  ([report §10](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md#10-the-ablations-seed-noise-and-the-stock-pack-2026-11-24),
+  [DECISIONS-2026-11-24 §6-§9](reports/DECISIONS-2026-11-24.md#6-qwen38-stays-the-default-after-i_t2_s1-and-i_t2_stock)):
+  - **`I_T2_s1` (seed 1): 51/71, board row `INK-T2-S1`, a seed replicate
+    (`replicate_of: INK-T2`, never ranked).** 2 of 71 units flipped against
+    I_T2, both gains (p 0.50): Inkling's seed noise floor, as DeepSeek's
+    (DS-T vs DS-Ts1: 2 flips). SCORE moved +1.8 on LANG alone.
+  - **`I_T2_stock` (Basalt's stock pack): 53/71, SCORE 78.2, board row
+    `INK-T2-STOCK`, #4 (the top RTX 5090 row).** Against I_T2 +4 (5/1,
+    p 0.22), against I_T2_s1 +2 (3/1, p 0.63); against Q38U-T2 over 65 clean
+    units −2 (2/4, p 0.69), level on the board's view: parity. 105 empty
+    capped turns (#588) against 203 and 167 on Derisked.
+  - Both: 0 contaminated, no shell route off the host; `122_gemm_blocked_d`
+    dlsym stop replayed: PASS 3/3 each (validator notes). Basalt server logs
+    kept and read with the new `evals/audit/basalt_log.py`: they match the
+    transcripts exactly; decode 484 / 444 tok/s, drafts accepted 90.2% /
+    88.7%.
+  - **Qwen3.8 stays the 5090 default** until the improved arm below. *(Superseded the same day: Max made the stock Inkling the default, DECISIONS-2026-11-24 §10.)*
+- [ ] **IDEA: a forced-act turn that works on Basalt** (HARNESS_NOTES,
+  "Inkling 2 Mini on Basalt: UP_8k"): send a small explicit
+  `reasoning_budget_tokens` on the forced turn instead of
+  `enable_thinking=false` (a runner change, era move), or an engine-side
+  hard stop at effort `none`. No U-type arm on Basalt with Inkling until
+  then (DECISIONS-2026-11-24 §13).
+- [x] **(History) QUEUED 2026-11-23 21:46:38 PST: three Inkling
+  ablation arms after `I_T2` and the Maya benchmark** (Max approved; arms
+  in #309, merge `d41c2c47`; reasoning in
+  [DECISIONS-2026-11-23 §12](reports/DECISIONS-2026-11-23.md#12-queue-three-inkling-ablation-arms-behind-i_t2)).
+  In order, each ~1.5-2 h (UNVERIFIED; `I_T2` did 30/71 units in ~40 min),
+  one stream, Basalt alias `inkling-2-mini`:
+  1. `I_T2_s1`: `I_T2` + `--seed 1`, `noise_of: I_T2` (the noise margin);
+     Derisked pack; harness9 tree.
+  2. `I_T2_stock`: `I_T2` on Basalt's stock pack (`inkling-v5.sh start
+     stock`), model name `Inkling 2 Mini (Basalt NVFP4-MX8, stock)` (the
+     control for the derisking edit); harness9 tree.
+  3. `I_UP8k`: DeepSeek's `UP_8k` setup at one stream, Derisked pack;
+     harness10 tree (era `9bcd5aa6`, checked at queue start).
+  - **Queue:** `~/openbeast-runs/ink-ablations-queue.sh` (setsid nohup,
+    pid 3634234 at launch), output `~/openbeast-runs/ink-ablations-queue.out`.
+    It polls every 2 min, logging each poll, until `ink-I_T2-run.out` says
+    `RESTORE OK` or `RESTORE FAILED` **and**
+    `~/openbeast-runs/maya-2026-11-23/GPU-RELEASED` exists. Then per arm:
+    `./stop.sh`, `inkling-v5.sh start <pack>`, serve check (`/v1/models`,
+    a chat, and `docker inspect basalt-serve` args naming the expected
+    pack, recorded with the container's DNS setting), the arm in the
+    eval-host container, `inkling-v5.sh stop`. A failed serve check skips
+    that arm and the queue goes on. At exit, always: `inkling-v5.sh stop`,
+    `./start.sh -d`, gate `:8091` check (200 and a chat) with
+    `~/.config/openbeast/rig-eval.key`, then `RESTORE OK|FAILED` and
+    `QUEUE DONE` in the `.out`.
+  - **Trees:** `~/ob-ink2` (detached worktree of `~/ob-eval-container` at
+    `d41c2c47`, era `9bcd5aa6`) and `~/ob-ink2/.claude/worktrees/h9` at
+    `f38a29c7` (era `036638dd`); image `openbeast-eval-host:8d1e28442569`
+    (the tag `scripts/eval-host-container.sh tag` computes in `~/ob-ink2`).
+    `~/ob-ink` is not used. Campaign logs
+    `~/openbeast-runs/beast-inkling-<arm>-<ts>.out`; state in
+    `~/ob-ink2/evals/results/campaigns/v5-thinking-first-inkling-2-mini-derisked-basalt-nvfp4-mx8/`
+    (`I_T2_s1`, `I_UP8k`) and `…-inkling-2-mini-basalt-nvfp4-mx8-stock/`
+    (`I_T2_stock`). `I_T2`'s row is in `~/ob-ink`'s state, so compare by
+    results file (`campaign.py report --baseline I_T2=<I_T2 results json>`).
+  - **DNS fix in these serves:** `scripts/basalt-serve.sh` (under
+    `~/openbeast-runs/inkling-perf-2026-11-23/`, original kept as
+    `basalt-serve.sh.orig-20261123`) now starts `basalt-serve` with
+    `--dns 127.0.0.1`. Probe on `strata-bench-net`: without it
+    `example.com` resolved, with it `gaierror -3`. The queue re-probes from
+    inside `basalt-serve` per arm. If a serve check fails with the fix, the
+    arm retries once with `BASALT_DNS_OPEN=1` (the old serve), logged.
+  - **Stop safely.** Before any arm has started (still waiting): `pkill -f
+    ink-ablations-queue.sh` is fine (it has touched nothing). Once arms run,
+    do **not** kill the script (it owns the restore): `touch
+    ~/openbeast-runs/ink-ablations-queue.STOP` (no further arm starts),
+    then stop the running arm's eval container:
+    `docker stop $(docker ps -q --filter ancestor=openbeast-eval-host:8d1e28442569)`.
+    The script logs the exit, stops Basalt and restores the default stack.
+  - **Waits forever** if `I_T2`'s launcher dies without a `RESTORE` line or
+    Maya never writes `GPU-RELEASED`; check the `WAIT:` lines.
+  - **After:** per arm the integrity scan, the `dlsym` procedure, the #588
+    count (logged per arm by the queue from the server; recount from the
+    transcripts with `evals/audit/capped_turns.py <scan.json>`, as for
+    `I_T2`), then the comparisons in DECISIONS §12. `I_T2`'s results file
+    for `--baseline` is
+    `~/ob-ink/.claude/worktrees/h9/evals/results/eval-inkling-2-mini-derisked-basalt-nvfp4-mx8-v5-thinking-first-i-t2-20261124-045843.json`
+    (committed in `evals/boards/v5/` under the same name). **Started
+    2026-11-24 01:56 PST** after Maya's `GPU-RELEASED` (01:56): serve check
+    passed with `--dns 127.0.0.1` (the in-container DNS probe FAILs, as
+    intended), the seed probe gave identical seeded replies and different
+    unseeded ones, and `I_T2_s1` launched 01:56:53
+    (`~/openbeast-runs/beast-inkling-I_T2_s1-20261124-0156.out`).
+    `I_T2_s1` ended 06:07:28 (51/71), `I_T2_stock` ran 06:07:39 to 10:25:17
+    (53/71), `I_UP8k` launched 10:25:27. A log saver
+    (`~/openbeast-runs/basalt-logsaver.sh`) kept each container's server log
+    in `~/openbeast-runs/basalt-server-logs/`.
+- [x] **DONE 2026-11-24 14:28 PST: `I_UP8k`** (the queue's last arm,
+  `QUEUE DONE`, `RESTORE OK`): 49/71, the same count as `I_T2`; its
+  forced-act turn made a call in 18 of 68 turns (`enable_thinking: false`
+  is not a hard switch on Inkling). Read in
+  [the Inkling report §12](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md#12-the-improved-arm-i_t3-2026-11-24).
+  **Wrapped up the same evening** ([report §10.9](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md#109-i_up8k-deepseeks-up_8k-setup-on-inkling-2026-11-24),
+  [DECISIONS-2026-11-24 §13-§14](reports/DECISIONS-2026-11-24.md#13-i_up8k-up_8ks-setup-is-not-adopted-for-inkling-no-forced-act-arm-on-basalt)):
+  - **Board row `INK-UP8K`: 49/71, SCORE 75.1**, listed, not ranked (INK-T2
+    is the Derisked pack's best row). Against I_T2 on the same pack: 3
+    gained, 3 lost (p 1.0); against I_T2_s1 −2 (p 0.63): **UP_8k adds
+    nothing measurable over T2 on Inkling**, as on DeepSeek.
+  - **The forced-act turns did not run with thinking off:** Basalt maps
+    `enable_thinking=false` to `reasoning_effort "none"` with no thinking
+    budget; 67 of 68 still thought, 56 hit the cap, 50 ended empty, 18
+    acted. Both tools now count it (`capped_turns.py` forced columns;
+    `basalt_log.py` `without_budget_line`: 68 here, 0 in the T2 arms).
+  - **Integrity:** the scan flags `163_bigint_divmod_c`: a `find /` listed
+    the reference file names under the mounted tree; reading them was
+    refused by the eval guard; the unit failed. By the scan's rule the
+    listing (not refused) is a contamination: **excluded** (49 raw, 49
+    scored; DECISIONS §14). The same check over the other rig arms' 503
+    transcripts found no other listing of a sealed path. No web calls, no
+    shell route off the host. dlsym replayed: PASS 3/3 (validator note).
+  - 226 empty capped turns (50 of them forced turns), the server log
+    agreeing exactly; §10.9.8 reconciles §12.6's earlier figures (its "176"
+    is the thinking-turn subset).
+- [x] **Arm `I_T3`, Inkling's improved composite: DONE 2026-11-25, 52/71**
+  (board row `INK-T3`, SCORE 77.4, listed, not the pack's shown row;
+  [report](reports/V5_INKLING2_MINI_I_T3-2026-11-25.md),
+  [DECISIONS-2026-11-25 §4](reports/DECISIONS-2026-11-25.md#4-i_t3-does-not-beat-ink-t2-stock-the-5090-default-stays-stock)).
+  Main pass 00:30:39-09:13:10Z, the campaign's rerun of 4 units to
+  10:18:12Z, `RESTORE OK` 02:18:19 PST. Against INK-T2-STOCK 2 gained, 3
+  lost (p 1.0); against Q38U-T2 (65 units) 2 gained, 5 lost (p 0.45): the
+  default stays stock. 4 context overflows (`overflow.json`; the runner
+  does not compact on Basalt's wording, HARNESS_NOTES (a)) + 1 at the
+  wall; the #632 patch: 0 empty capped turns (stock 105), 93 text-only
+  capped turns instead. Integrity 0 contaminated; dlsym replay PASS 3/3.
+  **Follow-ups `I_T3_t15`, `I_T3_8k` and a seed repeat: not queued; the
+  next Inkling step waits for the next-era overflow fix.** The launch
+  record follows, kept for the recipe. (Was: RUNNING since 2026-11-24
+  16:29:10 PST; launcher pid 7275, `PACK=stock`; gate passed 16:30:37; arm
+  started 16:30:39, the campaign's ETA ~11.5 h, so about 04:00 PST on
+  11-25) ([DECISIONS-2026-11-24 §12](reports/DECISIONS-2026-11-24.md#12-the-improved-inkling-arm-i_t3-turns-cap-patch)):
+  `I_T2_stock` (the stock pack, §8) + `--turns-per-wall-s 5` + a 16,384
+  cap + `--answer-room 8192` + the PR #632 patch (§11). Launch on the rig:
+  `setsid nohup ~/openbeast-runs/ink-I_T3-run.sh > ~/openbeast-runs/ink-I_T3-run.out 2>&1 < /dev/null &`
+  (`PACK=derisked` in front runs it on the Derisked pack instead). It
+  checks the queue is done and no eval runs, the trees (`~/ob-ink3` at
+  this PR's merge, `~/ob-ink3/.claude/worktrees/h9` at `f38a29c7`, era
+  `036638dd`), the image and the patched tree's hashes; stops the default
+  stack and restores it on exit; gates on the serve's args, mount, DNS
+  fix, a chat and a #588 probe; keeps the server log in
+  `~/openbeast-runs/basalt-server-logs/basalt-I_T3-<ts>.log`.
+  - **Live paths:** launcher log `~/openbeast-runs/ink-I_T3-run.out`;
+    campaign log `~/openbeast-runs/beast-inkling-I_T3-20261124-1630.out`;
+    state `~/ob-ink3/evals/results/campaigns/v5-thinking-first-inkling-2-mini-basalt-nvfp4-mx8-stock/`
+    (`state.json`, `arm-I_T3.log`); trees `~/ob-ink3` @ `bffe5ecd` and
+    `~/ob-ink3/.claude/worktrees/h9` @ `f38a29c7` (era `036638dd`); image
+    `openbeast-eval-host:8d1e28442569`; server log
+    `~/openbeast-runs/basalt-server-logs/basalt-I_T3-20261124-162910.log`.
+    The rig's `openbeast.conf` still says `AGENT_PROFILE=qwen38-best`; the
+    launcher restores the default stack (`./start.sh -d`) on exit.
+  - **Stop safely:** do **not** kill `ink-I_T3-run.sh` (its EXIT trap owns
+    the restore). Stop the arm's eval container instead:
+    `docker stop $(docker ps -q --filter ancestor=openbeast-eval-host:8d1e28442569)`.
+    The launcher then logs the exit, runs `inkling-v5.sh stop` (saves the
+    server log), `./start.sh -d`, checks the gate `:8091` (200 and a chat)
+    and writes `RESTORE OK|FAILED` and `I_T3 LAUNCHER DONE` in the `.out`.
+  - **Restore by hand** (only on `RESTORE FAILED` or a launcher that died
+    without a `RESTORE` line): `docker stop basalt-serve` if it is still
+    up, then `cd ~/Documents/openbeast && ./start.sh -d`, then
+    `curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $(cat ~/.config/openbeast/rig-eval.key)" http://127.0.0.1:8091/v1/models`
+    must print 200.
+  - **After:** integrity scan (the review-1124 scan: listings in any format
+    and the package-manager / nc / ssh network paths; rerun it read-only
+    over the earlier rig arms' transcripts too, item below),
+    `evals/audit/capped_turns.py <scan.json> --cap 16384`,
+    `evals/audit/basalt_log.py <kept log> --since … --until … --cap 16384`
+    (I_T3's cap is 16,384, not the tools' 8,192 default: at the default the
+    cap-reply rates come out empty), the `dlsym` procedure, the paired
+    tests against `I_T2_stock` and Q38U-T2 (report §12 recipe), then §6's
+    switch rule. Follow-ups `I_T3_t15`, `I_T3_8k` and a seed repeat only
+    with Max's go.
+- [x] **Rescan the rig arms with the review-1124 integrity scan: DONE
+  2026-11-25** (read only on the rig, transcripts copied to the Mac, the
+  scanner from main). Every board row and diagnostic that ran on the RTX
+  5090 rig: Q38U-L0 (71 transcripts, 3 contaminated, unchanged), Q38U-T2
+  main + r1 (81, **6: +2**), INK-T2 (71, 0), INK-T2-S1 (71, 0),
+  INK-T2-STOCK (81, 0, confirmed), INK-UP8K (71, 1, unchanged), INK-T3
+  (75, 0, confirmed), the DeepSeek T2 calibration with its rerun and
+  redo-fails (89, 0) and the Q38U L1/L2 profile (52, 0). The two new
+  Q38U-T2 units are package installs from the agent's shell, which the
+  2026-11-23 scan did not check (one a pass); both excluded:
+  **Q38U-T2 52/71 → 51/71, SCORE 75.6 → 75.0**, rank unchanged
+  ([DECISIONS-2026-11-25 §5](reports/DECISIONS-2026-11-25.md#5-the-rig-arms-rescanned-q38u-t2-loses-two-more-units-52--51)).
+  Scanner fixes: a network command the shell reports as `command not
+  found` is an attempt (one more Q_T2 pass was a false positive), and
+  the failed-connection test no longer matches `ENOTFOUND` inside
+  Python's `ModuleNotFoundError`. Sealed review
+  `evals/audit/reviews/rig-arms-rescan-2026-11-25.md`.
+- [ ] **Next era (runner): do not execute a tool call from a reply that
+  ended `length`.** Basalt returns a call the cap cut with its arguments
+  closed into valid JSON, and the runner runs it: 51-82 truncated
+  heredocs per Inkling arm (report §12.2). Return "your call was cut by
+  the output cap: re-issue it whole, or split it" instead, as a model-turn
+  error (with HARNESS_NOTES next-era (a), the llama.cpp side of the same
+  fault).
+- [x] **Basalt code review** done 2026-11-23 (read only, the Strata report
+  [§15](reports/STRATA_INKLING_5090-2026-11-23.md#15-basalt-security-and-supply-chain-review)):
+  no malware, telemetry or credential access, no network code in the
+  engine; OK to keep serving `I_T2` in its sandbox.
+- [x] **Basalt follow-ups before it becomes a default** (§15.8 of that
+  report): **closed in `scripts/engines/basalt.sh` on 2026-11-24**, when
+  Max made the stock Inkling the 5090 default (DECISIONS-2026-11-24 §10).
+  Each item and how it is verified (tests, live, or at the switch):
+  [ENGINES.md](ENGINES.md#basalt-the-rtx-5090-default). The DNS fix is the
+  rig's proven one (a no-NAT bridge plus `--dns 127.0.0.1`), now with a
+  probe that gates every launch; `/tmp` is noexec and PIDs and memory are
+  limited (unverified live); the Python side is a pinned distro-package
+  image (`scripts/engines/basalt/Dockerfile`); the #588 fix is a hook that
+  applies `scripts/engines/patches/basalt-pr632-*.patch` (**on `main` from
+  2026-11-24**: `basalt-pr632-55f9be17.patch`, DECISIONS-2026-11-24 §11). The
+  server log: the adapter runs the container in the foreground, so Basalt's
+  log goes to the stack's inference log like llama-server's (no
+  `docker logs` needed).
+- [ ] **Rig firewall: deny the Basalt sandbox's bridge before the switch**
+  (2026-11-24 review, security-02). The rig's ufw has
+  `-A ufw-user-input -p udp -d 172.17.0.1 --dport 53 -s 172.16.0.0/12 -j ACCEPT`
+  (and the same for 192.168.0.0/16), and its host resolver answers on
+  172.17.0.1:53: any container on a Docker network in those ranges can send
+  a raw DNS query out, around the sandbox's `--dns 127.0.0.1`. The
+  adapter's launch probe now sends exactly that query (and to the bridge
+  gateway, and TCP to the gateway's port 22) and **refuses to serve while
+  it is answered**, so the switch needs this first. The adapter's network
+  is on a fixed interface, `ob-basalt0`, so one rule closes it without
+  touching other Docker networks' DNS. On the rig, Max, `sudo`, any time
+  (the rule names an interface that does not exist until the first adapter
+  launch; the I_T3 eval runs on `strata-bench-net` and is not affected):
+  1. `sudo ufw status numbered`: note the two `172.17.0.1 53/udp` ALLOW rules.
+  2. `sudo ufw insert 1 deny in on ob-basalt0`
+  3. `sudo ufw status numbered`: the deny is rule 1, ahead of those ALLOWs.
+  4. At the switch's first launch the log says `sandbox probe: no DNS, no
+     TCP out, no raw DNS answer`; a `REFUSING … udp53 … ANSWERED` means the
+     rule is missing or behind the ALLOW.
+  Undo: `sudo ufw delete deny in on ob-basalt0`. The eval network
+  `strata-bench-net` (172.23.0.0/16, no NAT) is inside the same 172.16/12
+  ALLOW, so the eval serves have the same path; narrowing that ALLOW is a
+  separate host change (review finding security-03).
+- [ ] **Rig firewall: narrow the `allow-docker-dns` rules to `docker0`**
+  (2026-11-24 review, security-03; Max, `sudo`, **only after `I_T3` ends**
+  and before any further rig arm). Confirmed read only: `/etc/ufw/user.rules`
+  holds two rules commented `allow-docker-dns`, `udp 53` to `172.17.0.1`
+  from `172.16.0.0/12` and from `192.168.0.0/16`, with no interface, so
+  `strata-bench-net` (`br-f471e6a45884`, 172.23.0.0/16, where I_T3's
+  `basalt-serve` runs now) matches them; the host resolver at
+  172.17.0.1:53 answers public names (example.com: 2 answers, queried
+  from the host). Not yet tested from inside a container. Steps:
+  1. `sudo cp -a /etc/ufw/user.rules /etc/ufw/user.rules.bak-$(date +%Y%m%d-%H%M)`
+     (and `user6.rules` the same way).
+  2. `sudo ufw status numbered`: note the two `172.17.0.1 53/udp` ALLOW
+     rules (comment `allow-docker-dns`).
+  3. `sudo ufw allow in on docker0 from 172.17.0.0/16 to 172.17.0.1 port 53 proto udp comment 'allow-docker-dns-docker0'`
+  4. Delete the two old rules by number (`sudo ufw delete <n>`, highest
+     number first, re-reading `status numbered` between deletes).
+  5. Check: on `docker0` a container still resolves (`docker run --rm alpine nslookup example.com`);
+     on each no-egress net a probe gets no answer:
+     `docker run --rm --network strata-bench-net alpine nslookup -timeout=3 example.com 172.17.0.1`
+     must time out (repeat for `openbeast-basalt-net` / `ob-basalt0` once it exists).
+  6. If another compose network (a user-defined bridge in 172.16/12 or
+     192.168/16) needs the host resolver, add a rule for that bridge's
+     interface by name rather than restoring the range.
+  Rollback: `sudo cp -a /etc/ufw/user.rules.bak-<ts> /etc/ufw/user.rules`
+  (and `user6.rules`), `sudo ufw reload`, then `sudo ufw status numbered`
+  shows the two range rules again.
+- [ ] **Restrict spark-1's `rig_pull` key on the rig** (2026-11-24 review,
+  security-01, high). Confirmed read only: `beast:~/.ssh/authorized_keys`
+  line 2 (comment `spark-1`) carries only
+  `from="100.66.191.118,192.168.40.153",no-agent-forwarding,no-X11-forwarding,no-port-forwarding`:
+  no `command=`, no `restrict`, no `no-pty`. It logs in as max, who is in
+  `docker` and `wheel` on the rig, so the login is root-equivalent through
+  docker. The private key `spark-1:~/.ssh/id_ed25519_rig_pull` (0600,
+  created 2026-11-22) has **no passphrase**, and spark-1's `~/.ssh/config`
+  maps `Host beast` to it. The repo does not document it (`git grep
+  rig_pull` is empty; `SPARK_BACKUP_RESTORE.md` lists only the cluster
+  key). With `SPARK_HYDRA.md` E7 (spark-1's admin-tier tools run as max and
+  can be prompt-injected), a prompt-injected admin chat on spark-1 reaches
+  root on the rig and its live eval containers. Safe window: editing
+  `authorized_keys` does not touch the eval, but do it **after `I_T3`
+  ends** so nothing on the rig changes mid-arm. Steps:
+  1. Find what spark-1 pulls with it (the name says spark-1 pulls from the
+     rig; read spark-1's shell history and scripts for `ssh beast` /
+     `rsync beast:`). Write the answer down before restricting.
+  2. On the rig: `cp -a ~/.ssh/authorized_keys ~/.ssh/authorized_keys.bak-$(date +%Y%m%d-%H%M)`.
+     Keep a second ssh session to the rig open from the Mac (its own key,
+     line 1, is not changed) until step 4 passes.
+  3. Rewrite line 2's options to
+     `restrict,from="100.66.191.118,192.168.40.153",command="/usr/bin/rrsync -ro <dir>"`
+     (rrsync ships with rsync; `-ro` read only, rooted at the one
+     directory the pull needs). If the pull is not rsync, use a small
+     wrapper that allows only the needed command via
+     `$SSH_ORIGINAL_COMMAND`. Stronger: a separate rig user that is not in
+     `docker` or `wheel`, owning or reading only that directory.
+  4. Check from spark-1: the real pull works; `ssh beast id` and
+     `ssh beast docker ps` are refused (rrsync rejects them).
+  5. Document the key (purpose, the forced command, `from=`) in
+     `SPARK_HYDRA.md` (E7 known issues) and add
+     `~/.ssh/id_ed25519_rig_pull` to the secrets row of
+     `SPARK_BACKUP_RESTORE.md`.
+  Rollback: `cp -a ~/.ssh/authorized_keys.bak-<ts> ~/.ssh/authorized_keys`
+  on the rig (from the still-open session). Option: give the key a
+  passphrase only if the pull is interactive (an unattended pull cannot
+  use one).
+- [ ] **Harden the rig's eval serve script for the next arms** (2026-11-24
+  review, security-06, low; availability, not escape). Confirmed with
+  `docker inspect basalt-serve` during I_T3: `PidsLimit` unset, `Memory 0`,
+  `Tmpfs /tmp:rw,size=8g,exec`, network `strata-bench-net`, image
+  `ob-strata-env:2026-11-23` (not the pinned `openbeast-basalt-env`). It
+  does have User 1000:1000, `ReadonlyRootfs`, `CapDrop [ALL]`,
+  `no-new-privileges`, `Dns [127.0.0.1]`, `127.0.0.1:8099` only and the
+  key file read only. The Strata report (§15, the open gaps) and the
+  adapter's row in ENGINES.md list these limits. **Only after `I_T3`
+  ends; never edit `~/openbeast-runs/inkling-perf-2026-11-23/` while an
+  arm runs.** Steps:
+  1. `cp -a scripts/basalt-serve.sh scripts/basalt-serve.sh.orig-$(date +%Y%m%d)`
+     in that directory.
+  2. Add `--pids-limit 256 --memory 32g --memory-swap 32g` and make the
+     tmpfs `/tmp:rw,noexec,nosuid,size=8g` (the adapter's values).
+  3. Start it once outside an arm (`inkling-v5.sh start stock`), check
+     `docker inspect` shows the limits, a chat answers, and record whether
+     Basalt runs with noexec `/tmp` (ENGINES.md: the question is open);
+     then `inkling-v5.sh stop`.
+  4. The serve's limits are part of the recipe: note the change in the
+     RESULTS recipe of the next arm (`I_T3_t15`, `I_T3_8k`, a seed repeat),
+     or serve those arms through `scripts/engine-serve.sh` /
+     `scripts/engines/basalt.sh` so they get the adapter's checked flags.
+  Rollback: restore `basalt-serve.sh.orig-<date>`; if noexec `/tmp` breaks
+  Basalt, keep the pid and memory limits and leave `/tmp` exec (and record
+  it).
+- [x] **Switch the 5090 rig to Inkling 2 Mini (Basalt): Max, after the GPU
+  frees up. Done 2026-11-25 (~09:45-09:50 PST; evidence at the end of this
+  item)** (I_UP8k and the improved #632 arm I_T3 are done; nothing on the rig
+  changed for this PR). Steps and rollback:
+  [MODELS.md](MODELS.md#switching-the-rtx-5090-to-its-default-and-back).
+  Before: the firewall item above; `git pull --ff-only` in `~/Documents/openbeast`; the toolkit's
+  `docker run --gpus device=0` works; `scripts/engine.sh install basalt`
+  (builds the env image from the pinned Dockerfile: **its first build**, so
+  check `dpkg-query` pins pass and `bin/basalt` builds; compare its sha256
+  with the measured `5dc8a63c…`: a different compiler path may differ, the
+  commit is the pin); the pack: the rig already has it at
+  `~/openbeast-runs/inkling-perf-2026-11-23/weights/basalt-Inkling-2-Mini-c2afac3a/`,
+  so copy (or hard-link) it into `WEIGHTS_DIR` and
+  `scripts/verify-weights.sh --file Inkling-2-Mini-NVFP4-MX8.basalt`. Check
+  after the switch:
+  - **the gate**: `GET /v1/models` through beast-gate lists
+    `inkling-2-mini`; a chat answers with thinking on; a remote client
+    (Tailscale) works through the gate, and `:8080` is not reachable off
+    the box (`ss -ltn`: `127.0.0.1:8080` only);
+  - **the sandbox**: the launch log's `sandbox probe: no DNS, no TCP out`;
+    `docker inspect` of `openbeast-engine-basalt-<8hex>` shows
+    `ReadonlyRootfs`, `CapDrop [ALL]`, `Dns [127.0.0.1]`, `PidsLimit 256`,
+    32 GiB memory, the noexec `/tmp`; **if Basalt fails to start, try the
+    noexec `/tmp` first** (record the result in ENGINES.md either way);
+    peak memory and PIDs during a long agent turn (`docker stats`) against
+    the limits;
+  - **conformance**: `scripts/backends/conformance.sh --url
+    http://127.0.0.1:8080 --model inkling-2-mini` at c=1, PASS with
+    `reasoning_content` separated (key from `LLAMA_API_KEY`);
+  - **the dashboard**: the slot card shows one slot and the model
+    `inkling-2-mini`; `scripts/engine.sh status` and `doctor` show basalt
+    v0.5.7 at its pin, ready, and "default engine here: basalt";
+  - `AGENT_PROFILE=inkling-best` in the rig's conf; a spawned agent answers.
+  Then tick this item with the date, and note it in MODELS.md (as the
+  `qwen38-best` application was). Rollback if any check fails: the
+  MODELS.md block (Qwen3.8 on llama.cpp, `qwen38-best`).
+
+  **Done 2026-11-25.** The rig (`~/Documents/openbeast` at `36619bd2`)
+  serves stock Inkling 2 Mini on Basalt v0.5.7 + the #632 patch (profile
+  `inkling2-mini-stock`, `AGENT_PROFILE=inkling-best`). Conf backups:
+  `~/openbeast-runs/openbeast.conf.before-inkling-20261125-0907` and
+  `.engines/conf-backups/openbeast.conf.20261125T094457.671678`. The
+  switch hit a bug: `engine.sh use default` wrote the basalt conf and
+  restarted the stack, but start.sh relaunched the OLD llama
+  `SERVE_SCRIPT` (Qwen) on :8080 under the Inkling profile (log
+  `~/openbeast-runs/switch-inkling-20261125-0944.out`; `.run/stack.log`
+  09:44:58). Cause: engine.sh had sourced `lib/conf.sh` before rewriting
+  the conf, and conf.sh's plain `OPENBEAST_INFERENCE_*` exports read back
+  in the restarted start.sh as operator overrides. A restart from a plain
+  ssh shell launched Basalt correctly; fixed in code since (conf.sh derive
+  records + engine.sh restarts with its caller's environment,
+  `tests/test_engine_switch_env.sh`; [ENGINES.md](ENGINES.md#basalt-the-rtx-5090-default)).
+  Checks, all passed:
+  - **build**: the first adapter build on the rig, `basalt-v0.5.7+pr632-d62ab74d2299`;
+    `bin/basalt` sha256 `0fd5583db679b731…`, not the measured
+    `5dc8a63c…`, as anticipated above (same pin + #632, a different
+    compiler path); `engine.sh status`: basalt ready at the pin +pr632;
+  - **the sandbox**: launch log `sandbox probe: no DNS, no TCP out, no raw
+    DNS answer` (Max ran `sudo ufw insert 1 deny in on ob-basalt0` that
+    morning); `docker inspect`: `ReadonlyRootfs true`, `CapDrop [ALL]`,
+    `Dns [127.0.0.1]`, `PidsLimit 256`, `Memory` 32 GiB, user `1000:1000`,
+    `no-new-privileges`, `/tmp` `noexec,nosuid,nodev` 8g, port
+    `127.0.0.1:8080` only, network `openbeast-basalt-net` on bridge
+    `ob-basalt0`. **The noexec `/tmp` works with Basalt** (ENGINES.md);
+  - **conformance** PASS at c=1
+    (`.run/conformance/conformance-20261125T174700Z-inkling-2-mini.json`:
+    chat, stream, `reasoning_content`, tools, tool_result, parallel,
+    max_tokens);
+  - **the gate**, over Tailscale from the Mac
+    (`https://beast.tail4109f9.ts.net:8443`): `/v1/models` lists
+    `inkling-2-mini` (n_ctx 262144); a chat answered (391) with the
+    reasoning separated; no key → 401; `:8444` slot 200 (model
+    `inkling-2-mini`, 1 slot); `:8447` (the dashboard) 200; `:8080`
+    closed off the box;
+  - **a spawned agent answers**: `./agent.sh` (agents/runner.py, the
+    rig's conf) ran two tasks to `task_done` on `inkling-2-mini`: a
+    write-and-verify file task (3 iterations, ~2 s) and a sieve module +
+    unittest + 2,000-prime file (6 iterations, ~5 s, 33,671 tokens, tests
+    pass, `primes.txt` 2,000 lines ending 17389), 0 API errors. The agent
+    router's classify call replayed against Basalt returns
+    `{"spawn": true, …}` in 0.2 s (grammar + thinking off work); a spawn
+    through `:8088` needs the WebUI's signed identity on this rig (JWT
+    mode), so the end-to-end spawn is the WebUI's to exercise;
+  - **`docker stats`** of `openbeast-engine-basalt-9f33f079` during those
+    turns (streamed, 20 samples): peak 2.50 GiB of the 32 GiB limit and 18
+    of the 256 PIDs (host RAM; the weights sit in VRAM);
+  - **doctor**: 43 ok / 2 warnings / 1 failure; the failure was doctor
+    reading the hand-mounted dashboard on `:8447` as ntfy, and it called
+    the managed Basalt "not managed here" (both fixed since). The
+    dashboard labelled the one Basalt slot `mtp-single-slot` and gave no
+    `backend`, so clients got the llama catalog (Basalt 404s an id it does
+    not serve, checked: `model_not_found`); fixed since (`single-slot`,
+    `backend: "basalt"`), live on the rig after its next pull and
+    `./scripts/ext.sh restart dashboard`.
+- [ ] **Basalt after the switch**: the switch's `engine.sh install basalt`
+  already builds the pin + the #632 patch (`basalt-v0.5.7+pr632-…`; the
+  profile's `PATCHES` requires it): rerun the #588 reproduction,
+  `max_tokens` 3000 and `reasoning_budget_tokens` 400, before trusting a
+  budget wrap. **The profile's `ANSWER_ROOM` per I_T3's decision**: the
+  default serves pin + #632 at `auto`, which no board row measured and the
+  Strata §16.6 probe flagged (9 of 12 patched replies cut mid-call at the
+  8,192 cap); I_T3 (2026-11-25) did not settle it (it ran 16,384 with an
+  answer room of 8,192, inside a composite; 0 empty capped turns, and
+  `I_T3_8k` is not queued), so run the default as an arm before calling it measured,
+  and then point the profile's `MEASURED_ROW` at that row; a re-pin to an upstream
+  release that merges #632 (a new review row); Basalt's own `serve/tests`
+  once against the distro package set; a slim serve image (the env image
+  carries the compilers).
+- [ ] **Drop the local PR #632 patch when upstream merges it**: check
+  `gh api repos/jesdga95/basalt/pulls/632 --jq '{state,merged,merge_commit_sha}'`
+  (open, not merged on 2026-11-24 ~17:00Z). When merged: re-pin the adapter
+  to a reviewed release that contains it (a new review row), re-run the
+  #588 probe (`scripts/engines/basalt_probe_588.py` with
+  `scripts/engines/probes/probe-163rs-it39.json`, the one that reproduces
+  it), then remove `scripts/engines/patches/basalt-pr632-55f9be17.patch`,
+  `scripts/engines/basalt-apply-pr632.sh` and the rig's
+  `inkling-v5.sh --patch` (DECISIONS-2026-11-24 §11).
+- [ ] **Strata forces Inkling's thinking off** (`HAS_THINKING = False`,
+  every reasoning effort normalized to `"none"`, in
+  `terminal/strata_control/inkling_family.py` and
+  `terminal/serve/inkling_dialect.py` at `6a6db7ff`). So Strata cannot serve
+  `I_T2`; on Strata only a thinking-off arm is possible, which would not be
+  comparable with T2 rows. Re-check before choosing Strata for any eval.
+  **Re-checked 2026-11-25:** fixed in source since `39b8407c` (2026-11-23
+  12:52Z) and in v0.2.21 (`d46f5f26`): thinking levels reach the template and
+  `reasoning_content` is returned (serve default `low`; `HAS_THINKING` is
+  stale launcher metadata). Unmeasured by us; #7084 (uncapped second thinking
+  block) open ([SC117 report §1](reports/SC117_INKLING_STRATA-2026-11-25.md#1-thinking-on-strata-maxs-gate)).
+- [x] **DONE 2026-11-25: SC117 abliterated Inkling, Phase 2, path B** (Max's
+  go 2026-11-25). The SC117 edit transplanted into the release and converted
+  by Basalt (`Inkling-2-Mini-SC117-abliterated-NVFP4-MX8.basalt`, `6eaa50d3…`;
+  the converter rebuilds the stock pack `28ec7072…` byte for byte from
+  `thinkingmachines/Inkling-2-Mini @ b85c3cfa`; offline recipe
+  `scripts/engines/inkling-sc117-pack.sh`, registry row `derived`), then arm
+  `I_T2_sc117` (INK-T2-STOCK with only the weights changed): **51/71, SCORE
+  75.3, row INK-T2-SC117**; level with stock (1 in, 3 out, p 0.63) and with
+  Derisked (3 in, 1 out, p 0.63); same speed; KLD 0.0354 (stock 0.0128). The
+  default stays stock ([report](reports/V5_INKLING2_MINI_SC117-2026-11-25.md),
+  [DECISIONS-2026-11-25 §6](reports/DECISIONS-2026-11-25.md#6-sc117s-abliterated-inkling-on-basalt-level-with-stock-the-default-stays-stock)).
+- [x] **DONE 2026-11-25: SC117's pack is the RTX 5090 default** (Max,
+  [DECISIONS-2026-11-25 §7](reports/DECISIONS-2026-11-25.md#7-sc117s-abliterated-inkling-2-mini-is-the-rtx-5090-default)):
+  profile `scripts/engines/basalt/profiles/inkling2-mini-sc117.env`
+  (`engine.sh use default` writes it, also over a conf naming the stock
+  profile), board `defaults` → `INK-T2-SC117`, INSTALL/MODELS/ENGINES; the
+  stock profile is the rollback.
+- [x] **DONE: the rig serves the SC117 default.** 2026-11-25 17:03 PST, from a plain ssh shell in `~/Documents/openbeast` at `97363559`: the pack hard-linked into `weights/` (`verify-weights.sh --file Inkling-2-Mini-SC117-abliterated-NVFP4-MX8.basalt`: 1 verified, 0 failures), conf backed up (`~/openbeast-runs/openbeast.conf.before-sc117-20261125-1702`, and `use`'s own `.engines/conf-backups/openbeast.conf.20261125T170301.2136450`), `engine.sh use default --dry-run` showed `ENGINE_PROFILE=inkling2-mini-sc117` and the SC117 pack mount, then `engine.sh use default`: `engine.sh status` basalt v0.5.7 + #632, profile `inkling2-mini-sc117`, ready, serving `inkling-2-mini`; `docker inspect` mounts `weights/Inkling-2-Mini-SC117-abliterated-NVFP4-MX8.basalt` read-only, `ReadonlyRootfs true`, `CapDrop [ALL]`, `Dns [127.0.0.1]`, `PidsLimit 256`, `Memory 32 GiB`, port `127.0.0.1:8080` only (`ss`: loopback listener only); the launch log's sandbox probe: 9 of 9 checks FAIL (no DNS, no TCP out, no raw DNS answer); conformance PASS (reasoning in `reasoning_content`, tools, parallel calls); through beast-gate over Tailscale (`https://beast…:8443`) `/v1/models` 200 and a chat with thinking on answered (416 characters of reasoning); the dashboard's `/api/slot` shows `inkling-2-mini`, 1 slot, backend basalt; `AGENT_PROFILE=inkling-best` unchanged. Log: `~/openbeast-runs/sc117-basalt.log`. Rollback:
+  `scripts/engine.sh use basalt --profile inkling2-mini-stock` (the stock pack is still in `weights/`).
+- [ ] **SC117 path A (optional, not planned):** a bounded Strata v0.2.21 speed
+  and thinking check after a delta review
+  ([SC117 report §5.1](reports/SC117_INKLING_STRATA-2026-11-25.md#51-path-a-strata-v0221-bounded-speed-and-thinking-check-no-v5-arm)).
+  Low value now: path B answered the weights question on the faster engine.
+- [x] **Project Maya for Inkling 2 Mini** evaluated 2026-11-24 01:38-01:56
+  (v1.1.76 `8c618a59`, built offline, the stock unsloth Old_Support
+  UD-Q4_K_XL): **not adopted**. Single stream 329 / 204 tok/s code / prose
+  against Basalt's 376 / 307; 4 streams 350 / 354 against 702 / 624; prefill ~6K
+  against 18-19K. It cannot load the Derisked model. KLD 0.0137 (best measured
+  on the 4-bit file), conformance PASS at c=1 and c=4
+  ([reports/MAYA_INKLING_5090-2026-11-23.md](reports/MAYA_INKLING_5090-2026-11-23.md),
+  [DECISIONS-2026-11-23 §13](reports/DECISIONS-2026-11-23.md#13-project-maya-for-inkling-review-measure-not-adopted)).
+- [ ] **Maya revisit conditions** (no action until one holds): a reviewed
+  release that reads `inkling2_loop` GGUFs or the Derisked checkpoint;
+  prose drafting no longer below plain decode, and drafting kept under
+  `--parallel`; prefill above ~6K tok/s. The GLM adapter
+  (`scripts/engines/maya.sh`, v1.1.65) stays as it is; reviewing a v1.1.72+
+  row for it is a separate job.
+- [ ] **The Strata DSpark CUDA bug, upstream** (optional, Max's call). It is
+  **already reported** (#6762, CUDA; dupes #6784, #6852, #6876; SYCL twin
+  #6717), and a comment on #6762 proposes the same one-line fix as our
+  `results/strata-dspark-cuda-names.patch`. Nothing new to file; at most a
+  confirmation comment on #6762 with our RTX 5090 (sm_120) result. Details:
+  [the report §7](reports/STRATA_INKLING_5090-2026-11-23.md#7-the-bug-dspark-on-cuda-cannot-find-its-tensors).
+
+**Open — process and the website:**
+
+- [ ] **A free local CI runner.** GitHub Actions is turned off (cost) since
+  2026-11-17; PRs merge with `gh pr merge --admin` after the local checks in
+  [`CONTRIBUTING.md`](../CONTRIBUTING.md) "CI is off: check locally before
+  merging", with the results in the PR body. Replace the honour system with a
+  script, e.g. `scripts/premerge.sh <pr>` on spark-2: a temp clone of the PR
+  head, the pytest suite, the Linux-only shell suites, ruff / shellcheck /
+  pip-audit, `suite_stats.py --check`, `v5_board.py --check`, then a PR
+  comment with the results. A self-hosted Actions runner on spark-2 is the
+  other option (no minutes billed), but it runs PR code on a box that holds
+  the weights and the gate: decide that one deliberately.
+- [x] **Deploy openbeast.ai on the Mac Mini.** Deployed 2026-11-17 evening
+  (website `e72790c`; `/benchmarks/` answers 200, checked 2026-11-19).
+- [x] **Next.js security advisory on the website.** The site runs Next.js
+  16.4.5 (website commit `208ad30`; Dependabot's #16 closed).
+- [x] **The website's arm E update.** `/benchmarks/` shows E at 50/71, 74.7%
+  (checked 2026-11-19).
+- [ ] **Deploy website main (#52 and later).** Read live 2026-11-24
+  evening: production was redeployed 2026-11-24 14:38 PST (Last-Modified
+  22:38:39 GMT; most likely website main at #51 `66bc476`: it is the last
+  merge before that time, and the deploy recorded no commit); `/recipes/`
+  answers 200 and `/models/` names Inkling as the 5090 default.
+  **Not live:** website #52 (`d5ff300`, the INK-UP8K row; `/benchmarks/`
+  has no "UP8K") and anything after it. Re-check that a missing
+  `/_next/static/*` file no longer returns 404 with the immutable cache
+  header (the 2026-11-22 note). Run `deploy/deploy.sh prod` on the Mac Mini,
+  then purge Cloudflare's `/_next/static/` prefix, and **record the deployed
+  website commit here** (the 2026-11-24 deploy did not).
+- [ ] **The site's 5090 wording vs the live rig** (2026-11-24 review,
+  website-content-04). The website (`/hardware/` engine table,
+  `src/app/hardware/page.tsx:179` "Default since Nov 24 · Inkling 2 Mini
+  pack · hardened container behind the gate"; the home topology's RIG row
+  "Inkling 2 Mini (stock), the shipped default") describes the default
+  OpenBeast ships, while the rig itself still runs `qwen38-best` (read
+  only 2026-11-24: `~/Documents/openbeast/openbeast.conf` has
+  `AGENT_PROFILE=qwen38-best`; the I_T3 arm holds the GPU). The
+  `/hardware/` lede says it is the shipped default, so this is not false,
+  but it does not match the running rig. Close it either way: (a) the
+  rig switch item ("Open — Inkling 2 Mini on the 5090") lands after `I_T3`, then nothing changes on the
+  site; or (b) before the next website deploy, if the switch has not
+  landed, say "the default OpenBeast ships" in the engine-table cell and
+  the RIG row, or mark the rig switch as pending. No host change; website
+  repo only.
+- [x] **The website names the pair's new default.** Confirmed live
+  2026-11-22: the home page names DeepSeek-V4.1-Flash (Mia EXL3) as the
+  pair's default. History: the live site (2026-11-19)
+  said TensorFold serves "GLM-5.3-Flash Ablit" on the pair, and that
+  "DeepSeek v4.1 Flash is next". Change it to DeepSeek-V4.1-Flash (Mia EXL3),
+  the default and the board's #1 (T2 65/71, SCORE 94.9), with stock weights
+  (not abliterated, not uncensored). GLM-5.3-Flash Ablit becomes the staged
+  alternative. Then redeploy ([`WEBSITE_PLAN.md`](WEBSITE_PLAN.md#what-changed-since-the-third-revision-2026-11-19)).
+  **The handoff is [`WEBSITE_UPDATE_2026-11-19.md`](WEBSITE_UPDATE_2026-11-19.md)**: page-by-page
+  live quotes and replacement copy, the board rows, the uncensored-preferred
+  policy wording, new sections (labelled MEASURED / PLANNED), and the
+  post-deploy acceptance checks.
+  **Extended 2026-11-20 by [`WEBSITE_UPDATE_2026-11-20.md`](WEBSITE_UPDATE_2026-11-20.md)**
+  (re-checked live: nothing from 11-19 is deployed yet): the deltas for
+  DeepSeek's four arms (T, T_s1, T2, T3) and the about-one-unit seed noise,
+  more live stale text, the PROPOSED How we evaluate / Models / Own your
+  stack pages and the policy quote, the full new `llms.txt`, more Rule E
+  greps, and questions Q-F to Q-L for Max.
+  **Extended 2026-11-21 by [`WEBSITE_UPDATE_2026-11-21.md`](WEBSITE_UPDATE_2026-11-21.md)**
+  (re-checked live: neither 11-19 nor 11-20 is deployed): DeepSeek's ladder
+  at eight board rows (T to U_8k, #254), the "what we learned" copy (the cap
+  matters most, planning guidance helped, an extra pack hurt, forced action
+  did not beat the nudge; T2 stays the headline), phrasing rules for small
+  deltas, the How we evaluate chart spec, the board-row gate in the build,
+  UP_8k/UPA_8k kept off the site, and questions Q-M to Q-S.
+
+**Open — measurement:**
+
+- [ ] **Arms D and F of `v5-harness`** — not run: Max paused the chain after
+  E (2026-11-17). D is C + diagnostics, edit hint and verify-done; F is B at
+  `--seed 1`, the noise floor. Resume only on Max's word
+  ([`MODEL_CAMPAIGN.md` §8](MODEL_CAMPAIGN.md#8-worked-example-glm-53-flash-2026-11-16)).
+- [ ] **Qwen3.8 v5 rows** (L0 profile, then the thinking-first campaign):
+  the paper's second model and the first `beast` row. **L0 done
+  2026-11-22:** board row Q38U-L0, 39/71 scored (40 raw; 3 units excluded,
+  the agent's shell reached the network on Linux), SCORE 63.3, 4 units lost
+  to llama-server's HTTP 500 on a truncated tool call
+  ([report](reports/V5_QWEN38_RTX5090-2026-11-22.md)). **L1/L2 done
+  2026-11-22, the profile is complete (retired):** diagnostics only, not
+  board rows (`evals/boards/v5/diagnostics/`); zig 0 → 4 of 6 with packs,
+  L2 4 → 2 on zig, L0 → L2 +4 over 35 compiled units, all within churn;
+  integrity scan clean (report §5). **Cross-host calibration done
+  2026-11-23** ([report](reports/V5_EVAL_HOST_CALIBRATION-2026-11-23.md)):
+  DeepSeek T2 rerun from the rig container scored 60/71 against the Mac's
+  65; contention-free, 2/7 on the flips and 5/11 on the fails. No host
+  effect detected beyond run-to-run variation, from one calibration arm
+  (harness9; carried to harness10 rows such as Q38U-L0 by inference); the
+  data cannot separate a host effect from bad draws on `173` and `183`.
+  Two known host effects. (1) On Linux, Rust's std imports `dlsym` for
+  any thread, and `122_gemm_blocked` rejects a binary that imports
+  `dlsym`, so a threaded Rust GEMM stops at the binary check: verdict not
+  measured. (2) The agent's shell has no network deny on Linux (it cost
+  Q38U-L0 one excluded pass). **Q_T2 done 2026-11-23:** board row
+  Q38U-T2, 52/71 scored (54 raw; 3 units excluded, the agent's shell
+  reached the network on Linux, 2 of them passes), SCORE 75.6, #4 and the
+  model's best row; 3 units lost to the truncated-tool-call 500 after one
+  rerun; its Rust `122_gemm_blocked_d` hit (1) and was rebuilt and
+  checked by the procedure ([`MODEL_CAMPAIGN.md`, eval host in a
+  container](MODEL_CAMPAIGN.md#eval-host-in-a-container-linux)):
+  `validator_notes` "verdict not measured" (report §6), since replayed
+  under the proposed rule: verdict PASS (the item below).
+  Still open: the Linux network deny (HARNESS_NOTES next-era (d)) before
+  more rig rows. **And the Linux read-deny** (the same item): in INK-UP8K
+  (2026-11-24) a `find /` from the agent's shell listed a unit's sealed
+  reference file names, because the container mounts the eval tree and the
+  Linux shell has no read-deny; the reads were refused by the command-text
+  check, the unit (a fail) was excluded.
+- [ ] **Next suite/era: the `122_gemm_blocked` `dlsym` rule** (Rust
+  variant only: allow `dlsym` when no other symbol matches `_BAD_IMPORT`
+  or `_BAD_DEFINED`; C/C++/Go/Zig keep the rule, because glibc ≥ 2.34
+  libc exports `dlopen` and C token pasting dodges the lint; add the C
+  token-pasting test;
+  [HARNESS_NOTES](HARNESS_NOTES.md#next-era-the-122_gemm_blocked-dlsym-rule-on-linux-2026-11-23)).
+  The replays below are evidence for it: five threaded Rust solutions
+  that the current rule stops are correct (the four below, plus
+  INK-T2's, replayed 2026-11-24: PASS, 6 hidden cases, 3 of 3 runs;
+  `~/ob-cal/.claude/gemm-replay-ink/`; Inkling report §3.6).
+- [x] **Replay the four `122_gemm_blocked_d` Rust solutions under the
+  proposed `dlsym` rule** (done 2026-11-23, on the rig after Q_T2): the
+  calibration's cal, r1 and r2 attempts and Q38U-T2's r1 attempt. Each
+  final `gemm.rs` was recovered from its transcript (writes and edits
+  replayed in order, r1's `sed -i` and r2's python `str.replace` shell
+  edits re-run exactly; none skipped) and validated by the harness9
+  lifecycle in the eval-host container with a patched copy of the
+  validator. **Replayed under the proposed rule: verdict PASS, all four**
+  (6 hidden cases, three runs each; the unpatched copy reproduces the
+  `imports dlsym` FAIL). No score moves: the calibration files are
+  diagnostics and Q38U-T2's unit is excluded (its `validator_notes`
+  entry now records the replay). Calibration report §5, Qwen3.8 report
+  §6.
+- [x] **Rescan the calibration's integrity with the recorded command**
+  (done 2026-11-23, on the rig after Q_T2): the command in the sealed
+  `evals/audit/reviews/ds-t2-cal-integrity-2026-11-23.md`, `--tz UTC`
+  and `--until` per pass. 71 + 7 + 11 transcripts, 0 contaminated, as
+  expected; recorded in that review.
+- [x] **HG_T2 (Hy4-flash-abliterated, Mix-256G GGUF over llama.cpp RPC)
+  ABANDONED 2026-11-23 (Max).** Stopped at 16/71 units, most at the wall:
+  at about 5.3 tok/s per stream at 4 (21.3 aggregate) the row would
+  measure the RPC serve speed, not the model. Not a board row. The arm
+  stays in the campaign file with its note; its
+  `recommend.composite_by_model` entry is removed
+  ([`MODEL_CAMPAIGN.md`](MODEL_CAMPAIGN.md)).
+- [x] **DeepSeek-V4.1-Flash (Mia EXL3) thinking-first campaign:** complete
+  2026-11-21 ([final report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md); [`MODEL_CAMPAIGN.md` §9](MODEL_CAMPAIGN.md#9-next-deepseek-v41-flash-1017-thinking-first)).
+  On the board (2026-11-21): T 61, T_s1 61, **T2 65** (best, SCORE 94.9),
+  T3 65, U 59, UP 62, UPA 59, U_8k 63, UP_8k 65, UPA_8k 62; all integrity
+  scans clean. The
+  one-component-out ablations and the no-thinking arms were not run and
+  are not scheduled.
+- [x] **Arms U, U_8k, UP and UPA** (harness10, #234): U 59 (16384 cap),
+  U_8k 63 (+4: the cap), UP 62 (+3 over U: planning lines help), UPA 59
+  (−3 against UP: the pack hurts). Board rows DS-U, DS-U8k, DS-UP, DS-UPA.
+- [x] **Arms UP_8k and UPA_8k** (harness10, 2026-11-21): UP_8k 65 (SCORE
+  91.4; +2 over U_8k, not conclusive; a tie with T2, so T2 stays), UPA_8k
+  62 (−3 against UP_8k: the pack hurts at 8192 too). Board rows DS-UP8k,
+  DS-UPA8k; integrity scans clean. The U series is complete.
+- [x] **`H_T2` (Hy4-flash NVFP4) done 2026-11-22:** board row HY4-T2, 60/71,
+  SCORE 83.4, #2; 5 units behind DS-T2 on the same harness9 tree and pair
+  (7 lost, 2 gained), single seed; integrity scan clean; conformance PASS
+  ([report](reports/V5_HY4_FLASH-2026-11-22.md)).
+- [x] **`H_C` (Hy4-flash NVFP4, the ablation) done 2026-11-22:** board row
+  HY4-C, 55/71, SCORE 82.2, on the same tree, server and pair: T2's setup
+  +5 over GLM's best (7 gained, 2 lost), helped, single seed, bundled;
+  integrity scan clean (report §5).
+- [ ] **Optional: GLM at the 8,192 cap.** UP_8k (or T2) with `--model-name
+  GLM-5.3-Flash`, on the harness10 tree, read against GLM-UP. GLM has never
+  run below 16,384, and all 16 of GLM-UP's wall-hit units had 2-4 capped
+  16K thinking turns, 13 of them at 10 turns or fewer (on DeepSeek the cap
+  alone gave +3 to +4). It needs the pair on GLM for about 8.5 h. Not
+  scheduled; Max decides. A GLM U arm (U → UP) would isolate the planning
+  lines on GLM.
+- [ ] **Optional: unbundle T2 on Hy4.** One arm with T's assists at the
+  16,384-token eval turn cap (no 8,192 cap, no act nudge), on the harness9 tree, read
+  against H_T2 (the cap and nudge) and H_C (the assists). Only if Max wants
+  the attribution; it needs Hy4 served (`beasthy4`), so DeepSeek stops for
+  about 7 h.
+  The original plan, kept for the record: arm H_T2 is T2
+  exactly against Tencent's Hy4-flash (atakann's NVFP4 build on vLLM TP2,
+  staged in code 2026-11-19: `SPARK_HYDRA.md` "Hy4-flash (NVFP4, vLLM TP2):
+  staged"). A public-interest measurement, compared with DS-T2 (65/71) under
+  the same harness. Order, on spark-1 then the Mac: (1) after the U arms,
+  `scripts/backends/spark-hy4-stage.sh --run --only weights,verify,mirror`
+  (capped scopes, safe while DeepSeek serves), (2) between models,
+  `--run --only image,save,ship`, then `install` and `spark-beast.sh install`,
+  `--check` exits 0, (3) `beasthy4`, `scripts/backends/conformance.sh --url
+  http://127.0.0.1:8000 --model Hy4-flash-NVFP4 --backend vllm --key-file
+  ~/.config/openbeast/tensorfold-api-key`, (4) `campaign.py run --only H_T2 --model-name "Hy4-flash
+  (NVFP4)" --served-model Hy4-flash-NVFP4 --jobs 4 --slots 4`, (5) `beastds`.
+  The first start is UNVERIFIED (the image build, NCCL on our rails, the
+  autotune cache, memory beside the command center). Thinking off is not
+  reachable for Hy4 through the runner (it sends `enable_thinking`; Hy4 reads
+  `reasoning_effort`): an era change, so no N arms for Hy4 until then. The
+  EXL3 pack `~/Documents/LibertAIDAI-Hy4-flash-EXL3-4bpw` stays (single-host
+  only; kept on purpose).
+- [x] **The GLM recipe engine update (1104), last:** tested and profiled on
+  its own, 2026-11-23 ([report](reports/GLM_SERVING_WINDOW-2026-11-23.md)). **Verdict: no.** On the same pair,
+  day and gate probe, 1104 served at Mia's numerics (`DENSE=q8 HEAD=q8`)
+  gave 41.3 / 66.8 tok/s at 1 / 4 streams and 1.37-1.41K prefill. v1.8 gave
+  48.4 / 78.4 and 1.97-2.05K. At v1.8's `DENSE=q4`, 1104 ties at 1 stream
+  (45-49) but trails at 4 (75.5) and in prefill (1.4-1.5K). Both pass 9/9
+  functional checks (chat, thinking in `reasoning_content`, tool calls
+  streamed and not, a 105K needle) and conformance. GLM rows stay on v1.8.
+  The image `tensorfold-glm53-spark:b9f8eb919ae0` stays on both Sparks
+  (3.85 GB).
+- [x] **The GLM UP control:** arm UP with `--model-name GLM-5.3-Flash`, after
+  `beastglm`, so the UP change is measured on a second model (#234 asks for
+  it). **Done 2026-11-23** (10:19-18:50 PST, harness10 tree `5b198d3d`, the
+  pair on GLM's board configuration: v1.8 `33b50fd`, DFlash2 `6cc6c481`).
+  **56/71, SCORE 81.9, no unit lost; board row GLM-UP, GLM's best row, #3
+  (the ranking is unchanged).** Integrity scan: 0 contaminated after a
+  scanner fix (a relative `cd` into a fixture's own `tests/` was flagged;
+  the fix moves no other verdict). C → UP: +5 on the board, +2 over the 68
+  units both measured cleanly (4 in, 2 out, p 0.69; the other 3 are C's
+  integrity exclusions), across eras 8eaa5e5f → 9bcd5aa6, bundled, single
+  seed. DS-UP → GLM-UP: −6 (0 in, 6 out), same era and pair, single seed.
+  GLM has no U arm, so the planning lines are not isolated on GLM
+  ([report](reports/V5_GLM_UP-2026-11-23.md)).
+  - [x] **After the GLM UP arm finishes (deploys, in this order; spark-1
+    unless named; nothing here while any arm runs against the Sparks):**
+    **Done 2026-11-23 ~18:51-19:03 PST**, all nine steps, the pair idle. Both
+    checkouts pulled to `ea45b9fb` (#299); `beast-spark install`; the unit
+    re-installed (`TimeoutStopSec=120`; old copy kept as
+    `openbeast.service.bak-20261123`). The stop of step 2 took 6 s, no kill
+    needed (5 stray `.tmp` files removed). `spark-hy4-stage.sh install` with
+    Hy4 inactive (start/stop/config now match the checkout). The D2 re-check
+    ran in between (below, "hardware re-check of the committed D2 render").
+    `beast-spark ds` exited 0 (`selected: ds`, `deepseek-v41-inference`
+    active/enabled, `spark-hydra-inference` disabled). `openbeast.conf`:
+    `BEAST_ASSIST=0` and `AGENT_MAX_TOKENS=16384` replaced by
+    `AGENT_PROFILE=deepseek-best` (backup `openbeast.conf.bak-20261123-preds`);
+    the restart took 7 s, healthcheck 9/9. From the Mac through the gate:
+    `/v1/models` lists `DeepSeek-V4.1-Flash-1017`, a chat and a tool call
+    answer, the dashboard (`:8447`) says 200. Step 9 done too:
+    `activate-stock.sh` restarts the command center after enable/disable
+    (backup `activate-stock.sh.bak-20261123`).
+    1. `cd ~/openbeast && git pull` on spark-1 and spark-2 (both to the same
+       commit), then on spark-1 `beast-spark install` (installs #294's
+       beast-spark retry, the exit-3 contract and the `ds` fix of the
+       2026-11-23 review). Re-install the command-center unit from the
+       template (it gains `TimeoutStopSec=120`; the installed copy predates it
+       and also the template's `After=` comment change):
+       `sed "s|@REPO@|$HOME/openbeast|" scripts/openbeast.service > ~/.config/systemd/user/openbeast.service && systemctl --user daemon-reload`.
+    2. `systemctl --user stop openbeast` (this stop still runs the OLD
+       dashboard handler, which the pull does not replace in the running
+       process: it can take the full timeout).
+    3. If it times out or hangs: `systemctl --user kill -s KILL openbeast-stack;
+       systemctl --user reset-failed openbeast openbeast-stack`.
+    4. `systemctl --user start openbeast` (the new dashboard, `openbeast-stack`
+       with `TimeoutStopSec=30s`).
+    5. `rm -f ~/openbeast/.run/dashboard-*.json.tmp.*` (5 strays on spark-1 on
+       2026-11-23; the new dashboard also sweeps those of dead pids at start).
+    6. #285 and the Hy4 start/stop race fixes, while Hy4 is NOT running
+       (`systemctl --user is-active hy4-vllm-inference` says inactive):
+       `~/openbeast/scripts/backends/spark-hy4-stage.sh install` (copies
+       start/stop/config and the unit, daemon-reload). The installed
+       `~/openbeast-recipes/hy4-vllm/{start,stop,config}.sh` differ from the
+       checkout's until then (checked read-only 2026-11-23).
+    7. `beastds`, then check `systemctl --user is-enabled deepseek-v41-inference`
+       says enabled and `spark-hydra-inference` disabled (`beaststatus`:
+       `selected: ds`). An exit 3 means DeepSeek serves but the command center
+       is down: `journalctl --user -u openbeast -n 50`, then `systemctl --user
+       start openbeast`.
+    8. Restore DeepSeek's agent preset: add `AGENT_PROFILE=deepseek-best` back
+       to `~/openbeast/openbeast.conf` (and drop GLM's E2a lines,
+       [SPARK_HYDRA.md E2b](SPARK_HYDRA.md#e2b-deepseek-best-configuration-v5-t2)),
+       then `systemctl --user restart openbeast`.
+    9. Optional, outside the repo: reorder spark-1's
+       `~/openbeast-recipes/deepseek-prep/activate-stock.sh` so the
+       `systemctl --user restart openbeast.service` line (25) comes AFTER the
+       `enable deepseek-v41-inference` / `disable spark-hydra-inference` lines
+       (26-27). `beast-spark ds` handles the current order since the 2026-11-23
+       review, so this only matters for a hand run of the script. Back it up
+       first (`cp -p activate-stock.sh activate-stock.sh.bak-<date>`).
+- [x] **The command-center restart after a model switch** (found 2026-11-23,
+  [report](reports/GLM_SERVING_WINDOW-2026-11-23.md#bugs-found); **fixed
+  2026-11-23**). The `python3` was the dashboard extension: a stop sends it
+  SIGTERM twice within milliseconds (the supervisor's trap, then systemd for
+  the rest of `openbeast-stack`), the second signal re-entered its SIGTERM
+  handler inside the first, and the nested save deadlocked on the history
+  lock the outer one held, so the process waited for systemd's SIGKILL at 90 s
+  (4 of the day's 10 stops on spark-1; the other 6 stops left a stray
+  `.run/dashboard-power.json.tmp.*`). Fixed in the handler (runs once, an 8 s
+  deadline). Also: `openbeast-stack` gets `TimeoutStopSec=30s`; `start.sh -d`
+  waits (bounded) for a stack unit still stopping instead of exiting 1;
+  beast-gate, the tool server and the router bound uvicorn's graceful
+  shutdown to 5 s; and `beast-spark` retries a failed command-center restart
+  once and never rolls back or fails a switch whose model serves (exit 3
+  when the command center stays down: the 2026-11-23 review). Tests:
+  `tests/test_dashboard_stop.py`, `test_spark_beast.sh`, `test_lifecycle.sh`.
+  **Deployed 2026-11-23** (both Sparks at `ea45b9fb`, the safe order under
+  "The GLM UP control" above). The first stop under the old handler took 6 s;
+  after it, every command-center restart of the day's switches (D2, GLM,
+  DeepSeek, the conf restart) came up without the workaround; the conf
+  restart took 7 s.
+- [ ] **k-seed noise run** — the same arm at `--seed 1` (and 2) to put a noise
+  floor under every single-seed delta above (G12; the campaign's seed arm).
+  Arm F would have been the first such run; it did not run.
+- [ ] **Zig pack held-out check** — before claiming the pack effect
+  ([`LANG_AWARENESS_PLAN.md`](LANG_AWARENESS_PLAN.md) "Held-out check"). Pack
+  v3 (#194) carries the `std.posix.write` claim; the thinking-first campaign
+  measures v3 (#197).
+- [ ] **Thinking-stall recovery, measured** — 13 of C's 17 raw failures are
+  process failures, almost all a thinking turn capped at 16,384 tokens before
+  the file is written. #194 keeps the capped think's tail; measure it as its
+  own arm against C/E at the same seed (the `output_cap` event now logs what
+  that needs).
+- [ ] **The eval seal on Linux** — #195 seals `evals/`, `tests/`, `~/.claude`
+  and the repository metadata from eval agents, but on Linux only the file
+  tools and the command-text check refuse; the kernel does not. Before a v5
+  row runs with a Linux harness host, add a kernel-level deny (Landlock or a
+  mount namespace).
+- [ ] **beast-gate random seed, with an eval exemption** — a random default seed
+  at the gate for requests that carry none, so opencode, the Mac client and raw
+  `:8443` callers stop repeating themselves on retry; eval traffic (and any
+  request with an explicit seed) passes through untouched, because the runner's
+  seeding is part of the era. Replaces the TensorFold seed item in 🔎 REVIEW
+  2026-10-09. #202's `X-OpenBeast-Gate-Defaults: off` is the exemption
+  mechanism to reuse.
+- [ ] **The research paper: per-model vs unified harness** — see 📝 RESEARCH
+  PAPER below. It needs GLM's seed arm, a Qwen3.8 row, and the same arms on
+  both DeepSeek and GLM (the GLM UP control above is the first, done
+  2026-11-23: GLM-UP 56/71 against DS-UP 62/71 on one harness).
+
+## 🧮 PERFORMANCE MATRIX — engine × language-assistance × model (opened 2026-11-15)
+
+Max, 2026-11-15: the 5090 rig must be eval-tested running the same models on
+**llama.cpp vs vLLM**, and the result belongs in the same matrix as the v5
+language-assistance ablation (L0 bare / L1 packs / L2 packs+assist+escalate)
+and the variables added later.
+
+- [ ] **Rig engine A/B: llama.cpp vs vLLM on the 5090**, per model, same weights family
+  (GGUF for llama.cpp; the closest safetensors quant for vLLM: NVFP4/FP8/AWQ —
+  record which, it is a confound). Measure on the **v5 suite**: SCORE, SOLVE,
+  LANG, per-language pass rates, tokens and wall time per unit, single-stream
+  and `--jobs N` aggregate tok/s, TTFT, VRAM headroom, failure classes
+  (tool-call parse errors, context overflows). Same decoding settings, same
+  reasoning budget, same era. Start with the default uncensored Qwen3.8 27B
+  and the 35B-A3B MoE.
+- [ ] **One matrix, one runner**: rows = (host, engine, engine version,
+  weights repo@rev / quant, model), columns = arms (L0 / L1 / L2) and the
+  later variables (MTP / speculative decoding on-off, KV dtype, context size,
+  slots). `evals/profile.py` writes each cell; `evals/ablation.py` reports
+  paired deltas only *within* an engine, and the engine delta only within an
+  arm, never across eras.
+- [ ] **Engine provenance in every result**: engine name + exact version/commit
+  + image digest + flags (the v5 harness's provenance capture for
+  vLLM/TensorFold, not only `pgrep llama-server`).
+- [ ] Sparks: the same A/B between TensorFold (recipe / native) and vLLM once a
+  vLLM build serves the chosen model on GB10.
+- [ ] **Weight-streaming profiles (opened 2026-11-15, rig offline): benchmark
+  each once the rig is online**, after its tok/s acceptance check in
+  [WEIGHT_STREAMING.md](WEIGHT_STREAMING.md) passes. For each one record the
+  v4 SCORE and the v5 SCORE (SOLVE, LANG), plus decode tok/s short and at
+  ~8K context, prefill tok/s, VRAM used and the scope's MemoryCurrent:
+  - [ ] the default 27B uncensored MTP on llama.cpp **v1.0.0** (the pin move;
+    a regression check against its b10865 numbers, 140.2 tok/s);
+  - [ ] Flash-Next cached and static profiles still need ~8K-context throughput,
+    host RAM accounting and v4/v5 scores. Short-context decode measured
+    76.84 and 38.76 tok/s respectively ([paired results](WEIGHT_STREAMING.md#flash-next-on-beast-measured-november-17-2026)).
+  - [ ] `serve-glm53-flash-abl-q2kxl-big.sh` (big mode, target 20–30
+    tok/s). The 27B tops v4, so start with a held-out slice of the tasks the
+    27B fails, run paired; a full v5 cell is 2–3 GPU days;
+  - [ ] Project Maya on the same GLM weights: `scripts/engine-gate.sh maya
+    --profile glm53-flash-abl-q2kxl --serve-script serve-glm53-flash-abl-q2kxl-big.sh`.
+    SCORE rows only if it passes 1.5×. (The adapter pins v1.1.65; Maya was
+    first run on the rig for Inkling, 2026-11-24, outside the adapter:
+    [the Maya report](reports/MAYA_INKLING_5090-2026-11-23.md).)
+  Each finished row moves its slug out of `BENCH_EXCLUDED` into `MODELS`.
+- [ ] **Flash-Next on 0xSero's SGLang+EXL3 engine: trial per the report**
+  ([reviews/WEIGHT_STREAMING_0XSERO-2026-11-17.md](reviews/WEIGHT_STREAMING_0XSERO-2026-11-17.md)).
+  Step 1, free: check whether llama.cpp v1.0.0 lazy-loads the n-gram table
+  ([WEIGHT_STREAMING.md](WEIGHT_STREAMING.md) runbook step 3).
+- [ ] **Gate rule change for non-GGUF weights pending Max** (the engine gate,
+  `scripts/engine-gate.sh`, compares a candidate with llama.cpp on the SAME
+  weights, which an EXL3 engine cannot load).
+- [ ] **beast's previous llama-server was built from Max's
+  `beast-rank-kernels` branch** (commit d4389a4d, build 10865), replaced by
+  the v1.0.0 pin on 2026-11-17. Backed up on the rig at
+  `~/backups/llama-bin-d4389a4d-beastrank-2026-11-17`. Candidate: rebase the
+  branch onto the v1.0.0 pin (b1b770d9) and measure it against stock v1.0.0.
+- Engine swapping itself: `scripts/engine.sh` (see docs/ENGINES.md once it lands).
+- Landed: [docs/ENGINES.md](ENGINES.md) — `scripts/engine.sh use|install|update|rollback`, managed TP 1 vLLM / TensorFold on the rig, and "The rig A/B" section lists what the 5090 run needs (an uncensored safetensors/NVFP4 profile, or the GGUF via vllm-gguf-plugin).
 
 ## ⏳ GPU BACKLOG — parked 2026-10-09 (Max: "kick that into the back, we come back to it later")
 
@@ -104,11 +1350,13 @@ Decisions the 2026-10-09 review deferred to the owner. Each is open.
 - [ ] Write a global OpenCode config on the rig, so `opencode` works outside the checkout.
 - [ ] Unify flag conventions across scripts (`--dry-run` / `--yes`).
 - [ ] Generate tool-server keys by default.
-- [ ] Roll the eval era once, carrying: the `23_sql_injection` and `21_race_condition` validator fixes, the runner request-timeout fix, hiding `expected.txt` from variant units, and removing `fetch`/`web_search` under eval.
-- [ ] Trim prompt tokens in the era-hashed prompts (`system-prompt.md`, `system-prompt-tools.md`), in the same era roll.
+- [ ] Roll the eval era once, carrying: the `23_sql_injection` and `21_race_condition` validator fixes (draft PR #135), the runner request-timeout fix, hiding `expected.txt` from variant units, and removing `fetch`/`web_search` under eval (harness10, PR #234, does this as the opt-in `OPENBEAST_AGENT_HIDE_WEB=1` for arms U/UP/UPA), and the beast-island guard in `tools.web_search`/`tools.fetch` (`island.web_refusal`), so autonomous sub-agents refuse instantly too (docs/BEAST_ISLAND.md § Known limits).
+- [ ] beast-island: Open WebUI's built-in Web Search toggle bypasses the island guard (it calls SearXNG directly). Option: have `configure-webui.sh` disable it while islanded at launch.
+- Moved: TensorFold's fixed default seed is tracked as "beast-gate random seed" in 🧰 v5 HARNESS at the top (one item, not two).
+- [ ] Trim prompt tokens in `system-prompt.md` (era-hashed, so in the same era roll) and `system-prompt-tools.md` (WebUI-only, not era-hashed).
 - [ ] Rerun the champion row (Qwen3.6 27B Q5_K_XL) in the current era.
 - [ ] Agent router residual: in header mode with tool keys and no `LLAMA_API_KEY`, a local process can still type `X-OpenWebUI-User-Role: admin`. Fix is a router key minted by the launcher, or `--with-jwt` by default.
-- [ ] Decide whether `validator_timeout` rows count as infrastructure rows (ineligible for the board, excluded from paired verdicts) like `env_error`.
+- [x] Decide whether `validator_timeout` rows count as infrastructure rows (ineligible for the board, excluded from paired verdicts) like `env_error`. **Yes:** #134 stopped banking a validator timeout as a model FAIL unless it repeats for the key (`run_eval.py`), and `evals/ablation.py` and `evals/campaign.py` (#191, `INFRA_REASONS`) treat it as an infra row.
 - [ ] Clear the 17 already-banked "Validation timed out" cache entries (`cache_cli.py`), including `136_gf256_f` in Tier-3 cell C1.
 - [ ] Check the sweep cool-off defaults (50 °C, 60 s floor) against one real cool-down on the 5090.
 - [ ] Measure `--cache-ram` restore time for a 16–36 GiB state (one GPU check).
@@ -166,17 +1414,282 @@ Decisions the 2026-10-09 review deferred to the owner. Each is open.
   [`BEAST_INSTINCT.md`](BEAST_INSTINCT.md). The "day the nodes come online"
   runbooks are §7 (hydra) and §5.14 (instinct).
 - **Max's calls, 2026-09-30:** every model is uncensored, so hydra never
-  routes or spills to a stock one (enforced, #122); the Sparks serve
+  routes or spills to a stock one (enforced, #122; superseded 2026-11-19 by
+  uncensored-preferred, next item); the Sparks serve
   GLM-5.3-Flash uncensored as EXL3 on TensorFold (#120); instinct decides on
   a full 27B: the rig's 27B now, Open-Jev-27B-v1.1 locally on its own GPU as
   the target, the 0.6B as fallback only (#123).
+- [x] **The hydra family policy, decided 2026-11-19: uncensored-preferred**
+  (Max; PR #245). The pair's default since 2026-11-18,
+  DeepSeek-V4.1-Flash (Mia EXL3), is stock, which the 2026-09-30 rule would
+  have refused. Max: "It's uncensored-preferred, as we want to enable
+  researchers, lawyers, and professionals to get the most honest and neutral
+  answers when weighing critical business decisions (some of these models
+  have alignment and post-training that lead to wrong decisions)." Now
+  `family_policy` defaults to `uncensored-preferred`, which allows stock and
+  tries uncensored first at equal priority. `uncensored-only` and `any` are
+  the opt-ins. The key is `uncensored_families`, and `allowed_families` still
+  loads as an alias.
+  [BEAST_HYDRA.md "Family policy"](BEAST_HYDRA.md#family-policy).
 - **Next, on hardware:** enable `HYDRA` on the 5090 (held by Max); measure
   the 27B scorer's latency on the 1-slot MTP primary and the classify
   consult's real deadline (the example uses 800 ms); build and digest-pin the
   Open-Jev image on its host; get access to the gated
   `neko-legends/GLM-5.3-Flash-Uncensored-EXL3`.
 
-## 🟩 DGX SPARK INFERENCE — milestone 1 built 2026-09-29, hardware pending
+## 📝 RESEARCH PAPER — per-model vs unified agent harness (opened 2026-11-16, Max)
+
+Max: use the harness-improvement work as a new research paper. Question: does
+each model (GLM-5.3-Flash, Qwen3.8 27B, DeepSeek v4.1 Flash, …) need its own
+agent harness, or can one unified harness with a few per-model knobs serve them
+all? Evidence log: [`HARNESS_NOTES.md`](HARNESS_NOTES.md) (started from the
+2026-11-16 v5 L0 failure audit of GLM-5.3-Flash: iteration starvation, no-op
+plan loops, repeated identical calls, BSD-vs-GNU friction, thinking off, Zig
+0.16 drift). Method: every candidate measured as a full v5 arm (never a re-roll
+of failed units), on at least two models; a cross-model interaction is the
+paper's central result either way. Prereqs: the v5 arms for GLM (L0/L1/L2,
+thinking on, runner v2), a Qwen3.8 v5 row when the rig is back, DeepSeek v4.1
+Flash, and the Claude Opus 5.5 reference row as the ceiling.
+
+Status 2026-11-24: five model families measured (DeepSeek, GLM, Hy4,
+Qwen3.8, Inkling 2 Mini), all single seed (Inkling's INK-T2-S1 is the one
+seed repeat).
+DeepSeek-V4.1-Flash (Mia EXL3) on the thinking-first campaign has T 61,
+T_s1 61, T2 65 (SCORE 94.9, best), T3 65, U 59, UP 62, UPA 59, U_8k 63,
+UP_8k 65 and UPA_8k 62 (series complete), with a GLM UP control as the
+first cross-model arm (done 2026-11-23: GLM-UP 56/71, SCORE 81.9, GLM's
+best row; 6 behind DS-UP on the same harness, single seed;
+[report](reports/V5_GLM_UP-2026-11-23.md)). Hy4-flash (NVFP4) on the Spark pair has HY4-T2 60/71
+and the ablation HY4-C 55/71 ([report](reports/V5_HY4_FLASH-2026-11-22.md)).
+Qwen3.8 27B Uncensored MTP on the RTX 5090 has its L0 baseline, board row
+Q38U-L0 at 39/71 scored (profile complete; L1/L2 diagnostics, not board rows),
+and arm Q_T2 (T2 at one stream), board row Q38U-T2 at 52/71 scored, its best
+([report](reports/V5_QWEN38_RTX5090-2026-11-22.md)). Inkling 2 Mini Derisked
+on Basalt, the same arm on the same rig, board row INK-T2 at 49/71 scored
+(SCORE 76.5, above Q38U-T2 on SCORE, 6 behind it paired; Qwen3.8 stayed the
+default then; [report](reports/V5_INKLING2_MINI_RTX5090-2026-11-24.md)); its seed
+repeat INK-T2-S1 51/71 (2 units flipped; never ranked) and the stock-pack
+control INK-T2-STOCK 53/71 (SCORE 78.2, the top 5090 row; level with
+Q38U-T2 paired; report §10), the RTX 5090 default since 2026-11-24
+(DECISIONS-2026-11-24 §10); DeepSeek's UP_8k setup on the Derisked pack,
+INK-UP8K 49/71 (SCORE 75.1, listed, not ranked; one unit excluded by the
+integrity scan; report §10.9), and the improved arm I_T3, 52/71
+(INK-T3, SCORE 77.4, listed, not ranked; level with INK-T2-STOCK, 4 context
+overflows counted as fails; [report](reports/V5_INKLING2_MINI_I_T3-2026-11-25.md)). The cross-model reading
+is in [HARNESS_NOTES.md](HARNESS_NOTES.md). The GLM status as of 2026-11-17
+(evening) follows; it was GLM only at that point. GLM's arms L0 26
+→ A 31 → B 36 → C 51/71 scored (54 raw; thinking) → E 50/71, against the
+Opus 71/71 ceiling, all single seed. D and the seed arm F were not run (Max
+paused the chain). Evidence that bears on the question: the
+language-specific residue under thinking (HARNESS_NOTES) and the Droid prior
+art (`reviews/HARNESS_PRIOR_ART-2026-11-16.md`: the "unified harness, rich
+static knowledge" pole). Next: the
+same arms on further models (Qwen3.8's L1/L2 are done: zig packs +4 of
+6, p 0.125, the same direction as GLM but within churn; diagnostics and
+escalation unresolved, all within churn); GLM's D and F only on Max's word.
+
+## 🟩 DGX SPARK INFERENCE — LIVE 2026-11-13 as spark-hydra
+
+- [ ] **spark-2: apply the `mstflint_access` blacklist (Max, sudo, no reboot).** spark-1 has it
+  since its 2026-11-25 17:16 reboot. The command and the post-reboot check are in
+  [SPARK_HYDRA.md G9](SPARK_HYDRA.md#g9-mstflint_access-is-blacklisted-on-both-sparks); the cause is in
+  [SPARK1_SLOWDOWN-2026-11-25](reports/SPARK1_SLOWDOWN-2026-11-25.md) (NVIDIA's hourly OTA check oopsed in the
+  module and left 1,640 `mstflint` in D state). `spark-root-setup.sh` step 5/5 does the same on a fresh install.
+- [ ] **spark-1 available memory slides ~45 MiB/h, mostly Open WebUI's anon growth** (0 → 682 MB in 15 h,
+  2026-11-25). At ~2.6 GiB, spark-1 was 0.1 GiB from memguard's floor. The dashboard's new `memtrend` alert
+  watches for it. Next: confirm with a per-process RssAnon log over a day (is it the WebUI alone?), then
+  either a nightly WebUI restart between jobs or the WebUI move off the head node
+  ([DEEPSEEK_TUNING](reports/DEEPSEEK_TUNING-2026-11-23.md#moving-the-open-webui-off-the-head-node)).
+- [x] **TensorFold's prompt-cache `failed` counter** (2026-11-25, [serving opt report](reports/DEEPSEEK_SERVING_OPT-2026-11-25.md)):
+  it counts lookups that matched a kept prefix whose KV rows the full 524K pool had already given to newer
+  requests (stale), not a bug and not the 512 MiB budget. Max's prompts do share ~40K-token prefixes. Fixed
+  by spill v2 (`SPILL_GIB=64`, kept states restored from NVMe), live since 2026-11-25 18:29 with prefill
+  cut-in (`TF_FILL_CHUNKS=1 TF_FILL_FIRST=1 TF_FILL_CUT_IN=8192`): failed 88 → 0 and cached prompt tokens 0.7% → 18.2% in the first 10 min, but 9.0% at 18 requests: whether the
+  disk restores (565K tokens) shorten prefills is unproven until the clean bench below.
+- [ ] **DeepSeek serving: the clean bench** (deferred 2026-11-25, Max's client never paused). With the engine
+  idle, run `scripts/backends/deepseek-serving-bench.py` on `local.sh.bak-20261125-serving` (baseline), the
+  live config and `local.sh.cand-all` (+ `KV_SHARD=1`, pool 1,052,672 at about the same memory); keep
+  `KV_SHARD=1` only if it measures better; then gfunc and conformance at 4 and 8 on the final config.
+  Steps in the [report](reports/DEEPSEEK_SERVING_OPT-2026-11-25.md#prepared-not-run-the-clean-bench).
+- [ ] **Max's job shape:** the shared corpus in the system message, `max_tokens` ~4096 instead of the
+  server's 32,768 reservation, 5-6 in flight ([advice](reports/DEEPSEEK_SERVING_OPT-2026-11-25.md#advice-for-maxs-job)).
+  The gate's default `max_tokens` (below) covers the reservation part for any client that sends none.
+- [ ] **Deploy beast-gate's default `max_tokens` (8192) on spark-1 — deploy at Max's next break.** Merged to
+  `main` 2026-11-25 (Max approved; [SPARK_HYDRA.md E7a](SPARK_HYDRA.md#e7a-beast-gates-default-max_tokens)).
+  **Not deployed:** a gate restart drops every generation in flight through `:8443`, and Max's job was
+  running. spark-1's `openbeast.conf` already has `AGENT_PROFILE=deepseek-best`, which supplies
+  `GATE_DEFAULT_MAX_TOKENS=8192`, so no conf edit is needed. Steps, when Max's client is idle:
+  1. On spark-1: `cd ~/openbeast && git status --short && git pull --ff-only` (the checkout must be clean;
+     never pull while an eval arm runs from this checkout).
+  2. Restart the command center, which carries the gate and the dashboard (never the inference unit):
+     `systemctl --user restart openbeast`, then `./scripts/healthcheck.sh` (all services healthy) and
+     `grep 'beast-gate on' .run/stack.log | tail -1` (ends `default max_tokens=8192`).
+  3. Verify on spark-1. Health first:
+     `curl -s -H "X-OpenBeast-Local: $(cat .run/edge-local.token)" http://127.0.0.1:8090/gate/health`
+     shows `"max_tokens_default": 8192`. Then define the counter:
+     `mtd() { curl -s -H "X-OpenBeast-Local: $(cat ~/openbeast/.run/edge-local.token)" http://127.0.0.1:8090/gate/metrics | awk '/^openbeast_edge_max_tokens_defaulted_total/{s+=$2} END{print s+0}'; }`
+     and run `mtd` (note N).
+  4. From the Mac, a request **without** `max_tokens` (thinking off keeps it short):
+     `curl -s https://spark-1.tail4109f9.ts.net:8443/v1/chat/completions -H "Authorization: Bearer $(cat ~/.config/openbeast/spark-hydra-gate.key)" -H 'Content-Type: application/json' -d '{"model":"DeepSeek-V4.1-Flash-1017","messages":[{"role":"user","content":"Say OK."}],"chat_template_kwargs":{"enable_thinking":false}}' | python3 -c 'import json,sys; r=json.load(sys.stdin); print(r["choices"][0]["finish_reason"], r["usage"])'`
+     → `stop`, then on spark-1 `mtd` reads **N+1**.
+  5. The same request with `"max_tokens": 16` added and `"content":"Count from 1 to 100."`: `finish_reason`
+     `length` with `completion_tokens` ≤ 16 (its own cap, untouched), and `mtd` stays **N+1**.
+  6. The dashboard's Gate page shows the "default max_tokens" tile: 8192, with the count.
+  Rollback: `GATE_DEFAULT_MAX_TOKENS=0` in `openbeast.conf`, then `systemctl --user restart openbeast`.
+- [ ] **Dashboard follow-ups from the 2026-11-25 incident:** fan RPM (`/sys/class/hwmon/hwmon{0,1}/fan1_input`
+  on the Sparks) and the ACPI zone maximum next to the GPU temperature; a GLM stream baseline for the
+  `slow` alert (built in only for DeepSeek-V4.1-Flash and Hy4; `DASHBOARD_STREAM_BASELINE` overrides).
+
+- [ ] **Two full-run-only test failures (2026-11-24 review, not fixed by raising waits).**
+  `tests/test_hardening.py::test_stop_agent_falls_back_to_the_ledger` ("force-killed after
+  timeout": the SIGTERMed `sleep` still counts alive after `_stop_ledger_agent`'s 10 s) and
+  `tests/test_mcp_server_stop.py::test_signal_kills_in_flight_bash_child[15]` (the server does not
+  exit within 60 s of SIGTERM) fail in a FULL `pytest tests/` on both the Mac and the Linux image
+  (scripts/gate.sh, both runs at 94d4ad0f), and pass alone and with their two files run together
+  (53 passed). So they depend on state an earlier test leaves (a signal disposition, a child not
+  reaped, a subreaper), not on load. Next: bisect with `pytest -p no:randomly tests/ --lf` halves
+  (or `pytest-bisect`), then fix the leaking test; until then the PR body names them.
+
+- [ ] **Deploy the 2026-11-24 review's beast-spark fixes on spark-1** (code on `main`; nothing
+  on the Sparks changed by that PR). What they fix: a reboot after `beasthy4` or a recipe left
+  `openbeast.conf` on Hy4's / the recipe's backend and id while DeepSeek served (now
+  `beast-spark boot-check`, an `ExecStartPre` drop-in of `openbeast.service`); no switch wrote
+  `INFERENCE_SLOTS` (now every one does: DeepSeek 8 from `local.sh`, GLM 4, Hy4 4, a recipe
+  `SLOTS=`); `wait_ready` used a nonexistent `systemctl is-activating` (a DeepSeek / GLM unit
+  in `activating (auto-restart)` during its load is now waited for); a GLM that did not come
+  back in `ds`'s rollback lost the guidance line. Steps, spark-1, any time no switch runs and
+  no arm needs the gate restarted (the install restarts nothing):
+  1. `cd ~/openbeast && git pull --ff-only` (spark-2 too, same commit).
+  2. `beast-spark install`: writes `~/.config/systemd/user/openbeast.service.d/beast-spark.conf`
+     (`ExecStartPre=-/home/max/.local/bin/beast-spark boot-check`) and runs
+     `systemctl --user daemon-reload`. Check: `systemctl --user cat openbeast | grep -n boot-check`.
+  3. `beast-spark boot-check` by hand: with DeepSeek serving and the conf on it, it says
+     "nothing to point back" and changes nothing (`git diff --no-index` of a copy taken before).
+  4. `grep -n '^INFERENCE_SLOTS' ~/openbeast/openbeast.conf` is 8 (DeepSeek); the next
+     `beastglm` / `beastds` logs `INFERENCE_SLOTS=4` / `=8`. Re-adopted recipes get a `SLOTS=`
+     line (`beast-recipe adopt NAME --run`); an older `recipes.d/*.env` without it counts as 4.
+  Rollback: `rm ~/.config/systemd/user/openbeast.service.d/beast-spark.conf && systemctl --user daemon-reload`.
+
+- [ ] **TensorFold recipe for Hy4-flash; beat vLLM (31.4 / 77.8 tok/s, measured).** Max, 2026-11-22.
+  The plan is `recipes/hy4-flash-exl3-tensorfold-tp2` (`scripts/beast-recipe.sh plan
+  hy4-flash-exl3-tensorfold-tp2`): **SERVABLE-WITH-WORK at TP2** on native TensorFold **1.3.3** (1.3.4,
+  released 2026-11-22, adds no Hy4 path; its row reads the same). It fits easily (43 GiB a rank at TP2, Engram streamed from local NVMe); the work
+  is the engine, 32.5-94 engineering days (ESTIMATED), mostly upstream's: stage 1.3.3 (0.5 day), build
+  `tf-hy4-cuda-generate` from source at the tag (the release archive ships only `tensorfold-native`;
+  0.5 day), qualify that one-GB10 generator against the vLLM build in a 0.5-day pair-down window (its
+  single-stream decode is the floor), then a server path (`server-wrap`, 1-2 weeks) and the two-Spark
+  hy_v4_flash split (`family-tp`, 4-12 weeks; upstream TensorFold#3797 / #3801 in flight, 0 for us if
+  it lands), the pack's EXL3 reader (`hy4flash-routed-k4`, `mul1`), DFly drafting (1-3 weeks; ~15 tok/s
+  plain, CLAIMED) and the hy_v4 parsers (1-5 days). The CUDA slab upload mode (#4003) must be switched
+  on (env name VERIFY at the tag). Measure both with `beast-recipe check <recipe> --run --bench` (one
+  probe; re-measure the vLLM baseline with it first), then conformance and v5 H_T2 (60/71 on vLLM, must
+  not regress). Win: faster at 1 **and** 4 streams. [BEAST_RECIPE.md, example 2](BEAST_RECIPE.md#2-hy4-flash-exl3-4bpw-on-2-sparks-via-tensorfold-can-it-beat-vllm).
+- [x] **Native TensorFold install pin: 1.2.7 → 1.3.4** (2026-11-23). `install-native.sh`'s default
+  and the ark catalog (`agents/ark/catalog.toml`, entry `tensorfold`) pin 1.3.4, the newest signed
+  release; each archive sha256 was checked three ways (the release's `.sha256`, a local re-hash, GitHub's
+  asset digest), the ed25519 signature against the vendored key, and `SHA256SUMS` inside every archive.
+  It moves no recipe (each pins `TENSORFOLD_REQUIRES`) and not the live DeepSeek serve (Mia's
+  `tensorfold-dsv41` image). The Sparks keep 1.2.10 installed: reinstall or carry it with
+  `--version 1.2.10` ([SPARK_HYDRA.md H5](SPARK_HYDRA.md#h5-native-tensorfold-and-the-engine-plane)).
+  - [x] Closed 2026-11-23: 1.2.10 has its own ark entry, `tensorfold-1.2.10`, next to `tensorfold`
+    (1.3.4). Tag v1.2.10 = `2a674b55`; the three archive sha256s were checked the same way as 1.3.4's
+    (local re-hash = signed `.sha256` = GitHub asset digest, ed25519 signature with the vendored key,
+    in-archive `SHA256SUMS`), and `ark lock` derived the same pins on its own. Offline path:
+    `ark fetch --only tensorfold-1.2.10`, then `install-native.sh --version 1.2.10 --from
+    <drive>/files/tensorfold-1.2.10/1.2.10/linux-aarch64` ([SPARK_HYDRA.md H5](SPARK_HYDRA.md#h5-native-tensorfold-and-the-engine-plane)).
+- [ ] **beast-recipe on hardware** (v1 built off-hardware, merged 2026-11-22 as #274): each in a
+  pair-down window, after the live evals ([BEAST_RECIPE.md, deferred](BEAST_RECIPE.md#what-is-deferred-to-hardware-day)):
+  - [x] the first D2 serve on the pair: `beast-recipe adopt glm53-flash-exl3-native-tp2 --run` +
+    `beast-spark glm53-flash-exl3-native-tp2`, then `check --run --bench`; tune `CONTEXT`,
+    `KV_POOL_GIB`, `MEMORY_RESERVE_GIB` from the start line. **Done 2026-11-23**
+    ([report](reports/GLM_SERVING_WINDOW-2026-11-23.md#step-4-the-first-native-d2-serve)). It serves, with conformance PASS and
+    9/9 checks through the gate. As rendered (bf16 dense linears, 245,760 window, 17.5 GiB
+    reserve) it gives 30.7 / 57.7 tok/s at 1 / 4 streams and 1.4K prefill, against v1.8's
+    48.4 / 78.4 and 2.0K. `KV_POOL_GIB` has no native flag. The drafter lock is #289. Two
+    switch bugs were fixed on the way: #290 (`LLAMA_API_KEY` after GLM: a keyed
+    recipe or Hy4 started after GLM got 401s through the gate) and #291 (an
+    already-serving recipe syncs the key and brings the command center up).
+  - [x] the D2 dense-bits profile key: native 1.2.10 reads `TF_GLM_DENSE_BITS` (4/6/8/16), and
+    the profile grammar could not pass it. **Key added 2026-11-23**: recipe key `DENSE_BITS`
+    (validated against the engine family's `env` entry in `data/recipe-engines.json`; refused on
+    engines/families that do not read it), rendered as the profile key `TENSORFOLD_RANK_ENV`
+    (obprofile allow list `RANK_ENV_ALLOW`; `spark-node.sh` sets it on every rank and refuses
+    it for another family's checkpoint). The recipe is now `DENSE_BITS=4`, `CONTEXT=524288`,
+    `MEMORY_RESERVE_GIB=11.5` (MEASURED by the env experiment: 41.8 / 64.7 tok/s, a 214K needle
+    passes, MemAvailable 18+ GiB under load)
+    ([BEAST_RECIPE.md](BEAST_RECIPE.md#the-fit-maths)). `TF_GLM_HEAD_BITS` can follow the same
+    way once verified.
+  - [x] **hardware re-check of the committed D2 render** (**done 2026-11-23 ~18:53-18:59 PST**,
+    both Sparks at `ea45b9fb`). `model-fetch.sh --verify`: model and drafter OK on both (spark-2's
+    drafter now checked too). `spark-cluster.sh start` did not refuse (same commit, same profile).
+    `TF_GLM_DENSE_BITS=4` on `openbeast-tensorfold-rank0` (spark-1) and `-rank1` (spark-2). Start
+    line: "model 84.33 GiB; 4 streams at once, 3.66 GiB each at a 524288-token window (fp8 caches),
+    of 15.9 GiB left after a 11.5 GiB reserve; ... a 4.9 GiB prompt cache" (expected 16.1 and 5.2:
+    the free memory at launch, not the render; model, streams, per-stream KV, window and reserve
+    match, so `launch` stays). `check --run --bench`: conformance PASS, **44.65 / 67.95 tok/s** at
+    1 / 4 streams (expected about 41.8 / 64.7), TTFT 0.24-0.26 s; MemAvailable 22.1 / 23.1 GiB
+    (spark-1 / spark-2) right after. Records: `recipes/glm53-flash-exl3-native-tp2/runs/bench-20261123T185747.json`
+    and `.run/conformance/conformance-20261124T025630Z-glm-5.3-flash-ablit.json` on spark-1. Rolled
+    back with `beast-spark glm`, then `beastds`. The original steps:
+    `beast-recipe adopt glm53-flash-exl3-native-tp2 --run`, `beast-spark
+    glm53-flash-exl3-native-tp2`, `beast-recipe check glm53-flash-exl3-native-tp2 --run --bench`.
+    Before it, on each Spark: `git -C ~/openbeast pull --ff-only` to a commit with this item, then
+    `scripts/backends/model-fetch.sh --profile recipe-glm53-flash-exl3-native-tp2 --verify` (read-only;
+    it checks the Ablit pack and the locked drafter copy `MODELS_DIR/recipe-glm53-flash-exl3-native-tp2.drafter`;
+    spark-1's drafter files already hash-matched the lock, read-only 2026-11-23; spark-2's are unchecked).
+    `spark-cluster.sh start` now refuses if spark-2's profile differs from spark-1's. Confirm the
+    rank units carry `TF_GLM_DENSE_BITS=4` and the start line says "model 84.33 GiB; 4 streams at
+    once, 3.66 GiB each at a 524288-token window, of 16.1 GiB left after a 11.5 GiB reserve" (the
+    env experiment at the same 4-bit / 524288 / 11.5; 82.36 GiB was 4-bit at 245760 / 17.5); expect
+    about 41.8 / 64.7 tok/s. Then add nothing to `d2_served` (TP2 on 1.2.10 is already there); if
+    the start line differs, update `engines[tf-native-1.2.10].families.glm5_next.launch` in
+    `scripts/backends/data/recipe-engines.json`. Rollback: `beast-spark glm`.
+  - [ ] native-engine prefill: 1104 and native 1.2.10 both reach about 1.4K tok/s against
+    v1.8's 2.0K on this pair. Find out why (the prompt chunk, `ABSORB_MMA`, the engine), on
+    1.3.4 once it is staged.
+  - [ ] `beast-recipe engine hy4-flash-exl3-tensorfold-tp2 --run --stage`: stage TensorFold 1.3.3 on
+    both Sparks, snapshot `capabilities --json` into `data/recipe-engines.json`, build
+    `tf-hy4-cuda-generate` at v1.3.3.
+  - [ ] the Hy4 generator qualification (example 2, step 2) and the vLLM baseline re-measured with
+    `check --bench`.
+  - [ ] `stage` then `up` for MiniMax-M3.1-Flash (TP2, ~171 GB to fetch) and Qwen3.8-27B (one Spark,
+    ~16 GB).
+  - [ ] not built in v1: a generic vLLM pair launcher with a per-recipe image, a launcher for DeepSeek
+    TP4 (needs 4 Sparks: the dsv41 fork takes 1, 2 or 4 ranks), the TabbyAPI/ExLlamaV3 launcher, image
+    builds from a recipe's `image/`, and `spark-cluster.sh check` learning the 3-Spark triangle and the
+    4-Spark ring (gap `topology`; four Sparks need no switch, SPARK_HYDRA §A2).
+- **Live November 17:** DeepSeek-V4.1-Flash-1017 serves four streams on TensorFold TP2 across two RoCE rails, from Mia's EAQ v1.1 "-v2" pack since the evening A/B (stock EAQ v1 stays on disk as a fallback). The enrolled Mac completed a real OpenCode request. GLM-5.3-Flash is the only other model the pair serves; `beastglm` / `beastds` switch. [Deployment and acceptance record](SPARK_HYDRA.md#deepseek-deployment).
+- **2026-11-18: GLM-5.3-Flash is the default again** (boot and daily use), Max's decision after testing DeepSeek, the "-v2" pack included. `spark-hydra-inference` is enabled, `deepseek-v41-inference` disabled; `beastds` brings DeepSeek back on "-v2". Clients follow a switch with `openbeast-client autosync` (PR #215).
+- **2026-11-18, later: DeepSeek-V4.1-Flash (Mia EXL3) is THE DEFAULT** (boot and daily use), Max's decision after hands-on testing and the v5 board (61/71, the board's #1, against GLM's 51/71). `deepseek-v41-inference` is enabled, `spark-hydra-inference` disabled; GLM-5.3-Flash is staged as the alternative (`beastglm`, `beastds` back). `beastup` with nothing selected picks DeepSeek, and a restore that cannot tell the backup's selection enables DeepSeek. opencode on both Sparks defaults to `spark-hydra-local/DeepSeek-V4.1-Flash-1017`.
+- **2026-11-18:** opencode v2.3.2 runs on both Sparks against `127.0.0.1:8000` (spark-2 through an ssh tunnel); it has no OpenBeast MCP tools yet. Offline development has a documented loop through a bare hub repo on spark-1 ([SELF_DEVELOPMENT.md §11](SELF_DEVELOPMENT.md#11-developing-with-github-unreachable)); the hub itself is not created yet (since created: `~/git/openbeast.git` on spark-1, at #222 on 2026-11-19, so refresh it from `main` before relying on it offline; backed up since #229). Open: pytest on spark-1, ShellCheck on the Sparks, a DeepSeek MODELS entry in `benchmark_all.py`, a cold boot with the WAN down.
+- **Next:** full offline playbook (image save/load, DFlash2, aarch64 air-gap
+  bundle, zig); the `svc:spark-hydra` Tailscale Service name (remote access
+  through beast-gate is live since #155); the primary switch beast ↔
+  spark-hydra on the hydra side (clients switch since #204); `PARALLEL=8`
+  (for GLM; DeepSeek's is live since the 2026-11-23 tuning session at the top); the MTU A/B. (The native
+  TensorFold A/B ran on 2026-11-23 with 1.2.10, not 1.2.7: D2 served GLM at
+  30.7 / 57.7 tok/s as rendered, 41.8 / 64.7 tuned, against v1.8's 48.4 / 78.4;
+  [report](reports/GLM_SERVING_WINDOW-2026-11-23.md).)
+- [x] **RoCE MTU 9000 — LIVE on both Sparks since 2026-11-17 14:20.**
+  Staged with `spark-fabric-mtu.sh --stage` on each, both rebooted, then
+  `--verify` passed on both: netdev MTU 9000 and RoCE `active_mtu 4096` on
+  every rail, and 8972-byte don't-fragment pings to the peer on both rails.
+  `--verify` takes **all** the peer's rail IPs in one call; a call with one
+  IP fails the rail that has none. (It was MTU 1500 = `active_mtu 1024`
+  before; Max, 2026-11-16: "We absolutely need to fix this on the next
+  restart".)
+- **The MTU A/B is unmeasured:** one item, "MTU 9000 performance A/B" in
+  🧰 v5 HARNESS at the top.
+- **TODO — scaling review, 1 to 8 ranks (Max, 2026-11-15: "leave the
+  scaling questions 1-8 for another day").** The 2026-11-16 adversarial
+  review covered the 2x pair only. Still unreviewed and unmeasured: the
+  launchers' 3-8 rank paths (`SPARK_HYDRA.md` "1 to 8 ranks"), the switch
+  or ring fabric past one QSFP cable, weight sync fan-out to N peers, TP vs
+  TP+PP layouts for 4/8 ranks, the gate's admission default (INFERENCE_SLOTS)
+  as slots grow, and a v5 profile at each size. Do it as its own review +
+  profiling pass, with hardware in hand.
+
+### History: milestone 1 (built 2026-09-29)
 
 - **What:** the stack stays on the rig and points at vLLM or TensorFold
   running tensor-parallel across two DGX Sparks. Plan, security, coupling

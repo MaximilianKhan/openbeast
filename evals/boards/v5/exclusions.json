@@ -1,0 +1,247 @@
+{
+  "description": "Applied by evals/v5_board.py. exclusions: units withheld from a run's score (counted as not passed; the raw count is footnoted). validator_notes: known validator problems, footnoted and NOT adjusted. Each entry names its run by board.json id (\"run\") or by one of its result files (\"file\"); naming neither applies it to every run. After editing: python3 evals/v5_board.py --write",
+  "exclusions": [
+    {
+      "unit": "122_gemm_blocked_b",
+      "run": "GLM-C",
+      "reason": "contaminated: the agent read sealed paths (G25 integrity scan, evals/CHANGELOG.md)"
+    },
+    {
+      "unit": "122_gemm_blocked_d",
+      "run": "GLM-C",
+      "reason": "contaminated: the agent read sealed paths (G25 integrity scan, evals/CHANGELOG.md)"
+    },
+    {
+      "unit": "122_gemm_blocked_e",
+      "run": "GLM-C",
+      "reason": "contaminated: the agent read sealed paths (G25 integrity scan, evals/CHANGELOG.md)"
+    },
+    {
+      "unit": "126_hmac_scratch",
+      "run": "Q38U-L0",
+      "reason": "contaminated: the integrity scan flagged off-host access from the agent's shell (integrity scan 2026-11-22; on Linux the agent shell has no network deny, evals/README.md residual gaps)"
+    },
+    {
+      "unit": "163_bigint_divmod_e",
+      "run": "Q38U-L0",
+      "reason": "contaminated: the integrity scan flagged off-host access from the agent's shell (integrity scan 2026-11-22; on Linux the agent shell has no network deny, evals/README.md residual gaps)"
+    },
+    {
+      "unit": "192_pike_regex",
+      "run": "Q38U-L0",
+      "reason": "contaminated: the integrity scan flagged off-host access from the agent's shell (integrity scan 2026-11-22; on Linux the agent shell has no network deny, evals/README.md residual gaps)"
+    },
+    {
+      "unit": "122_gemm_blocked_d",
+      "run": "Q38U-T2",
+      "reason": "contaminated: the integrity scan flagged off-host access from the agent's shell (integrity scan 2026-11-23; on Linux the agent shell has no network deny, evals/README.md residual gaps)"
+    },
+    {
+      "unit": "124_rkf45",
+      "run": "Q38U-T2",
+      "reason": "contaminated: the integrity scan flagged off-host access from the agent's shell (integrity scan 2026-11-23; on Linux the agent shell has no network deny, evals/README.md residual gaps)"
+    },
+    {
+      "unit": "126_hmac_scratch",
+      "run": "Q38U-T2",
+      "reason": "contaminated: the integrity scan flagged off-host access from the agent's shell (integrity scan 2026-11-23; on Linux the agent shell has no network deny, evals/README.md residual gaps)"
+    },
+    {
+      "unit": "123_nbody_b",
+      "run": "Q38U-T2",
+      "reason": "contaminated: the review-1124 rescan flagged off-host access from the agent's shell (a package install from the public index, which the 2026-11-23 scan did not check; integrity rescan 2026-11-25)"
+    },
+    {
+      "unit": "168_linearizability_kv_c",
+      "run": "Q38U-T2",
+      "reason": "contaminated: the review-1124 rescan flagged a package install from the agent's shell whose output was discarded (counted as a read, as Q38U-L0's 163_bigint_divmod_e, though the eval-host user cannot install system packages; a fail, so no score effect; integrity rescan 2026-11-25)"
+    },
+    {
+      "unit": "163_bigint_divmod_c",
+      "run": "INK-UP8K",
+      "reason": "contaminated: a find / listing printed sealed reference file names (evals/refs/163_bigint_divmod/, the paths only; both reads of a file were refused by the eval guard); the unit failed, so the scored count is unchanged (integrity scan 2026-11-24; the Linux container mounts the eval tree, docs/HARNESS_NOTES.md)"
+    }
+  ],
+  "validator_notes": [
+    {
+      "unit": "122_gemm_blocked_c",
+      "run": "GLM-E",
+      "note": "a validator false FAIL: the pre-#195 forbidden-API lint matched 'dlopen' inside a comment, and the solution passes the fixed validator (replayed, #195)"
+    },
+    {
+      "unit": "126_hmac_scratch",
+      "run": "GLM-L0",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "126_hmac_scratch",
+      "run": "GLM-A",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "126_hmac_scratch",
+      "run": "GLM-B",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "126_hmac_scratch",
+      "run": "GLM-C",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "126_hmac_scratch",
+      "run": "GLM-E",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "126_hmac_scratch",
+      "run": "OPUS-REF",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "126_hmac_scratch",
+      "run": "DS-T",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "153_coroutine_scheduler",
+      "run": "GLM-L0",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "153_coroutine_scheduler",
+      "run": "GLM-A",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "153_coroutine_scheduler",
+      "run": "GLM-B",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "153_coroutine_scheduler",
+      "run": "GLM-C",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "153_coroutine_scheduler",
+      "run": "GLM-E",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "153_coroutine_scheduler",
+      "run": "OPUS-REF",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "153_coroutine_scheduler",
+      "run": "DS-T",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "117_iter_refinement",
+      "run": "GLM-L0",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "117_iter_refinement",
+      "run": "GLM-A",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "117_iter_refinement",
+      "run": "GLM-B",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "117_iter_refinement",
+      "run": "GLM-C",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "117_iter_refinement",
+      "run": "GLM-E",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "117_iter_refinement",
+      "run": "OPUS-REF",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "117_iter_refinement",
+      "run": "DS-T",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "49_markov_steady_state",
+      "run": "GLM-L0",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "49_markov_steady_state",
+      "run": "GLM-A",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "49_markov_steady_state",
+      "run": "GLM-B",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "49_markov_steady_state",
+      "run": "GLM-C",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "49_markov_steady_state",
+      "run": "GLM-E",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "49_markov_steady_state",
+      "run": "OPUS-REF",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "49_markov_steady_state",
+      "run": "DS-T",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "122_gemm_blocked_d",
+      "run": "Q38U-T2",
+      "note": "a stop at the binary check on std's dlsym (Linux host), not a measured verdict; replayed under the proposed next-era rule (docs/HARNESS_NOTES.md): verdict PASS, 6 hidden cases"
+    },
+    {
+      "unit": "122_gemm_blocked_d",
+      "run": "INK-T2",
+      "note": "a stop at the binary check on std's dlsym (Linux host): verdict not measured; replayed under the proposed next-era rule (docs/HARNESS_NOTES.md): verdict PASS, 6 hidden cases"
+    },
+    {
+      "unit": "122_gemm_blocked_d",
+      "run": "INK-T2-S1",
+      "note": "a stop at the binary check on std's dlsym (Linux host): verdict not measured; replayed under the proposed next-era rule (docs/HARNESS_NOTES.md): verdict PASS, 6 hidden cases"
+    },
+    {
+      "unit": "122_gemm_blocked_d",
+      "run": "INK-T2-STOCK",
+      "note": "a stop at the binary check on std's dlsym (Linux host): verdict not measured; replayed under the proposed next-era rule (docs/HARNESS_NOTES.md): verdict PASS, 6 hidden cases"
+    },
+    {
+      "unit": "122_gemm_blocked_d",
+      "run": "INK-UP8K",
+      "note": "a stop at the binary check on std's dlsym (Linux host): verdict not measured; replayed under the proposed next-era rule (docs/HARNESS_NOTES.md): verdict PASS, 6 hidden cases"
+    },
+    {
+      "unit": "122_gemm_blocked_d",
+      "run": "INK-T3",
+      "note": "a stop at the binary check on std's dlsym (Linux host): verdict not measured; replayed under the proposed next-era rule (docs/HARNESS_NOTES.md): verdict PASS, 6 hidden cases"
+    },
+    {
+      "unit": "122_gemm_blocked_d",
+      "run": "INK-T2-SC117",
+      "note": "a stop at the binary check on std's dlsym (Linux host): verdict not measured; replayed under the proposed next-era rule (docs/HARNESS_NOTES.md): verdict PASS, 6 hidden cases"
+    }
+  ]
+}

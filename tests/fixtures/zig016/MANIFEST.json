@@ -1,7 +1,7 @@
 {
   "zig": "0.16.0",
   "verified": "2026-09-11",
-  "rule": "every *.old.*.zig must FAIL and every *.new.*.zig must COMPILE under `zig build-exe -fno-emit-bin`; every `pack_must_contain` string must appear in section (1) of agents/packs/zig-0.16.md; every curated bullet must hit >=1 entry",
+  "rule": "every *.old.*.zig must FAIL and every *.new.*.zig must COMPILE under `zig build-exe -fno-emit-bin`; every `pack_must_contain` string must appear in section (1) of agents/packs/zig-0.16.md; every curated bullet must hit >=1 entry; where an entry has `expect`, that OLD fixture's compiler output must contain the expected error text; an entry with `since: vN` is stated only in pack variant vN and later (agents/packs/zig-0.16-vN.md), so the variants already measured keep their bytes",
   "entries": [
     {
       "entry": "main_io",
@@ -280,6 +280,186 @@
         "`std.ascii.isAlpha/isSpace` \u2192 `isAlphabetic/isWhitespace`"
       ],
       "summary": "`std.ascii.isAlpha/isSpace` -> `isAlphabetic/isWhitespace` (also `isDigit`, `isAlphanumeric`, `toLower`, `toUpper`, `eqlIgnoreCase`)"
+    },
+    {
+      "entry": "thread_spawn",
+      "old": [
+        "thread_spawn.old.1.zig",
+        "thread_spawn.old.2.zig"
+      ],
+      "new": [
+        "thread_spawn.new.1.zig"
+      ],
+      "expect": {
+        "thread_spawn.old.1.zig": "expected type 'Thread.SpawnConfig', found 'mem.Allocator'",
+        "thread_spawn.old.2.zig": "expected a tuple"
+      },
+      "pack_must_contain": [
+        "`std.Thread.spawn(config, f, args)`",
+        "std.Thread.spawn(.{}, worker, .{ ctx, i })",
+        "std.Thread.getCpuCount()"
+      ],
+      "summary": "`std.Thread.spawn(.{}, worker, .{ ctx, i })`: the first argument is a SpawnConfig (`.{}` or `.{ .allocator = gpa }`), never an allocator, and the args are always a tuple, even for one value (`.{ctx}`)"
+    },
+    {
+      "entry": "thread_sync",
+      "old": [
+        "thread_sync.old.1.zig",
+        "thread_sync.old.2.zig"
+      ],
+      "new": [
+        "thread_sync.new.1.zig"
+      ],
+      "expect": {
+        "thread_sync.old.1.zig": "has no member named 'ResetEvent'",
+        "thread_sync.old.2.zig": "has no member named 'Mutex'"
+      },
+      "pack_must_contain": [
+        "`std.Thread.ResetEvent/Mutex/Condition` are gone",
+        "std.Io.Event = .unset",
+        "std.Io.Mutex = .init"
+      ],
+      "summary": "`std.Thread.ResetEvent/Mutex/Condition` are gone: `var ev: std.Io.Event = .unset; ev.set(io); try ev.wait(io);` and `var m: std.Io.Mutex = .init; try m.lock(io); defer m.unlock(io);`"
+    },
+    {
+      "entry": "io_arity",
+      "old": [
+        "io_arity.old.1.zig",
+        "io_arity.old.2.zig",
+        "io_arity.old.3.zig",
+        "io_arity.old.4.zig"
+      ],
+      "new": [
+        "io_arity.new.1.zig"
+      ],
+      "expect": {
+        "io_arity.old.1.zig": "no field or member function named 'writeAll' in 'Io.File'",
+        "io_arity.old.2.zig": "no field or member function named 'openFileIo'",
+        "io_arity.old.3.zig": "expected 0 argument(s), found 1",
+        "io_arity.old.4.zig": "member function expected 2 argument(s), found 1"
+      },
+      "pack_must_contain": [
+        "`std.Io.File.stdin()/.stdout()` take NO args",
+        "`f.reader(io, &buf)`",
+        "f.writeStreamingAll(io, bytes)",
+        "no `openFileIo`"
+      ],
+      "summary": "`std.Io.File.stdin()/.stdout()` take no args; `f.reader(io, &buf)` / `f.writer(io, &buf)` take io first; `std.Io.File` has no `writeAll` (use `f.writeStreamingAll(io, bytes)`); there is no `openFileIo` (use `dir.openFile(io, path, .{})`)"
+    },
+    {
+      "entry": "syntax",
+      "old": [
+        "syntax.old.1.zig",
+        "syntax.old.2.zig"
+      ],
+      "new": [
+        "syntax.new.1.zig"
+      ],
+      "expect": {
+        "syntax.old.1.zig": "expected parameter list, found ';'",
+        "syntax.old.2.zig": "expected '(', found 'an identifier'"
+      },
+      "pack_must_contain": [
+        "`@std` does not exist",
+        "while (i < n) : (i += 1)"
+      ],
+      "summary": "`const std = @import(\"std\");` (there is no `@std`); a while continue expression needs parentheses: `while (i < n) : (i += 1) {`"
+    },
+    {
+      "entry": "lint",
+      "old": [
+        "lint.old.1.zig",
+        "lint.old.2.zig",
+        "lint.old.3.zig",
+        "lint.old.4.zig"
+      ],
+      "new": [
+        "lint.new.1.zig"
+      ],
+      "expect": {
+        "lint.old.1.zig": "unused local constant",
+        "lint.old.2.zig": "local variable is never mutated",
+        "lint.old.3.zig": "pointless discard",
+        "lint.old.4.zig": "name shadows primitive 'i0'"
+      },
+      "pack_must_contain": [
+        "unused local constant/var is an error",
+        "never mutated \u2192 `const`",
+        "pointless discard",
+        "`i0`, `i2`, `u8`"
+      ],
+      "summary": "zig 0.16 lint errors: delete an unused local; a `var` never mutated must be `const`; `_ = x;` after x is used is a pointless discard; `i0`, `i2`, `u8`, `f32` are primitive type names, never identifiers"
+    },
+    {
+      "entry": "posix_write",
+      "since": "v3",
+      "old": [
+        "posix_write.old.1.zig"
+      ],
+      "new": [
+        "posix_write.new.1.zig",
+        "posix_write.new.2.zig"
+      ],
+      "expect": {
+        "posix_write.old.1.zig": "struct 'posix' has no member named 'write'"
+      },
+      "pack_must_contain": [
+        "`std.posix.write` is GONE but `std.posix.read` is not",
+        "std.Io.File.stdout().writeStreamingAll(io, bytes)",
+        "std.c.write(1, bytes.ptr, bytes.len)"
+      ],
+      "summary": "`std.posix.write` is gone in 0.16 (`std.posix.read` still exists, so posix is not intact): write raw output with `try std.Io.File.stdout().writeStreamingAll(io, bytes);` (`io = init.io`), or libc `_ = std.c.write(1, bytes.ptr, bytes.len);` (needs `-lc` off macOS)"
+    },
+    {
+      "entry": "clz_shift",
+      "since": "v3",
+      "old": [
+        "clz_shift.old.1.zig",
+        "clz_shift.old.2.zig"
+      ],
+      "new": [
+        "clz_shift.new.1.zig"
+      ],
+      "expect": {
+        "clz_shift.old.1.zig": "invalid builtin function: '@intClz'",
+        "clz_shift.old.2.zig": "expected type 'u5', found 'u6'"
+      },
+      "pack_must_contain": [
+        "no `@intClz`",
+        "std.math.Log2Int(u32)",
+        "const s: std.math.Log2Int(u32) = @intCast(@clz(v));"
+      ],
+      "summary": "there is no `@intClz`; `@clz(v)` on a u32 returns a u6 but a u32 shift amount must be `std.math.Log2Int(u32)` (u5): `const s: std.math.Log2Int(u32) = @intCast(@clz(v)); const y = x << s;` (v != 0)"
+    },
+    {
+      "entry": "erf",
+      "since": "v3",
+      "old": [
+        "erf.old.1.zig"
+      ],
+      "new": [
+        "erf.new.1.zig"
+      ],
+      "expect": {
+        "erf.old.1.zig": "struct 'math' has no member named 'erf'"
+      },
+      "pack_must_contain": [
+        "No `std.math.erf`/`erfc`",
+        "A&S 7.1.26"
+      ],
+      "summary": "zig 0.16's std.math has no `erf`/`erfc`: write it yourself (Abramowitz & Stegun 7.1.26, abs error 1.5e-7; a series or continued fraction for tighter)"
+    },
+    {
+      "entry": "init_skeleton",
+      "since": "v3",
+      "old": [],
+      "new": [
+        "init_skeleton.new.1.zig"
+      ],
+      "pack_must_contain": [
+        "lib/init/src/main.zig"
+      ],
+      "summary": "the toolchain ships a complete working 0.16 main (args, io, stdout writer) at `<zig env .lib_dir>/init/src/main.zig`: read it before grepping lib/std"
     }
   ]
 }

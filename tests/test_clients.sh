@@ -16,6 +16,14 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PASS=0
 FAIL=0
 pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
+# _with_timeout <secs> <cmd…> — GNU `timeout` is not on stock macOS (a client
+# platform), where it made the lock control below fail on every run. perl is.
+_with_timeout() {
+  if command -v timeout >/dev/null 2>&1; then timeout "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$@"
+  else perl -e 'alarm shift; exec @ARGV or exit 127' "$@"
+  fi
+}
 fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 
 echo "=== clients.sh (per-device enrollment) tests ==="
@@ -283,6 +291,17 @@ if "$CLI" enroll multi --scope chat --scope admin >/dev/null \
 else
   fail "repeated --scope did not accumulate"
 fi
+# beast-artifact binds a key to the login it answers for (review, spark-scale).
+if "$CLI" enroll bound --scope artifact --login Max@Example.com >/dev/null \
+   && [[ "$(_q '[d.get("login") for d in devs if d["id"] == "bound"][0]')" == "max@example.com" ]] \
+   && "$CLI" rotate bound >/dev/null \
+   && [[ "$(_q '[d.get("login") for d in devs if d["id"] == "bound"][0]')" == "max@example.com" ]] \
+   && ! "$CLI" enroll unbound-x --login >/dev/null 2>&1; then
+  pass "--login binds a key (lowercased), survives rotate, needs a value"
+else
+  fail "--login did not bind the key"
+fi
+"$CLI" remove bound --yes >/dev/null
 if ! "$CLI" enroll bad-scope --scope "Chat Admin" >/dev/null 2>&1; then
   pass "an invalid scope name is refused at enroll"
 else
@@ -317,6 +336,45 @@ if ! "$CLI" scope legacy-box grant chat >/dev/null 2>&1 \
 else
   fail "scope accepted a bad action or an unknown device"
 fi
+# max-tokens: the device's default max_tokens for beast-gate (edge.py
+# device_max_tokens reads `max_tokens_default`). No key rotation.
+_maxtok() { python3 -c 'import json,sys; d=[x for x in json.load(open(sys.argv[1]))["devices"] if x["id"]==sys.argv[2]][0]; print(d.get("max_tokens_default","ABSENT"))' "$REG" "$1"; }
+_keyhash() { python3 -c 'import json,sys; print([x for x in json.load(open(sys.argv[1]))["devices"] if x["id"]==sys.argv[2]][0]["key_sha256"])' "$REG" "$1"; }
+_h0="$(_keyhash legacy-box)"
+if "$CLI" max-tokens legacy-box 4096 | grep -q "max_tokens=4096" \
+   && [[ "$(_maxtok legacy-box)" == "4096" && "$(_keyhash legacy-box)" == "$_h0" ]] \
+   && "$CLI" show legacy-box | grep -q "max_tokens_default: *4096"; then
+  pass "max-tokens N sets the device default, keeps the key, shows in show"
+else
+  fail "max-tokens N did not set max_tokens_default ($(_maxtok legacy-box))"
+fi
+if "$CLI" max-tokens legacy-box 0 | grep -q "never adds" && [[ "$(_maxtok legacy-box)" == "0" ]]; then
+  pass "max-tokens 0 opts the device out"
+else
+  fail "max-tokens 0 did not store 0"
+fi
+if "$CLI" max-tokens legacy-box default >/dev/null && [[ "$(_maxtok legacy-box)" == "ABSENT" ]]; then
+  pass "max-tokens default clears the field (the gate's default applies)"
+else
+  fail "max-tokens default did not clear the field"
+fi
+if ! "$CLI" max-tokens legacy-box lots >/dev/null 2>&1 \
+   && ! "$CLI" max-tokens legacy-box -1 >/dev/null 2>&1 \
+   && ! "$CLI" max-tokens ghost-device 100 >/dev/null 2>&1 \
+   && ! "$CLI" max-tokens legacy-box >/dev/null 2>&1; then
+  pass "max-tokens refuses a non-number, a negative, an unknown device, no value"
+else
+  fail "max-tokens accepted bad input"
+fi
+"$CLI" max-tokens legacy-box 2048 >/dev/null
+"$CLI" rotate legacy-box >/dev/null
+if [[ "$(_maxtok legacy-box)" == "2048" ]]; then
+  pass "rotate preserves a device's max_tokens_default"
+else
+  fail "rotate dropped max_tokens_default"
+fi
+"$CLI" max-tokens legacy-box default >/dev/null
+
 # Rotating a scoped device must not silently drop its grants — the key
 # changes, the authorization does not.
 "$CLI" rotate phone >/dev/null
@@ -678,38 +736,83 @@ else
 fi
 
 echo ""
-echo "remove that empties the registry (netsec S7, review R2-3):"
-# An emptied registry still EXISTS, and beast-gate decides EDGE_ALLOW_ANON on
-# the file existing: it refuses every caller until the next enroll. `remove`
-# must say THAT (it used to warn the gate had reopened) — and only when the
-# registry is actually empty.
+echo "remove that empties the registry (netsec S7, review 2026-11-15):"
+# An emptied registry still EXISTS to beast-gate (edge.py Registry.exists),
+# so EDGE_ALLOW_ANON stays ignored and the gate answers 401. `remove` must
+# say that true thing — not that the gate reopened — and only then.
 A="$(_fresh_repo anon)"
-AN="registry is now EMPTY"
-AW="admits EVERY tailnet caller"
-AD="Do not delete .run/clients.json while EDGE_ALLOW_ANON=true"
+AW="registry is now EMPTY"
 printf 'EDGE_GATE=true\nEDGE_ALLOW_ANON=true\n' > "$A/openbeast.conf"
 "$A/scripts/clients.sh" enroll one >/dev/null 2>&1
 "$A/scripts/clients.sh" enroll two >/dev/null 2>&1
 out="$("$A/scripts/clients.sh" remove one --yes 2>&1)" || true
-if ! _has "$out" "$AN" && _has "$out" "Removed 'one'"; then
-  pass "removing one of two devices prints no empty-registry note"
+if ! _has "$out" "$AW" && _has "$out" "Removed 'one'"; then
+  pass "removing one of two devices does not warn (the registry is not empty)"
 else
-  fail "noted an empty registry although a device is still enrolled"
+  fail "warned although a device is still enrolled"
 fi
 out="$("$A/scripts/clients.sh" remove two --yes 2>&1)" || true
-if _has "$out" "$AN" && _has "$out" "refuses every caller" && _has "$out" "$AD" \
-   && ! _has "$out" "$AW"; then
-  pass "removing the LAST device says the gate is closed (not reopened) under ALLOW_ANON"
+if _has "$out" "$AW" && _has "$out" "stays CLOSED" && _has "$out" "401" \
+   && _has "$out" "'two'" && _has "$out" "clients.sh enroll" \
+   && ! _has "$out" "admits EVERY" && ! _has "$out" "EDGE_ALLOW_ANON=false"; then
+  pass "removing the LAST device under EDGE_ALLOW_ANON=true says the gate stays closed (401)"
 else
-  fail "emptied registry under EDGE_ALLOW_ANON=true: wrong or missing note: $out"
+  fail "remove of the last device misstated the gate's state: $out"
 fi
 printf 'EDGE_GATE=true\nEDGE_ALLOW_ANON=false\n' > "$A/openbeast.conf"
 "$A/scripts/clients.sh" enroll three >/dev/null 2>&1
 out="$("$A/scripts/clients.sh" remove three --yes 2>&1)" || true
-if _has "$out" "$AN" && ! _has "$out" "$AD" && _has "$out" "Removed 'three'"; then
-  pass "the fail-closed default notes the empty registry without the ALLOW_ANON line"
+if ! _has "$out" "$AW" && _has "$out" "Removed 'three'"; then
+  pass "the fail-closed default (EDGE_ALLOW_ANON=false) empties without the warning"
 else
-  fail "EDGE_ALLOW_ANON=false: wrong note on emptying the registry: $out"
+  fail "warned although EDGE_ALLOW_ANON=false"
+fi
+
+echo ""
+echo "remove + re-enroll of one id is a fresh device (review 2026-11-15):"
+# The gate keys last-seen by id and device_uid by id:enrolled_at(:nonce).
+# Without the prune, `list` showed the new device as seen at its
+# predecessor's last use; without the nonce, a same-second re-enroll shared
+# the predecessor's uid (limiter bucket, audit identity).
+R="$(_fresh_repo reenroll)"
+"$R/scripts/clients.sh" enroll lap >/dev/null 2>&1
+"$R/scripts/clients.sh" enroll keep >/dev/null 2>&1
+printf '{"lap": "2026-01-02T03:04:05Z", "keep": "2026-01-02T03:04:06Z"}' \
+  > "$R/.run/clients-lastseen.json"
+_nonce() { python3 -c 'import json,sys; print(next(d.get("enroll_nonce") or "" for d in json.load(open(sys.argv[1]))["devices"] if d["id"]=="lap"))' "$R/.run/clients.json"; }
+n1="$(_nonce)"
+"$R/scripts/clients.sh" remove lap --yes >/dev/null 2>&1
+"$R/scripts/clients.sh" enroll lap >/dev/null 2>&1
+n2="$(_nonce)"
+if [[ -n "$n1" && -n "$n2" && "$n1" != "$n2" ]]; then
+  pass "each enrollment writes its own enroll_nonce"
+else
+  fail "enroll_nonce missing or reused across re-enroll ('$n1' vs '$n2')"
+fi
+out="$("$R/scripts/clients.sh" show lap --json 2>&1)" || true
+if ! _has "$out" "2026-01-02T03:04:05Z"; then
+  pass "a re-enrolled id does not inherit its predecessor's last-seen"
+else
+  fail "re-enrolled id shows the removed device's last-seen: $out"
+fi
+out="$("$R/scripts/clients.sh" show keep --json 2>&1)" || true
+if _has "$out" "2026-01-02T03:04:06Z"; then
+  pass "control: other devices keep their last-seen after a remove"
+else
+  fail "remove pruned another device's last-seen: $out"
+fi
+"$R/scripts/clients.sh" rotate lap >/dev/null 2>&1
+if [[ "$(_nonce)" == "$n2" ]]; then
+  pass "rotate keeps the enroll_nonce (same device, same uid)"
+else
+  fail "rotate changed the enroll_nonce"
+fi
+# beast-gate's sticky marker: without it, deleting or moving clients.json
+# aside reopened EDGE_ALLOW_ANON to the whole tailnet.
+if [[ -f "$R/.run/clients.enrolled" ]]; then
+  pass "a registry write leaves the gate's clients.enrolled marker"
+else
+  fail "enroll did not write .run/clients.enrolled"
 fi
 
 echo ""
@@ -740,7 +843,7 @@ else
   fail "revoke wrote the registry while the lock was held elsewhere"
 fi
 # Negative control: readers take no lock, so list must not hang behind it.
-if out="$(timeout 10 "$L/scripts/clients.sh" list 2>&1)" && _has "$out" "lap"; then
+if out="$(_with_timeout 10 "$L/scripts/clients.sh" list 2>&1)" && _has "$out" "lap"; then
   pass "list does not wait for the lock (reads stay lock-free)"
 else
   fail "list blocked on (or failed under) the writer lock"
@@ -823,6 +926,57 @@ if [[ "$(_lq "m['qwen38-27b-nvfp4']['limit']['context']")" == "131072" ]] \
 else
   fail "live row lost its context limit :: $LIVE_OUT"
 fi
+# A TensorFold rig (the Spark pair): no /props (404, and beast-gate blocks it
+# anyway), the window is /health's context_length. A vLLM rig's is /v1/models
+# max_model_len. Both rows used to ship with no limit (ops review, client mode).
+for _be in tensorfold vllm; do
+  TF_DIR="$TMPROOT/live-$_be"; mkdir -p "$TF_DIR"
+  python3 - "$TF_DIR/port" "$_be" <<'PY' &
+import http.server, json, sys
+be = sys.argv[2]
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/v1/models":
+            row = {"id": "GLM-5.3-Flash-EXL3"}
+            if be == "vllm":
+                row["max_model_len"] = 262144
+            body = {"data": [row]}
+        elif self.path == "/health" and be == "tensorfold":
+            body = {"ok": True, "backend": "tensorfold", "context_length": 1048576}
+        else:
+            self.send_error(404); return
+        raw = json.dumps(body).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers(); self.wfile.write(raw)
+    def log_message(self, *a):
+        pass
+srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+open(sys.argv[1] + ".tmp", "w").write(str(srv.server_address[1]))
+import os; os.replace(sys.argv[1] + ".tmp", sys.argv[1])
+srv.serve_forever()
+PY
+  TF_PID=$!
+  for _ in $(seq 1 100); do [[ -s "$TF_DIR/port" ]] && break; sleep 0.05; done
+  LCFG="$TF_DIR/opencode.json"
+  python3 -c "
+import json, sys
+json.dump({'provider': {'openbeast-rig': {'options': {'baseURL': 'http://127.0.0.1:%s/v1' % sys.argv[2], 'apiKey': 'not-needed'},
+                                          'models': {}}}},
+          open(sys.argv[1], 'w'), indent=2)" "$LCFG" "$(cat "$TF_DIR/port")"
+  TF_OUT="$(bash -c "OC_CONFIG='$LCFG'; REPO='$REPO_DIR'; PY_BIN=python3
+$RF
+_refresh_oc_catalog" 2>&1)" || true
+  kill "$TF_PID" 2>/dev/null || true
+  wait "$TF_PID" 2>/dev/null || true
+  _want=1048576; [[ $_be == vllm ]] && _want=262144
+  if [[ "$(_lq "m['GLM-5.3-Flash-EXL3'].get('limit', {}).get('context')")" == "$_want" ]]; then
+    pass "a $_be rig's live row carries its real context window ($_want)"
+  else
+    fail "$_be live row has no context limit :: $TF_OUT"
+  fi
+done
 # Negative control: the dead-rig run above (section 9) must not have invented
 # a live row either — every key is a catalog id.
 if [[ "$(_ocq "'rig-live' in c['provider']['openbeast-rig']['models']")" == "False" ]]; then
@@ -849,6 +1003,60 @@ if [[ $rc -eq 1 ]] && _has "$out" "no venv at" && ! _has "$out" "not installed";
   pass "control: an existing install without a venv reports the missing venv"
 else
   fail "half-installed status (rc=$rc): $out"
+fi
+
+echo ""
+echo "client.sh status probes (review 2026-11-16):"
+# curl stub: records argv, never dials. /health answers nothing (a blackholed
+# rig), /healthz says OK, a query-less format=json answers $SX_FMT.
+SH="$TMPROOT/status-home"; SB="$TMPROOT/status-bin"; mkdir -p "$SH/.openbeast-client" "$SB"
+cat > "$SB/curl" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >> "$CURL_LOG"
+url="${@: -1}"; w=""; prev=""; null=0
+for a in "$@"; do
+  [[ "$prev" == "-w" ]] && w="$a"
+  [[ "$prev" == "-o" && "$a" == /dev/null ]] && null=1
+  prev="$a"
+done
+case "$url" in
+  */healthz)               body="OK"; code=200 ;;
+  */search\?format=json)   body='{"error": "No query"}'; code="${SX_FMT:-400}" ;;
+  *)                       body=""; code=000 ;;
+esac
+[[ $null -eq 1 ]] || printf '%s' "$body"
+[[ -n "$w" ]] && printf '%b' "${w//%\{http_code\}/$code}"
+[[ "$code" == 000 ]] && exit 7
+exit 0
+STUB
+chmod +x "$SB/curl"
+{ echo "OPENBEAST_AGENT_INFERENCE_URL=https://rig.invalid:8443/v1"
+  echo "SEARXNG_URL=https://rig.invalid:8889"; } > "$SH/.openbeast-client.env"
+_status() { : > "$TMPROOT/curl.log"
+  out="$(env -i HOME="$SH" PATH="$SB:/usr/bin:/bin" CURL_LOG="$TMPROOT/curl.log" "$@" \
+         bash "$REPO_DIR/scripts/client.sh" status 2>&1)" || true; }
+_status
+if [[ "$(grep -c '/health$' "$TMPROOT/curl.log")" == "1" ]] && _has "$out" "no response from"; then
+  pass "a silent rig is asked for /health ONCE (body + status in one request)"
+else
+  fail "health requests: $(grep -c '/health$' "$TMPROOT/curl.log") :: $out"
+fi
+if ! grep -q 'q=' "$TMPROOT/curl.log" && grep -q '/healthz$' "$TMPROOT/curl.log" \
+   && _has "$out" "search reachable"; then
+  pass "search is checked with /healthz + a query-less format probe: no live search"
+else
+  fail "search probe: $(tr '\n' '|' < "$TMPROOT/curl.log") :: $out"
+fi
+if grep -q -- '-m 2 .*healthz$' "$TMPROOT/curl.log"; then
+  pass "with the rig silent, the later probes wait 2 s, not 5"
+else
+  fail "later probe timeout: $(tr '\n' '|' < "$TMPROOT/curl.log")"
+fi
+_status SX_FMT=403
+if _has "$out" "JSON output is off" && ! _has "$out" "search reachable"; then
+  pass "a SearXNG without JSON output is named as such (web_search needs it)"
+else
+  fail "json-off search: $out"
 fi
 
 # --- Summary ---

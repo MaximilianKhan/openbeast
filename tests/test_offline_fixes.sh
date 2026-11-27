@@ -336,8 +336,10 @@ fi
 {
   echo 'set -euo pipefail'
   echo 'step() { echo "==> $*"; }; ok() { echo "OK: $*"; }; warn() { echo "WARN: $*"; }'
-  echo 'die() { echo "DIE: $*" >&2; exit 1; }; ob_offline() { return 1; }'
+  echo 'die() { echo "DIE: $*" >&2; exit 1; }; ob_offline() { [[ "${OFFLINE:-false}" == "true" ]]; }'
+  echo 'OB_LOCAL_LLAMA="${OB_LOCAL_LLAMA:-1}"; INFERENCE_BACKEND="${INFERENCE_BACKEND:-llama}"; INFERENCE_URL="${INFERENCE_URL:-http://127.0.0.1:8080}"'
   echo "$_wdefs"
+  sed -n '/^ob_closed_box_weights() {/,/^}/p' "$REPO_DIR/bootstrap.sh"
   echo "$_wsec"
   echo 'echo HARNESS-REACHED-END'
 } > "$T/bootstrap_weight_step.sh"
@@ -396,6 +398,62 @@ if [[ $_rc -eq 0 && "$(n_hf)" == "0" ]] && has "$_out" "already downloaded, sha2
 else
   fail "re-run on a good weight (rc=$_rc, hf=$(n_hf)): $_out"
 fi
+# UNMANAGED INFERENCE (a DGX Spark serving TensorFold, docs/DGX_SPARK_PLAN.md
+# §8 row 19): nothing launches llama-server, so the step downloads nothing,
+# creates no weights dir and does not even read the registry.
+rm -rf "$WB13"; : > "$T/state/hf.log"
+_out="$(env PATH="$T/bin:$PATH" REPO_DIR="$SB" OPENBEAST_WEIGHTS_DIR="$WB13" OB_LOCAL_LLAMA=0 \
+        INFERENCE_BACKEND=tensorfold INFERENCE_URL=http://100.64.0.7:8000 bash "$T/bootstrap_weight_step.sh" 2>&1)"; _rc=$?
+if [[ $_rc -eq 0 && "$(n_hf)" == "0" && ! -e "$WB13" ]] && has "$_out" "none downloaded — inference is tensorfold at http://100.64.0.7:8000" \
+   && has "$_out" "HARNESS-REACHED-END"; then
+  pass "an unmanaged backend downloads no weight and creates no weights dir"
+else
+  fail "unmanaged weight step (rc=$_rc, hf=$(n_hf), dir: $(ls -A "$WB13" 2>/dev/null)): $_out"
+fi
+# OFFLINE with a NON-DEFAULT SERVE_SCRIPT: docs/INSTALL.md says "any registry
+# weight works ... set SERVE_SCRIPT to match what you brought". The step used
+# to demand the default weight regardless, so this died on every run.
+_ow_body='OTHER-REGISTRY-WEIGHT'
+_ow_sha="$(printf '%s' "$_ow_body" | sha256sum | awk '{print $1}')"
+pin_default "$_dw_sha"
+printf '%s\t%s\t%s\t%s\t%s\n' "$_ow_sha" "${#_ow_body}" "other-27b.gguf" "org/other-GGUF" "-" >> "$SB/scripts/weights.registry"
+printf '#!/bin/bash\n# the comment mentions %s, which must NOT count\nexec llama-server -m "$WEIGHTS_DIR/other-27b.gguf"\n' "$_DW" > "$SB/scripts/serve-other.sh"
+run_owstep() { : > "$T/state/hf.log"; _out="$(env PATH="$T/bin:$PATH" REPO_DIR="$SB" OPENBEAST_WEIGHTS_DIR="$WB13" OFFLINE=true \
+                 DEFAULT_SERVE_SCRIPT=serve-other.sh bash "$T/bootstrap_weight_step.sh" 2>&1)"; _rc=$?; }
+rm -rf "$WB13"; mkdir -p "$WB13"; printf '%s' "$_ow_body" > "$WB13/other-27b.gguf"
+run_owstep
+if [[ $_rc -eq 0 && "$(n_hf)" == "0" && ! -e "$WB13/$_DW" ]] && has "$_out" "other-27b.gguf present, sha256 verified" \
+   && has "$_out" "HARNESS-REACHED-END"; then
+  pass "OFFLINE + a non-default SERVE_SCRIPT: the weight THAT script loads is verified, the default is not demanded"
+else
+  fail "offline non-default weight (rc=$_rc, hf=$(n_hf)): $_out"
+fi
+printf '%s' "${_ow_body//O/X}" > "$WB13/other-27b.gguf"
+run_owstep
+if [[ $_rc -ne 0 ]] && has "$_out" "NOT the weight OpenBeast pinned" && ! has "$_out" "HARNESS-REACHED-END"; then
+  pass "...and a wrong file under that name is still refused (hashed, not trusted by name)"
+else
+  fail "offline non-default wrong weight (rc=$_rc): $_out"
+fi
+rm -f "$WB13/other-27b.gguf"
+run_owstep
+if [[ $_rc -ne 0 && "$(n_hf)" == "0" ]] && has "$_out" "serve-other.sh (SERVE_SCRIPT) loads weight(s) not in" \
+   && has "$_out" "other-27b.gguf" && ! has "$_out" "HARNESS-REACHED-END"; then
+  pass "...and a missing one is named (the configured weight, not the default) and fatal"
+else
+  fail "offline non-default missing weight (rc=$_rc): $_out"
+fi
+# NEGATIVE CONTROL: OFFLINE with the DEFAULT serve script still wants the default.
+printf '#!/bin/bash\nexec llama-server -m "$WEIGHTS_DIR/%s"\n' "$_DW" > "$SB/scripts/serve-default.sh"
+rm -rf "$WB13"; mkdir -p "$WB13"; : > "$T/state/hf.log"
+_out="$(env PATH="$T/bin:$PATH" REPO_DIR="$SB" OPENBEAST_WEIGHTS_DIR="$WB13" OFFLINE=true \
+        DEFAULT_SERVE_SCRIPT=serve-default.sh bash "$T/bootstrap_weight_step.sh" 2>&1)"; _rc=$?
+if [[ $_rc -ne 0 && "$(n_hf)" == "0" ]] && has "$_out" "OFFLINE=true and $_DW is not in"; then
+  pass "negative control: OFFLINE with the default SERVE_SCRIPT still requires the default weight"
+else
+  fail "offline default weight missing (rc=$_rc, hf=$(n_hf)): $_out"
+fi
+rm -f "$SB/scripts/serve-other.sh" "$SB/scripts/serve-default.sh"
 printf '%s\n' "$_dw_reg" > "$SB/scripts/weights.registry"
 
 # ===========================================================================
@@ -430,6 +488,11 @@ if [[ "${1:-}" == "-m" && "${2:-}" == "pip" ]]; then
   echo "pip ${*:3}" >> "$S/pip.log"
   case "${3:-}" in
     install)
+      # what real pip says (and does) inside a venv when handed --user
+      if [[ -f "$S/in_venv" && " $* " == *" --user "* ]]; then
+        echo "ERROR: Can not perform a '--user' install. User site-packages are not visible in this virtualenv." >&2
+        exit 1
+      fi
       if [[ " $* " == *" --require-hashes "* ]]; then
         case "$mode" in
           hashfail)
@@ -468,6 +531,12 @@ if [[ "${1:-}" == "-" && "${2:-}" == */agents/requirements.txt ]]; then
   [[ -f "$S/pip_installed" ]] && exit 0
   echo "foo (not installed)"; exit 1
 fi
+# The venv probe (sys.prefix != sys.base_prefix) answers what the case says,
+# never what the interpreter running the suite happens to be.
+if [[ "${1:-}" == "-c" && "${2:-}" == *base_prefix* ]]; then
+  [[ "${2:-}" == *"print("* ]] && { echo "/fake/venv"; exit 0; }
+  [[ -f "$S/in_venv" ]]; exit $?
+fi
 exec "$REAL_PY" "$@"
 STUB
 chmod +x "$T/bin/python3"
@@ -498,6 +567,24 @@ if has "$_out" "THESE PACKAGES DO NOT MATCH"; then
   pass "pip's own report is still shown to the operator (stderr was captured, not swallowed)"
 else
   fail "pip's stderr was swallowed: $_out"
+fi
+# INSIDE A VENV (install-supply-chain finding): pip refuses --user there, and
+# bootstrap passed it unconditionally, so the online path died blaming the
+# network/lock while the OFFLINE path (pydeps.sh) worked on the same box.
+: > "$T/state/in_venv"
+run_step ok
+if [[ $_rc -eq 0 && "$(n_locked)" == "1" ]] && ! grep -q -- "--user" "$T/state/pip.log" \
+   && has "$_out" "inside a virtualenv" && has "$_out" "HARNESS-REACHED-END"; then
+  pass "inside a venv the locked install runs WITHOUT --user (pip would refuse it) and succeeds"
+else
+  fail "venv install (rc=$_rc, pip.log: $(cat "$T/state/pip.log")): $_out"
+fi
+rm -f "$T/state/in_venv"
+run_step ok
+if [[ $_rc -eq 0 ]] && grep -q -- "--user" "$T/state/pip.log" && ! has "$_out" "inside a virtualenv"; then
+  pass "negative control: outside a venv the install is still --user"
+else
+  fail "non-venv install (rc=$_rc, pip.log: $(cat "$T/state/pip.log")): $_out"
 fi
 
 # A NON-hash failure STOPS too, by default (2026-10-09 review, supply S2). "No
@@ -595,18 +682,26 @@ cat > "$T/bin/py_update" <<'STUB'
 S="$OB_STUB_STATE"
 if [[ "${1:-}" == "-m" && "${2:-}" == "pip" ]]; then
   case "${3:-}" in
-    show) echo "Version: 9.9.$(( $(cat "$S/upgraded" 2>/dev/null || echo 0) ))" ;;
+    show) echo x >> "$S/pipshow"; echo "Version: 9.9.$(( $(cat "$S/upgraded" 2>/dev/null || echo 0) ))" ;;
     install) [[ " $* " == *" -U "* ]] && echo 1 > "$S/upgraded" ;;
   esac
   exit 0
 fi
-if [[ "${1:-}" == "-" ]]; then cat >/dev/null; [[ -f "$S/import_breaks" ]] && exit 1; exit 0; fi
+if [[ "${1:-}" == "-" ]]; then
+  src="$(cat)"
+  # lib/pyversions.sh (ob_py_versions): one "name version" line per arg.
+  if [[ "$src" == *"metadata.version"* ]]; then
+    shift; for n in "$@"; do echo "$n 9.9.$(( $(cat "$S/upgraded" 2>/dev/null || echo 0) ))"; done; exit 0
+  fi
+  [[ -f "$S/import_breaks" ]] && exit 1; exit 0
+fi
 exec "$REAL_PY" "$@"
 STUB
 chmod +x "$T/bin/py_update"
 SBU="$T/repo_update"; mkdir -p "$SBU/scripts/lib" "$SBU/agents" "$T/binu"
 install -m 755 "$REPO_DIR/scripts/update.sh" "$SBU/scripts/update.sh"
-install -m 644 "$REPO_DIR/scripts/lib/conf.sh" "$REPO_DIR/scripts/lib/hardware.sh" "$SBU/scripts/lib/"
+install -m 644 "$REPO_DIR/scripts/lib/conf.sh" "$REPO_DIR/scripts/lib/hardware.sh" \
+  "$REPO_DIR/scripts/lib/pyversions.sh" "$SBU/scripts/lib/"
 ln -s "$T/bin/py_update" "$T/binu/python3"
 # The stub pydeps records WHAT requirements.txt SAID when `lock` was called:
 # regenerating before the pins are rewritten would lock the OLD versions.
@@ -621,7 +716,7 @@ run_update_python() {
   # A pin the old hand-kept list did not know about (httpx), with the comment
   # that explains it: both must survive the rewrite.
   printf 'openai==1.0\n# httpx: direct runtime dep of router.py — keep\nhttpx==0.28.1\n' > "$SBU/agents/requirements.txt"
-  : > "$T/state/pydeps.log"; rm -f "$T/state/upgraded"
+  : > "$T/state/pydeps.log"; rm -f "$T/state/upgraded" "$T/state/pipshow"
   _out="$(PATH="$T/binu:$PATH" "$SBU/scripts/update.sh" --python 2>&1)"; _rc=$?
 }
 rm -f "$T/state/lock_fails" "$T/state/import_breaks"
@@ -631,6 +726,13 @@ if [[ $_rc -eq 0 ]] && has "$(cat "$T/state/pydeps.log")" "pydeps lock :: openai
   pass "update.sh --python runs 'pydeps.sh lock' AFTER the pins are rewritten"
 else
   fail "update --python did not relock (rc=$_rc): $(cat "$T/state/pydeps.log") :: $_out"
+fi
+# review 2026-11-16: installed versions are read in one python3 per pass
+# (lib/pyversions.sh), not a `pip show` startup per pin per pass.
+if [[ ! -e "$T/state/pipshow" ]] && has "$_out" "openai 9.9.0 -> 9.9.1"; then
+  pass "update.sh --python reads versions without a pip startup per pin, and still reports what moved"
+else
+  fail "update --python: $(wc -l < "$T/state/pipshow" 2>/dev/null || echo 0) pip show calls; $_out"
 fi
 # The rewrite carries EVERY pin in the file forward, comments included — it
 # used to regenerate the file from a five-name list, dropping httpx.
@@ -876,6 +978,54 @@ if [[ $_rc -eq 0 && -f "$SB/llama.cpp/GOOD.txt" ]] && has "$_out" "extracted lla
 else
   fail "honest source bundle (rc=$_rc): $_out"
 fi
+# A bundle BUILT ON ANOTHER OS/CPU: its wheels and images are the build box's.
+# built_on was recorded and never compared, so install extracted llama.cpp
+# and only then died inside pip --no-index. Refused before anything is placed.
+rm -rf "$SB/llama.cpp"; mk_srcbundle
+"$REAL_PY" "$SB/scripts/lib/bundle_manifest.py" write "$SRCB" --built-at t --repo-commit c --built-on "Plan9 mips" \
+    --component source:source --meta "source:{\"commit\": \"$_commit\"}" >/dev/null
+install_bundle "$SRCB"
+if [[ $_rc -ne 0 && ! -e "$SB/llama.cpp" ]] && has "$_out" "built on 'Plan9 mips'; this box is '$(uname -s) $(uname -m)'"; then
+  pass "a bundle built on another OS/CPU is refused BEFORE anything is extracted"
+else
+  fail "foreign-platform bundle (rc=$_rc, llama.cpp: $(ls "$SB/llama.cpp" 2>/dev/null)): $_out"
+fi
+rm -rf "$SB/llama.cpp"; mk_srcbundle
+"$REAL_PY" "$SB/scripts/lib/bundle_manifest.py" write "$SRCB" --built-at t --repo-commit c --built-on "$(uname -s) $(uname -m)" \
+    --component source:source --meta "source:{\"commit\": \"$_commit\"}" >/dev/null
+install_bundle "$SRCB"
+if [[ $_rc -eq 0 && -f "$SB/llama.cpp/GOOD.txt" ]]; then
+  pass "negative control: a bundle built on this OS/CPU installs"
+else
+  fail "same-platform bundle (rc=$_rc): $_out"
+fi
+# A SYMLINK in the source archive is refused — also on a non-GNU find (BSD
+# find on macOS has no -printf; the old check ran it with stderr dropped and
+# `|| true`, so "find failed" read as "no symlinks"). The stub find below
+# behaves like BSD find: it rejects -printf and otherwise runs the real one.
+mk_symbundle() {
+  rm -rf "$SRCB" "$T/srclink"; mkdir -p "$SRCB/source" "$T/srclink/llama.cpp"
+  echo "real source" > "$T/srclink/llama.cpp/GOOD.txt"; ln -s /etc "$T/srclink/llama.cpp/evil"
+  tar -czf "$SRCB/source/llama.cpp-${_commit:0:12}.tar.gz" -C "$T/srclink" llama.cpp
+  "$REAL_PY" "$SB/scripts/lib/bundle_manifest.py" write "$SRCB" --built-at t --repo-commit c \
+      --component source:source --meta "source:{\"commit\": \"$_commit\"}" >/dev/null
+}
+mkdir -p "$T/bin_bsdfind"; REAL_FIND="$(command -v find)"; export REAL_FIND
+cat > "$T/bin_bsdfind/find" <<'STUB'
+#!/bin/bash
+for a in "$@"; do [[ "$a" == -printf ]] && { echo "find: -printf: unknown primary or operator" >&2; exit 1; }; done
+exec "$REAL_FIND" "$@"
+STUB
+chmod +x "$T/bin_bsdfind/find"
+for _fp in "$T/bin" "$T/bin_bsdfind:$T/bin"; do
+  rm -rf "$SB/llama.cpp"; mk_symbundle
+  _out="$(cd "$T" && PATH="$_fp:$PATH" OPENBEAST_PYTHON="$REAL_PY" "$SB/scripts/bundle.sh" install "$SRCB" 2>&1)"; _rc=$?
+  if [[ $_rc -ne 0 && ! -e "$SB/llama.cpp" ]] && has "$_out" "contains symlinks"; then
+    pass "a source archive with a symlink is refused, nothing placed ($([[ "$_fp" == *bsdfind* ]] && echo 'BSD-like find' || echo 'host find'))"
+  else
+    fail "symlinked source archive, PATH=$_fp (rc=$_rc, llama.cpp: $(ls -A "$SB/llama.cpp" 2>/dev/null)): $_out"
+  fi
+done
 # The bundle's commit against THIS checkout's pin (scripts/llama.cpp.ref): the
 # build box may have had its clone somewhere else, and install said nothing.
 rm -rf "$SB/llama.cpp"; mk_srcbundle
@@ -1374,6 +1524,35 @@ if [[ $_rc -ne 0 && "$(cat "$WD/w.gguf")" == "PRE-EXISTING" && ! -e "$WD/w.gguf.
 else
   fail "registry mismatch (rc=$_rc, have: $(cat "$WD/w.gguf" 2>/dev/null)): $_out"
 fi
+# UNPINNED weight, UNSIGNED bundle (install-supply-chain finding): the
+# registry check only fired for a real row, so any other name (or a PENDING
+# one) was placed — or REPLACED an existing file — on the stick's word alone.
+for _row in none pending; do
+  mk_wbundle
+  if [[ "$_row" == none ]]; then : > "$SB/scripts/weights.registry"
+  else printf 'PENDING\t0\tw.gguf\torg/w\t-\n' > "$SB/scripts/weights.registry"; fi
+  install_w
+  if [[ $_rc -ne 0 && ! -e "$WD/w.gguf" && ! -e "$WD/w.gguf.partial" ]] && has "$_out" "has no sha256 pin" \
+     && has "$_out" "--allow-unpinned-weights"; then
+    pass "an UNSIGNED bundle cannot place an unpinned weight (registry row: $_row)"
+  else
+    fail "unsigned unpinned weight, row=$_row (rc=$_rc, dir: $(ls -A "$WD")): $_out"
+  fi
+done
+printf 'OPERATORS-OWN-MODEL' > "$WD/w.gguf"
+_out="$(cd "$T" && PATH="$T/bin:$PATH" OPENBEAST_WEIGHTS_DIR="$WD" OPENBEAST_PYTHON="$REAL_PY" "$SB/scripts/bundle.sh" install "$WB" --allow-unpinned-weights 2>&1)"; _rc=$?
+if [[ $_rc -ne 0 && "$(cat "$WD/w.gguf")" == "OPERATORS-OWN-MODEL" ]] && has "$_out" "never replaces an unpinned weight"; then
+  pass "...and even with --allow-unpinned-weights it never REPLACES an existing unpinned file"
+else
+  fail "unsigned unpinned replace (rc=$_rc, have: $(cat "$WD/w.gguf" 2>/dev/null)): $_out"
+fi
+rm -f "$WD/w.gguf"
+_out="$(cd "$T" && PATH="$T/bin:$PATH" OPENBEAST_WEIGHTS_DIR="$WD" OPENBEAST_PYTHON="$REAL_PY" "$SB/scripts/bundle.sh" install "$WB" --allow-unpinned-weights 2>&1)"; _rc=$?
+if [[ $_rc -eq 0 ]] && cmp -s "$WB/weights/w.gguf" "$WD/w.gguf" && has "$_out" "UNSIGNED manifest alone"; then
+  pass "negative control: --allow-unpinned-weights places a new unpinned weight, loudly"
+else
+  fail "opt-in unpinned weight (rc=$_rc): $_out"
+fi
 
 # ===========================================================================
 echo ""
@@ -1388,6 +1567,18 @@ else
   bsh() { _out="$(cd "$T/usb" && PATH="$T/bin:$PATH" OPENBEAST_WEIGHTS_DIR="$WD" OPENBEAST_PYTHON="$REAL_PY" "$SB/scripts/bundle.sh" "$@" 2>&1)"; _rc=$?; }
   bsh sign ./wbundle --key "$T/key"
   [[ $_rc -eq 0 && -f "$WB/MANIFEST.json.sig" ]] && pass "signed the test bundle" || fail "sign (rc=$_rc): $_out"
+  # THE COMMANDS sign PRINTS, run verbatim (INSTALL.md: sign "prints the exact
+  # command"). They used to single-quote a `$(cat KEY.pub)`, writing that
+  # literal text into allowed-signers, so every --key then failed.
+  _signcmds="$(grep -E '^    (mkdir -p ~/.config/openbeast|printf |echo )' <<< "$_out" || true)"
+  rm -rf "$T/hsign"; mkdir -p "$T/hsign"
+  (cd "$T" && HOME="$T/hsign" bash -c "$_signcmds") >/dev/null 2>&1
+  bsh verify ./wbundle --key "$T/hsign/.config/openbeast/allowed-signers"
+  if [[ $_rc -eq 0 ]] && has "$_out" "signature verified"; then
+    pass "the allowed-signers command sign prints, run verbatim, makes a file that verifies"
+  else
+    fail "printed allowed-signers command (rc=$_rc, cmds: $_signcmds, file: $(cat "$T/hsign/.config/openbeast/allowed-signers" 2>/dev/null)): $_out"
+  fi
 
   # NEGATIVE CONTROL first: the good path works — with a RELATIVE --key (9).
   bsh verify ./wbundle --key ./allowed
@@ -1518,6 +1709,9 @@ LR="$T/repo_llama"; mkdir -p "$LR/scripts" "$T/binl"
   echo 'step() { echo "==> $*"; }; ok() { echo "OK: $*"; }; warn() { echo "WARN: $*"; }'
   echo 'die() { echo "DIE: $*" >&2; exit 1; }; ob_offline() { return 1; }'
   echo 'OB_BACKEND=cpu; GPU_BACKEND=cpu; ob_cmake_flags() { echo ""; }'
+  # the real build-number helper (lib/hardware.sh): it only asks git
+  sed -n '/^ob_llama_build_number() {/,/^}/p' "$REPO_DIR/scripts/lib/hardware.sh"
+  echo 'OB_LOCAL_LLAMA="${OB_LOCAL_LLAMA:-1}"; INFERENCE_BACKEND="${INFERENCE_BACKEND:-llama}"; INFERENCE_URL="${INFERENCE_URL:-http://127.0.0.1:8080}"'
   echo "$_lsec"
   echo 'echo HARNESS-REACHED-END'
 } > "$T/bootstrap_llama_step.sh"
@@ -1601,6 +1795,16 @@ if [[ $_rc -eq 0 && "$(n_git " clone --depth 1 ")" == "1" && "$(n_git " fetch ")
   pass "negative control: a pin that is not a 40-hex commit (a branch name) is not used — unpinned clone, loud warning"
 else
   fail "unusable pin (rc=$_rc): $_out :: $(cat "$T/state/gitl.log")"
+fi
+# UNMANAGED INFERENCE: no git, no cmake, no llama.cpp/ — and it says why.
+llama_fresh; : > "$T/state/gitl.log"
+_out="$(env PATH="$T/binl:$PATH" REPO_DIR="$LR" OB_LLAMA_DIR="$LR/llama.cpp" OB_LOCAL_LLAMA=0 \
+        INFERENCE_BACKEND=tensorfold INFERENCE_URL=http://100.64.0.7:8000 bash "$T/bootstrap_llama_step.sh" 2>&1)"; _rc=$?
+if [[ $_rc -eq 0 && ! -s "$T/state/gitl.log" && ! -e "$LR/llama.cpp" ]] \
+   && has "$_out" "not built — inference is tensorfold at http://100.64.0.7:8000" && has "$_out" "HARNESS-REACHED-END"; then
+  pass "an unmanaged backend fetches and builds no llama.cpp (no git, no cmake call)"
+else
+  fail "unmanaged llama step (rc=$_rc): $_out :: $(cat "$T/state/gitl.log")"
 fi
 # The committed pin itself: one full commit id, nothing movable.
 if [[ "$(grep -cE '^LLAMA_CPP_REF=[0-9a-f]{40}$' "$REPO_DIR/scripts/llama.cpp.ref")" == "1" \
@@ -1915,6 +2119,7 @@ fi
 _psec="$(sed -n '/^# Persist the resolved backend/,/^# ---- 3\. Python dependencies/p' "$REPO_DIR/bootstrap.sh" | sed '$d')"
 { echo 'set -euo pipefail'
   echo 'ok() { echo "OK: $*"; }; warn() { echo "WARN: $*"; }'
+  echo 'OB_LOCAL_LLAMA="${OB_LOCAL_LLAMA:-1}"; INFERENCE_BACKEND="${INFERENCE_BACKEND:-llama}"; INFERENCE_URL="${INFERENCE_URL:-http://127.0.0.1:8080}"'
   echo "$_psec"
 } > "$T/persist_step.sh"
 PR16="$T/repo_persist"; mkdir -p "$PR16"
@@ -1938,6 +2143,14 @@ if [[ $_rc -eq 0 ]] && grep -qx 'GPU_BACKEND=cuda' "$PR16/openbeast.conf" && [[ 
 else
   fail "auto->cuda (rc=$_rc): $(cat "$PR16/openbeast.conf" 2>&1)"
 fi
+# Nothing built (unmanaged inference): no flavour to pin, the conf untouched.
+rm -f "$PR16/openbeast.conf"; printf 'INFERENCE_BACKEND=tensorfold\n' > "$PR16/openbeast.conf"
+_out="$(REPO_DIR="$PR16" GPU_BACKEND=auto OB_BACKEND=cuda OB_LOCAL_LLAMA=0 bash "$T/persist_step.sh" 2>&1)"; _rc=$?
+if [[ $_rc -eq 0 && "$(cat "$PR16/openbeast.conf")" == "INFERENCE_BACKEND=tensorfold" ]]; then
+  pass "an unmanaged backend pins no GPU_BACKEND (nothing was built)"
+else
+  fail "unmanaged persist (rc=$_rc): $(cat "$PR16/openbeast.conf" 2>&1) :: $_out"
+fi
 # No conf yet (conf.sh had nothing to persist): the file bootstrap creates will
 # hold secrets later, so it is born 0600 — whatever the caller's umask.
 _out="$(umask 022; rm -f "$PR16/openbeast.conf"; REPO_DIR="$PR16" GPU_BACKEND=auto OB_BACKEND=cuda bash "$T/persist_step.sh" 2>&1)"
@@ -1950,6 +2163,7 @@ fi
 # --- the closing banner says where the weights are ---------------------------
 { echo 'set -euo pipefail'
   echo 'step() { echo "==> $*"; }; c_grn=""; c_bold=""; c_rst=""; START_STACK=no'
+  echo 'OB_LOCAL_LLAMA="${OB_LOCAL_LLAMA:-1}"; INFERENCE_BACKEND="${INFERENCE_BACKEND:-llama}"; INFERENCE_URL="${INFERENCE_URL:-http://127.0.0.1:8080}"'
   grep -E '^WEIGHT_FILE="[^"]+"$' "$REPO_DIR/bootstrap.sh"
   sed -n '/^ob_weights_line() {/,/^}/p' "$REPO_DIR/bootstrap.sh"
   sed -n '/^# ---- Done/,$p' "$REPO_DIR/bootstrap.sh"
@@ -1961,6 +2175,16 @@ if [[ $_rc -eq 0 ]] && has "$_out" "OpenBeast is ready" && has "$_out" "Weights:
   pass "the 'OpenBeast is ready' banner prints the weight's absolute path and size, and names WEIGHTS_DIR"
 else
   fail "banner (rc=$_rc): $_out"
+fi
+# Unmanaged: no weight (WEIGHTS_DIR is never resolved), and the model API is
+# the server it talks to — not a localhost:8080 that nothing listens on.
+_out="$(REPO_DIR="$PR16" OB_LOCAL_LLAMA=0 INFERENCE_BACKEND=tensorfold INFERENCE_URL=http://100.64.0.7:8000 \
+        bash "$T/banner_step.sh" 2>&1 </dev/null)"; _rc=$?
+if [[ $_rc -eq 0 ]] && has "$_out" "Model API: http://100.64.0.7:8000/v1" && has "$_out" "Inference: tensorfold at http://100.64.0.7:8000" \
+   && ! has "$_out" "localhost:8080" && ! has "$_out" "Weights:"; then
+  pass "unmanaged: the banner names the inference server, and no weight or localhost:8080"
+else
+  fail "unmanaged banner (rc=$_rc): $_out"
 fi
 
 echo ""

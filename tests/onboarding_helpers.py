@@ -13,6 +13,7 @@ import json
 import struct
 import sys
 import threading
+import time
 import urllib.parse
 from pathlib import Path
 
@@ -118,6 +119,8 @@ class Hub:
         self.redirect: str | None = None
         self.ignore_range = False        # answer 200 + the whole file to a Range request
         self.link_origin = ""            # absolute origin for tree pagination links ("" = relative)
+        self.slow: dict[str, int] = {}   # path -> how many more requests trickle it (512 B / 50 ms)
+        self.hang: dict[str, int] = {}   # path -> how many more requests send headers, then nothing
         self.log: list[tuple[str, str | None, str | None]] = []   # (path, Authorization, Range)
         hub = self
 
@@ -133,6 +136,27 @@ class Hub:
                     self.send_header(k, v)
                 self.end_headers()
                 self.wfile.write(body)
+
+            def _dribble(self, code, body, headers, hang, path):
+                """Headers, then the body 512 B per 50 ms (slow) or nothing for 5 s (hang)."""
+                which = hub.hang if hang else hub.slow
+                which[path] -= 1
+                self.send_response(code)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(body)))
+                for k, v in headers.items():
+                    self.send_header(k, v)
+                self.end_headers()
+                try:
+                    if hang:
+                        time.sleep(5)
+                        return
+                    for i in range(0, len(body), 512):
+                        self.wfile.write(body[i:i + 512])
+                        self.wfile.flush()
+                        time.sleep(0.05)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass                         # the client gave up on us: the point
 
             def do_GET(self):  # noqa: N802
                 u = urllib.parse.urlsplit(self.path)
@@ -174,12 +198,14 @@ class Hub:
                     if path in hub.corrupt:
                         b = b[:-1] + bytes([b[-1] ^ 0xFF])
                     rng = self.headers.get("Range")
+                    code, headers = 200, {}
                     if rng and not hub.ignore_range:
                         lo, _, hi = rng.split("=", 1)[1].partition("-")
                         lo, hi = int(lo), (int(hi) if hi else len(b) - 1)
-                        return self._send(206, b[lo:hi + 1], "application/octet-stream",
-                                          {"Content-Range": f"bytes {lo}-{hi}/{len(b)}"})
-                    return self._send(200, b, "application/octet-stream")
+                        code, headers, b = 206, {"Content-Range": f"bytes {lo}-{hi}/{len(b)}"}, b[lo:hi + 1]
+                    if hub.slow.get(path, 0) > 0 or hub.hang.get(path, 0) > 0:
+                        return self._dribble(code, b, headers, hang=hub.hang.get(path, 0) > 0, path=path)
+                    return self._send(code, b, "application/octet-stream", headers)
                 return self._send(404, b"?")
 
         self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)

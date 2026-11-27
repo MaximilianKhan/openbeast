@@ -1,0 +1,138 @@
+[
+ {
+  "name": "mobile_list_available_devices",
+  "description": "List all available devices. This includes both physical mobile devices and mobile simulators and emulators. It returns both Android and iOS devices. These are local devices already connected to this machine, ready to use immediately at no cost - for devices from the shared remote cloud fleet, use mobile_list_remote_devices instead."
+ },
+ {
+  "name": "mobile_login_to_cloud_provider",
+  "description": "Start authenticating this machine with the remote device cloud provider. This is required once before mobile_list_remote_devices or mobile_allocate_remote_device will work; if either of those fails with an authentication error, call this tool and then retry. This starts a browser-based device-code login and returns quickly with a URL and a one-time code - it does NOT wait for the login to complete. Show the URL and code to the user verbatim and ask them to open the URL and enter the code in their own browser. The login keeps running in the background after this tool returns; once the user confirms they've completed it, retry the remote devices tool that originally failed. Only call this after the user has asked for, or agreed to, remote/cloud devices - never call it speculatively, since it interrupts the user to act in their browser."
+ },
+ {
+  "name": "mobile_list_remote_devices",
+  "description": "List the catalog of device models (make, platform, OS version) available to reserve from the remote cloud device fleet. This is different from mobile_list_available_devices, which lists real devices and simulators/emulators already connected to this local machine and ready to use immediately at no cost. Remote devices live in a shared cloud fleet: they are not usable until reserved with mobile_allocate_remote_device, and reserving one may be a limited/billed resource. Requires mobile_login_to_cloud_provider to have been called first; if this fails with an authentication error, call that tool then retry."
+ },
+ {
+  "name": "mobile_allocate_remote_device",
+  "description": "Reserve a physical device from the remote cloud fleet for exclusive use, returning a device identifier usable with the other mobile_* tools. Unlike local devices, a remote device is a shared and billed resource borrowed for the session - never call this silently. If no local device is available, offer a remote device to the user and call this only after they agree. Requires mobile_login_to_cloud_provider to have been called first; if this fails with an authentication error, call that tool then retry. Use mobile_list_remote_devices first to see which names and versions actually exist in the fleet before filtering by them. Release the device with mobile_release_remote_device once the whole task is finished - releasing wipes the device's state, so do not release and reallocate between steps of the same task just to be tidy."
+ },
+ {
+  "name": "mobile_release_remote_device",
+  "description": "Release a device previously reserved with mobile_allocate_remote_device back to the remote cloud fleet so it becomes available to others. Releasing is destructive to the device's state: apps installed, files pushed, and any other changes made during this session are lost, and a later mobile_allocate_remote_device call may take time and could return a different physical unit. Only release once the whole task is finished - if there is more work to do on the same device shortly, keep holding it rather than releasing and reallocating."
+ },
+ {
+  "name": "mobile_list_apps",
+  "description": "List all the installed apps on the device"
+ },
+ {
+  "name": "mobile_get_foreground_app",
+  "description": "Get the app currently in the foreground on the device, including the focused activity class on Android or view controller class on iOS when available. Use this to verify which app or screen you are on before interacting with it."
+ },
+ {
+  "name": "mobile_launch_app",
+  "description": "Launch an app on mobile device. Use this to open a specific app. You can find the package name of the app by calling mobile_list_apps."
+ },
+ {
+  "name": "mobile_terminate_app",
+  "description": "Stop and terminate an app on mobile device"
+ },
+ {
+  "name": "mobile_clear_app_data",
+  "description": "Clear an app's data, such as its cache, documents, preferences and databases, and stop the app, so the next launch starts as if freshly installed. The app stays installed. Supported on Android devices and emulators and on iOS simulators, not on real iOS devices."
+ },
+ {
+  "name": "mobile_install_app",
+  "description": "Install an app on mobile device"
+ },
+ {
+  "name": "mobile_uninstall_app",
+  "description": "Uninstall an app from mobile device"
+ },
+ {
+  "name": "mobile_get_screen_size",
+  "description": "Get the screen size of the mobile device in pixels"
+ },
+ {
+  "name": "mobile_click_on_screen_at_coordinates",
+  "description": "Click on the screen, either at x,y coordinates or on an element by its ref (e.g. \"@e5\") from the latest mobile_list_elements_on_screen result. Prefer ref when the element is listed."
+ },
+ {
+  "name": "mobile_double_tap_on_screen",
+  "description": "Double-tap on the screen, either at x,y coordinates or on an element by its ref (e.g. \"@e5\") from the latest mobile_list_elements_on_screen result. Prefer ref when the element is listed."
+ },
+ {
+  "name": "mobile_long_press_on_screen_at_coordinates",
+  "description": "Long press on the screen, either at x,y coordinates or on an element by its ref (e.g. \"@e5\") from the latest mobile_list_elements_on_screen result. Prefer ref when the element is listed."
+ },
+ {
+  "name": "mobile_list_elements_on_screen",
+  "description": "List elements on screen with their ref, coordinates, and display text or accessibility label. Use the ref with mobile_click_on_screen_at_coordinates, mobile_double_tap_on_screen or mobile_long_press_on_screen_at_coordinates. Refs and coordinates stay valid as long as the screen does not change; re-list only after navigation or a layout change."
+ },
+ {
+  "name": "mobile_press_button",
+  "description": "Press a button on device"
+ },
+ {
+  "name": "mobile_open_url",
+  "description": "Open an http:// or https:// URL in the browser on device. Other URL schemes, such as app deep links, are rejected unless the server was started with MOBILEMCP_ALLOW_UNSAFE_URLS=1."
+ },
+ {
+  "name": "mobile_swipe_on_screen",
+  "description": "Swipe on the screen"
+ },
+ {
+  "name": "mobile_type_keys",
+  "description": "Type text into the focused element"
+ },
+ {
+  "name": "mobile_take_screenshot",
+  "description": "Take a screenshot of the mobile device. Use this to understand what's on screen, if you need to press an element that is available through view hierarchy then you must list elements on screen instead. The screenshot is usually smaller than the screen, so when the device reports its screen size the result also states how to convert positions in the screenshot into screen coordinates before tapping. Do not cache this result."
+ },
+ {
+  "name": "mobile_save_screenshot",
+  "description": "Save a screenshot of the mobile device to a file"
+ },
+ {
+  "name": "mobile_set_orientation",
+  "description": "Change the screen orientation of the device"
+ },
+ {
+  "name": "mobile_fold_device",
+  "description": "Fold or unfold a foldable device, such as iPhone Duo simulators and foldable Android emulators. Provide either posture or angle."
+ },
+ {
+  "name": "mobile_set_location",
+  "description": "Override the GPS location reported by the device, or clear the override to restore the real location. Omit latitude and longitude to clear."
+ },
+ {
+  "name": "mobile_clipboard",
+  "description": "Read or replace the device clipboard. Pass text to set the clipboard, omit it to read the current clipboard."
+ },
+ {
+  "name": "mobile_get_device_logs",
+  "description": "Collect live device logs (logcat on Android, unified log on iOS) as one JSON object per line. Only logs emitted after the call starts are captured, so trigger the behavior you want to observe right before or during the call. Stops after `limit` entries or after 30 seconds of silence. Each line of a stack trace counts as one entry, so filter by process or tag to avoid filling the limit with noise. Start with a small limit (20-50) for a quick look. For large captures, pass `saveTo` to write logs to a file and only the entry count is returned."
+ },
+ {
+  "name": "mobile_get_orientation",
+  "description": "Get the current screen orientation of the device"
+ },
+ {
+  "name": "mobile_start_screen_recording",
+  "description": "Start recording the screen of a mobile device. The recording runs in the background until stopped with mobile_stop_screen_recording. Returns the path where the recording will be saved."
+ },
+ {
+  "name": "mobile_stop_screen_recording",
+  "description": "Stop an active screen recording on a mobile device. Returns the file path, size, and approximate duration of the recording."
+ },
+ {
+  "name": "mobile_list_crashes",
+  "description": "List crash reports available on the device"
+ },
+ {
+  "name": "mobile_get_crash",
+  "description": "Get the full content of a crash report by its ID. Use mobile_list_crashes to find available crash IDs."
+ },
+ {
+  "name": "mobile_batch_commands",
+  "description": "Run multiple tools in sequence in a single call, e.g. click, type, click, type. Use this to fill forms or perform multi-step flows without round-trips. The device argument is applied to every step unless a step provides its own. Tools allowed as steps: mobile_list_available_devices, mobile_login_to_cloud_provider, mobile_list_remote_devices, mobile_allocate_remote_device, mobile_release_remote_device, mobile_list_apps, mobile_get_foreground_app, mobile_launch_app, mobile_terminate_app, mobile_clear_app_data, mobile_install_app, mobile_uninstall_app, mobile_get_screen_size, mobile_click_on_screen_at_coordinates, mobile_double_tap_on_screen, mobile_long_press_on_screen_at_coordinates, mobile_list_elements_on_screen, mobile_press_button, mobile_open_url, mobile_swipe_on_screen, mobile_type_keys, mobile_save_screenshot, mobile_set_orientation, mobile_fold_device, mobile_set_location, mobile_clipboard, mobile_get_device_logs, mobile_get_orientation, mobile_start_screen_recording, mobile_stop_screen_recording, mobile_list_crashes, mobile_get_crash."
+ }
+]

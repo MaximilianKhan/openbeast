@@ -11,5 +11,7 @@
   "cleanup": "rm -rf /tmp/eval_sf",
   "max_iter": 25,
   "category": "Concurrency & Systems",
-  "subcategory": "Async patterns"
+  "subcategory": "Async patterns",
+  "ref_stem": "107_singleflight/sf",
+  "dest": "/tmp/eval_sf/sf.py"
 }

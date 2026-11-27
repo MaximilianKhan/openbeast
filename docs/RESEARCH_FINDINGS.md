@@ -1,7 +1,11 @@
 # OpenBeast research findings
 
 Durable log of what we've learned. Newest sections appended over time.
-Numbers are from the RTX 5090 (32 GB) reference box unless noted.
+Numbers are from the RTX 5090 (32 GB) reference box unless noted. Each
+section is dated and stays as written, so a "default" or "winner" below is
+the one of its date: today's defaults are in [MODELS.md](MODELS.md), and the
+current (v5) board, led by the DGX Spark pair's DeepSeek-V4.1-Flash (Mia
+EXL3), is in [RESULTS.md](RESULTS.md).
 
 ---
 
@@ -304,7 +308,7 @@ and proven; only implementation remains.
 3. If `spawn == false`: proceed with the normal turn (thinking ON, default).
 
 **Where it lives:** a thin proxy in front of llama-server `/v1/chat/completions`
-(WebUI/OpenCode point at it). One interception point, both frontends.
+(WebUI points at it; the checkout's OpenCode config is fixed at :8080 and does not).
 
 **Proven facts backing it:**
 - tool_choice forcing is unreliable in llama.cpp (1/5) — do NOT use it.

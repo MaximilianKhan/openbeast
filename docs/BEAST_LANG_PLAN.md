@@ -1,5 +1,19 @@
 # beast-lang — the offline language library (design, 2026-09-15)
 
+> **Status (2026-11-19 review): PARTLY IMPLEMENTED.** The following phases
+> shipped:
+> - P0, the library (#65);
+> - P1, introspection (#78);
+> - P2, the verifier (#66);
+> - pack resolution (#67);
+> - P4, escalation (#73, wired in #103);
+> - P5, the `language_reference` tool and skill (#92).
+>
+> The P3 synthesis harness is built (#92), but the real synthesis run is still
+> open. §10 below is the detailed status. The day-to-day surfaces are
+> documented in [REFERENCE.md](REFERENCE.md), [FEATURES.md](FEATURES.md) and
+> `skills/beast-lang/`.
+
 **Max's ask (2026-09-15):** bring down documentation for every major language,
 let a local model look up the current API and version semantics without
 reaching the web, pull every revision of a language, synthesize the whole

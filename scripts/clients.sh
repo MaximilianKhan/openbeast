@@ -7,10 +7,11 @@
 # device its OWN bearer key, so a lost device is one `revoke` away from silence
 # and every other device keeps working.
 #
-#   ./scripts/clients.sh enroll <id> [--label "text"] [--slot N] [--rate N] [--scope S]
+#   ./scripts/clients.sh enroll <id> [--label "text"] [--slot N] [--rate N] [--scope S] [--login L]
 #   ./scripts/clients.sh list [--json]
 #   ./scripts/clients.sh show <id> [--json]
 #   ./scripts/clients.sh scope <id> add|remove <name>
+#   ./scripts/clients.sh max-tokens <id> N|0|default   # this device's default max_tokens
 #   ./scripts/clients.sh revoke <id>
 #   ./scripts/clients.sh unrevoke <id>
 #   ./scripts/clients.sh rotate <id>            # = enroll <id> --force
@@ -25,7 +26,10 @@
 # Registry schema (version 1) — the shared contract with agents/edge.py:
 #   {"version":1,"devices":[{"id","label","key_sha256","enrolled_at",
 #                            "revoked_at","slot","rate_limit_per_min",
-#                            "last_seen","scopes"}]}
+#                            "last_seen","scopes","enroll_nonce",
+#                            "max_tokens_default"}]}
+# enroll_nonce: random, written once per enrollment (kept on rotate) so two
+# enrollments of one id inside the same second still get distinct device_uids.
 # Unknown/future fields are round-tripped untouched, so a newer edge.py can add
 # fields (and keep writing last_seen) without this CLI dropping them. `scopes`
 # arrived that way and is why the version stays 1: a consumer that has never
@@ -46,6 +50,14 @@
 #            the key into a page's Manage sheet. See docs/BEAST_ARTIFACT.md.
 # A device with no `scopes` field, or an empty one, has no scopes — absence is
 # never a grant.
+#
+# max_tokens_default: the max_tokens beast-gate gives this device's chat and
+# completions requests that set neither max_tokens nor max_completion_tokens.
+# Absent / null = the gate's GATE_DEFAULT_MAX_TOKENS (8192 on the Spark pair
+# under AGENT_PROFILE=deepseek-best, off elsewhere); N = N; 0 = never inject
+# for this device. A request that sets its own cap is never changed. Set it
+# with `max-tokens` (no key rotation; the gate hot-reloads it on the next
+# request). docs/SPARK_HYDRA.md, "beast-gate's default max_tokens".
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -167,6 +179,7 @@ import datetime
 import fcntl
 import json
 import os
+import secrets
 import sys
 import tempfile
 
@@ -196,6 +209,36 @@ def last_seen_of(dev):
     return seen.get(dev.get("id")) or dev.get("last_seen")
 
 
+def prune_last_seen(dev_id):
+    """Drop a removed id from the gate's last-seen sidecar.
+
+    The sidecar is keyed by id, so without this a later `enroll` of the same
+    id showed the PREVIOUS device's last use before the new key was ever
+    presented. Best effort, atomic like the gate's own write.
+    """
+    path = os.path.join(os.path.dirname(REG), "clients-lastseen.json")
+    try:
+        with open(path) as fh:
+            seen = json.load(fh)
+    except (OSError, ValueError):
+        return
+    if not isinstance(seen, dict) or dev_id not in seen:
+        return
+    del seen[dev_id]
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path),
+                               prefix=".lastseen-", suffix=".json")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            json.dump(seen, fh)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
 def now():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -210,8 +253,8 @@ def load():
         with open(REG, "r") as fh:
             doc = json.load(fh)
     except ValueError as exc:
-        die("%s is not valid JSON (%s).\n       Refusing to touch it — restore "
-            "or fix it (beast-gate stays closed meanwhile)." % (REG, exc), 4)
+        die("%s is not valid JSON (%s).\n       Refusing to touch it — fix or "
+            "move it aside." % (REG, exc), 4)
     if not isinstance(doc, dict) or not isinstance(doc.get("devices"), list):
         die("%s has an unexpected shape (want {\"version\":1,\"devices\":[...]}).\n"
             "       Refusing to touch it." % REG, 4)
@@ -256,6 +299,14 @@ def save(doc):
             pass
         raise
     os.chmod(REG, 0o600)
+    # beast-gate's sticky "this rig has had a registry" marker (edge.py
+    # ENROLLED_MARKER): with it, deleting or moving clients.json aside keeps
+    # EDGE_ALLOW_ANON off instead of reopening the gate to the tailnet.
+    try:
+        os.close(os.open(os.path.join(d, "clients.enrolled"),
+                         os.O_WRONLY | os.O_CREAT, 0o600))
+    except OSError:
+        pass
 
 def find(doc, dev_id):
     for dev in doc["devices"]:
@@ -312,7 +363,7 @@ def redact(dev):
     return out
 
 # --- commands -----------------------------------------------------------
-if CMD in ("enroll", "scope", "revoke", "unrevoke", "remove"):
+if CMD in ("enroll", "scope", "revoke", "unrevoke", "remove", "max-tokens"):
     _lock_fd = lock()
 
 if CMD == "enroll":
@@ -337,6 +388,10 @@ if CMD == "enroll":
             # Always present on a fresh row (empty = no grants), so a
             # consumer can read the field instead of probing for it.
             "scopes": parse_scopes(os.environ.get("OB_SCOPES")),
+            # Bound into the gate's device_uid: enrolled_at is one-second
+            # resolution, so a scripted remove + enroll inside one second
+            # would otherwise share a uid (limiter bucket, audit identity).
+            "enroll_nonce": secrets.token_hex(8),
         }
         doc["devices"].append(dev)
         action = "enrolled"
@@ -357,6 +412,8 @@ if CMD == "enroll":
     # same as label/slot/rate.
     if os.environ.get("OB_HAS_SCOPES") == "1":
         dev["scopes"] = parse_scopes(os.environ.get("OB_SCOPES"))
+    if os.environ.get("OB_HAS_LOGIN") == "1":
+        dev["login"] = os.environ.get("OB_LOGIN", "").strip().lower()
     save(doc)
     print(action)
     if action == "rotated" and dev.get("revoked_at"):
@@ -400,8 +457,9 @@ elif CMD == "show":
         sys.exit(0)
     pub = redact(dev)
     prefix = pub.pop("key_sha256_prefix", None)
-    order = ["id", "label", "status", "slot", "rate_limit_per_min", "scopes",
-             "enrolled_at", "revoked_at", "last_seen"]
+    order = ["id", "label", "status", "slot", "rate_limit_per_min",
+             "max_tokens_default", "scopes", "enrolled_at", "revoked_at",
+             "last_seen"]
     # `scopes` is printed even when the row predates the field. An operator
     # reading this to answer "may this device act on my rig?" must see the
     # answer, not the absence of a line they have to know to look for.
@@ -442,6 +500,25 @@ elif CMD == "scope":
     print("Takes effect on the device's NEXT request — the consumer hot-reloads")
     print("this file, so no restart and no re-enrollment.")
 
+elif CMD == "max-tokens":
+    dev_id = os.environ["OB_ID"]
+    raw = os.environ["OB_MAXTOK"]
+    doc = load()
+    dev = need(doc, dev_id)
+    if raw == "default":
+        dev.pop("max_tokens_default", None)
+        what = "the gate's default (GATE_DEFAULT_MAX_TOKENS)"
+    else:
+        dev["max_tokens_default"] = int(raw)
+        what = ("none: the gate never adds max_tokens for this device"
+                if int(raw) == 0 else "max_tokens=%d" % int(raw))
+    save(doc)
+    print("'%s': requests that set no max_tokens / max_completion_tokens get %s."
+          % (dev_id, what))
+    print("")
+    print("Takes effect on the device's NEXT request (the gate hot-reloads this")
+    print("file): no restart, no key rotation. A request's own cap always wins.")
+
 elif CMD in ("revoke", "unrevoke"):
     dev_id = os.environ["OB_ID"]
     doc = load()
@@ -474,25 +551,22 @@ elif CMD == "remove":
     doc["devices"] = [d for d in doc["devices"]
                       if not (isinstance(d, dict) and d.get("id") == dev_id)]
     save(doc)
+    prune_last_seen(dev_id)
     print("Removed '%s' from the registry." % dev_id)
     print("")
     print("Its audit row is GONE — past `last_seen` and enrollment history for")
     print("this device are unrecoverable. `revoke` keeps that trail; `remove`")
     print("does not. A future enroll of the same id starts a fresh history.")
-    # An emptied registry still EXISTS, and beast-gate decides
-    # EDGE_ALLOW_ANON on the file existing, not on it holding a device: the
-    # gate refuses every caller (401 no_registry) until the next enroll.
-    # (It used to warn the opposite — that the gate had reopened.)
-    if not doc["devices"]:
+    # An emptied registry is still a registry to beast-gate (edge.py
+    # Registry.exists): EDGE_ALLOW_ANON stays ignored and every remote
+    # caller — the removed device included — now gets 401. Say so, so an
+    # operator who expected the anon opt-in back is not left guessing.
+    if not doc["devices"] and os.environ.get("OB_ALLOW_ANON") == "true":
         sys.stderr.write(
-            "\nNOTE: the registry is now EMPTY — beast-gate refuses every caller\n"
-            "      (401) until you enroll a device: ./scripts/clients.sh enroll <id>\n")
-        if os.environ.get("OB_ALLOW_ANON") == "true":
-            # The one way back to anonymous mode: no file at a gate (re)start.
-            sys.stderr.write(
-                "      Do not delete .run/clients.json while EDGE_ALLOW_ANON=true:\n"
-                "      a beast-gate restarted with no registry file serves every\n"
-                "      tailnet caller as 'anon'.\n")
+            "\nNOTE: the registry is now EMPTY. beast-gate stays CLOSED: once a\n"
+            "      registry has existed it ignores EDGE_ALLOW_ANON=true, so every\n"
+            "      remote caller (including '%s') gets 401 until you enroll a\n"
+            "      device: ./scripts/clients.sh enroll <id>\n" % dev_id)
 
 else:
     die("internal: unknown OB_CMD '%s'" % CMD)
@@ -511,6 +585,7 @@ case "$cmd" in
     _valid_id "$dev_id" || _die "invalid id '$dev_id' — use [a-z0-9][a-z0-9-]{0,30} (e.g. laptop-air)"
     label=""; slot=""; rate=""; scopes=""
     has_label=0; has_slot=0; has_rate=0; has_scopes=0
+    login=""; has_login=0
     force=0
     # rotate implies --force, but ALSO requires the device to already exist:
     # rotating a mistyped id must fail loudly, not silently enroll a brand-new
@@ -551,6 +626,13 @@ print(int(any(d.get("id") == os.environ["OB_ID"]
         --scope=*) _scope_val="${1#*=}"
                    _valid_scope "$_scope_val" || _die "invalid scope '$_scope_val' — use [a-z0-9][a-z0-9_-]{0,30} (e.g. chat)"
                    scopes="${scopes:+$scopes,}$_scope_val"; has_scopes=1; shift ;;
+        # The tailnet login this key answers for (beast-artifact: a bound key
+        # is refused under any other login, and only a bound key carries
+        # that login's admin power). Stored lowercased in `login`.
+        --login)   [[ $# -ge 2 && -n "${2:-}" ]] || _die "--login needs a value"
+                   login="$2"; has_login=1; shift 2 ;;
+        --login=*) login="${1#*=}"; [[ -n "$login" ]] || _die "--login needs a value"
+                   has_login=1; shift ;;
         --force)   force=1; shift ;;
         *)         _die "unknown option for $cmd: $1" ;;
       esac
@@ -570,7 +652,7 @@ print(int(any(d.get("id") == os.environ["OB_ID"]
     action="$(OB_CMD=enroll OB_ID="$dev_id" OB_LABEL="$label" OB_HASH="$key_hash" \
               OB_SLOT="$slot" OB_RATE="$rate" OB_FORCE="$force" OB_SCOPES="$scopes" \
               OB_HAS_LABEL="$has_label" OB_HAS_SLOT="$has_slot" OB_HAS_RATE="$has_rate" \
-              OB_HAS_SCOPES="$has_scopes" \
+              OB_HAS_SCOPES="$has_scopes" OB_LOGIN="$login" OB_HAS_LOGIN="$has_login" \
               _registry_op)"
 
     echo ""
@@ -645,6 +727,17 @@ print(int(any(d.get("id") == os.environ["OB_ID"]
     _valid_scope "$scope_name" || _die "invalid scope '$scope_name' — use [a-z0-9][a-z0-9_-]{0,30} (e.g. chat)"
     if [[ ! -f "$REGISTRY" ]]; then _no_registry; exit 1; fi
     OB_CMD=scope OB_ID="$dev_id" OB_ACTION="$action" OB_SCOPE="$scope_name" _registry_op
+    ;;
+
+  max-tokens)
+    dev_id="${1:-}"
+    val="${2:-}"
+    [[ -n "$dev_id" && -n "$val" ]] || _die "usage: clients.sh max-tokens <id> N|0|default"
+    shift 2
+    [[ $# -eq 0 ]] || _die "unknown option for max-tokens: $1"
+    [[ "$val" == default ]] || _int_or_die "$val" max-tokens 0
+    if [[ ! -f "$REGISTRY" ]]; then _no_registry; exit 1; fi
+    OB_CMD=max-tokens OB_ID="$dev_id" OB_MAXTOK="$val" _registry_op
     ;;
 
   revoke|unrevoke)

@@ -62,7 +62,7 @@ case "${1:-}" in
     ;;
 
   --help|-h)
-    grep '^#' "$0" | sed 's/^# *//'
+    grep '^#' "$0" | grep -v '^#!' | sed 's/^# *//'
     ;;
 
   "")
@@ -87,9 +87,8 @@ case "${1:-}" in
     echo "Global skills ($GLOBAL_SKILLS):"
     if [[ -d "$GLOBAL_SKILLS" ]]; then
       for d in "$GLOBAL_SKILLS"/*/; do
-        # The glob's trailing slash makes `-L` follow the link (always false):
-        # every skill --link made was listed as a plain directory. Test the
-        # entry itself.
+        # The glob's trailing slash makes -L follow the link (always false):
+        # strip it, or a --link'ed skill is listed as a plain copy.
         d="${d%/}"
         [[ -d "$d" || -L "$d" ]] || continue
         name="$(basename "$d")"

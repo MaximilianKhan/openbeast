@@ -1,7 +1,8 @@
 #!/bin/bash
 # Launch the OpenBeast status dashboard (process-kind extension). Binds the
 # stack-wide address (loopback by default; remote goes through Tailscale like
-# every other service). Port via DASHBOARD_PORT (default 3002).
+# every other service). Port via DASHBOARD_PORT (default 3002; start.sh passes
+# the conf key down through lib/conf.sh).
 set -euo pipefail
 EXT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$EXT_DIR/../.." && pwd)"

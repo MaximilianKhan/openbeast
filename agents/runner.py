@@ -19,6 +19,7 @@ import argparse
 import atexit
 import json
 import os
+import platform
 import re
 import signal
 import sys
@@ -31,7 +32,8 @@ from pathlib import Path
 from openai import OpenAI
 
 import tools as _tools
-from tools import TOOL_SCHEMAS, TOOL_HANDLERS, coerce_args, plan_block, reset_plan, update_plan
+from tools import (TOOL_SCHEMAS, TOOL_HANDLERS, coerce_args, get_plan, plan_block,
+                   reset_plan, update_plan)
 
 # beast-chat session ledger. Optional on purpose: a runner whose checkout
 # predates sessions.py, or whose import fails for any reason, must still run.
@@ -89,7 +91,8 @@ USE THE TOOLS. A working professional engineer:
 Workflow:
 1. Understand the task — read relevant files, explore the codebase with list_files / grep.
 2. Plan your approach. For any task with 3+ steps call update_plan with the steps
-   first, then keep it current as you go (exactly one step in_progress at a time).
+   first, then call it again only when a step changes status (exactly one step
+   in_progress at a time; the plan is re-shown every turn, never re-send it unchanged).
    For hard tasks (parsers, algorithms with subtle invariants, numerical code),
    think through the invariants before coding.
 3. Execute. Use edit_file for changes to existing files; write_file only for brand-new files.
@@ -109,12 +112,115 @@ Guidelines:
 """
 
 
-def build_system_prompt(context: str = "", context_budget: int = 0) -> str:
+def platform_line(system: str | None = None, shell: str | None = None) -> str:
+    """One line naming the tool host's OS and the bash tool's shell.
+
+    Runner v2 (audit of GLM-5.3-Flash's v5 failures, 2026-11-16). Tools run
+    where THIS process runs (AGENTS.md), which for the eval harness and Mac
+    clients is macOS: GNU habits (`sed -i 's/..'`, `timeout`, `cat -A`)
+    failed there and cost turns, because nothing said the host was BSD. The
+    text is built here, never in system-prompt.md (owner's rule)."""
+    system = system or platform.system() or "unknown"
+    shell = shell or _tools.BASH_SHELL
+    host = system
+    if system == "Darwin":
+        host = ("Darwin (macOS, BSD userland: `sed -i ''` not `sed -i`, no GNU "
+                "`timeout`, no `cat -A`"
+                + ("; /bin/bash is bash 3.2" if shell == "/bin/bash" else "") + ")")
+    return f"Tool host: {host}. The bash tool runs each command with `{shell} -c`.\n"
+
+
+def budget_line(max_iter: int) -> str:
+    """The turn budget, stated up front (runner v2: most failing v5 units
+    ran out of turns while still exploring, never told how many they had)."""
+    return (f"Turn budget: you have {max_iter} tool turns (model replies) for this "
+            f"task. Spend them on progress: explore briefly, then edit, run the "
+            f"check, and call task_done well before they run out.\n")
+
+
+# ---------------------------------------------------------------------------
+# harness10 prompt switches (2026-11-19; DeepSeek-V4.1-Flash (Mia EXL3), the
+# 168_linearizability_kv investigation; arms U/UP/UPA in v5-thinking-first).
+# Each is opt-in and read per run; off, the prompt is byte-identical to before.
+# ---------------------------------------------------------------------------
+
+#: The tool-list and workflow lines that advertise the web tools. Under eval
+#: they are refused (tools._eval_web_gate) unless OPENBEAST_EVAL_WEB=record,
+#: so with OPENBEAST_AGENT_HIDE_WEB=1 they are cut from the prompt and the
+#: schemas are left out of the request (tools.web_tools_hidden).
+_WEB_PROMPT_CUTS = (
+    ("  fetch        — pull text from a PUBLIC URL (docs, API references, gists); localhost/\n"
+     "                 LAN/tailnet addresses are blocked; use bash + curl for local servers\n", ""),
+    ("  web_search   — search the web via local SearXNG (when stuck or need references)\n", ""),
+    ("  - Looks things up. If a formula or API signature is fuzzy, use web_search/fetch to find\n"
+     "    a reference — guessing wastes iterations.\n", ""),
+    ("   If stuck, use web_search or fetch for references — don't keep guessing.\n",
+     "   If stuck, test a smaller case or re-read the error — don't keep guessing.\n"),
+)
+
+
+def agent_instructions(hide_web: bool = False) -> str:
+    """_AGENT_INSTRUCTIONS, without the web-tool lines when `hide_web`."""
+    text = _AGENT_INSTRUCTIONS
+    if hide_web:
+        for old, new in _WEB_PROMPT_CUTS:
+            text = text.replace(old, new)
+    return text
+
+
+def done_verified_enabled() -> bool:
+    """OPENBEAST_AGENT_DONE_VERIFIED=1: the "done when verified" line."""
+    return os.environ.get("OPENBEAST_AGENT_DONE_VERIFIED", "").strip() == "1"
+
+
+def algo_lines_enabled() -> bool:
+    """OPENBEAST_AGENT_ALGO_LINES=1: the three planning lines (arm UP)."""
+    return os.environ.get("OPENBEAST_AGENT_ALGO_LINES", "").strip() == "1"
+
+
+def done_verified_line() -> str:
+    """Stop when your own checks pass (evidence: DeepSeek T_s1 168_kv_a kept
+    editing a passing file for ~33 minutes and never called task_done). With
+    G9 (OPENBEAST_AGENT_VERIFY_DONE=1) on, the line names that check instead
+    of restating it: task_done already asks once for a re-run of a file
+    written after its last run (tools._verify_untested)."""
+    line = ("Done when verified: once your own checks pass (a brute force on small "
+            "inputs agrees with your solution, and a timing run at the stated input "
+            "limits fits the time limit), call task_done. Do not keep polishing a "
+            "solution that passes them.")
+    if _tools.verify_done_enabled():
+        line += (" If you changed the file after its last run, task_done asks you "
+                 "once to re-run it; do that, then finish.")
+    return line + "\n"
+
+
+#: Arm UP. General planning lines; they name no task.
+ALGO_LINES = (
+    "Planning:\n"
+    "- Bound first: compute the worst-case state count and work from the stated "
+    "input limits before choosing an algorithm.\n"
+    "- When a simplification would make the problem tractable (splitting into "
+    "independent parts, a greedy choice, dropping a constraint) but you doubt it "
+    "is sound, implement it and check it against a brute force on many small "
+    "random inputs before rejecting it.\n"
+    "- If a measurement misses the time limit by more than 5x, the algorithm is "
+    "wrong: redesign instead of micro-optimising.\n")
+
+
+def build_system_prompt(context: str = "", context_budget: int = 0,
+                        max_iter: int = 0) -> str:
     """Assemble the full system prompt with optional context and budget info."""
     parts = []
     if _SOUL_PROMPT:
         parts.append(_SOUL_PROMPT)
-    parts.append(_AGENT_INSTRUCTIONS)
+    parts.append(agent_instructions(hide_web=_tools.web_tools_hidden()))
+    parts.append(platform_line())
+    if max_iter > 0:
+        parts.append(budget_line(max_iter))
+    if algo_lines_enabled():
+        parts.append(ALGO_LINES)
+    if done_verified_enabled():
+        parts.append(done_verified_line())
     if context_budget > 0:
         parts.append(
             f"Context budget: you have approximately {context_budget:,} tokens of context. "
@@ -211,9 +317,58 @@ def _tool_summary(name: str, args: dict) -> str:
         "task_done": lambda a: a.get("summary", "")[:100],
     }
     fmt = summaries.get(name)
-    if fmt:
-        return fmt(args)
+    if fmt and isinstance(args, dict):
+        # Called outside the handler's try: a field of the wrong type
+        # ({"summary": null}, {"command": 5}) must not kill the run here.
+        try:
+            return str(fmt(args))
+        except Exception:
+            pass
     return str(args)[:100]
+
+
+#: Review 1118, reporting only (nothing here changes what the agent does):
+#: `api_errors_tail` = failed model calls since the last successful one, so
+#: the harness can tell "API errors ENDED the run" from "an error the run
+#: recovered from"; `response_models` = the `model` each response named;
+#: `reasoning_turns` = responses that carried reasoning (the EFFECTIVE
+#: thinking, beside the requested enable_thinking). Reset per run_agent.
+_RUN_STATS: dict = {"api_errors_tail": 0, "response_models": {}, "reasoning_turns": 0}
+
+
+def _reset_run_stats() -> None:
+    _RUN_STATS.update(api_errors_tail=0, response_models={}, reasoning_turns=0)
+
+
+def _note_response(response, message) -> None:
+    """A model call succeeded: the error tail resets, and its model and
+    reasoning are counted."""
+    _RUN_STATS["api_errors_tail"] = 0
+    m = getattr(response, "model", None)
+    if isinstance(m, str) and m:
+        rm = _RUN_STATS["response_models"]
+        rm[m] = rm.get(m, 0) + 1
+    if _reasoning_text(message):
+        _RUN_STATS["reasoning_turns"] += 1
+
+
+#: run_eval's content-addressed pack files (agents/lang/host_pack.write).
+_PACK_NAME_RE = re.compile(r"^host-([0-9a-f]{24})\.md$")
+
+
+def _read_context_file(path: str) -> str:
+    """--context-file's text. A content-addressed pack file (host-<sha24>.md,
+    the host/language pack run_eval hands a unit) must still hash to its
+    name: one rewritten since run_eval wrote it (by an earlier unit's agent)
+    is refused, never silently read (review 1118)."""
+    data = Path(path).read_bytes()
+    m = _PACK_NAME_RE.match(os.path.basename(path))
+    if m:
+        import hashlib  # noqa: PLC0415
+        if hashlib.sha256(data).hexdigest()[:24] != m.group(1):
+            raise SystemExit(f"Error: context file {path} does not match its content hash "
+                             f"(rewritten since it was written); refusing to run with it")
+    return data.decode("utf-8")
 
 
 def _print_token_summary(tokens_prompt: int, tokens_completion: int, tokens_total: int,
@@ -228,6 +383,9 @@ def _print_token_summary(tokens_prompt: int, tokens_completion: int, tokens_tota
     print(f"TOKENS: prompt={tokens_prompt} completion={tokens_completion} total={tokens_total}")
     print(f"COMPACTIONS: {compactions}")
     print(f"API_ERRORS: {api_errors}")
+    print(f"API_ERRORS_TAIL: {_RUN_STATS['api_errors_tail']}")
+    print(f"REASONING_TURNS: {_RUN_STATS['reasoning_turns']}")
+    print(f"RESPONSE_MODELS: {json.dumps(_RUN_STATS['response_models'], sort_keys=True)}")
 
 
 # ---------------------------------------------------------------------------
@@ -321,16 +479,293 @@ _SCHEMA_CHARS = len(json.dumps(TOOL_SCHEMAS))
 # operator's REASONING_BUDGET when set (env, else openbeast.conf — the value
 # serve.sh passes as --reasoning-budget; -1 = unlimited means no cap here
 # either), else the shipped serve scripts' 20480. OPENBEAST_AGENT_MAX_TOKENS
-# overrides it all (0 = uncapped). Eval runs stay uncapped: run_eval bounds
-# each task by wall time, and a cap would change measured behaviour under
-# unlimited-thinking configs.
+# overrides it all (0 = uncapped).
+#
+# Eval runs were uncapped (run_eval bounds each task by wall time). Runner v2
+# caps them too (G11 in docs/HARNESS_NOTES.md): on the 2026-11-16 v5 L0,
+# GLM-5.3-Flash's first code-writing turn on 168 ran past the client's 600 s
+# read timeout in 5 of 5 attempts, was retried identically, and the unit spent
+# its whole 1,800 s wall without writing a file. A capped turn instead ends
+# with finish_reason "length" and the truncation recovery below hands the head
+# back to the model with a nudge. The eval cap is fixed, the same for every
+# model: 8K tokens with thinking off (a v5 solution file is a few thousand
+# tokens; the cap only bites on a runaway), 16K with OPENBEAST_AGENT_THINKING=on
+# (room for a long think plus the same answer). The client's read timeout is
+# sized to the cap at a pessimistic 8 tok/s, so a capped turn on a busy
+# 4-stream server is never cut off by the client first: the first sizing (16K
+# at 20 tok/s) was not pessimistic enough. Measured on the runner v2 arm, a
+# long-context turn under 4-way load decoded at ~12 tok/s (6,818 tokens in
+# 580 s), so the client's 819 s timeout fired before the 16K cap and its
+# retry lost the turn twice (168_c, 1,638 s). Eval runs also never retry a
+# timed-out turn (_EVAL_CLIENT_MAX_RETRIES): the loop owns recovery.
+#
+# The 16K thinking cap was re-measured on arm C (2026-11-17, 71 units, 4
+# jobs) and kept. The 78 capped turns decoded at 15.1-25.8 tok/s (median
+# 19.1), so 8 tok/s still leaves the client 2x margin. Turns that ended on
+# their own: p50 ~0.4K, p90 ~2.3K, p99 ~12.4K, max ~15.1K tokens
+# (estimated from turn time and each unit's completion total). A higher cap
+# was rejected: what a capped think would have needed is censored, the same
+# 163/168 units capped 2-4 turns in a row, and every extra 8K tokens is
+# ~7 more minutes per stalled turn on a 3,600 s wall. The fix is the
+# recovery instead: a capped think keeps its tail (_capped_think_nudge).
 # ---------------------------------------------------------------------------
 _DEFAULT_REASONING_BUDGET = 20480   # --reasoning-budget in the shipped serve scripts
 _CONTENT_ALLOWANCE_TOKENS = 12288
 _DEFAULT_MAX_COMPLETION_TOKENS = _DEFAULT_REASONING_BUDGET + _CONTENT_ALLOWANCE_TOKENS
 _CLIENT_MAX_RETRIES = 1        # one quick retry for a blip; the loop owns the rest
+_EVAL_CLIENT_MAX_RETRIES = 0   # eval: a retried timeout re-spends the whole turn
+_EVAL_TURN_TOKENS = 8192            # eval cap, thinking off/unset (G11)
+_EVAL_TURN_TOKENS_THINKING = 16384  # eval cap, OPENBEAST_AGENT_THINKING=on
+_CLIENT_TIMEOUT_FLOOR_S = 600.0     # the openai client's own default
+_PESSIMISTIC_TOK_S = 8.0            # per-stream decode under --jobs load
+# A 429 is admission control (beast-gate's per-device in-flight / rate caps,
+# beast-chat's slot cap), not a failed turn: wait the server's Retry-After and
+# re-send the SAME turn, without spending an iteration or counting an API
+# error. Bounded so a device wedged at 429 still ends instead of hanging.
+_RATE_LIMIT_MAX_WAIT_S = 600
+_RATE_LIMIT_DEFAULT_S = 5.0
+
+
+def _retry_after_s(exc: Exception) -> float | None:
+    """Seconds to wait when `exc` is an HTTP 429, else None."""
+    if getattr(exc, "status_code", None) != 429:
+        return None
+    resp = getattr(exc, "response", None)
+    raw = None
+    try:
+        raw = resp.headers.get("retry-after") if resp is not None else None
+    except Exception:
+        raw = None
+    try:
+        wait = float(raw) if raw is not None else _RATE_LIMIT_DEFAULT_S
+    except (TypeError, ValueError):
+        wait = _RATE_LIMIT_DEFAULT_S
+    return min(max(wait, 0.5), 60.0)
 _TRUNCATED_KEEP_CHARS = 2000   # head of a capped turn kept in the history
+
+# ---------------------------------------------------------------------------
+# A thinking turn cut off by the cap (2026-11-17, docs/HARNESS_NOTES.md
+# "Thinking stall"). On arm C (GLM-5.3-Flash, thinking on, 16K eval cap) all
+# 78 capped turns were pure reasoning: no content, no tool call. The
+# recovery above kept nothing and the next turn re-derived the plan from
+# scratch, and after a cap on a code-writing turn that re-derivation was
+# capped again or killed by the wall 33 times in 47 (it wrote the file
+# straight away 8 times). Those turns cost 1,136 minutes and 13 of C's 17
+# failures. So when a capped turn has no content and no tool call but does
+# have reasoning, the nudge carries the reasoning's last
+# _CAPPED_REASONING_TAIL_CHARS (~1.5K tokens) and says: conclude and act.
+# Bounded per cap, so a chain of caps cannot grow the history without
+# limit. Every other turn keeps the default: reasoning is never fed back.
+# ---------------------------------------------------------------------------
+_CAPPED_REASONING_TAIL_CHARS = 6000
 _CONF_PATH = Path(__file__).resolve().parent.parent / "openbeast.conf"
+
+
+def _reasoning_text(message) -> str:
+    """The turn's reasoning as the server returned it: `reasoning_content`
+    (llama.cpp, TensorFold, vLLM) or `reasoning` (some OpenAI-compatible
+    servers); the openai SDK keeps unknown fields as attributes or in
+    model_extra. "" when there is none."""
+    for attr in ("reasoning_content", "reasoning"):
+        v = getattr(message, attr, None)
+        if isinstance(v, str) and v.strip():
+            return v
+    extra = getattr(message, "model_extra", None)
+    if isinstance(extra, dict):
+        for attr in ("reasoning_content", "reasoning"):
+            v = extra.get(attr)
+            if isinstance(v, str) and v.strip():
+                return v
+    return ""
+
+
+def _reasoning_tail(reasoning: str, limit: int = _CAPPED_REASONING_TAIL_CHARS) -> str:
+    """The last `limit` chars of `reasoning`, started at a line boundary
+    when one falls in the first fifth (a tail that opens mid-word reads
+    like noise)."""
+    text = reasoning.strip()
+    if len(text) <= limit:
+        return text
+    tail = text[-limit:]
+    nl = tail.find("\n", 0, limit // 5)
+    return tail[nl + 1:] if nl >= 0 else tail
+
+
+def _capped_think_nudge(max_tokens: int, tail: str) -> str:
+    return (f"Your last turn hit the {max_tokens:,}-token output cap while you were "
+            "still thinking: no answer and no tool call came out. The end of that "
+            "reasoning, so you do not start over:\n"
+            "<<<\n" + tail + "\n>>>\n"
+            "You were cut off mid-reasoning. Do not re-derive what is above: conclude "
+            "from it and act now. Make the tool call it was leading to (write the "
+            "file, run the test) or call task_done, and keep any further thinking short.")
+
+
+# ---------------------------------------------------------------------------
+# Act nudge (opt-in, OPENBEAST_AGENT_ACT_NUDGE=1; arm T2, 2026-11-18).
+#
+# DeepSeek-V4.1-Flash (Mia EXL3), arm T: 192_pike_regex spent 8 turns and
+# 3,585 s of its 3,600 s wall with ZERO tool calls. Every turn hit the 16K cap
+# as pure reasoning (~65K chars each), and the capped-think recovery above
+# fired every time, handing the tail back with "conclude and act now". The
+# model kept thinking anyway. One capped think is recovered as before. From
+# the second turn in a row with no tool call, and from the first one that
+# ended in a way that is neither a cap nor a final answer, a short act nudge
+# follows: the next reply must be a tool call. It never fires on a turn that
+# made a tool call, or on finish_reason "stop" with content (a final answer,
+# or the model talking; the existing task_done nudge answers that).
+# ---------------------------------------------------------------------------
+#: Consecutive no-tool-call turns that end in the cap before the nudge fires.
+_ACT_NUDGE_CAPPED_STREAK = 2
+
+
+def act_nudge_enabled() -> bool:
+    return os.environ.get("OPENBEAST_AGENT_ACT_NUDGE", "").strip() == "1"
+
+
+def act_nudge_due(finish_reason: str | None, content: str | None, idle_turns: int) -> bool:
+    """Whether a turn that made NO tool call earns the act nudge.
+    `idle_turns` counts the consecutive no-tool-call turns, this one included."""
+    fr = (finish_reason or "").strip().lower()
+    if fr == "stop" and (content or "").strip():
+        return False                       # a final answer, or talk: not ours
+    if fr == "length":
+        return idle_turns >= _ACT_NUDGE_CAPPED_STREAK   # the first cap: the recovery
+    return True       # stopped with nothing, no finish_reason, or something else
+
+
+def _act_nudge(idle_turns: int, idle_tokens: int) -> str:
+    spent = f" (~{idle_tokens:,} tokens)" if idle_tokens else ""
+    return (f"[act now] {idle_turns} turn(s) in a row{spent} ended without a tool "
+            "call, and the wall clock keeps running. Your next reply must be a tool "
+            "call: write the file with your current best version, run a command "
+            "that tests the idea you are weighing, or call task_done if the work is "
+            "done and tested. Fix it from the result, not from more thought.")
+
+
+# ---------------------------------------------------------------------------
+# Forced-act turn (opt-in, OPENBEAST_AGENT_FORCE_ACT=1; harness10, arms U*).
+#
+# DeepSeek-V4.1-Flash (Mia EXL3), 168_linearizability_kv (2026-11-19): with
+# thinking on, the act nudge above was ignored every time (up to 11 nudges in
+# one unit): the model always thinks first and hits the cap again. In arm T,
+# 314 of 360 unit-minutes went into turns capped with only reasoning, and 4
+# of 6 units never wrote a file; in T2 (8K cap + nudge) 247 of 360. Each cap
+# also discards ~90% of the turn's reasoning (~65K chars made, ~6K handed
+# back), so the design is re-decided every turn. A text nudge cannot stop a
+# model from thinking; the request can. After N (OPENBEAST_AGENT_FORCE_ACT_AFTER,
+# default 2) consecutive turns cut off by the cap with no content and no tool
+# call, the NEXT request goes out with thinking OFF (chat_template_kwargs.
+# enable_thinking=false, the same switch the thinking-off arms send) and
+# asks for a short "Decisions so far / Rejected options" list, then the tool
+# call, in that one reply. Thinking is back on for the turn after.
+#
+# The pass-back: the forced reply itself writes the summary, as CONTENT.
+# Reasoning is never kept in the history, content is: the decisions ride
+# along on every later turn, so the next thinking turn builds on them
+# instead of re-deciding. Rejected alternative: a separate summary request
+# before the act turn. It costs a whole extra turn on the wall, can itself
+# be capped, and leaves the act for a third request. The raw tail stays as
+# the forced turn's input (_capped_think_nudge): with thinking off, it is
+# all the model has of those turns to summarise from.
+# ---------------------------------------------------------------------------
+_FORCE_ACT_AFTER_DEFAULT = 2
+
+
+def force_act_enabled() -> bool:
+    return os.environ.get("OPENBEAST_AGENT_FORCE_ACT", "").strip() == "1"
+
+
+def force_act_after() -> int:
+    """N: capped thinking turns in a row before the forced-act turn. An
+    integer >= 1 from OPENBEAST_AGENT_FORCE_ACT_AFTER, else 2. run_eval
+    parses it the same way for the key (`fact<N>`)."""
+    raw = os.environ.get("OPENBEAST_AGENT_FORCE_ACT_AFTER", "").strip()
+    try:
+        n = int(raw) if raw else _FORCE_ACT_AFTER_DEFAULT
+    except ValueError:
+        return _FORCE_ACT_AFTER_DEFAULT
+    return n if n >= 1 else _FORCE_ACT_AFTER_DEFAULT
+
+
+def _no_think_kwargs(base: dict) -> dict:
+    """`base` (the run's thinking/seed kwargs) with thinking explicitly off
+    for one request; the seed and any other extra_body field are kept."""
+    kw = dict(base)
+    extra = dict(kw.get("extra_body") or {})
+    extra["chat_template_kwargs"] = {**(extra.get("chat_template_kwargs") or {}),
+                                     "enable_thinking": False}
+    kw["extra_body"] = extra
+    return kw
+
+
+def _force_act_note(streak: int) -> str:
+    return (f"[act turn] {streak} replies in a row ran out of output while still "
+            "thinking, so this one reply is generated with thinking OFF. Work from the "
+            "reasoning shown above. Begin with two short lists (at most ~12 lines in "
+            "all):\n"
+            "Decisions so far: the approach and each choice you settled on.\n"
+            "Rejected options: what you ruled out, one line each, with the reason.\n"
+            "Then, in this same reply, make the tool call those decisions lead to: write "
+            "the file with your current best version, or run a command that tests the "
+            "open question. The lists stay in the conversation, so later turns build on "
+            "them instead of deciding again. Thinking is back on after this reply.")
+
+
+# ---------------------------------------------------------------------------
+# Reasoning text in the transcript (harness10, observability only). Until
+# harness9 the transcript kept only reasoning character counts, so a stall
+# could be measured but not read. Every turn's reasoning is logged as a
+# `reasoning` event, size-capped (OPENBEAST_AGENT_REASONING_LOG_CHARS, default
+# 100,000 chars per turn, ~25K tokens: a 16K-token capped turn fits whole;
+# 0 = off). Over the cap, the head quarter and the tail are kept. Nothing
+# reads it back into the conversation; transcripts are 0600.
+# ---------------------------------------------------------------------------
+_REASONING_LOG_CHARS_DEFAULT = 100_000
+
+
+def reasoning_log_chars() -> int:
+    raw = os.environ.get("OPENBEAST_AGENT_REASONING_LOG_CHARS", "").strip()
+    try:
+        return max(0, int(raw)) if raw else _REASONING_LOG_CHARS_DEFAULT
+    except ValueError:
+        return _REASONING_LOG_CHARS_DEFAULT
+
+
+def reasoning_log_text(reasoning: str, limit: int) -> tuple[str, bool]:
+    """(text to log, truncated?): whole when it fits, else the first quarter
+    of `limit` and the last three quarters around a marker."""
+    if limit <= 0 or len(reasoning) <= limit:
+        return reasoning, False
+    head = limit // 4
+    tail = limit - head
+    cut = len(reasoning) - head - tail
+    return (reasoning[:head] + f"\n[... {cut:,} chars of reasoning not logged ...]\n"
+            + reasoning[-tail:]), True
+
+
+# ---------------------------------------------------------------------------
+# Partial run stats (2026-11-18). run_eval kills a unit at its wall, and the
+# runner prints its TOKENS / REASONING_TURNS lines only on a normal exit, so 16
+# of DeepSeek arm T's 17 wall-killed rows recorded tokens 0 and iterations
+# None. With OPENBEAST_AGENT_STATS_FILE set (run_eval's run_agent sets it), the
+# counters are rewritten there, atomically, at every turn start and after
+# every response; run_eval reads the file only when it killed the agent.
+# Reporting only: no verdict reads it.
+# ---------------------------------------------------------------------------
+
+
+def write_stats_sidecar(stats: dict) -> None:
+    path = os.environ.get("OPENBEAST_AGENT_STATS_FILE", "").strip()
+    if not path:
+        return
+    tmp = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(stats, f)
+        os.replace(tmp, path)
+    except OSError:
+        pass
 
 
 def _conf_value(key: str) -> str:
@@ -350,9 +785,22 @@ def _conf_value(key: str) -> str:
 
 def _max_completion_tokens() -> int:
     """max_tokens for an agent request; 0 means send none (uncapped)."""
-    if os.environ.get(_EVAL_MARKER):
-        return 0
     raw = os.environ.get("OPENBEAST_AGENT_MAX_TOKENS", "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            pass
+    if os.environ.get(_EVAL_MARKER):
+        thinking = os.environ.get("OPENBEAST_AGENT_THINKING", "").strip().lower() == "on"
+        return _EVAL_TURN_TOKENS_THINKING if thinking else _EVAL_TURN_TOKENS
+    # AGENT_MAX_TOKENS in openbeast.conf: the serving host's own turn cap for
+    # its agents (never eval runs, decided above). REASONING_BUDGET below is
+    # a llama.cpp knob (serve.sh --reasoning-budget); a TensorFold or vLLM
+    # host has no such flag, so the cap is set here instead. spark-1 sets
+    # 16384, arm C's cap (docs/SPARK_HYDRA.md, "Recommended serving
+    # configuration").
+    raw = _conf_value("AGENT_MAX_TOKENS").split("#", 1)[0].strip()
     if raw:
         try:
             return max(0, int(raw))
@@ -370,6 +818,87 @@ def _max_completion_tokens() -> int:
     if n < 0:
         return 0   # unlimited thinking: a token cap would cut it mid-thought
     return n + _CONTENT_ALLOWANCE_TOKENS
+
+
+def _client_timeout_s(max_tokens: int) -> float:
+    """Read timeout for the model client: the openai default, raised so a
+    turn that runs to `max_tokens` at a pessimistic per-stream rate is ended
+    by the cap (recoverable), not by the client (a lost, retried turn)."""
+    if max_tokens <= 0:
+        return _CLIENT_TIMEOUT_FLOOR_S
+    return max(_CLIENT_TIMEOUT_FLOOR_S, max_tokens / _PESSIMISTIC_TOK_S)
+
+
+def _thinking_kwargs() -> dict:
+    """Per-request thinking toggle (runner v2), OPENBEAST_AGENT_THINKING:
+    on / off send chat_template_kwargs.enable_thinking true / false (the
+    switch for a "thinking on" ablation arm; checked live on the Spark GLM
+    TensorFold server, where `true` returns reasoning_content and the
+    default none). Unset, or any other value, sends nothing: the request is
+    byte-identical to before. run_eval copies the parent env into the
+    runner, so `OPENBEAST_AGENT_THINKING=on python evals/run_eval.py` reaches
+    here. reasoning_content is not put back in the history: only
+    message.content and tool_calls are kept (see the assistant turn below).
+    The one exception is a turn the output cap cut off while it was still
+    thinking (no content, no tool call): a bounded tail of its reasoning
+    goes back in the nudge, so the next turn continues instead of starting
+    over (_capped_think_nudge)."""
+    v = os.environ.get("OPENBEAST_AGENT_THINKING", "").strip().lower()
+    if v not in ("on", "off"):
+        return {}
+    return {"extra_body": {"chat_template_kwargs": {"enable_thinking": v == "on"}}}
+
+
+#: Request header beast-gate reads (agents/edge.py, GATE_DEFAULTS_HEADER):
+#: "off" = forward this request with no gate-side defaults (today: the
+#: INFERENCE_THINKING injection). Every eval-mode request carries it, so an
+#: eval run that names no thinking mode reaches the server exactly as it
+#: always did and gets the SERVER's default, on every host: thinking on for
+#: the llama.cpp Qwen templates, off on TensorFold GLM. Sending an explicit
+#: enable_thinking=false instead would have kept the GLM baselines and
+#: silently turned thinking off for every llama.cpp eval row.
+GATE_DEFAULTS_HEADER = "X-OpenBeast-Gate-Defaults"
+
+
+def _inference_thinking() -> str:
+    """The serving host's thinking default, INFERENCE_THINKING (env
+    OPENBEAST_INFERENCE_THINKING, else openbeast.conf): "on", "off" or ""
+    (unset, or any other value)."""
+    v = (os.environ.get("OPENBEAST_INFERENCE_THINKING", "").strip()
+         or _conf_value("INFERENCE_THINKING")).split("#", 1)[0].strip().lower()
+    return v if v in ("on", "off") else ""
+
+
+def _agent_thinking_kwargs() -> dict:
+    """What the run sends for thinking. OPENBEAST_AGENT_THINKING on/off
+    always wins (_thinking_kwargs). Unset: an eval run sends nothing, as
+    before (the era's baselines are "the server's default"); any other run
+    follows the host's INFERENCE_THINKING, so OpenBeast's own agents think
+    by default where the operator turned that on (spark-1: arm C, the best
+    v5 configuration). Neither set: nothing, and the server (or beast-gate,
+    for a client-mode agent) decides."""
+    kw = _thinking_kwargs()
+    if kw or os.environ.get(_EVAL_MARKER):
+        return kw
+    v = _inference_thinking()
+    if not v:
+        return {}
+    return {"extra_body": {"chat_template_kwargs": {"enable_thinking": v == "on"}}}
+
+
+def _seed_kwargs() -> dict:
+    """Per-run sampling seed (runner v2), OPENBEAST_AGENT_SEED=<int>: sent as
+    `seed` on every request. The Spark TensorFold server falls back to a FIXED
+    seed when none is sent (probed 2026-11-16: three temperature-0.6 requests
+    gave byte-identical text; seeds 1/2/3 gave three texts, seed 1 twice gave
+    one), so every run there is the same single draw and a 23-byte prompt
+    change flips units. Repeating an arm under different seeds is how its
+    effect is told from that chaos (G12). Unset sends nothing."""
+    raw = os.environ.get("OPENBEAST_AGENT_SEED", "").strip()
+    try:
+        return {"seed": int(raw)} if raw else {}
+    except ValueError:
+        return {}
 
 
 def _is_context_overflow(err: str) -> bool:
@@ -580,6 +1109,323 @@ def proactive_asks(est: int, context_budget: int) -> tuple[int, int] | None:
     return ((est - target) * _CHARS_PER_TOKEN, (est - low) * _CHARS_PER_TOKEN)
 
 
+def _unsurrogate(v):
+    """A lone UTF-16 surrogate (a model's "\\ud800" JSON escape) cannot be
+    encoded as UTF-8: it crashes print() and the next request's JSON body.
+    Strings come back with each one as '?'; dicts/lists are rebuilt."""
+    if isinstance(v, str):
+        return v.encode("utf-8", "replace").decode("utf-8")
+    if isinstance(v, dict):
+        return {k: _unsurrogate(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_unsurrogate(x) for x in v]
+    return v
+
+
+def _scrub_surrogates(messages: list[dict]) -> int:
+    """In place, on the history: how many message fields changed."""
+    n = 0
+    for m in messages:
+        for k, v in m.items():
+            clean = _unsurrogate(v)
+            if clean != v:
+                m[k] = clean
+                n += 1
+    return n
+
+
+def _scrub_plan_surrogates() -> int:
+    """The plan is the other half of every request (_with_plan re-injects
+    plan_block() each turn) and lives outside `messages`, in tools'
+    ContextVar: update_plan keeps a step's text exactly as json.loads gave
+    it. Scrubbing only the history left a surrogate in a plan step failing
+    every later request. 1 if the plan was rewritten, else 0."""
+    steps = get_plan()
+    if not steps:
+        return 0
+    clean = _unsurrogate(steps)
+    if clean == steps:
+        return 0
+    update_plan(clean)   # the steps already passed validation once
+    return 1
+
+
+def _safe_stdio():
+    """print() of model/tool text must never be what kills the run."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
+#: The remaining-turns notice appears when this many turns or fewer are left
+#: (the current one included).
+_TURNS_LOW = 3
+
+
+def turns_notice(iteration: int, max_iter: int) -> str:
+    """A short notice for the last _TURNS_LOW turns, else ''. Rides in the
+    transient block with the plan (never stored in the history)."""
+    left = max_iter - iteration + 1
+    if left > _TURNS_LOW or left < 1:
+        return ""
+    if left == 1:
+        return ("[turn budget — this is your LAST turn: call task_done now "
+                "if the work is done]")
+    return (f"[turn budget — {left} turns left, this one included: stop "
+            f"exploring; finish, verify, and call task_done]")
+
+
+# ---------------------------------------------------------------------------
+# G23 — wall-clock warnings (opt-in, OPENBEAST_AGENT_WALL_WARN=1)
+#
+# The runner knew its turn budget but not the unit's wall budget, so a slow
+# model was killed by run_eval's timeout with no warning. With the switch on
+# and a wall known (--wall-s, or OPENBEAST_AGENT_WALL_S, which run_eval's
+# run_agent sets to the scaled wall it kills at), the first turn starting
+# past 50% and the first past 80% get one transient notice each, next to the
+# turns notice (never stored in the history). Prior art: Droid shows elapsed
+# time only past thresholds; LangChain deepagents' time-budget warnings.
+# ---------------------------------------------------------------------------
+
+#: Fractions of the wall at which a notice fires, once each.
+_WALL_MARKS = (0.5, 0.8)
+
+#: The runner's clock (monotonic; a module attribute so tests can fake it).
+_clock = time.monotonic
+
+
+def wall_warn_enabled() -> bool:
+    return os.environ.get("OPENBEAST_AGENT_WALL_WARN", "").strip() == "1"
+
+
+def wall_budget_s(explicit: float | None = None) -> float:
+    """The unit's wall budget: the explicit value (--wall-s) if positive,
+    else OPENBEAST_AGENT_WALL_S, else 0 (unknown: no notices)."""
+    if explicit and explicit > 0:
+        return float(explicit)
+    try:
+        v = float(os.environ.get("OPENBEAST_AGENT_WALL_S", "").strip() or 0)
+    except ValueError:
+        return 0.0
+    return v if v > 0 else 0.0
+
+
+def wall_notice(elapsed: float, wall_s: float, fired: set) -> str:
+    """The notice for the first turn starting past a mark not yet fired, else
+    ''. A turn that jumps past several marks fires once, for the highest, and
+    retires the lower ones. Mutates `fired`."""
+    if wall_s <= 0:
+        return ""
+    crossed = [m for m in _WALL_MARKS if elapsed >= m * wall_s and m not in fired]
+    if not crossed:
+        return ""
+    fired.update(m for m in _WALL_MARKS if m <= max(crossed))
+    return (f"[wall clock — {int(elapsed)} s of your {int(wall_s)} s wall used; "
+            f"finish and verify the destination now]")
+
+
+# ---------------------------------------------------------------------------
+# G22 — first-turn environment block (opt-in, OPENBEAST_AGENT_ENV_BLOCK=1)
+#
+# Most failing GLM v5 units ended on the turn cap after spending early turns
+# on `which`, `--version` and `ls`. Prior art: Droid's startup environment
+# block, shown as shell command output ("helped the agent avoid reissuing
+# similar commands"); Meta-Harness's sandbox snapshot "saves 2-5 early
+# exploration turns". This block is about THIS run (versions, workdir, the
+# task's paths); host userland quirks belong to platform_line and the packs.
+#
+# Placement: appended to the first user message (the task), formatted as
+# the output of a probe. Not a synthetic tool result: that needs a fabricated
+# assistant tool_call the model never made, which chat templates validate
+# and the transcript would attribute to the model. Stored in the history: it
+# is a fact that never changes, so it costs one prefix, not one per turn.
+#
+# Never prints environment values or anything outside the task's
+# /tmp/eval_* directories.
+# ---------------------------------------------------------------------------
+
+#: Hard size cap (~300 tokens at 4 chars/token).
+_ENV_BLOCK_MAX_CHARS = 1200
+_ENV_PROBE_TIMEOUT_S = 3.0
+_ENV_LIST_MAX = 30
+_ENV_PATHS_MAX = 12
+_ENV_PATHS_CHARS = 360
+#: Same commands as evals/run_eval.py toolchain_versions(), plus python3 and
+#: the C compilers the task may call by any of their names.
+_ENV_TOOLCHAINS = (("python3", ["python3", "--version"]),
+                   ("go", ["go", "version"]),
+                   ("rustc", ["rustc", "--version"]),
+                   ("zig", ["zig", "version"]),
+                   ("cc", ["cc", "--version"]),
+                   ("clang", ["clang", "--version"]),
+                   ("gcc", ["gcc", "--version"]))
+_ENV_CLI = ("git", "make", "cmake", "timeout", "gtimeout", "perl", "jq")
+
+
+def env_block_enabled() -> bool:
+    return os.environ.get("OPENBEAST_AGENT_ENV_BLOCK", "").strip() == "1"
+
+
+def _probe_version(cmd: list[str]) -> str | None:
+    """First line of a version command, None when the tool is absent."""
+    import shutil
+    import subprocess
+    # The bash tool's PATH (G24: under eval, python3 is the validators').
+    exe = shutil.which(cmd[0], path=_tools.shell_path())
+    if not exe:
+        return None
+    try:
+        out = subprocess.run([exe] + list(cmd[1:]), capture_output=True, text=True,
+                             stdin=subprocess.DEVNULL, timeout=_ENV_PROBE_TIMEOUT_S)
+        text = (out.stdout or out.stderr or "").strip()
+        return text.splitlines()[0][:50] if text else "?"
+    except Exception:
+        return "?"
+
+
+def _human_size(n: int) -> str:
+    for unit in ("B", "K", "M", "G"):
+        if n < 1024 or unit == "G":
+            return f"{n}{unit}" if unit == "B" else f"{n:.1f}{unit}"
+        n /= 1024
+    return f"{n}B"  # pragma: no cover
+
+
+def _eval_roots(expected: list[str]) -> list[str]:
+    """The task's /tmp/eval_* top-level directories (only those)."""
+    roots = []
+    for p in expected:
+        m = re.match(r"^/tmp/(eval[\w\-.]*)", p)
+        if m:
+            root = "/tmp/" + m.group(1).rstrip(".")
+            if root not in roots:
+                roots.append(root)
+    return roots
+
+
+def _list_eval_dir(root: str, budget: list[int]) -> list[str]:
+    """Depth <= 2 listing of one eval dir, sharing the entry budget. Symlinks
+    are shown, never followed."""
+    lines: list[str] = []
+
+    def walk(d: str, depth: int, indent: str):
+        try:
+            names = sorted(os.listdir(d))
+        except OSError:
+            return
+        for name in names:
+            if budget[0] <= 0:
+                budget[1] += 1
+                continue
+            full = os.path.join(d, name)
+            try:
+                st = os.lstat(full)
+            except OSError:
+                continue
+            import stat as _stat
+            budget[0] -= 1
+            if _stat.S_ISLNK(st.st_mode):
+                lines.append(f"{indent}{name} -> (symlink)")
+            elif _stat.S_ISDIR(st.st_mode):
+                lines.append(f"{indent}{name}/")
+                if depth < 2:
+                    walk(full, depth + 1, indent + "  ")
+            else:
+                lines.append(f"{indent}{name} {_human_size(st.st_size)}")
+
+    walk(root, 1, "    ")
+    return lines
+
+
+def env_block(workdir: str | None = None, expected: list[str] | None = None,
+              system: str | None = None, machine: str | None = None) -> str:
+    """The first-turn environment block (G22). Bounded by
+    _ENV_BLOCK_MAX_CHARS; never includes an environment value."""
+    from concurrent.futures import ThreadPoolExecutor
+    expected = _tools._task_expected_paths() if expected is None else expected
+    # Only the eval dirs: run_eval extracts exactly /tmp/eval* paths, and
+    # anything else (a home path in a hand-set variable) is not echoed.
+    expected = [p for p in expected if p.startswith("/tmp/eval")]
+    system = system or platform.system() or "unknown"
+    machine = machine or platform.machine() or "unknown"
+    with ThreadPoolExecutor(max_workers=len(_ENV_TOOLCHAINS)) as ex:
+        found = list(zip([n for n, _ in _ENV_TOOLCHAINS],
+                         ex.map(lambda nc: _probe_version(nc[1]), _ENV_TOOLCHAINS)))
+    # cc/clang/gcc are often one compiler: group identical answers.
+    groups: dict[str, list[str]] = {}
+    for name, ver in found:
+        if ver is not None:
+            groups.setdefault(ver, []).append(name)
+    tc = [f"{'/'.join(names)}: {ver}" for ver, names in groups.items()]
+    absent = [n for n, v in found if v is None]
+    import shutil
+    have = [t for t in _ENV_CLI if shutil.which(t)]
+    lacking = [t for t in _ENV_CLI if t not in have]
+
+    head = ["[environment — probed by the harness before your first turn; "
+            "this is command output, no need to re-run it]",
+            f"os: {system} {machine}",
+            "toolchains: " + ("; ".join(tc) or "none found")
+            + (f" (not installed: {', '.join(absent)})" if absent else ""),
+            "cli: " + (" ".join(have) or "none")
+            + (f" (missing: {' '.join(lacking)})" if lacking else ""),
+            f"workdir: {workdir or os.getcwd()}"]
+    if expected:
+        # Bounded on its own (<= _ENV_PATHS_MAX names, <= _ENV_PATHS_CHARS),
+        # so a long path list can never crowd out the rest of the block.
+        line = "expected task paths: "
+        shown = 0
+        for p in expected[:_ENV_PATHS_MAX]:
+            mark = f"{p} ({'exists' if os.path.lexists(p) else 'missing'})"
+            if shown and len(line) + len(mark) + 2 > _ENV_PATHS_CHARS:
+                break
+            line += (", " if shown else "") + mark
+            shown += 1
+        more = len(expected) - shown
+        head.append(line + (f", +{more} more" if more > 0 else ""))
+    listing: list[str] = []
+    budget = [_ENV_LIST_MAX, 0]           # [entries left, entries dropped]
+    for root in _eval_roots(expected):
+        if os.path.isdir(root) and not os.path.islink(root):
+            listing.append(f"  {root}/")
+            listing.extend(_list_eval_dir(root, budget))
+    if listing:
+        head.append("task dirs (depth <= 2):")
+    if budget[1]:
+        listing.append(f"    ... +{budget[1]} more entries")
+    # Whole lines only: the head always fits (each part is bounded), the
+    # listing is cut at the line that would cross the cap.
+    out = "\n".join(head)[:_ENV_BLOCK_MAX_CHARS]
+    tail = "\n    ... (truncated)"
+    for i, ln in enumerate(listing):
+        if len(out) + 1 + len(ln) + (len(tail) if i < len(listing) - 1 else 0) \
+                > _ENV_BLOCK_MAX_CHARS:
+            out += tail
+            break
+        out += "\n" + ln
+    return out
+
+
+#: Consecutive identical tool calls (same name, args AND result) after which
+#: the result gets _repeat_nudge appended.
+_REPEAT_AFTER = 3
+
+
+def _repeat_nudge(n: int) -> str:
+    return (f"\n\n[You have seen this exact output {n} times; act on it "
+            f"(edit, run the tests, or call task_done)]")
+
+
+def _call_key(name: str, args) -> str:
+    """Canonical form of a tool call, so {"a":1,"b":2} == {"b":2,"a":1}."""
+    try:
+        return name + "\0" + json.dumps(args, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return name + "\0" + repr(args)
+
+
 def _with_plan(messages: list[dict], plan: str) -> list[dict]:
     """Request payload = history + the current plan block (transient: the
     block is never stored, so it can't bloat or be evicted). Folded into a
@@ -718,11 +1564,24 @@ def _apply_steer_ops(ops: list[dict], messages: list[dict], log_event,
     return {"stop": stop, "paused": paused, "said": said}
 
 
-def _host_of(url: str) -> str:
+_LOOPBACK_NAMES = ("localhost", "127.0.0.1", "::1")
+
+
+def _origin_of(url: str) -> tuple[str, str, int] | None:
+    """(scheme, host, port) with the default port filled in and loopback
+    aliases folded to one name; None for anything that is not http(s)."""
     try:
-        return (urllib.parse.urlsplit(url).hostname or "").lower()
-    except Exception:
-        return ""
+        u = urllib.parse.urlsplit((url or "").strip())
+        scheme = u.scheme.lower()
+        host = (u.hostname or "").lower()
+        port = u.port or {"http": 80, "https": 443}.get(scheme)
+    except ValueError:
+        return None
+    if scheme not in ("http", "https") or not host or port is None:
+        return None
+    if host in _LOOPBACK_NAMES:
+        host = "localhost"
+    return scheme, host, port
 
 
 def _key_endpoint_trusted(base_url: str) -> bool:
@@ -730,16 +1589,23 @@ def _key_endpoint_trusted(base_url: str) -> bool:
 
     start_agent(base_url=...) is a model-callable MCP parameter with no host
     allowlist, so an injected prompt can name an arbitrary endpoint. The
-    ambient key therefore travels ONLY to the endpoint this install was
-    configured for (OPENBEAST_AGENT_INFERENCE_URL) or to the local server;
-    anywhere else gets the keyless sentinel. An explicit --api-key is operator
-    intent and always honored.
+    ambient key therefore travels ONLY to an endpoint this install was
+    configured for — the runner's local default, OPENBEAST_AGENT_INFERENCE_URL,
+    OPENBEAST_INFERENCE_URL or OPENBEAST_CONSUMER_BASE (hydra) — matched by
+    ORIGIN (scheme + host + port), so another loopback listener or another
+    port/scheme on the worker host gets the keyless sentinel. An explicit
+    --api-key is operator intent and always honored.
     """
-    host = _host_of(base_url)
-    if not host or host in ("localhost", "127.0.0.1", "::1"):
-        return True
-    configured = os.environ.get("OPENBEAST_AGENT_INFERENCE_URL", "")
-    return bool(configured) and host == _host_of(configured)
+    origin = _origin_of(base_url)
+    if origin is None:
+        return False
+    trusted = {_origin_of(DEFAULT_BASE_URL)}
+    for name in ("OPENBEAST_AGENT_INFERENCE_URL", "OPENBEAST_INFERENCE_URL",
+                 "OPENBEAST_CONSUMER_BASE"):
+        configured = os.environ.get(name, "").strip()
+        if configured:
+            trusted.add(_origin_of(configured))
+    return origin in trusted
 
 
 def resolve_api_key(explicit: str | None = None,
@@ -778,8 +1644,15 @@ def run_agent(
     api_key: str | None = None,
     session_id: str | None = None,
     steer: bool = False,
+    wall_s: float | None = None,
 ) -> str:
     """Run the agent loop. Returns the final summary or last model message."""
+    _safe_stdio()
+    # G23: the wall clock starts with the run (run_eval's kill timer started a
+    # moment earlier, at spawn). Notices only with the switch on and a wall.
+    wall_t0 = _clock()
+    wall = wall_budget_s(wall_s) if wall_warn_enabled() else 0.0
+    wall_fired: set = set()
 
     if workdir:
         workdir = os.path.expanduser(workdir)
@@ -787,13 +1660,27 @@ def run_agent(
 
     # Build system prompt: explicit override > dynamic build > default
     if system_prompt is None:
-        system_prompt = build_system_prompt(context=context, context_budget=context_budget)
+        system_prompt = build_system_prompt(context=context, context_budget=context_budget,
+                                            max_iter=max_iter)
 
-    client = OpenAI(base_url=base_url, api_key=resolve_api_key(api_key, base_url),
-                    max_retries=_CLIENT_MAX_RETRIES)
-    # Resolved once per run; {} (send nothing) under eval or when set to 0.
+    # Resolved once per run; {} (send nothing) when set to 0 or unlimited.
     max_tokens = _max_completion_tokens()
+    client_kwargs = {}
+    if os.environ.get(_EVAL_MARKER):
+        # beast-gate leaves an eval request exactly as sent (no thinking
+        # default injected): see GATE_DEFAULTS_HEADER.
+        client_kwargs["default_headers"] = {GATE_DEFAULTS_HEADER: "off"}
+    client = OpenAI(base_url=base_url, api_key=resolve_api_key(api_key, base_url),
+                    max_retries=(_EVAL_CLIENT_MAX_RETRIES if os.environ.get(_EVAL_MARKER)
+                                 else _CLIENT_MAX_RETRIES),
+                    timeout=_client_timeout_s(max_tokens), **client_kwargs)
     cap_kwargs = {"max_tokens": max_tokens} if max_tokens else {}
+    # {} unless OPENBEAST_AGENT_THINKING, or (not eval) INFERENCE_THINKING
+    think_kwargs = _agent_thinking_kwargs()
+    think_kwargs.update(_seed_kwargs())  # {} unless OPENBEAST_AGENT_SEED
+    # TOOL_SCHEMAS, without fetch/web_search under eval with
+    # OPENBEAST_AGENT_HIDE_WEB=1 (tools.web_tools_hidden).
+    tool_schemas = _tools.visible_tool_schemas()
 
     # --- THE EVAL GUARD, resolved FIRST (E1/E2) ---------------------------
     # Resolved once, here, and cached in a local for the whole run: the guard
@@ -902,7 +1789,16 @@ def run_agent(
 
     log_event({"type": "start", "task": task, "model": model, "workdir": workdir})
 
+    # G22: the environment block rides on the task message, once, before the
+    # first model call (a fresh run only: a resumed history starts elsewhere).
+    if env_block_enabled() and not (resume_from and os.path.isfile(resume_from)):
+        block = env_block(workdir)
+        messages[1] = {**messages[1],
+                       "content": f"{messages[1].get('content') or ''}\n\n{block}"}
+        log_event({"type": "env_block", "chars": len(block), "text": block})
+
     final_summary = ""
+    _reset_run_stats()
     # Token usage accumulated across every API call. Servers that don't return
     # a `usage` field (e.g. some older llama.cpp builds) leave these at 0.
     tokens_prompt = 0
@@ -914,8 +1810,33 @@ def run_agent(
     stop_reason = ""
     call_seq = 0
     call_index: dict[int, int] = {}   # message position -> tool-call ordinal
+    # Repeat guard (runner v2): the v5 audit saw the same `cat` 15x and the
+    # same bash command 19x in a row, each with the same output.
+    last_call: tuple[str, str] | None = None   # (call key, result)
+    repeats = 0
+    # Act nudge (OPENBEAST_AGENT_ACT_NUDGE=1): the no-tool-call streak.
+    act_nudge = act_nudge_enabled()
+    idle_turns = 0
+    idle_tokens = 0
+    # Forced-act turn (OPENBEAST_AGENT_FORCE_ACT=1): capped thinking turns in
+    # a row, and whether the next request goes out with thinking off.
+    force_act = force_act_enabled()
+    force_after = force_act_after()
+    capped_streak = 0
+    force_next = False
+    reasoning_cap = reasoning_log_chars()
+
+    def stats_sidecar(iterations: int) -> None:
+        write_stats_sidecar({
+            "tokens_prompt": tokens_prompt, "tokens_completion": tokens_completion,
+            "tokens_total": tokens_total, "iterations": iterations,
+            "reasoning_turns": _RUN_STATS["reasoning_turns"], "compactions": compactions,
+            "response_models": dict(_RUN_STATS["response_models"]),
+            "updated": time.time()})
     if not (resume_from and os.path.isfile(resume_from)):
         reset_plan()
+    # G9's write/run ledger is per run (a no-op unless VERIFY_DONE is on).
+    _tools.reset_verify_done()
 
     def compact(reason: str, chars_to_free: int, detail: str = "",
                 must_free: int | None = None) -> int:
@@ -989,8 +1910,17 @@ def run_agent(
 
         print(f"\n[iter {iteration}/{max_iter}]")
         log_event({"type": "iteration", "number": iteration})
+        stats_sidecar(iteration)
 
-        plan = plan_block()
+        # The transient block: the plan plus, near the end, the turns left.
+        # G23: and, with OPENBEAST_AGENT_WALL_WARN=1, the wall-clock notice.
+        wnote = wall_notice(_clock() - wall_t0, wall, wall_fired)
+        if wnote:
+            log_event({"type": "wall_notice", "iteration": iteration,
+                       "elapsed_s": round(_clock() - wall_t0, 1), "wall_s": wall})
+        plan = "\n\n".join(b for b in (plan_block(), turns_notice(iteration, max_iter),
+                                      wnote)
+                           if b)
         if context_budget > 0:
             # Proactive: past ~70% of the declared budget, evict before the
             # server has to tell us (4 chars/token estimate).
@@ -1006,21 +1936,47 @@ def run_agent(
                         f" (est {est:,} > {target:,} tokens, to {low:,})",
                         must_free=asks[0])
 
+        # A forced-act turn sends thinking off for this one request.
+        forced_turn, force_next = force_next, False
+        req_think = _no_think_kwargs(think_kwargs) if forced_turn else think_kwargs
         try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=_with_plan(messages, plan),
-                tools=TOOL_SCHEMAS,
-                # OPENBEAST_EVAL_GREEDY=1 (low-churn eval mode, 2026-09-10):
-                # unseeded temperature-0.6 sampling was the measured ±5-14
-                # task-flip churn floor's primary engine. Greedy decoding is
-                # an EXPERIMENT mode — the 0.6 default is serving reality
-                # and stays for leaderboard rows.
-                temperature=(0.0 if os.environ.get(
-                    "OPENBEAST_EVAL_GREEDY", "") == "1" else 0.6),
-                **cap_kwargs,
-            )
+            waited = 0.0
+            while True:
+                try:
+                    response = client.chat.completions.create(
+                        model=model,
+                        messages=_with_plan(messages, plan),
+                        tools=tool_schemas,
+                        # OPENBEAST_EVAL_GREEDY=1 (low-churn eval mode,
+                        # 2026-09-10): unseeded temperature-0.6 sampling was
+                        # the measured ±5-14 task-flip churn floor's primary
+                        # engine. Greedy decoding is an EXPERIMENT mode — the
+                        # 0.6 default is serving reality and stays for
+                        # leaderboard rows.
+                        temperature=(0.0 if os.environ.get(
+                            "OPENBEAST_EVAL_GREEDY", "") == "1" else 0.6),
+                        **cap_kwargs,
+                        **req_think,
+                    )
+                    break
+                except Exception as rl:
+                    wait = _retry_after_s(rl)
+                    if wait is None or waited + wait > _RATE_LIMIT_MAX_WAIT_S:
+                        raise
+                    waited += wait
+                    log_event({"type": "rate_limited", "wait_s": wait})
+                    time.sleep(wait)
         except Exception as e:
+            # A failed request is retried as the turn it was: still forced.
+            force_next = force_next or forced_turn
+            if isinstance(e, UnicodeEncodeError) and (
+                    _scrub_surrogates(messages) + _scrub_plan_surrogates()):
+                # Not an API error: the payload could not be encoded, and an
+                # identical retry would fail the same way every 5 s. Both
+                # halves of the payload are scrubbed (no short-circuit): the
+                # history AND the plan block re-injected from tools.
+                log_event({"type": "surrogates_scrubbed"})
+                continue
             err = str(e)
             print(f"  API error: {err}")
             log_event({"type": "error", "error": err})
@@ -1045,6 +2001,7 @@ def run_agent(
                 stop_reason = "context overflow (nothing left to compact)"
                 break
             api_errors += 1
+            _RUN_STATS["api_errors_tail"] += 1
             time.sleep(5)
             continue
 
@@ -1056,10 +2013,28 @@ def run_agent(
 
         choice = response.choices[0]
         message = choice.message
+        _note_response(response, message)
+        stats_sidecar(iteration)
+        _rmodel = getattr(response, "model", None)
+        if isinstance(_rmodel, str) and _rmodel:
+            log_event({"type": "response_model", "iteration": iteration, "model": _rmodel,
+                       "finish_reason": str(getattr(choice, "finish_reason", "") or "")})
         # Hit our own output cap: keep only the head of the runaway text —
         # assistant turns are never compacted, so a 30K-token repetition loop
         # would otherwise ride along on every later request.
         truncated = bool(cap_kwargs) and choice.finish_reason == "length"
+        # harness10: the reasoning TEXT, size-capped (reasoning_log_text).
+        _rtext = _reasoning_text(message)
+        if _rtext and reasoning_cap:
+            _logged, _cut = reasoning_log_text(_rtext, reasoning_cap)
+            log_event({"type": "reasoning", "iteration": iteration, "chars": len(_rtext),
+                       "capped": truncated, "truncated": _cut, "text": _logged})
+        if forced_turn:
+            log_event({"type": "force_act_result", "iteration": iteration,
+                       "tool_calls": len(message.tool_calls or []),
+                       "content_chars": len(message.content or ""),
+                       "reasoning_chars": len(_rtext),
+                       "finish_reason": str(choice.finish_reason or "")})
 
         # Append assistant message to history
         content = message.content or ""
@@ -1087,22 +2062,79 @@ def run_agent(
         if not message.tool_calls:
             if truncated:
                 print(f"  (reply hit the {max_tokens:,}-token output cap)")
-                log_event({"type": "output_cap", "iteration": iteration,
-                           "max_tokens": max_tokens})
-                messages.append({
-                    "role": "user",
-                    "content": f"Your last reply hit the {max_tokens:,}-token output cap "
-                               "and was cut off. Do not repeat it: be concise, and make "
-                               "progress with a tool call or call task_done.",
-                })
-            elif choice.finish_reason == "stop":
+                # Cut off mid-think: the reasoning is all the turn produced.
+                reasoning = ("" if (message.content or "").strip()
+                             else _reasoning_text(message))
+                cap_event = {"type": "output_cap", "iteration": iteration,
+                             "max_tokens": max_tokens}
+                if usage is not None and getattr(usage, "completion_tokens", None):
+                    cap_event["completion_tokens"] = usage.completion_tokens
+                if reasoning:
+                    tail = _reasoning_tail(reasoning)
+                    cap_event.update(reasoning_chars=len(reasoning),
+                                     reasoning_tail_chars=len(tail))
+                    nudge = _capped_think_nudge(max_tokens, tail)
+                else:
+                    nudge = (f"Your last reply hit the {max_tokens:,}-token output cap "
+                             "and was cut off. Do not repeat it: be concise, and make "
+                             "progress with a tool call or call task_done.")
+                log_event(cap_event)
+                messages.append({"role": "user", "content": nudge})
+            elif choice.finish_reason == "stop" and (message.content or "").strip():
                 print("  (model stopped without calling task_done)")
                 # Nudge it to either continue or call task_done
                 messages.append({
                     "role": "user",
                     "content": "If the task is complete, call the task_done tool with a summary. If not, continue working.",
                 })
+            elif choice.finish_reason == "stop" and not act_nudge:
+                # Stopped with no content and no tool call (the switch off:
+                # exactly the old behaviour, the same nudge).
+                print("  (model stopped without calling task_done)")
+                messages.append({
+                    "role": "user",
+                    "content": "If the task is complete, call the task_done tool with a summary. If not, continue working.",
+                })
+            idle_turns += 1
+            if usage is not None:
+                idle_tokens += getattr(usage, "completion_tokens", 0) or 0
+            # Forced-act: count capped thinking turns (no content, no tool
+            # call); the forced turn itself and any other ending reset it.
+            if truncated and not (message.content or "").strip() and not forced_turn:
+                capped_streak += 1
+            else:
+                capped_streak = 0
+            forcing = force_act and capped_streak >= force_after
+            if forcing:
+                text = _force_act_note(capped_streak)
+                last = messages[-1]
+                if last.get("role") == "user":
+                    messages[-1] = {**last, "content": f"{last.get('content') or ''}\n\n{text}"}
+                else:
+                    messages.append({"role": "user", "content": text})
+                print(f"  (forced-act turn next: {capped_streak} capped thinking turn(s), "
+                      f"thinking off for one reply)")
+                log_event({"type": "force_act", "iteration": iteration,
+                           "capped_streak": capped_streak, "after": force_after,
+                           "idle_turns": idle_turns, "idle_tokens": idle_tokens})
+                force_next = True
+                capped_streak = 0
+            elif act_nudge and act_nudge_due(choice.finish_reason, message.content, idle_turns):
+                text = _act_nudge(idle_turns, idle_tokens)
+                last = messages[-1]
+                if last.get("role") == "user":
+                    # One user turn, not two: the cap recovery's nudge and this.
+                    messages[-1] = {**last, "content": f"{last.get('content') or ''}\n\n{text}"}
+                else:
+                    messages.append({"role": "user", "content": text})
+                print(f"  (act nudge: {idle_turns} turn(s) without a tool call)")
+                log_event({"type": "act_nudge", "iteration": iteration,
+                           "idle_turns": idle_turns, "idle_tokens": idle_tokens,
+                           "finish_reason": str(choice.finish_reason or "")})
             continue
+        idle_turns = 0
+        idle_tokens = 0
+        capped_streak = 0
 
         # Execute tool calls
         for tc in message.tool_calls:
@@ -1122,6 +2154,7 @@ def run_agent(
                              f"Re-issue the call with valid JSON.")
 
             handler = TOOL_HANDLERS.get(fn_name)
+            call_ok = False  # the handler ran and returned (no error turn)
             if parse_err:
                 result = parse_err
             elif not handler:
@@ -1139,8 +2172,22 @@ def run_agent(
                         raise TypeError(
                             f"arguments must be an object, got {type(fn_args).__name__}")
                     result = handler(**coerce_args(fn_name, fn_args))
+                    call_ok = True
                 except Exception as e:
                     result = f"Error: bad tool call to {fn_name}: {e}"
+
+            # task_done is exempt: a refused one is answered by its own text.
+            if fn_name != "task_done":
+                key = (_call_key(fn_name, fn_args if not parse_err
+                                 else tc.function.arguments), result)
+                repeats = repeats + 1 if key == last_call else 1
+                last_call = key
+                if repeats >= _REPEAT_AFTER:
+                    result += _repeat_nudge(repeats)
+                    log_event({"type": "repeat_guard", "name": fn_name,
+                               "repeats": repeats, "iteration": iteration})
+            else:
+                last_call, repeats = None, 0
 
             log_event({
                 "type": "tool_call",
@@ -1157,9 +2204,17 @@ def run_agent(
                 "content": result,
             })
 
-            # Check for task completion
-            if fn_name == "task_done":
-                final_summary = fn_args.get("summary", result)
+            # Check for task completion. Only an ACCEPTED task_done ends the
+            # run: a bad call (invalid JSON, non-object args, missing summary)
+            # and the R1 path guard's "NOT DONE — ..." refusal are tool turns
+            # the model must get to act on.
+            if (fn_name == "task_done" and call_ok
+                    and str(result).startswith("TASK_DONE")):
+                final_summary = fn_args.get("summary")
+                if not isinstance(final_summary, str):
+                    # {"summary": null|5|{...}}: callers slice the summary.
+                    final_summary = (str(result) if final_summary is None
+                                     else str(final_summary))
                 print(f"\n{'=' * 60}")
                 print(f"Task complete (iteration {iteration})")
                 print(f"Summary: {final_summary}")
@@ -1263,6 +2318,7 @@ def main():
     parser.add_argument("--resume", help="Resume from a previous agent log file (JSONL path)")
     parser.add_argument("--session-id", help="beast-chat: pin the session-ledger id (default: derived from the log filename, else generated). Implies --steer.")
     parser.add_argument("--steer", action="store_true", help="beast-chat: register in the session ledger and read the steering inbox at each turn boundary. OFF unless this flag or --session-id is passed (there is no environment opt-in); ALWAYS off under run_eval.py (OPENBEAST_EVAL / OPENBEAST_TASK_PATHS).")
+    parser.add_argument("--wall-s", type=float, default=0, help="The unit's wall budget in seconds (default: OPENBEAST_AGENT_WALL_S, which run_eval sets). Used only with OPENBEAST_AGENT_WALL_WARN=1: one transient notice at the first turn past 50%% and past 80%% of it")
     parser.add_argument("--system-prompt", help="Override the system prompt (disables context/budget injection)")
     parser.add_argument("--system-prompt-file", help="Read system prompt from a file (disables context/budget injection)")
 
@@ -1286,7 +2342,7 @@ def main():
     # Resolve context
     context = args.context or ""
     if args.context_file:
-        context = Path(args.context_file).read_text()
+        context = _read_context_file(args.context_file)
 
     run_agent(
         task=task,
@@ -1303,6 +2359,7 @@ def main():
         api_key=args.api_key,
         session_id=args.session_id,
         steer=args.steer,
+        wall_s=args.wall_s,
     )
 
 

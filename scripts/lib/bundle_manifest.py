@@ -70,6 +70,10 @@ CHUNK = 1 << 20
 #: Safe to ignore because no installer step can consume one: install reads the
 #: source tarball by its recorded commit, images and weights by their manifest
 #: entries, and wheels through `pydeps audit`, which applies this same rule.
+#: IDENTICAL to pydeps_lock.BENIGN_NAMES (tests/test_bundle_manifest.py pins
+#: it): pydeps once tolerated .Trashes/.directory/Thumbs.db as well, so a
+#: wheelhouse a Dolphin or Explorer user had browsed passed `pydeps audit`
+#: and failed `bundle verify` — the disagreement this comment says was fixed.
 BENIGN_NAMES = frozenset({".DS_Store"})
 APPLEDOUBLE_MAGIC = b"\x00\x05\x16\x07"
 

@@ -39,11 +39,13 @@ fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 has()  { grep -qF -- "$2" <<< "$1"; }
 
 T="$(mktemp -d "${TMPDIR:-/tmp}/ob-ops-ca-XXXXXX")"
+# Unix socket paths are capped near 104 bytes; $TMPDIR on macOS is long.
+TS="$(mktemp -d /tmp/obsk.XXXXXX)"
 PIDS=""
 cleanup() {
   local p
   for p in $PIDS; do kill "$p" 2>/dev/null || true; done
-  rm -rf "$T"
+  rm -rf "$T" "$TS"
 }
 trap cleanup EXIT
 trap 'exit 143' INT TERM
@@ -122,6 +124,28 @@ elif [[ "${CI:-}" == "true" ]]; then
   fail "no /proc/net/tcp: the /proc fallback checks were skipped under CI=true"
 else
   echo "  SKIP: no /proc/net/tcp on this OS"
+fi
+# A non-dumpable listener (beast-chat and the tool server harden themselves,
+# tools.harden_process): `ss -p` shows the socket but no pid, so the holder
+# is unknown. It used to read as "someone else's", and start.sh never called
+# a hardened beast-chat ready.
+if [[ "$(uname -s)" == Linux ]]; then
+  P_ND="$(free_port)"
+  python3 -c "import ctypes,runpy,sys; ctypes.CDLL(None).prctl(4,0,0,0,0); sys.argv=sys.argv[1:]; runpy.run_path(sys.argv[0])" \
+    "$T/health.py" "$P_ND" & ND_PID=$!; PIDS="$PIDS $ND_PID"
+  wait_listen "$P_ND" || fail "the non-dumpable health server never listened on $P_ND"
+  _rc=0; ob_pid_owns_port "$ND_PID" "$P_ND" || _rc=$?
+  if [[ $_rc -eq 0 || $_rc -eq 2 ]]; then
+    pass "a non-dumpable listener is ours-or-unknown (rc=$_rc), never 'someone else's'"
+  else
+    fail "ob_pid_owns_port called our non-dumpable server foreign (rc=$_rc; pids: $(ob_port_pids "$P_ND" | tr '\n' ' '))"
+  fi
+  _rc=0; ob_pid_owns_port "$ND_PID" "$P_FREE" || _rc=$?
+  [[ $_rc -eq 1 ]] && pass "…and a port nobody listens on is still 1 (control)" \
+    || fail "ob_pid_owns_port on a free port: rc=$_rc"
+  kill "$ND_PID" 2>/dev/null || true
+else
+  echo "  SKIP: prctl is Linux-only"
 fi
 
 # ---------------------------------------------------------------------------
@@ -214,9 +238,14 @@ while i < len(args):
 def out(o):
     sys.stdout.write(o if isinstance(o, str) else json.dumps(o, separators=(",", ":")))
     sys.exit(0)
+# --unix-socket: a probe over the login socket, steered by SOCK_UP.
+if "--unix-socket" in args and os.environ.get("SOCK_UP", "1") != "1": sys.exit(7)
 if "/api/artifacts/health" in url:
     if os.environ.get("ART_UP", "1") != "1": sys.exit(7)
     out({"status": "ok", "artifacts": 2})
+if "/gate/health" in url:
+    if os.environ.get("GATE_UP", "0") != "1": sys.exit(7)
+    out({"service": "beast-gate", "auth": "devices", "devices": 1})
 if "/api/chat/health" in url:
     if os.environ.get("CHAT_UP", "1") != "1": sys.exit(7)
     out({"status": "ok", "reads": "allowlist", "running": 0})
@@ -225,9 +254,15 @@ if url.endswith("/v1/health"):
     code = os.environ.get("NOTIFY_CODE", "200")
     if code == "000": sys.exit(7)
     out(code if w else {"healthy": True})
+# The WebUI Host guard probe (lib/net.sh ob_webui_host_guard): a live guard
+# refuses Host: rebind.invalid with 400; REBIND_CODE=200 plays a missing one.
+if w and "Host: rebind.invalid" in args: out(os.environ.get("REBIND_CODE", "400"))
 if w: out("200")
 if url.endswith(":8080/health"): out({"status": "ok"})
 if url.endswith("/slots"): out([])
+if url.endswith(":3002/api/slot"):
+    if os.environ.get("DASH_UP", "1") != "1": sys.exit(7)
+    out({"beast_slot": 2, "healthy": True})
 if ":3001/health" in url: out({"status": "ok", "auth": "open", "identity": "headers"})
 if url.endswith("/api/version"): out({"version": "stub"})
 if url.endswith("/api/config"): out({"features": {"auth": True}})
@@ -451,6 +486,79 @@ else
 fi
 RUN_ENV=()
 
+# Review 2026-11-16: the :8445/:8446 mount TARGET must match the login mode.
+# Switching CHAT_LOGIN_FROM is two steps (restart, then --publish-chat); a
+# skipped second step 404s every phone login or 502s the console while the
+# TCP liveness probe still passed.
+S8445T='https://beast.example.ts.net:8445 (tailnet only)\n|-- / proxy http://127.0.0.1:3003\n'
+RUN_ENV=(TS_SERVE="$S8445T")
+doctor BEAST_CHAT=true CHAT_OPERATORS=me@example.com CHAT_LOGIN_FROM=unix "CHAT_SOCKET=$TS/chat.sock"
+if has "$_O" ":8445 proxies to http://127.0.0.1:3003 but beast-chat runs CHAT_LOGIN_FROM=unix" \
+   && ! has "$_O" "beast-chat published on :8445"; then
+  pass "unix mode behind a TCP :8445 mount FAILs (every phone login would 404)"
+else
+  fail "unix behind TCP mount: $(row '8445')"
+fi
+S8445U="https://beast.example.ts.net:8445 (tailnet only)\n|-- / proxy unix:$TS/chat.sock\n"
+RUN_ENV=(TS_SERVE="$S8445U")
+doctor BEAST_CHAT=true CHAT_OPERATORS=me@example.com
+if has "$_O" ":8445 proxies to unix:$TS/chat.sock but beast-chat runs CHAT_LOGIN_FROM=loopback"; then
+  pass "a stale unix:<socket> :8445 mount after a rollback to loopback FAILs"
+else
+  fail "stale unix mount: $(row '8445')"
+fi
+doctor BEAST_CHAT=true CHAT_OPERATORS=me@example.com CHAT_LOGIN_FROM=unix "CHAT_SOCKET=$TS/chat.sock"
+if has "$_O" "no socket exists there"; then
+  pass "a unix mount over a socket that does not exist FAILs"
+else
+  fail "missing socket: $(row '8445')"
+fi
+doctor BEAST_CHAT=true CHAT_OPERATORS=me@example.com CHAT_LOGIN_FROM=unix "CHAT_SOCKET=$TS/other.sock"
+if has "$_O" "but CHAT_SOCKET is $TS/other.sock"; then
+  pass "a unix mount at a different path than CHAT_SOCKET FAILs"
+else
+  fail "socket path mismatch: $(row '8445')"
+fi
+python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TS/chat.sock"
+RUN_ENV=(TS_SERVE="$S8445U" SOCK_UP=0)
+doctor BEAST_CHAT=true CHAT_OPERATORS=me@example.com CHAT_LOGIN_FROM=unix "CHAT_SOCKET=$TS/chat.sock"
+if has "$_O" "beast-chat is NOT answering on $TS/chat.sock"; then
+  pass "a unix mount whose socket does not answer FAILs (probed over the socket, not TCP)"
+else
+  fail "dead socket: $(row '8445')"
+fi
+RUN_ENV=(TS_SERVE="$S8445U" SOCK_UP=1)
+doctor BEAST_CHAT=true CHAT_OPERATORS=me@example.com CHAT_LOGIN_FROM=unix "CHAT_SOCKET=$TS/chat.sock"
+if has "$_O" "beast-chat published on :8445 (tailnet-only, via $TS/chat.sock)" && ! has "$_O" "proxies to"; then
+  pass "…a matching unix mount over a live socket passes (control)"
+else
+  fail "unix control: $(row '8445')"
+fi
+S8446U="https://beast.example.ts.net:8446 (tailnet only)\n|-- / proxy unix:$TS/artifact.sock\n"
+S8446T='https://beast.example.ts.net:8446 (tailnet only)\n|-- / proxy http://127.0.0.1:3004\n'
+RUN_ENV=(TS_SERVE="$S8446T")
+doctor BEAST_ARTIFACT=true ARTIFACT_OPERATORS=me@example.com ARTIFACT_LOGIN_FROM=unix "ARTIFACT_SOCKET=$TS/artifact.sock"
+if has "$_O" ":8446 proxies to http://127.0.0.1:3004 but beast-artifact runs ARTIFACT_LOGIN_FROM=unix"; then
+  pass "beast-artifact: unix mode behind a TCP :8446 mount FAILs"
+else
+  fail "artifact unix behind TCP: $(row '8446')"
+fi
+RUN_ENV=(TS_SERVE="$S8446U")
+doctor BEAST_ARTIFACT=true ARTIFACT_OPERATORS=me@example.com
+if has "$_O" ":8446 proxies to unix:$TS/artifact.sock but beast-artifact runs ARTIFACT_LOGIN_FROM=loopback"; then
+  pass "beast-artifact: a stale unix :8446 mount after a rollback FAILs"
+else
+  fail "artifact stale unix mount: $(row '8446')"
+fi
+python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TS/artifact.sock"
+doctor BEAST_ARTIFACT=true ARTIFACT_OPERATORS=me@example.com ARTIFACT_LOGIN_FROM=unix "ARTIFACT_SOCKET=$TS/artifact.sock"
+if has "$_O" "beast-artifact published on :8446 (tailnet-only, via $TS/artifact.sock)"; then
+  pass "…a matching unix :8446 mount over a live socket passes (control)"
+else
+  fail "artifact unix control: $(row '8446')"
+fi
+RUN_ENV=()
+
 doctor
 if ! has "$_O" "Notifications"; then
   pass "nothing configured: no Notifications section (control)"
@@ -481,6 +589,26 @@ if has "$_O" "CHAT_NOTIFY_URL is set but BEAST_CHAT is off"; then
   pass "a notify URL without beast-chat WARNs (nothing would send it)"
 else
   fail "notify without chat: $(row 'notif')"
+fi
+# extensions-ntfy review: beast-chat drops a word that is not a terminal
+# state, so CHAT_NOTIFY_ON=error sent nothing behind a doctor `pass`.
+doctor BEAST_CHAT=true "CHAT_NOTIFY_URL=http://127.0.0.1:3005/$TOPIC" "CHAT_NOTIFY_ON=error"
+if has "$_O" "CHAT_NOTIFY_ON: 'error' is not a session state; NO session state will notify"; then
+  pass "CHAT_NOTIFY_ON with no valid state WARNs that nothing will notify"
+else
+  fail "CHAT_NOTIFY_ON=error: $(row 'NOTIFY_ON|notif')"
+fi
+doctor BEAST_CHAT=true "CHAT_NOTIFY_URL=http://127.0.0.1:3005/$TOPIC" "CHAT_NOTIFY_ON=Failed, fail,done"
+if has "$_O" "CHAT_NOTIFY_ON: 'fail' is not a session state; it is ignored" && ! has "$_O" "'failed'"; then
+  pass "…a partial typo WARNs about the one word (case and spaces are fine, as beast-chat reads them)"
+else
+  fail "CHAT_NOTIFY_ON partial: $(row 'NOTIFY_ON|notif')"
+fi
+doctor BEAST_CHAT=true "CHAT_NOTIFY_URL=http://127.0.0.1:3005/$TOPIC" "CHAT_NOTIFY_ON=failed,stopped"
+if ! has "$_O" "CHAT_NOTIFY_ON:"; then
+  pass "…and a valid CHAT_NOTIFY_ON stays quiet (control)"
+else
+  fail "valid CHAT_NOTIFY_ON warned: $(row 'NOTIFY_ON')"
 fi
 doctor BEAST_CHAT=true "CHAT_NOTIFY_URL=ntfy.example/$TOPIC"
 if has "$_O" "CHAT_NOTIFY_URL is not an http(s) URL"; then
@@ -514,6 +642,23 @@ if has "$_O" "ntfy published on :8447 (tailnet-only)"; then
   pass "…a live ntfy behind :8447 passes (control)"
 else
   fail ":8447 live: $(row '8447')"
+fi
+# spark-1 and the rig mount the status DASHBOARD on :8447 by hand
+# (BEAST_SLOT.md); doctor failed "ntfy is NOT responding" on the rig's live
+# dashboard (2026-11-25). The mount's target decides which service it is.
+RUN_ENV=(TS_SERVE='https://beast.example.ts.net:8447 (tailnet only)\n|-- / proxy http://127.0.0.1:3002\n' NTFY_UP=0 DASH_UP=1)
+doctor BEAST_CHAT=true
+if has "$_O" "the status dashboard is published on :8447" && ! has "$_O" "ntfy is NOT responding"; then
+  pass ":8447 proxying to the dashboard is checked as the dashboard, not as ntfy"
+else
+  fail ":8447 dashboard: $(row '8447')"
+fi
+RUN_ENV=(TS_SERVE='https://beast.example.ts.net:8447 (tailnet only)\n|-- / proxy http://127.0.0.1:3002\n' DASH_UP=0)
+doctor BEAST_CHAT=true
+if has "$_O" ":8447 publishes the status dashboard (http://127.0.0.1:3002) but it is NOT responding"; then
+  pass "…a dead dashboard behind :8447 FAILs (control)"
+else
+  fail ":8447 dashboard dead: $(row '8447')"
 fi
 RUN_ENV=()
 # OFFLINE + a compose-kind extension: its image rides no bundle, and a missing
@@ -569,6 +714,44 @@ else
   fail "online ext image row: $(row 'image')"
 fi
 cp "$T/docker.orig" "$SB/bin/docker"
+
+# Gate bypass drift (the rig, 2026-11-22): `tailscale serve` :8443 straight at
+# llama :8080 while openbeast.conf had EDGE_GATE=true — every device key was
+# a 401 from llama-server. doctor judges the mount TARGET against EDGE_GATE.
+S8443L='https://beast.example.ts.net:8443 (tailnet only)\n|-- / proxy http://127.0.0.1:8080\n'
+S8443G='https://beast.example.ts.net:8443 (tailnet only)\n|-- / proxy http://127.0.0.1:8091\n'
+RUN_ENV=(TS_SERVE="$S8443L" GATE_UP=1)
+doctor EDGE_GATE=true EDGE_PORT=8091
+if has "$_O" ":8443 proxies to http://127.0.0.1:8080, not beast-gate (:8091), while EDGE_GATE=true" \
+   && has "$_O" 'fix: tailscale serve --bg --https=8443 http://127.0.0.1:8091' && has "$_O" 'sudo tailscale set --operator=$USER' \
+   && ! has "$_O" "inference published via beast-gate"; then
+  pass "EDGE_GATE=true with :8443 -> llama-server FAILs, with the exact re-point and the operator hint"
+else
+  fail "gate bypass: $(row '8443|operator')"
+fi
+RUN_ENV=(TS_SERVE="$S8443G" GATE_UP=0)
+doctor EDGE_PORT=8091
+if has "$_O" ":8443 proxies to http://127.0.0.1:8091 (the beast-gate port) but EDGE_GATE is not true"; then
+  pass "…and the reverse: :8443 -> the gate port with EDGE_GATE off FAILs (the gate is not started: 502)"
+else
+  fail "gate port, gate off: $(row '8443')"
+fi
+RUN_ENV=(TS_SERVE="$S8443G" GATE_UP=1)
+doctor EDGE_GATE=true EDGE_PORT=8091
+if has "$_O" "inference published via beast-gate (per-device keys + audit)" && ! has "$_O" ":8443 proxies to"; then
+  pass "…:8443 -> the gate port with EDGE_GATE=true and a live gate passes (control)"
+else
+  fail "gate control: $(row '8443|gate')"
+fi
+S8443P='https://beast.example.ts.net:8443 (tailnet only)\n|-- / proxy http://127.0.0.1:18090\n'
+RUN_ENV=(TS_SERVE="$S8443P" GATE_UP=1)
+doctor EDGE_GATE=true
+if has "$_O" ":8443 proxies to http://127.0.0.1:18090, not beast-gate (:8090)"; then
+  pass "…a target that merely CONTAINS the gate port (:18090) is not taken for the gate"
+else
+  fail "port suffix: $(row '8443')"
+fi
+RUN_ENV=()
 
 # ---------------------------------------------------------------------------
 echo ""
@@ -695,6 +878,7 @@ printf '%s\n' "$@" > "$STUB_DIR/art.argv"
 cp "$2" "$STUB_DIR/art.page" 2>/dev/null
 [[ "${ART_RC:-0}" == 0 ]] && echo "Published: http://localhost:3004/a/$4 (v1)"
 [[ "${ART_RC:-0}" == 4 ]] && echo "ERROR: beast-artifact is not answering" >&2
+[[ "${ART_RC:-0}" == 3 ]] && echo "ERROR: publish failed (HTTP 404): not found" >&2
 exit "${ART_RC:-0}"
 STUB
 printf '#!/bin/bash\necho era-abc123\n' > "$PV/scripts/eval-era.sh"
@@ -704,13 +888,28 @@ printf 'verdict: <b>SHIP</b> & p=0.019\n' > "$T/verdict.txt"
 pv() { env -i HOME="$T" PATH="/usr/bin:/bin" STUB_DIR="$T" ${PV_ENV[@]+"${PV_ENV[@]}"} \
          bash "$PV/scripts/publish-verdict.sh" "$@" 2>&1; }
 PV_ENV=()
-WANT_ID="$(python3 -c 'import uuid; print(uuid.uuid5(uuid.NAMESPACE_URL, "openbeast:verdict:tier3-zig"))')"
-rm -f "$T/art.argv"
+# The verdict id is an HMAC under the rig's .run/verdict-id.key, NOT the
+# public uuid5 of the slug a WebUI user could compute and claim first.
+vid() { # vid <repo-dir> <slug>
+  OB_KEY="$1/.run/verdict-id.key" python3 -c 'import hashlib, hmac, os, sys, uuid
+k = open(os.environ["OB_KEY"]).read().strip().encode()
+m = hmac.new(k, ("openbeast:verdict:" + sys.argv[1]).encode(), hashlib.sha256).digest()
+print(uuid.UUID(bytes=m[:16], version=5))' "$2"; }
+PUBLIC_ID="$(python3 -c 'import uuid; print(uuid.uuid5(uuid.NAMESPACE_URL, "openbeast:verdict:tier3-zig"))')"
+rm -f "$T/art.argv" "$PV/.run/verdict-id.key"
 _O="$(pv tier3-zig "$T/verdict.txt")"; _rc=$?
 _argv="$(tr '\n' '|' < "$T/art.argv" 2>/dev/null)"
+WANT_ID="$(vid "$PV" tier3-zig 2>/dev/null)"
+_kmode="$(stat -c %a "$PV/.run/verdict-id.key" 2>/dev/null || stat -f %Lp "$PV/.run/verdict-id.key" 2>/dev/null)"
+if [[ -n "$WANT_ID" && "$WANT_ID" != "$PUBLIC_ID" && "$_kmode" == 600 ]] \
+   && ! has "$_argv" "$PUBLIC_ID"; then
+  pass "the verdict id is keyed by a 0600 rig-local key, not the public uuid5 of the slug"
+else
+  fail "verdict id: want=$WANT_ID public=$PUBLIC_ID keymode=$_kmode argv=[$_argv]"
+fi
 if [[ $_rc -eq 0 ]] && has "$_argv" "--id|$WANT_ID|" && ! has "$_argv" "--visibility" \
    && has "$_argv" "--label|nogit era=era-abc123|" && has "$_O" "Published:"; then
-  pass "uuid5 id, no visibility asked (a share must survive), label '<sha> era=<era>', URL passed through"
+  pass "keyed id, no visibility asked (a share must survive), label '<sha> era=<era>', URL passed through"
 else
   fail "publish argv: [$_argv] rc=$_rc :: $_O"
 fi
@@ -748,6 +947,17 @@ if [[ $_rc -eq 0 && "$(wc -l <<< "$_O")" == 1 ]] && has "$_O" "not answering"; t
   pass "artifact server down: exit 0 and one line — a campaign under set -e keeps going"
 else
   fail "server down: rc=$_rc :: $_O"
+fi
+# A REFUSAL (the page at this id is someone else's) is loud and names the id;
+# exit 0 by default (set -e callers), exit 3 only under an explicit --strict.
+PV_ENV=(ART_RC=3)
+_O="$(pv tier3-zig "$T/verdict.txt")"; _rc=$?
+_O2="$(pv tier3-zig "$T/verdict.txt" --strict)"; _rc2=$?
+if [[ $_rc -eq 0 && $_rc2 -eq 3 ]] && has "$_O" "WARNING" && has "$_O" "REFUSED" \
+   && has "$_O" "$WANT_ID" && has "$_O" "HTTP 404"; then
+  pass "a refused publish is a WARNING naming the id (exit 0; --strict exits 3)"
+else
+  fail "refusal: rc=$_rc strict=$_rc2 :: $_O"
 fi
 PV_ENV=()
 _O="$(pv 'bad slug!' "$T/verdict.txt")"; _rc=$?
@@ -800,6 +1010,7 @@ if "$PY3" -c 'import fastapi, uvicorn' 2>/dev/null; then
   done
   _O="$(env -i HOME="$T" PATH="/usr/bin:/bin" bash "$RR/scripts/publish-verdict.sh" tier3-zig "$T/verdict.txt" 2>&1)"
   _O="$_O$(env -i HOME="$T" PATH="/usr/bin:/bin" bash "$RR/scripts/publish-verdict.sh" tier3-zig "$T/verdict.txt" --label second 2>&1)"
+  WANT_ID="$(vid "$RR" tier3-zig 2>/dev/null)"   # this tree's own key
   _show="$(env -i HOME="$T" PATH="/usr/bin:/bin" bash "$RR/scripts/artifact.sh" show "$WANT_ID" --json 2>&1)"
   if has "$_show" "$WANT_ID" && has "$_show" "second" && has "$_show" "era=era-real" \
      && has "$_show" '"private"'; then

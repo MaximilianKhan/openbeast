@@ -3,7 +3,7 @@
 # Cells per docs/LANG_AWARENESS_PLAN.md §7: A0/A1 champion off/on, B1 uncensored on;
 # B0 offline from banked A' merged full run. Each live cell = v5-fast suite + the
 # 2 assumed-failed minis (158_karatsuba_bytes_f, 23_sql_injection).
-# Pre-swap A0 cache rows quarantined in scratch/ab-quarantine-preswap/ so A0 runs live.
+# Pre-swap A0 cache rows quarantined so A0 runs live (now sealed under evals/audit/archive-ab-quarantine-preswap/).
 set -uo pipefail
 cd /home/max/Documents/openbeast
 MINIS="158_karatsuba_bytes_f,23_sql_injection"

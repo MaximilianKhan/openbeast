@@ -28,7 +28,7 @@ A full 5-model sweep takes ~3-4 hours; plan to run it overnight.
 Usage:
   python evals/benchmark_all.py                        # all configured models
   python evals/benchmark_all.py --models qwen-27b-q5,gemma-4-31b-q5
-  python evals/benchmark_all.py --tasks 21,22,23       # subset (task numbers, ids or base ids)
+  python evals/benchmark_all.py --tasks 21,22,23       # subset of tasks
   python evals/benchmark_all.py --max-iter 30          # cap iterations per task
 """
 
@@ -146,7 +146,44 @@ MODELS = [
     {"slug": "qwen38-27b-uncensored-mtp-q5",
      "name": "Qwen3.8 27B Uncensored MTP Q5_K_M",
      "serve": "scripts/serve-qwen38-27b-uncensored-mtp-q5.sh"},
+    # REMOTE entries (v5): a server this harness neither starts nor stops.
+    # GLM-5.3-Flash is the spark-hydra pair (docs/SPARK_HYDRA.md: TensorFold,
+    # 4 parallel streams, thinking off by default), reached over the tailnet
+    # through beast-gate with a device key (scripts/clients.sh). The key is
+    # read from `api_key_env`, never written here. `slots` clamps --jobs
+    # because /props is llama.cpp-only; `reasoning_budget` is DECLARED ("0":
+    # thinking off), since no pgrep on this host can see that server.
+    # Validators and diagnostics still run HERE: the harness host needs the
+    # toolchains (evals/profile.py preflight checks them).
+    {"slug": "glm-5.3-flash",
+     "name": "GLM-5.3-Flash",
+     "base_url": "https://spark-1.tail4109f9.ts.net:8443/v1",
+     "api_key_env": "OPENBEAST_SPARK_API_KEY",
+     "slots": 4,
+     "engine": "tensorfold",
+     "reasoning_budget": "0"},
 ]
+
+
+def is_remote(model: dict) -> bool:
+    """A MODELS entry served elsewhere (no serve script to start or stop)."""
+    return bool(model.get("base_url")) and not model.get("serve")
+
+
+def remote_env(model: dict, env=None) -> dict:
+    """The env a remote entry's agents need: its bearer key as
+    OPENBEAST_API_KEY, and its URL marked as this install's inference
+    endpoint so agents/runner.py sends the key there (it withholds an
+    ambient key from any endpoint it was not configured for)."""
+    env = os.environ if env is None else env
+    key_env = model.get("api_key_env")
+    key = env.get(key_env, "") if key_env else ""
+    if key_env and not key:
+        raise KeyError(f"{model['slug']}: ${key_env} is empty (the endpoint's bearer key)")
+    out = {"OPENBEAST_AGENT_INFERENCE_URL": model["base_url"]}
+    if key:
+        out["OPENBEAST_API_KEY"] = key
+    return out
 
 # Serve scripts deliberately NOT benchmarked, with the reason. This exists so
 # that "missing from MODELS" is always a decision someone made rather than an
@@ -160,6 +197,19 @@ BENCH_EXCLUDED = {
         "single slot, ~35 tok/s): a v5-fast row is a ~1-day GPU+CPU job that "
         "starves every other queue item. Baselined by hand 2026-09-11 (see "
         "docs/MODELS.md); register it when Max schedules the run.",
+    "scripts/serve-glm53-flash-abl-q2kxl-big.sh":
+        "BIG MODE: GLM-5.3-Flash abliterated UD-Q2_K_XL streamed from host "
+        "RAM (target 20-30 tok/s), written 2026-11-15 with the rig offline "
+        "and the weights not yet fetched. A full v5 cell at ~25 tok/s is 2-3 "
+        "days of the GPU, and the 27B tops v4, so the first run is a held-out "
+        "slice of tasks the 27B fails (docs/WEIGHT_STREAMING.md); register it "
+        "when Max schedules it.",
+    "scripts/serve-qwen38-flash-next-unc-iq4xs-moecache.sh":
+        "the same Flash-Next weights with llama.cpp v1.0.0's MoE expert cache "
+        "(target 55-70 tok/s), written 2026-11-15 while the rig was offline. "
+        "Its tok/s acceptance check comes first (docs/WEIGHT_STREAMING.md); "
+        "the v4/v5 SCORE row is a docs/TODO.md PERFORMANCE MATRIX item, "
+        "registered here once Max schedules the GPU time.",
     "scripts/serve-qwen38-27b-vision-q5.sh":
         "same weights as qwen38-27b-q5, differing only by --mmproj; our eval "
         "suite is text-only, so this would burn ~45 min to reproduce its "
@@ -306,6 +356,10 @@ def stop_llama_server():
         if not _port_in_use(LLAMA_PORT):
             return
         time.sleep(0.5)
+
+
+class SweepStopping(RuntimeError):
+    """A signal handler is tearing the sweep down: start nothing new."""
 
 
 class PortBusy(RuntimeError):
@@ -480,6 +534,8 @@ def start_model(serve_script: str, slug: str = "model") -> tuple[subprocess.Pope
     # Asked on every (re)start, not just at launch: a mid-sweep recovery
     # after someone took the card with `acquire --force` must not load a
     # second model into their window.
+    if run_eval.stopping():
+        raise SweepStopping("sweep is stopping: not starting a server")
     require_gpu_lease()
     # Our own previous server is stopped by now, so a bound port belongs to
     # someone else (the stack, another worktree's campaign). Refuse rather
@@ -507,6 +563,11 @@ def start_model(serve_script: str, slug: str = "model") -> tuple[subprocess.Pope
         # one fd per (re)start — including when Popen itself raises.
         log_fp.close()
     _own_server["proc"] = proc
+    # The handler may have begun between the check above and the Popen,
+    # and already run its stop_llama_server: this one is ours to stop.
+    if run_eval.stopping():
+        stop_llama_server()
+        raise SweepStopping("sweep is stopping: stopped the server just started")
     return proc, log_path
 
 
@@ -558,7 +619,7 @@ def restart_server(serve_script: str, slug: str,
     stop_llama_server()
     try:
         proc, _ = start_model(serve_script, slug)
-    except (FileNotFoundError, PortBusy, GpuLeaseHeld) as e:
+    except (FileNotFoundError, PortBusy, GpuLeaseHeld, SweepStopping) as e:
         print(f"  Restart failed: {e}")
         return False
     print(f"  Waiting for /health (up to {health_timeout}s)...")
@@ -584,8 +645,12 @@ def benchmark_model(model: dict, task_filter: list[str] | None,
     'results' (success) or 'error' (skipped)."""
     print(f"\n{'#' * 60}")
     print(f"# Benchmarking: {model['name']} ({model['slug']})")
-    print(f"# Serve: {model['serve']}")
+    print(f"# Serve: {model.get('serve') or model.get('base_url') + ' (remote)'}")
     print(f"{'#' * 60}\n")
+
+    if is_remote(model) and not cache_only:
+        return benchmark_remote(model, task_filter, max_iter_override, use_cache=use_cache,
+                                jobs=jobs, suite=suite)
 
     if cache_only:
         # Cache-only mode never talks to the server. Skip start/health/stop.
@@ -614,7 +679,7 @@ def benchmark_model(model: dict, task_filter: list[str] | None,
     print(f"Starting {model['serve']}...")
     try:
         proc, _ = start_model(model["serve"], model["slug"])
-    except (FileNotFoundError, PortBusy, GpuLeaseHeld) as e:
+    except (FileNotFoundError, PortBusy, GpuLeaseHeld, SweepStopping) as e:
         return {"slug": model["slug"], "name": model["name"], "error": str(e),
                 "gpu_work": False}
 
@@ -655,6 +720,74 @@ def benchmark_model(model: dict, task_filter: list[str] | None,
         return {"slug": model["slug"], "name": model["name"],
                 "error": "eval produced no results"}
 
+    return {"slug": model["slug"], "name": model["name"], "results": results}
+
+
+def remote_alive(base_url: str, attempts: int = 3, gap: float = 2.0,
+                 timeout: float = 5.0, sleep=time.sleep) -> bool:
+    """Is the remote endpoint up? GET /v1/models, with retries.
+
+    The health check used to be ONE detect_model() call: any exception,
+    a 429 included, read as "down", and run_eval then aborted every
+    remaining unit of the sweep (review 1116). beast-gate charges
+    /v1/models a token from the same per-device bucket the agents'
+    completions draw on, so four fast agents can drain it, and one tailnet
+    or TLS blip is enough on its own. Now: 2xx or 429 (the gate answered)
+    is alive; a 5xx, timeout or connection error is retried `attempts`
+    times `gap` s apart; any other 4xx (a bad key) is down at once."""
+    import urllib.error
+    url = base_url.rstrip("/") + "/models"
+    for i in range(attempts):
+        try:
+            req = urllib.request.Request(url, headers=run_eval._auth_headers(base_url))
+            with urllib.request.urlopen(req, timeout=timeout):
+                return True
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                return True
+            if e.code < 500:
+                return False
+        except Exception:  # noqa: BLE001 — URLError, timeout, TLS: retry
+            pass
+        if i < attempts - 1:
+            sleep(gap)
+    return False
+
+
+def benchmark_remote(model: dict, task_filter, max_iter_override, use_cache: bool = True,
+                     jobs: int = 1, suite: str | None = None) -> dict:
+    """A remote entry: nothing to start, stop, lease or recover. Health is
+    the endpoint answering /v1/models (remote_alive, with retries); --jobs
+    is clamped to its slots, and by run_eval to beast-gate's per-device
+    in-flight cap when the endpoint is a gate."""
+    try:
+        env = remote_env(model)
+    except KeyError as e:
+        return {"slug": model["slug"], "name": model["name"], "error": str(e),
+                "gpu_work": False}
+    os.environ.update(env)
+    base_url = model["base_url"]
+
+    def _alive() -> bool:
+        return remote_alive(base_url)
+
+    if not _alive():
+        return {"slug": model["slug"], "name": model["name"],
+                "error": f"remote endpoint {base_url} did not answer /v1/models",
+                "gpu_work": False}
+    try:
+        results = run_eval.run_eval(
+            task_filter=task_filter, base_url=base_url,
+            max_iter_override=max_iter_override, model_name=model["name"],
+            use_cache=use_cache, health_check=_alive, recover_cb=None,
+            jobs=jobs, suite=suite, slots=model.get("slots"),
+            reasoning_budget=model.get("reasoning_budget"))
+    except Exception as e:
+        return {"slug": model["slug"], "name": model["name"],
+                "error": f"eval crashed: {e}"}
+    if not results:
+        return {"slug": model["slug"], "name": model["name"],
+                "error": "eval produced no results"}
     return {"slug": model["slug"], "name": model["name"], "results": results}
 
 
@@ -790,42 +923,71 @@ def experiment_arms(env=None) -> list[str]:
         arms.append("beast-assist diagnostics")
     if "1" in (env.get("BEAST_ESCALATE", "").strip(), env.get("OPENBEAST_ESCALATE", "").strip()):
         arms.append("--escalate")
-    if env.get("OPENBEAST_BASH_WRAPPER", "").strip():
-        # Sandlock (conf BASH_WRAPPER): run_eval keys these rows into their
-        # own sbx-<sha8> era; they are not the validated unconfined regime.
-        arms.append("OPENBEAST_BASH_WRAPPER sandbox")
     return arms
 
 
-def _on_signal(signum, frame):
-    """SIGINT/SIGTERM: reap the live agents, stop OUR server, exit 130.
+def _leaderboard_policy(args, arms: list[str], is_pin: bool = True) -> bool:
+    """Whether this sweep may record into leaderboard.json, printing why not.
 
-    run_eval's own reaper is installed only when run_eval.py is the entry
-    point; under this harness the agents (start_new_session=True) used to
-    survive a Ctrl-C or `kill`: still writing the unit's shared /tmp/eval_*
-    fixtures and reconnecting to whatever server came up next on :8080 —
-    llama-server ignores the model id, so a quick relaunch could have model
-    A's orphan write into the unit being measured for model B. Agents
-    first, so none reconnects to a server mid-shutdown. os._exit, not
-    sys.exit: with --jobs N, ThreadPoolExecutor's exit would otherwise join
-    N workers that are still waiting on (or spawning) agents."""
-    print(f"\n\nReceived signal {signum} — reaping eval agents, stopping llama-server "
-          f"and exiting...")
-    try:
-        run_eval._reap_live_agents()
-    finally:
+    --tasks IMPLIES --no-leaderboard, like --suite. The old NOTE said partial
+    scores "will be recorded" — but scoring's 291-unit guard refuses every
+    partial v4 entry, so it described something that could not happen
+    (review finding campaign-evals); and that guard is v4-only, so the next
+    suite would have let them in. One rule here, whatever the suite."""
+    if args.no_leaderboard:
+        return False
+    if args.suite and is_pin:
+        # A pinned subset (v4-fast) is an imputed readout. A suite MANIFEST
+        # (--suite v5) is the full suite and may record.
+        print(f"NOTE: --suite {args.suite} implies --no-leaderboard (fast-suite "
+              f"scores are imputed readouts, never leaderboard rows).")
+        return False
+    if args.tasks:
+        print("NOTE: --tasks implies --no-leaderboard (a partial-suite score is "
+              "not comparable with full-suite rows).")
+        return False
+    if arms:
+        print(f"NOTE: {', '.join(arms)} implies --no-leaderboard (experiment "
+              f"arms are leaderboard-ineligible; the board holds serving reality).")
+        return False
+    return True
+
+
+def _on_signal(signum, _frame):
+    """SIGTERM/SIGINT: reap the in-flight eval agents, stop our server, die.
+
+    run_eval.run_agent spawns every agent with start_new_session=True, so a
+    signal to this sweep's group never reaches them, and run_eval's own
+    reaper (_install_signal_reaper) is installed only by run_eval.main() —
+    never on this in-process path. Without the reap a stopped sweep left
+    the runner and its bash-tool children running against the shared
+    /tmp/eval_* fixtures (review finding campaign-evals: signal orphans).
+    Agents first: they are what writes fixtures and holds a slot."""
+    print(f"\n\nReceived signal {signum} — reaping eval agents, stopping "
+          f"llama-server and exiting...")
+    # begin_stop forbids new agents BEFORE the slow server stop: under
+    # --jobs N the worker threads keep running through it, and one whose
+    # agent was just reaped would otherwise Popen the next agent (or
+    # restart the server) for os._exit to orphan.
+    if not run_eval.begin_stop(signum):
+        return      # mid-spawn on this thread: re-raised once registered
+    stop_llama_server()
+    # Again, for a spawn that raced the first pass: an agent registered
+    # after begin_stop's snapshot kills itself, but a server a recovery
+    # started mid-stop is ours to stop here.
+    run_eval._reap_live_agents()
+    stop_llama_server()
+    for stream in (sys.stdout, sys.stderr):
         try:
-            stop_llama_server()
-        finally:
-            for stream in (sys.stdout, sys.stderr):
-                try:
-                    stream.flush()
-                except Exception:
-                    pass
-            os._exit(130)
+            stream.flush()
+        except Exception:
+            pass
+    # os._exit, as run_eval's handler: sys.exit would block joining --jobs
+    # ThreadPoolExecutor workers, any of which may spawn a fresh agent.
+    os._exit(128 + signum)
 
 
-def _install_signal_handlers() -> None:
+def _install_signal_handler() -> None:
     signal.signal(signal.SIGINT, _on_signal)
     signal.signal(signal.SIGTERM, _on_signal)
 
@@ -839,12 +1001,12 @@ def main():
     parser.add_argument("--list", action="store_true", help="List configured models and exit")
     parser.add_argument("--no-cache", action="store_true", help="Disable result cache (force live runs)")
     parser.add_argument("--no-leaderboard", action="store_true",
-                        help="Do not record scores in leaderboard.json. REQUIRED for "
-                             "smoke tests / partial-suite runs: the leaderboard must only "
-                             "ever contain full-suite sweeps, or its accuracy numbers "
-                             "become incomparable (a 13-task 100%% is not a 323-task 97%%).")
-    parser.add_argument("--suite", help="Run a pinned suite subset from evals/suites/ "
-                        "(e.g. v5-fast) instead of the full task set. Implies "
+                        help="Do not record scores in leaderboard.json. Implied by "
+                             "--tasks, --suite and experiment arms: the leaderboard must "
+                             "only ever contain full-suite sweeps, or its accuracy numbers "
+                             "become incomparable (a 13-task 100%% is not a full-suite 97%%).")
+    parser.add_argument("--suite", help="Suite from evals/suites/ (default: the current "
+                        "suite's manifest, v5). A pinned v4 subset (v4-fast) implies "
                         "--no-leaderboard: fast-suite scores are imputed readouts, "
                         "never leaderboard rows.")
     parser.add_argument("--jobs", type=int, default=1,
@@ -859,6 +1021,10 @@ def main():
                              "into the agent system prompt for tasks whose language has a pack "
                              "(zig only today; own pack1-<sha8> cache era on those units; "
                              "leaderboard-ineligible experiment rows). Same as BEAST_PACKS=1.")
+    parser.add_argument("--diag", action="store_true",
+                        help="beast-assist push diagnostics for units in assist scope (compiled "
+                             "languages + shell; own diag2 cache era on those units; "
+                             "leaderboard-ineligible). Same as BEAST_ASSIST=1.")
     parser.add_argument("--escalate", action="store_true",
                         help="beast-lang escalation: attach the toolchain-confirmed fix when the "
                              "diagnostics checker reports a known-cause error (needs BEAST_ASSIST=1; "
@@ -868,13 +1034,21 @@ def main():
     parser.add_argument("--reasoning-budget",
                         help="--cache-only: the reasoning-budget era to replay (e.g. 20480; "
                              "-1 = uncapped). Default: each model's last live run.")
+    parser.add_argument("--no-provision", action="store_true",
+                        help="Do not install missing eval toolchains (scripts/eval-host.sh "
+                             "setup) or re-exec under the eval venv; only report. Same as "
+                             "OPENBEAST_EVAL_NO_PROVISION=1.")
     args = parser.parse_args()
 
     if args.list:
         print(f"Configured models ({len(MODELS)}):\n")
         for m in MODELS:
             print(f"  {m['slug']:<32}  {m['name']}")
-            print(f"  {'':<32}  serve: {m['serve']}")
+            if is_remote(m):
+                print(f"  {'':<32}  remote: {m['base_url']} (slots {m.get('slots', '?')}, "
+                      f"key ${m.get('api_key_env')})")
+            else:
+                print(f"  {'':<32}  serve: {m['serve']}")
         return
 
     if args.models:
@@ -890,44 +1064,51 @@ def main():
         os.environ["OPENBEAST_EVAL_GREEDY"] = "1"
     if args.packs:
         os.environ["BEAST_PACKS"] = "1"
+    if args.diag:
+        os.environ["BEAST_ASSIST"] = "1"
     if args.escalate:
         os.environ["BEAST_ESCALATE"] = "1"
-    try:
-        # Before the lease and any server: a filter that selects nothing
-        # used to load and health-wait every model for nothing.
-        task_filter = run_eval.resolve_task_filter(
-            args.tasks.split(",") if args.tasks else None)
-    except run_eval.TaskFilterError as e:
-        print(e, file=sys.stderr)
-        sys.exit(2)
+    task_filter = args.tasks.split(",") if args.tasks else None
 
-    _install_signal_handlers()
+    # Cleanup handler — no agent, no llama-server left running.
+    _install_signal_handler()
 
     if args.cache_only and args.no_cache:
         print("--cache-only and --no-cache are mutually exclusive.", file=sys.stderr)
         sys.exit(2)
+    if not args.cache_only:
+        # The eval host's toolchains (evals/toolchains.lock), before the
+        # first run_eval pins them: setup when missing, then a re-exec under
+        # the eval venv (docs/SPARK_HYDRA.md F6).
+        import eval_host  # noqa: PLC0415
+        host_problems = eval_host.ensure_host(
+            argv=[os.path.abspath(__file__)] + sys.argv[1:], no_provision=args.no_provision)
+        if host_problems and not eval_host.no_provision_requested(args.no_provision):
+            print("Refusing to start: the eval host is not ready (scripts/eval-host.sh check):",
+                  file=sys.stderr)
+            for p in host_problems:
+                print(f"  - {p}", file=sys.stderr)
+            sys.exit(2)
     if args.suite and args.tasks:
         print("--suite and --tasks are mutually exclusive.", file=sys.stderr)
         sys.exit(2)
-    update_lb = not args.no_leaderboard
-    if args.suite and update_lb:
-        print(f"NOTE: --suite {args.suite} implies --no-leaderboard (fast-suite "
-              f"scores are imputed readouts, never leaderboard rows).")
-        update_lb = False
-    arms = experiment_arms()
-    if arms and update_lb:
-        print(f"NOTE: {', '.join(arms)} implies --no-leaderboard (experiment "
-              f"arms are leaderboard-ineligible; the board holds serving reality).")
-        update_lb = False
-    if args.tasks and not args.no_leaderboard:
-        print("NOTE: --tasks given without --no-leaderboard. A partial-suite run "
-              "is not seated (scoring refuses a v4 row without all 291 units), "
-              "so the leaderboard update will be skipped. Pass --no-leaderboard "
-              "for smoke/partial runs to say so up front.",
-              file=sys.stderr)
+    suite = args.suite
+    is_pin = False
+    if suite:
+        try:
+            with open(os.path.join(run_eval.SUITES_DIR,
+                                   f"{run_eval.SUITE_ALIASES.get(suite, suite)}.json")) as f:
+                is_pin = not run_eval.suite_manifest.is_manifest(json.load(f))
+        except (OSError, ValueError):
+            is_pin = True
+    elif not task_filter:
+        # A bare sweep runs the current suite's manifest (v5), not every
+        # task file in evals/tasks/ (which still holds the dropped v4 units).
+        suite = run_eval.default_suite()
+    update_lb = _leaderboard_policy(args, experiment_arms(), is_pin)
     # The GPU lease, before anything touches the card. cache-only never
     # starts a server, so it neither needs nor takes the lease.
-    if not args.cache_only:
+    if not args.cache_only and any(not is_remote(m) for m in models):
         try:
             ensure_gpu_lease(sys.argv[1:])
         except GpuLeaseHeld as e:
@@ -939,7 +1120,7 @@ def main():
                          cache_only=args.cache_only,
                          update_leaderboard=update_lb,
                          jobs=args.jobs,
-                         suite=args.suite,
+                         suite=suite,
                          reasoning_budget=args.reasoning_budget)
     summary_path = save_sweep_summary(summary)
 

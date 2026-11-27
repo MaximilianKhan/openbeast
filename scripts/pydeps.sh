@@ -4,7 +4,7 @@
 #
 #   ./scripts/pydeps.sh lock                    regenerate agents/requirements.lock
 #   ./scripts/pydeps.sh verify                  offline: is the lock sane and current
-#   ./scripts/pydeps.sh check                   online: re-resolve, is the lock STALE
+#   ./scripts/pydeps.sh check                   online: is the lock EXACTLY the closure (1), newest (4)
 #   ./scripts/pydeps.sh wheelhouse <dir>        fill a dir with the exact artifacts
 #   ./scripts/pydeps.sh audit <dir>             every file in <dir> must be in the lock
 #   ./scripts/pydeps.sh install [--from <dir> [--lock-sha256 <hex>]]
@@ -29,6 +29,9 @@
 #
 # PLATFORM COVERAGE, measured not assumed:
 #   linux x86_64, python 3.12 and 3.14   all 43 packages  ✓
+#   linux aarch64 (DGX Spark), py 3.12   all 43 packages  ✓  (spark-1, 2026-11-13:
+#                                        a --require-hashes download, and a fresh
+#                                        resolve there names the same 43)
 #   macOS arm64 (Apple Silicon)          all 43 packages  ✓
 #   macOS x86_64 (Intel)                 cffi 2.1.1 ships no wheel for it, so
 #                                        pip must build it from the sdist
@@ -102,29 +105,17 @@ case "$CMD" in
 
   check)
     # ONLINE. `verify` proves the lock is self-consistent and covers every
-    # direct pin; only a resolver can prove it is not missing a package that
-    # a bumped dependency now needs. Re-resolve into a temp file and diff the
-    # pins — the hashes are expected to be identical, so any difference is a
-    # stale lock, not noise.
+    # direct pin; only a resolver can prove it is EXACTLY the closure. It used
+    # to diff the lock against one unconstrained resolve and call any
+    # difference "a stale lock, not noise" — but an unconstrained resolve
+    # moves every time any unpinned transitive dependency ships a release, so
+    # "extra package" and "certifi moved" looked identical. pydeps_lock.py
+    # check asks the two questions apart (see its docstring):
+    #   exit 0 CURRENT, 1 WRONG/STALE (extra, missing or re-hashed package —
+    #   held to the lock's own versions, so not index movement), 4 OUTDATED
+    #   (a correct closure, but a fresh resolve picks other releases).
     [[ -f "$LOCK" ]] || die "$LOCK does not exist"
-    _tmp="$(mktemp -d)"
-    trap 'rm -rf "$_tmp"' EXIT
-    if ! "$PY" "$HELPER" build --lock "$_tmp/fresh.lock" --req "$REQ" "${EXTRA[@]}" >/dev/null; then
-      die "could not re-resolve (network? index?) — the committed lock is unchanged"
-    fi
-    # Compare the PINS, not the comment header: the header records the
-    # resolver's own version, which moves for reasons that are not a stale
-    # lock and would make this check cry wolf on every pip upgrade.
-    _strip() { grep -vE '^\s*#' "$1" | grep -vE '^\s*$'; }
-    if diff -u <(_strip "$LOCK") <(_strip "$_tmp/fresh.lock") > "$_tmp/diff"; then
-      echo "$LOCK: CURRENT — a fresh resolve produces the same pins and hashes"
-    else
-      echo "$LOCK: STALE — a fresh resolve differs:"
-      sed -n '1,60p' "$_tmp/diff"
-      echo
-      echo "regenerate with: ./scripts/pydeps.sh lock"
-      exit 1
-    fi
+    "$PY" "$HELPER" check --lock "$LOCK" --req "$REQ" "${EXTRA[@]}"
     ;;
 
   wheelhouse)
@@ -138,7 +129,12 @@ case "$CMD" in
     echo "filling $DIR from $LOCK (hash-checked on arrival)..."
     "$PY" -m pip download --require-hashes -r "$LOCK" -d "$DIR" "$@" \
       || die "download failed — nothing in $DIR should be trusted; see the error above"
-    "$PY" "$HELPER" audit --lock "$LOCK" --dir "$DIR"
+    # The audit judges coverage for THIS interpreter's wheel tags — unless
+    # pip was given flags (--platform/--python-version: a different target),
+    # where this box's tags are the wrong question; the closed box's own
+    # `install --from` audits for its tags.
+    _aud=(); [[ $# -eq 0 ]] || _aud=(--any-platform)
+    "$PY" "$HELPER" audit --lock "$LOCK" --dir "$DIR" ${_aud[@]+"${_aud[@]}"}
     _n=$(find "$DIR" -maxdepth 1 -type f | wc -l)
     _lock_sha="$("$PY" -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$LOCK")"
     _commit="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || echo "not a git checkout")"
@@ -160,6 +156,12 @@ any other checkout passes the hash above, read off THIS screen):
 For a DIFFERENT target than this box, add pip's platform flags, e.g.
   ./scripts/pydeps.sh wheelhouse wheels-mac \\
       --only-binary :all: --platform macosx_11_0_arm64 --python-version 3.12
+A DGX Spark (linux aarch64) needs EVERY manylinux tag spelled out — pip does
+not widen one --platform to older glibc tags, and cffi ships only 2_17:
+  ./scripts/pydeps.sh wheelhouse wheels-spark --only-binary :all: \\
+      --python-version 3.12 --platform manylinux_2_39_aarch64 \\
+      --platform manylinux_2_34_aarch64 --platform manylinux_2_28_aarch64 \\
+      --platform manylinux_2_17_aarch64 --platform manylinux2014_aarch64
 (macOS x86_64 cannot be covered by wheels alone — see the header.)
 EOF
     ;;

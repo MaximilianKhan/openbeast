@@ -58,7 +58,22 @@ fi
 PORT="${OPENBEAST_MEASURE_PORT:-8080}"
 PORT_ARGS=()
 [[ -n "${OPENBEAST_MEASURE_PORT:-}" ]] && PORT_ARGS=(--port "$PORT")
-HEALTH="http://localhost:${PORT}/health"
+# The measured server goes on loopback, whatever BIND_HOST says: serve.sh
+# binds BIND_HOST by default, and with a LAN/tailnet BIND_HOST the
+# localhost health probe never reached it — a clean load waited 240 s and
+# was reported "never became healthy". A --host among the extra args wins
+# (serve.sh takes the last one), so the probe follows it.
+SERVE_HOST=127.0.0.1
+_prev=""
+for _a in "$@"; do
+  [[ "$_prev" == "--host" ]] && SERVE_HOST="$_a"
+  _prev="$_a"
+done
+# BIND_HOST (openbeast.conf, read-only) is where the STACK's server listens.
+OB_CONF_READONLY=1 source "$SCRIPT_DIR/lib/conf.sh" 2>/dev/null || true
+command -v ob_probe_host >/dev/null 2>&1 || source "$SCRIPT_DIR/lib/net.sh"
+HEALTH="http://$(ob_probe_host "$SERVE_HOST"):${PORT}/health"
+STACK_HEALTH="http://$(ob_probe_host "${BIND_HOST:-127.0.0.1}"):${PORT}/health"
 LEASE_SH="$SCRIPT_DIR/gpu-lease.sh"
 
 # 1. The lease. Somebody else's is a hard stop: loading a second model onto a
@@ -78,8 +93,18 @@ esac
 # 2. The port. Anything that answers is somebody's server; its /health would
 #    satisfy ours and its VRAM would be reported as this model's. curl rc 7
 #    is "connection refused" — the only answer that means nobody is there.
+#    Both addresses: where ours will listen, and where the stack's does (a
+#    server on a LAN BIND_HOST does not answer loopback, yet it is on the
+#    same card).
+#    On the stack's address only an answer counts (rc 0, or 52/56: connected,
+#    then cut off): an address this box does not hold times out, and nothing
+#    of ours can be listening there.
 PROBE_RC=0
 curl -s -o /dev/null --max-time 2 "$HEALTH" 2>/dev/null || PROBE_RC=$?
+if [[ "$PROBE_RC" -eq 7 && "$STACK_HEALTH" != "$HEALTH" ]]; then
+  _rc=0; curl -s -o /dev/null --max-time 2 "$STACK_HEALTH" 2>/dev/null || _rc=$?
+  case "$_rc" in 0|52|56) PROBE_RC="$_rc" ;; esac
+fi
 if [[ "$PROBE_RC" -ne 7 ]]; then
   echo "Error: something is already listening on :$PORT (the stack's llama-server?)." >&2
   echo "  Its VRAM would be measured instead of this model's. Stop it first:" >&2
@@ -105,7 +130,7 @@ echo "Card total: ${TOTAL_MIB} MiB"
 # campaign's, and the shell that invoked us.
 LOG="$(mktemp)"
 set -m
-"$SCRIPT_DIR/$SERVE" "${PORT_ARGS[@]}" "$@" >"$LOG" 2>&1 &
+"$SCRIPT_DIR/$SERVE" --host 127.0.0.1 ${PORT_ARGS[@]+"${PORT_ARGS[@]}"} "$@" >"$LOG" 2>&1 &
 SERVER_PID=$!
 set +m
 
@@ -167,9 +192,14 @@ done
 HEADROOM=$(( TOTAL_MIB - MAX_USED ))
 VERDICT="OK"
 [[ "$HEADROOM" -lt 2048 ]] && VERDICT="TIGHT (<2 GB headroom — back off context)"
+# The context the server actually allocated: serve.sh auto-scales -c on a
+# card smaller than the reference, so the script's -c is not what was
+# measured, and a per-card profile (docs/HARDWARE_PROFILES.md) needs the real
+# one. llama.cpp logs it at load ("llama_context: n_ctx = N").
+CTX="$(grep -m1 -oE 'llama_context: n_ctx +=  *[0-9]+' "$LOG" 2>/dev/null | grep -oE '[0-9]+$' || true)"
 
 echo ""
 echo "-------------------------------------------------------------"
-printf "RESULT  %-34s used=%6s MiB  headroom=%6s MiB  [%s]\n" \
-       "$SERVE" "$MAX_USED" "$HEADROOM" "$VERDICT"
+printf "RESULT  %-34s ctx=%-7s used=%6s MiB  headroom=%6s MiB  [%s]\n" \
+       "$SERVE" "${CTX:-?}" "$MAX_USED" "$HEADROOM" "$VERDICT"
 echo "-------------------------------------------------------------"

@@ -162,7 +162,6 @@ class Chrome:
                     pass
             shutil.rmtree(self.udd, ignore_errors=True)
             shutil.rmtree(self.child_tmp, ignore_errors=True)
-            shutil.rmtree(self.child_tmp, ignore_errors=True)
             raise
         os.close(cmd_r)
         os.close(out_w)

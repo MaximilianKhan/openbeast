@@ -10,8 +10,8 @@
    line; mode preserved, 0600 when created). conf.sh exports it as
    OPENBEAST_INFERENCE_MODEL for vllm/tensorfold, which agents/runner.py sends.
 4. Prints the opencode provider entry (or writes it to --opencode-out). The
-   repo's opencode.json is NOT edited: it is tracked and part of the eval era
-   hash; opencode merges ~/.config/opencode/opencode.json with it.
+   repo's opencode.json is NOT edited: it is tracked (frontend catalog) and
+   shared by every rig; opencode merges ~/.config/opencode/opencode.json with it.
 Open WebUI needs nothing: it lists whatever /v1/models lists, which the
 conformance report proves.
 """
@@ -130,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
         print("Note: INFERENCE_BACKEND=llama — llama-server ignores model ids, so INFERENCE_MODEL takes effect "
               "only once INFERENCE_BACKEND is vllm or tensorfold.")
     ctx = (doc.get("facts") or {}).get("max_model_len") if doc else None
-    keyed = backend != "tensorfold" and bool(os.environ.get("LLAMA_API_KEY") or os.environ.get("OPENBEAST_API_KEY"))
+    keyed = bool(os.environ.get("LLAMA_API_KEY") or os.environ.get("OPENBEAST_API_KEY"))
     snip = json.dumps(opencode_snippet(model, url or "http://SPARK:8000", ctx, keyed), indent=2)
     if a.opencode_out:
         if a.opencode_out.exists() and not a.force:

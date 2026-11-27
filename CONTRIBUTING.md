@@ -1,9 +1,10 @@
 # Contributing to OpenBeast
 
-OpenBeast is a self-hosted AI workstation: llama.cpp serving, an 18-tool
+OpenBeast is a self-hosted AI workstation: llama.cpp serving, a 19-tool
 agent arsenal (two surfaces — the identity tool server for the browser, the
-MCP server for the terminal), browser + terminal frontends, RBAC, and a
-137-task / 291-unit (v4) eval suite. Contributions welcome — here's how to
+MCP server for the terminal), browser + terminal frontends, RBAC, and an eval suite (the current one
+is v5.0: 71 scored units over 34 base tasks; `python3 evals/suite_stats.py`
+prints the counts). Contributions welcome — here's how to
 land one cleanly.
 
 **It also splits across machines.** The **rig** runs the full stack; any
@@ -41,7 +42,7 @@ Run what CI runs, so nothing surprises you in review:
 # Tests (the CI 'test' job)
 ./tests/run_tests.sh                 # the shell suites (scripts, clients, job.sh, artifact CLI,
                                      #   offline fixes, ssd-wear) + tool unit tests + full pytest
-python3 -m pytest tests/ -q          # full suite (~3,500 tests, CPU-only)
+python3 -m pytest tests/ -q          # full suite (~5,100 tests, CPU-only)
 
 # Quality gates (the CI 'PR quality' jobs) — install once:
 #   pip install --user ruff pip-audit shellcheck-py
@@ -53,15 +54,8 @@ pip-audit -r agents/requirements.lock --disable-pip --no-deps  # …and the whol
 python3 evals/suite_stats.py --check  # docs cite the generated eval counts
 ```
 
-Under `CI=true`, `tests/conftest.py` fails the pytest session when a test is
-skipped for a reason not on its `SKIP_ALLOWLIST`, so a test that silently
-stops running is a red check, not a quiet `s`. `OPENBEAST_SKIP_GATE=off|warn|strict`
-overrides that (default: `strict` under CI, `off` locally). CI's own tool
-pins (`.github/ci-requirements/{test,lint,audit,variants}.txt`) are
-regenerated from the matching `*.in` by `.github/ci-requirements/relock.sh`
-(all four by default, or name one).
-
-Two workflows gate every PR (green is required):
+Two workflows gate every PR when GitHub Actions is on (it is off for now;
+see [CI is off](#ci-is-off-check-locally-before-merging) below):
 
 - **`ci.yml`** — installs the hash-pinned closure (`pip --require-hashes -r
   agents/requirements.lock`) and checks the lock is current
@@ -77,8 +71,6 @@ Two workflows gate every PR (green is required):
 A weekly `dependency-audit.yml` (Mondays, and on manual dispatch) audits
 every pinned file (the agents lock, `.github/ci-requirements/*.txt`, the
 Open-Jev requirements) and fails only on a finding that has a fix.
-Dependabot also opens grouped, weekly docker-compose image PRs (7-day
-cooldown).
 
 A third, `dependabot-relock.yml`, runs only on Dependabot's PRs: it
 regenerates `agents/requirements.lock` for the bumped `requirements.txt`
@@ -92,6 +84,67 @@ it waits for the rebase only, then the same checks and merge) — see
 without the lock**: `update.sh --python` regenerates it, and CI goes red on a
 commit that moves one without the other.
 
+### CI is off: check locally before merging
+
+**Since 2026-11-17, GitHub Actions is turned off for this repo (cost).** The
+workflows above are still the definition of "green", but nothing runs them,
+so the author runs them before merging. Until a free local runner replaces
+this (`docs/TODO.md`, "A free local CI runner"):
+
+1. **On the Mac (or any dev box), the PR's head commit, in a clean tree:**
+   `scripts/gate.sh`, with a Python ≥ 3.10 that has the locked deps (the
+   eval venv works: `~/.local/opt/openbeast-eval-venv/bin/python`):
+
+   ```bash
+   PY=~/.local/opt/openbeast-eval-venv/bin/python scripts/gate.sh            # full: ruff E9,F, shellcheck -S error, suite_stats/v5_board --check, pytest tests/
+   PY=~/.local/opt/openbeast-eval-venv/bin/python scripts/gate.sh --quick    # a docs-only PR: the doc-pinning tests instead of the whole pytest run
+   scripts/gate.sh --linux                                                   # the same commit in the Linux test image (docker): tests/run_tests.sh
+   ```
+
+   **Never run the checks in your working checkout only.** `gate.sh` makes a
+   fresh `git worktree add --detach` of the commit, so a file that exists in
+   your checkout but not in the commit (untracked, or hidden by
+   `.gitignore`) cannot make it pass: #314 merged a `main` on which 17 Basalt
+   tests failed, because its profile was ignored by `*.env` and only the
+   author's tree had it. The Mac baseline is **0 failed**: tests that need
+   Linux (`/proc`, GNU `stat`/`sed`/`grep -P`, bash ≥ 4) carry the
+   `linux_only` marker (`tests/conftest.py`) and skip there, so any failure
+   is new. Paste the summary block (commit, one line per step) into the PR
+   body.
+
+   For a docs change, also check that every `#anchor` link in the files you
+   touched resolves (the doc-pinning tests do not cover every page).
+
+2. **The Linux-only shell suites on spark-2, in a temp clone.** Several
+   suites need GNU userland (`grep -z`, util-linux `flock`, GNU `sed`),
+   `netplan`, or other things macOS lacks, and they must run from a real
+   repository checkout, not a copied tree (`test_uninstall.sh` and others
+   fail from a non-repo copy). spark-2 runs no OpenBeast service, so a
+   scratch clone there disturbs nothing:
+
+   ```bash
+   ssh spark-2.<tailnet>.ts.net 'set -e; d=$(mktemp -d); trap "rm -rf $d" EXIT
+     git clone -q --branch <pr-branch> https://github.com/MaximilianKhan/openbeast "$d/ob"
+     cd "$d/ob" && ./tests/run_tests.sh'
+   ```
+
+   `tests/run_tests.sh` runs the shell suites the CI shell jobs ran, plus the
+   tool tests and pytest. Never run it in spark-1's `~/openbeast`: that
+   checkout is the live command center. Offline, clone from a bundle instead
+   of GitHub.
+
+3. **Merge with admin rights, results in the PR body.** Put what you ran and
+   what it printed (pass counts, `OK` lines, any skip and why) in the PR
+   description, then:
+
+   ```bash
+   gh pr merge <N> --merge --admin
+   ```
+
+   `--admin` is only for the missing status checks. It is not a licence to
+   merge a red local run: a failing check is fixed, or the PR body says
+   exactly why it is unrelated (with the same failure shown on `main`).
+
 House rules the suite enforces (so you don't discover them in review):
 
 - **Shell**: `set -euo pipefail` on entry points; no command substitution
@@ -103,8 +156,8 @@ House rules the suite enforces (so you don't discover them in review):
   RAM + all swap. See `docs/TODO.md` post-mortem.
 - **Tool changes**: `agents/tools.py` is the single source of truth for the
   primitives; `agents/mcp_server.py` wraps it and adds the MCP-only tools
-  (skill, agent control, artifacts, `language_reference`). `docs/TOOLS.md`
-  pins the count (18) and `tests/test_tools.py` asserts it, so a new tool is
+  (skill, agent control, artifacts, `language_reference`, `platform_docs`).
+  `docs/TOOLS.md` pins the count (19) and `tests/test_tools.py` asserts it, so a new tool is
   a doc change in the same PR. Note the two era-hashed files (`tools.py`,
   `runner.py`): touching either rolls the eval cache era (`scripts/eval-era.sh`),
   which is why the artifact and language tools live in `mcp_server.py`.

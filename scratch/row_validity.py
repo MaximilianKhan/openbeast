@@ -84,7 +84,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # model's. Those two carry a normal exit and real tokens, so only the reason
 # shows it.
 INFRA_REASONS = {"setup_failed", "server_unhealthy", "skipped_cache_miss", "low_disk",
-                 "server_error", "env_error"}
+                 "server_error", "env_error", "interpreter_error"}
 EAGAIN_RE = re.compile(r"Resource temporarily unavailable|SystemResources|"
                        r"thread constructor failed|pthread_create failed|"
                        r"fork: retry|can't start new thread")
@@ -200,6 +200,7 @@ def expected_n(d):
     name = d.get("suite_selection") or (d.get("fast_suite") or {}).get("suite")
     if not name:
         return None
+    name = {"v5-fast": "v4-fast"}.get(name, name)   # renamed at the v5 era break
     p = os.path.join(REPO, "evals", "suites", f"{name}.json")
     if not os.path.exists(p):
         return None

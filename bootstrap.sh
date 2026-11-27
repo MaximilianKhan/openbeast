@@ -124,6 +124,32 @@ fi
 # check in the preflight needs to know what it is making room for.
 WEIGHT_FILE="Qwen3.8-27B-Uncensored-Q5_K_M.gguf"
 HF_REPO="JonathanColetti/Qwen3.8-27B-Uncensored-GGUF"
+# What an OFFLINE box must already hold: the weight(s) the CONFIGURED serve
+# script loads (SERVE_SCRIPT -> DEFAULT_SERVE_SCRIPT, lib/conf.sh), scraped the
+# way `bundle.sh build --with-weights` picks them — non-comment lines only, a
+# shard expanded to its whole set. Online, bootstrap downloads the default and
+# nothing else; offline it used to REQUIRE the default even when SERVE_SCRIPT
+# named another registry weight, so the documented "any registry weight works"
+# died on every run. Prints WEIGHT_FILE when the configured script loads it,
+# names no file, or cannot be read.
+ob_closed_box_weights() {
+  local s="$REPO_DIR/scripts/${DEFAULT_SERVE_SCRIPT:-}" names="" n
+  if [[ -n "${DEFAULT_SERVE_SCRIPT:-}" && -f "$s" ]]; then
+    names="$(grep -vE '^[[:space:]]*#' "$s" | grep -oE '[A-Za-z0-9._-]+\.gguf' | sort -u || true)"
+  fi
+  if [[ -z "$names" ]] || grep -qxF -- "$WEIGHT_FILE" <<< "$names"; then
+    printf '%s\n' "$WEIGHT_FILE"; return 0
+  fi
+  while IFS= read -r n; do
+    [[ -n "$n" ]] || continue
+    if [[ "$n" =~ ^(.*)-[0-9]{5}-of-([0-9]{5})\.gguf$ ]]; then
+      local stem="${BASH_REMATCH[1]}" tot="${BASH_REMATCH[2]}" i
+      for i in $(seq 1 "$((10#$tot))"); do printf '%s-%05d-of-%s.gguf\n' "$stem" "$i" "$tot"; done
+    else
+      printf '%s\n' "$n"
+    fi
+  done <<< "$names" | sort -u
+}
 
 # ---- distro detection ------------------------------------------------------
 DISTRO="unknown"; PKG_HINT=""
@@ -204,6 +230,20 @@ ob_nvidia_broken() {
 preflight_gpu() {
   ob_detect_gpu
   ob_resolve_backend
+  # Unified memory (GB10) is host RAM the OS shares, not VRAM: say so.
+  local mem_kind="VRAM"
+  [[ "${OB_GPU_UNIFIED:-0}" -eq 1 ]] && mem_kind="unified memory"
+  # Nothing is built for the GPU here, so nothing below is a question this
+  # box has to answer: the driver, the floor and the toolchain belong to
+  # whatever serves INFERENCE_URL. Reported, never failed.
+  if [[ $OB_LOCAL_LLAMA -eq 0 ]]; then
+    case "$OB_GPU_VENDOR" in
+      nvidia|amd) ok "GPU: ${OB_GPU_NAME:-unknown} (${OB_VRAM_MB} MiB $mem_kind, ${OB_GPU_COUNT}x) — not used by this stack" ;;
+      intel)      ok "GPU: ${OB_GPU_NAME:-unknown} — not used by this stack" ;;
+      none)       ok "no GPU detected — none needed (inference is not managed here)" ;;
+    esac
+    return 0
+  fi
   # Only when the backend is ours to choose (auto) or is CUDA: someone who
   # set GPU_BACKEND=hip|sycl|cpu has said which card they mean to use.
   local nv_why
@@ -219,7 +259,7 @@ preflight_gpu() {
     return 0
   fi
   case "$OB_GPU_VENDOR" in
-    nvidia) ok "NVIDIA GPU: ${OB_GPU_NAME:-unknown} (${OB_VRAM_MB} MiB VRAM, ${OB_GPU_COUNT}x)" ;;
+    nvidia) ok "NVIDIA GPU: ${OB_GPU_NAME:-unknown} (${OB_VRAM_MB} MiB $mem_kind, ${OB_GPU_COUNT}x)" ;;
     amd)    ok "AMD GPU: ${OB_GPU_NAME:-unknown} (${OB_VRAM_MB} MiB VRAM, ${OB_GPU_COUNT}x)" ;;
     intel)  ok "Intel GPU: ${OB_GPU_NAME:-unknown}" ;;
     none)
@@ -278,13 +318,41 @@ preflight_gpu() {
 run_preflight() {
   step "Preflight checks (distro: $DISTRO)"
   MISSING=0
-  need git    git       "needed to fetch llama.cpp"
-  need cmake  cmake     "needed to build llama.cpp"
-  need make   toolchain "drives the llama.cpp build"
-  need gcc    toolchain "C compiler for the build"
-  # llama.cpp is C++. gcc without g++ is an ordinary state (a minimal Debian
-  # has it) and used to pass every check here, then fail inside cmake.
-  need g++    toolchain "C++ compiler for the build (llama.cpp is C++)"
+  # --preflight promises to write NOTHING, and sourcing conf.sh was the one
+  # thing that did: it generates SEARXNG_SECRET and creates openbeast.conf.
+  # OB_CONF_READONLY=1 is conf.sh's switch for "resolve, do not persist".
+  # Sourced FIRST because what this box has to build depends on it (below).
+  [[ $PREFLIGHT -eq 1 ]] && export OB_CONF_READONLY=1
+  source "$REPO_DIR/scripts/lib/conf.sh"
+  source "$REPO_DIR/scripts/lib/hardware.sh"
+  # IS THE MODEL SERVER OURS? INFERENCE_MANAGED=false (always, for vLLM /
+  # TensorFold; and a llama INFERENCE_URL on another machine — lib/conf.sh)
+  # means start.sh launches nothing, so llama.cpp, its toolchain and the
+  # ~20 GB GGUF have no consumer here. A DGX Spark running the command center
+  # beside its own TensorFold (docs/DGX_SPARK_PLAN.md, T2) used to be walked
+  # through a CUDA build and a weight download for a server it never starts.
+  OB_LOCAL_LLAMA=1
+  [[ "${INFERENCE_MANAGED:-true}" == "false" ]] && OB_LOCAL_LLAMA=0
+  if [[ $OB_LOCAL_LLAMA -eq 1 ]]; then
+    need git    git       "needed to fetch llama.cpp"
+    need cmake  cmake     "needed to build llama.cpp"
+    need make   toolchain "drives the llama.cpp build"
+    need gcc    toolchain "C compiler for the build"
+    # llama.cpp is C++. gcc without g++ is an ordinary state (a minimal Debian
+    # has it) and used to pass every check here, then fail inside cmake.
+    need g++    toolchain "C++ compiler for the build (llama.cpp is C++)"
+  else
+    need git    git       "scripts/update.sh updates this checkout with it"
+    ok "inference: $INFERENCE_BACKEND at $INFERENCE_URL, not managed here
+      (INFERENCE_MANAGED=false) — no llama.cpp build, no GPU toolchain and
+      no local weight are needed"
+    if [[ $MINIMAL -eq 1 ]]; then
+      warn "--minimal installs llama-server and nothing else, and this box
+      serves no model of its own (INFERENCE_MANAGED=false) — nothing to do"
+      echo "      → run ./bootstrap.sh without --minimal for the command center"
+      hard_fail
+    fi
+  fi
   need curl   curl      "health probes + installers use it"
   need python3 python   "runs the MCP tool server + eval harness"
   # pip as a module — some distros ship python3 without it.
@@ -300,13 +368,6 @@ run_preflight() {
   # resolve the llama.cpp build backend (GPU_BACKEND in openbeast.conf, or
   # auto → vendor mapping). Reference profile is CUDA on a 5090; HIP/SYCL/CPU
   # are built but UNTESTED — see docs/HARDWARE_PROFILES.md.
-  #
-  # --preflight promises to write NOTHING, and sourcing conf.sh was the one
-  # thing that did: it generates SEARXNG_SECRET and creates openbeast.conf.
-  # OB_CONF_READONLY=1 is conf.sh's switch for "resolve, do not persist".
-  [[ $PREFLIGHT -eq 1 ]] && export OB_CONF_READONLY=1
-  source "$REPO_DIR/scripts/lib/conf.sh"
-  source "$REPO_DIR/scripts/lib/hardware.sh"
   preflight_gpu
 
   # Docker (only for the full stack; Tier 0 doesn't need it)
@@ -362,6 +423,10 @@ preflight_extras() {
 PF_WEIGHT_PRESENT=0
 preflight_disk() {
   step "Weights disk space"
+  if [[ $OB_LOCAL_LLAMA -eq 0 ]]; then
+    ok "no local weight needed — inference is $INFERENCE_BACKEND at $INFERENCE_URL"
+    return 0
+  fi
   # Resolve WEIGHTS_DIR exactly like the serve scripts do, but READ-ONLY:
   # lib/weights.sh exits 1 when the dir doesn't exist yet (normal on a fresh
   # box), so source it in a throwaway bash and capture the resolved path via
@@ -381,6 +446,29 @@ preflight_disk() {
   avail_kb=$(df -Pk "$probe" 2>/dev/null | awk 'NR==2 {print $4}') || avail_kb=""
   [[ "$avail_kb" =~ ^[0-9]+$ ]] || avail_kb=""
   avail_gb=$(( ${avail_kb:-0} / 1024 / 1024 ))
+  # OFFLINE with a non-default SERVE_SCRIPT: step 4 checks the weight that
+  # script loads (ob_closed_box_weights), so presence and size are judged on
+  # that — not on a 20 GB default this box will never hold.
+  local _pf_w="$WEIGHT_FILE"
+  ob_offline && _pf_w="$(ob_closed_box_weights)"
+  if [[ "$_pf_w" != "$WEIGHT_FILE" ]]; then
+    local _n _all=1 _b _sum=0
+    while IFS= read -r _n; do
+      [[ -f "$resolved/$_n" ]] || _all=0
+      _b="$(awk -F'\t' -v f="$_n" '$3 == f {print $2}' "$REPO_DIR/scripts/weights.registry" 2>/dev/null || true)"
+      [[ "$_b" =~ ^[0-9]+$ ]] && _sum=$(( _sum + _b ))
+    done <<< "$_pf_w"
+    if [[ $_all -eq 1 ]]; then
+      PF_WEIGHT_PRESENT=1
+      ok "weights dir: $resolved — the weight $DEFAULT_SERVE_SCRIPT loads is already there${avail_kb:+ (${avail_gb} GB free)}"
+    elif [[ $_sum -gt 0 && -n "$avail_kb" && $(( avail_kb * 1024 )) -lt $_sum ]]; then
+      warn "not enough disk for the weight $DEFAULT_SERVE_SCRIPT loads: need $(awk -v b="$_sum" 'BEGIN{printf "%.1f", b/1e9}') GB in $resolved"
+      hard_fail
+    else
+      warn "OFFLINE: the weight $DEFAULT_SERVE_SCRIPT loads is not all in $resolved yet — copy it in (step 4 refuses without it)"
+    fi
+    return 0
+  fi
   if [[ -f "$resolved/$WEIGHT_FILE" ]]; then
     PF_WEIGHT_PRESENT=1
     ok "weights dir: $resolved — the default weight is already there${avail_kb:+ (${avail_gb} GB free)}"
@@ -442,20 +530,34 @@ preflight_network() {
     PF_NO_NET=1
     return 0
   fi
-  local unreachable=() url host
-  for url in https://github.com https://pypi.org "$PF_HF_BASE"; do
+  local unreachable=() url host urls=(https://github.com https://pypi.org "$PF_HF_BASE")
+  # github is for the llama.cpp source and HF for the weight; with no local
+  # model server neither is fetched, and probing them would warn about
+  # hosts this install never contacts.
+  [[ $OB_LOCAL_LLAMA -eq 1 ]] || urls=(https://pypi.org)
+  for url in "${urls[@]}"; do
     # -I, 6s, no retries: this is a reachability question, not a download.
     host="${url#*://}"; host="${host%%/*}"
     curl -fsS -I --max-time 6 --retry 0 -o /dev/null "$url" 2>/dev/null \
       || unreachable+=("$host")
   done
   if [[ ${#unreachable[@]} -eq 0 ]]; then
-    ok "network: github.com, pypi.org and $PF_HF_HOST all reachable"
+    if [[ $OB_LOCAL_LLAMA -eq 1 ]]; then
+      ok "network: github.com, pypi.org and $PF_HF_HOST all reachable"
+    else
+      ok "network: pypi.org reachable (no llama.cpp source or weight to fetch)"
+    fi
     return 0
   fi
   PF_NO_NET=1
   PF_UNREACHABLE=("${unreachable[@]}")
   warn "network: cannot reach ${unreachable[*]} — a FIRST install cannot complete"
+  if [[ $OB_LOCAL_LLAMA -eq 0 ]]; then
+    echo "      bootstrap needs pypi.org for the python wheels, plus two container"
+    echo "      images from ghcr.io/docker hub (no llama.cpp, no weight: inference"
+    echo "      is not managed here). Closed network: ./scripts/pydeps.sh wheelhouse"
+    return 0
+  fi
   echo "      bootstrap needs all three: llama.cpp source (github), the python"
   echo "      wheels (pypi), and the ~20 GB default weight (huggingface), plus"
   echo "      two container images from ghcr.io/docker hub."
@@ -489,7 +591,7 @@ pf_summary() {
     # and still cannot fetch a single artifact. Say both.
     if [[ ${PF_NO_NET:-0} -eq 1 ]]; then
       echo "  ${c_red}…and the network is unreachable: a first install will fail"
-      echo "  at the llama.cpp clone even once the ✗ items are fixed.${c_rst}"
+      echo "  at $PF_FIRST_FETCH even once the ✗ items are fixed.${c_rst}"
     fi
   elif ob_offline; then
     # DELIBERATELY offline is not the same as unreachable, and saying
@@ -507,7 +609,7 @@ pf_summary() {
     # Everything LOCAL is fine, so this is not a ✗ — but "looks ready" would
     # be a lie on a box that cannot fetch a single one of its four artifacts.
     echo "  ${c_ylw}Local environment is ready, but the network is not reachable."
-    echo "  A first install will fail at the llama.cpp clone. An existing"
+    echo "  A first install will fail at $PF_FIRST_FETCH. An existing"
     echo "  install can still rebuild and serve."
     echo "  If that is permanent, set OFFLINE=true in openbeast.conf and the"
     echo "  installer will refuse those steps up front instead of stalling on"
@@ -518,6 +620,9 @@ pf_summary() {
 }
 
 run_preflight
+# What a first install fetches first, for the network verdicts.
+PF_FIRST_FETCH="the llama.cpp clone"
+[[ $OB_LOCAL_LLAMA -eq 1 ]] || PF_FIRST_FETCH="the python wheels"
 preflight_network
 preflight_disk
 
@@ -535,12 +640,12 @@ fi
 # rather than after it — the same 10-40 minutes the disk check saves.
 if [[ ${#PF_UNREACHABLE[@]} -gt 0 ]]; then
   _ob_net_need=()
-  if [[ " ${PF_UNREACHABLE[*]} " == *" github.com "* \
+  if [[ $OB_LOCAL_LLAMA -eq 1 && " ${PF_UNREACHABLE[*]} " == *" github.com "* \
         && ! -x "$REPO_DIR/llama.cpp/build/bin/llama-server" \
         && ! -f "$REPO_DIR/llama.cpp/CMakeLists.txt" ]]; then
     _ob_net_need+=("github.com — the llama.cpp source is not here yet")
   fi
-  if [[ " ${PF_UNREACHABLE[*]} " == *" $PF_HF_HOST "* && $PF_WEIGHT_PRESENT -eq 0 ]]; then
+  if [[ $OB_LOCAL_LLAMA -eq 1 && " ${PF_UNREACHABLE[*]} " == *" $PF_HF_HOST "* && $PF_WEIGHT_PRESENT -eq 0 ]]; then
     _ob_net_need+=("$PF_HF_HOST — the default weight ($WEIGHT_FILE) is not here yet")
   fi
   if [[ ${#_ob_net_need[@]} -gt 0 ]]; then
@@ -549,15 +654,18 @@ $(printf '         %s\n' "${_ob_net_need[@]}")
        Nothing was built or downloaded. Check the connection (a VPN, a proxy,
        DNS) and re-run. On a network that is closed on purpose, set
        OFFLINE=true in openbeast.conf and bring the artifacts in:
-         ./scripts/bundle.sh build ./bundle      (on a connected box)
+         ./scripts/bundle.sh build ./bundle      (on a connected box of the SAME arch: an aarch64 Spark for a Spark)
          ./scripts/bundle.sh install ./bundle    (here)"
   fi
 fi
 
 # ---- 2. build llama.cpp (skip if already built) ---------------------------
-step "llama.cpp (${OB_BACKEND^^} build)"
 LLAMA_BIN="$REPO_DIR/llama.cpp/build/bin/llama-server"
-if [[ -x "$LLAMA_BIN" ]]; then
+if [[ $OB_LOCAL_LLAMA -eq 0 ]]; then
+  step "llama.cpp"
+  ok "not built — inference is $INFERENCE_BACKEND at $INFERENCE_URL
+      (INFERENCE_MANAGED=false), so nothing here launches llama-server"
+elif step "llama.cpp (${OB_BACKEND^^} build)" && [[ -x "$LLAMA_BIN" ]]; then
   ok "already built ($LLAMA_BIN)"
 else
   # Flags come from the shared lib (scripts/lib/hardware.sh) so bootstrap
@@ -605,7 +713,15 @@ else
     git -C "$d" checkout -q -B master FETCH_HEAD || return 1
     git -C "$d" config branch.master.remote origin
     git -C "$d" config branch.master.merge refs/heads/master
-    [[ "$(git -C "$d" rev-parse HEAD 2>/dev/null)" == "$LLAMA_CPP_REF" ]]
+    [[ "$(git -C "$d" rev-parse HEAD 2>/dev/null)" == "$LLAMA_CPP_REF" ]] || return 1
+    # A depth-1 fetch makes llama.cpp's own build number (its commit count)
+    # 1, and its UI target then asks for the assets of "b1". Name the commit
+    # by its upstream bNNNN tag (one ls-remote, best effort), which
+    # ob_llama_build_number (lib/hardware.sh) passes to cmake.
+    local _bt
+    _bt="$(git -C "$d" ls-remote --tags origin 'b*' 2>/dev/null \
+      | awk -v s="$LLAMA_CPP_REF" '$1 == s { t = $2; sub("^refs/tags/", "", t); sub(/\^\{\}$/, "", t); if (t ~ /^b[0-9]+$/) { print t; exit } }' || true)"
+    [[ -z "$_bt" ]] || git -C "$d" tag -f "$_bt" "$LLAMA_CPP_REF" >/dev/null 2>&1 || true
   }
   _ob_llama_head=""
   [[ -d "$REPO_DIR/llama.cpp/.git" ]] \
@@ -628,7 +744,7 @@ else
     die "OFFLINE=true and there is no llama.cpp source to build.
        The source is one of the four fetches a first install cannot do on a
        closed network. Bring it in with a bundle:
-         connected box:  ./scripts/bundle.sh build ./bundle
+         connected box (same arch as this one):  ./scripts/bundle.sh build ./bundle
          here:           ./scripts/bundle.sh install ./bundle
        or by hand: git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
        into $REPO_DIR/llama.cpp (a source tarball is enough — this build
@@ -649,9 +765,12 @@ else
       was tested with."
     git clone --depth 1 "$LLAMA_CPP_URL" "$REPO_DIR/llama.cpp"
   fi
+  # The build number llama.cpp names its UI assets by: shared with
+  # scripts/update.sh (ob_llama_build_number, lib/hardware.sh).
+  _ob_llama_bn="$(ob_llama_build_number "$REPO_DIR/llama.cpp")"
   # $CMAKE_FLAGS is deliberately unquoted — it's a flag list.
   cmake -S "$REPO_DIR/llama.cpp" -B "$REPO_DIR/llama.cpp/build" \
-        $CMAKE_FLAGS -DCMAKE_BUILD_TYPE=Release
+        $CMAKE_FLAGS ${_ob_llama_bn:+"-DLLAMA_BUILD_NUMBER=$_ob_llama_bn"} -DCMAKE_BUILD_TYPE=Release
   cmake --build "$REPO_DIR/llama.cpp/build" --config Release -j"$(nproc)" --target llama-server
   [[ -x "$LLAMA_BIN" ]] && ok "built $LLAMA_BIN" || die "build did not produce llama-server"
 fi
@@ -666,7 +785,10 @@ fi
 # outright; this guard is here so the pin cannot come back by another road.
 # cpu is persisted only when it was ASKED for (--cpu / GPU_BACKEND=cpu).
 CONF_FILE="$REPO_DIR/openbeast.conf"
-if [[ "$OB_BACKEND" == "cpu" && "$GPU_BACKEND" != "cpu" ]]; then
+if [[ $OB_LOCAL_LLAMA -eq 0 ]]; then
+  : # nothing was built, so there is no flavor to pin — and pinning a guess
+    # (a GB10 resolves to cuda) would outlive the config that made it moot
+elif [[ "$OB_BACKEND" == "cpu" && "$GPU_BACKEND" != "cpu" ]]; then
   warn "not writing GPU_BACKEND=cpu to openbeast.conf: it came from detection,
       not from you. Detection runs again next time; to make CPU-only stick,
       set GPU_BACKEND=cpu there (or run ./bootstrap.sh --cpu)."
@@ -692,10 +814,18 @@ fi
 # ---- 3. Python dependencies ------------------------------------------------
 step "Python dependencies"
 PIP_FLAGS=""
+# INSIDE A VENV, pip REFUSES --user ("User site-packages are not visible in
+# this virtualenv") — not a hash error, so this step died blaming the network
+# or the lock, while the OFFLINE path (scripts/pydeps.sh, whose _pip_flags
+# checks this first) worked on the same box. Same test, same order, here.
+PIP_USER="--user"
+if python3 -c 'import sys; sys.exit(0 if sys.prefix != sys.base_prefix else 1)' 2>/dev/null; then
+  PIP_USER=""
+  ok "inside a virtualenv ($(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null)) → installing into it, not --user"
 # PEP-668 "externally managed" environments (Arch, newer Debian) reject a
 # bare 'pip install --user'. Use --break-system-packages there; it only
 # touches ~/.local, never system site-packages.
-if python3 -c 'import sysconfig,os;p=sysconfig.get_path("stdlib");exit(0 if os.path.exists(os.path.join(p,"EXTERNALLY-MANAGED")) else 1)' 2>/dev/null; then
+elif python3 -c 'import sysconfig,os;p=sysconfig.get_path("stdlib");exit(0 if os.path.exists(os.path.join(p,"EXTERNALLY-MANAGED")) else 1)' 2>/dev/null; then
   PIP_FLAGS="--break-system-packages"
   warn "externally-managed Python → using --user --break-system-packages (~/.local only)"
 fi
@@ -712,19 +842,39 @@ fi
 # Upgrades are not lost: scripts/update.sh --python owns them (it already runs
 # `pip list --outdated` and reinstalls against requirements.txt), which is the
 # right place for an upgrade — bootstrap's job is to make the box WORK.
+# THE PARSER IS pydeps_lock's, not a second copy. This one used
+# `^name\s*==\s*(.+)$`, the shape pydeps_lock.py documents as failing on both
+# ordinary decorations: `uvicorn[standard]==X` fell through to presence-only
+# (ANY installed uvicorn "satisfied", so the hash-pinned install was skipped),
+# and `pkg==X ; marker` read the version as "X ; marker" (never satisfied,
+# reinstalled every run). A line that parser cannot read is NOT satisfied; a
+# pin whose environment marker excludes this python is not required.
 ob_python_deps_satisfied() {
-  python3 - "$REPO_DIR/agents/requirements.txt" <<'PYDEPS'
+  python3 - "$REPO_DIR/agents/requirements.txt" "$REPO_DIR/scripts/lib" <<'PYDEPS'
 import importlib.metadata as md, re, sys
-missing = []
-for raw in open(sys.argv[1]):
-    line = raw.split("#")[0].strip()
-    if not line:
-        continue
-    m = re.match(r"^([A-Za-z0-9._-]+)\s*==\s*(.+)$", line)
-    if not m:                      # unpinned line: presence is all we can check
-        name, want = re.split(r"[<>=!~\[]", line, 1)[0].strip(), None
-    else:
-        name, want = m.group(1), m.group(2).strip()
+sys.path.insert(0, sys.argv[2])
+from pydeps_lock import direct_pins, _norm
+try:
+    from packaging.markers import Marker
+except ImportError:
+    try:
+        from pip._vendor.packaging.markers import Marker
+    except ImportError:
+        Marker = None
+pins, unparsed = direct_pins(sys.argv[1])
+missing = [f"{u} (treated as NOT satisfied)" for u in unparsed]
+if Marker is not None:
+    for raw in open(sys.argv[1]):
+        spec, sep, mk = raw.split("#")[0].strip().partition(";")
+        if not sep:
+            continue
+        try:
+            applies = Marker(mk.strip()).evaluate()
+        except Exception:
+            continue                 # unreadable marker: keep the pin, check it
+        if not applies:
+            pins.pop(_norm(re.split(r"[<>=!~\[\s]", spec.strip(), maxsplit=1)[0]), None)
+for name, want in pins.items():
     try:
         got = md.version(name)
     except md.PackageNotFoundError:
@@ -821,7 +971,7 @@ $(sed 's/^/         /' <<< "$_ob_stale")
   if [[ $_ob_lock_usable -eq 1 ]]; then
     # pip's stderr is KEPT, because why it failed decides what happens next.
     _ob_pip_err="$(mktemp)"
-    if python3 -m pip install --user $PIP_FLAGS -q --require-hashes -r "$_ob_lock" 2>"$_ob_pip_err"; then
+    if python3 -m pip install $PIP_USER $PIP_FLAGS -q --require-hashes -r "$_ob_lock" 2>"$_ob_pip_err"; then
       _ob_locked_ok=1
       rm -f "$_ob_pip_err"
       ok "installed the hash-pinned closure ($(grep -cE '^[A-Za-z0-9].*==' "$_ob_lock") packages, content verified)"
@@ -878,7 +1028,7 @@ $(sed 's/^/         /' <<< "$_ob_stale")
          git checkout -- agents/requirements.lock
        or accept versions pinned but content NOT verified:
          OPENBEAST_PIP_STRICT=0 ./bootstrap.sh"
-    python3 -m pip install --user $PIP_FLAGS -q -U "huggingface_hub" -r "$REPO_DIR/agents/requirements.txt" \
+    python3 -m pip install $PIP_USER $PIP_FLAGS -q -U "huggingface_hub" -r "$REPO_DIR/agents/requirements.txt" \
       || die "pip install failed. On a closed network, pre-stage the wheels:
        on a connected box:  ./scripts/pydeps.sh wheelhouse wheels
        copy ./wheels here (NOT the lock — this checkout's is the trust root), then:
@@ -910,46 +1060,79 @@ command -v hf >/dev/null 2>&1 || command -v huggingface-cli >/dev/null 2>&1 \
   || warn "hf CLI not on PATH — add 'export PATH=\$HOME/.local/bin:\$PATH' to your shell rc"
 
 # ---- 4. default model weight (skip if present) -----------------------------
-step "Default model weight (~20 GB — the one big download)"
-# Resolve the weights dir the same way the serve scripts do. On a fresh
-# machine no weights dir exists anywhere and weights.sh would hard-exit with
-# its "point OpenBeast at your weights" guidance — correct for serve scripts,
-# fatal for the bootstrapper whose job is to create it. OPENBEAST_WEIGHTS_MKDIR
-# tells the resolver to mkdir the RESOLVED dir instead (custom env/conf paths
-# are still preferred as usual).
-export OPENBEAST_WEIGHTS_MKDIR=1
-source "$REPO_DIR/scripts/lib/weights.sh"
-unset OPENBEAST_WEIGHTS_MKDIR
-# (WEIGHT_FILE and HF_REPO are set at the top of this file.)
-# Supply-chain pin for the one mandatory download, read from the weight
-# registry (scripts/weights.registry — pins EVERY shipped GGUF, same
-# discipline as the digest-pinned container images). A silent swap in the
-# upstream HF repo fails loudly here instead of shipping onto every fresh
-# install. Other models: scripts/verify-weights.sh after download.
-WEIGHT_SHA256="$(awk -F'\t' -v f="$WEIGHT_FILE" '$3 == f {print $1}' "$REPO_DIR/scripts/weights.registry" 2>/dev/null || true)"
-[[ -n "$WEIGHT_SHA256" ]] || die "scripts/weights.registry has no entry for $WEIGHT_FILE — restore it from git"
-# PRESENT IS NOT VERIFIED. This used to print "already downloaded" for any
-# file with the right name, and the download branch used to leave a weight
-# that FAILED its pin under that very name (die, no rm). So re-running
-# bootstrap after "checksum MISMATCH" — the ordinary reaction to a failed
-# installer — turned the pin's rejection into acceptance, and start.sh (a
-# size check only) then served the substituted file. The existing file is
-# hashed on every run now (~1 min for 20 GB, inside a multi-minute
-# bootstrap). A mismatch is fatal and NOT auto-deleted here: the file may be
-# one the operator put there by hand.
-if [[ -f "$WEIGHTS_DIR/$WEIGHT_FILE" ]]; then
-  echo "  verifying the existing $WEIGHT_FILE against its pin (~1 min for 20 GB)..."
-  if _vw="$("$REPO_DIR/scripts/verify-weights.sh" --file "$WEIGHT_FILE" 2>&1)"; then
-    ok "already downloaded, sha256 verified ($WEIGHTS_DIR/$WEIGHT_FILE)"
-  else
-    die "$WEIGHTS_DIR/$WEIGHT_FILE is NOT the weight OpenBeast pinned:
+if [[ $OB_LOCAL_LLAMA -eq 0 ]]; then
+  step "Default model weight"
+  ok "none downloaded — inference is $INFERENCE_BACKEND at $INFERENCE_URL"
+else
+  step "Default model weight (~20 GB — the one big download)"
+  # Resolve the weights dir the same way the serve scripts do. On a fresh
+  # machine no weights dir exists anywhere and weights.sh would hard-exit with
+  # its "point OpenBeast at your weights" guidance — correct for serve scripts,
+  # fatal for the bootstrapper whose job is to create it. OPENBEAST_WEIGHTS_MKDIR
+  # tells the resolver to mkdir the RESOLVED dir instead (custom env/conf paths
+  # are still preferred as usual).
+  export OPENBEAST_WEIGHTS_MKDIR=1
+  source "$REPO_DIR/scripts/lib/weights.sh"
+  unset OPENBEAST_WEIGHTS_MKDIR
+  # (WEIGHT_FILE and HF_REPO are set at the top of this file.)
+  # Supply-chain pin for the one mandatory download, read from the weight
+  # registry (scripts/weights.registry — pins EVERY shipped GGUF, same
+  # discipline as the digest-pinned container images). A silent swap in the
+  # upstream HF repo fails loudly here instead of shipping onto every fresh
+  # install. Other models: scripts/verify-weights.sh after download.
+  WEIGHT_SHA256="$(awk -F'\t' -v f="$WEIGHT_FILE" '$3 == f {print $1}' "$REPO_DIR/scripts/weights.registry" 2>/dev/null || true)"
+  [[ -n "$WEIGHT_SHA256" ]] || die "scripts/weights.registry has no entry for $WEIGHT_FILE — restore it from git"
+  # PRESENT IS NOT VERIFIED. This used to print "already downloaded" for any
+  # file with the right name, and the download branch used to leave a weight
+  # that FAILED its pin under that very name (die, no rm). So re-running
+  # bootstrap after "checksum MISMATCH" — the ordinary reaction to a failed
+  # installer — turned the pin's rejection into acceptance, and start.sh (a
+  # size check only) then served the substituted file. The existing file is
+  # hashed on every run now (~1 min for 20 GB, inside a multi-minute
+  # bootstrap). A mismatch is fatal and NOT auto-deleted here: the file may be
+  # one the operator put there by hand.
+  _ob_ow="$WEIGHT_FILE"
+  ob_offline && _ob_ow="$(ob_closed_box_weights)"
+  if [[ "$_ob_ow" != "$WEIGHT_FILE" ]]; then
+    # OFFLINE, and SERVE_SCRIPT loads something other than the default: that
+    # is what has to be here (and verified), not the default.
+    _ob_miss=""
+    while IFS= read -r _n; do
+      [[ -f "$WEIGHTS_DIR/$_n" ]] || _ob_miss="$_ob_miss         $_n"$'\n'
+    done <<< "$_ob_ow"
+    [[ -z "$_ob_miss" ]] || die "OFFLINE=true and $DEFAULT_SERVE_SCRIPT (SERVE_SCRIPT) loads weight(s) not in $WEIGHTS_DIR:
+${_ob_miss}       A closed network cannot download them. Copy them in and verify:
+         copy the .gguf file(s) into $WEIGHTS_DIR
+         ./scripts/verify-weights.sh           (checks size + sha256)"
+    while IFS= read -r _n; do
+      if awk -F'\t' -v f="$_n" '$1 !~ /^#/ && $3 == f {found=1} END {exit !found}' "$REPO_DIR/scripts/weights.registry" 2>/dev/null; then
+        echo "  verifying $_n against its pin..."
+        _vw="$("$REPO_DIR/scripts/verify-weights.sh" --file "$_n" 2>&1)" \
+          || die "$WEIGHTS_DIR/$_n is NOT the weight OpenBeast pinned:
+$(sed 's/^/         /' <<< "$_vw")
+       Refusing to continue with it. Copy a good one in and re-run."
+        if [[ "$_vw" == *PENDING* ]]; then
+          warn "$_n is present but its registry row is PENDING — nothing to verify it against"
+        else
+          ok "$_n present, sha256 verified against scripts/weights.registry"
+        fi
+      else
+        warn "$_n is not in scripts/weights.registry — present, but nothing to verify it against"
+      fi
+    done <<< "$_ob_ow"
+  elif [[ -f "$WEIGHTS_DIR/$WEIGHT_FILE" ]]; then
+    echo "  verifying the existing $WEIGHT_FILE against its pin (~1 min for 20 GB)..."
+    if _vw="$("$REPO_DIR/scripts/verify-weights.sh" --file "$WEIGHT_FILE" 2>&1)"; then
+      ok "already downloaded, sha256 verified ($WEIGHTS_DIR/$WEIGHT_FILE)"
+    else
+      die "$WEIGHTS_DIR/$WEIGHT_FILE is NOT the weight OpenBeast pinned:
 $(sed 's/^/         /' <<< "$_vw")
        Refusing to continue with it. Delete it and re-run this script (the
        download is verified BEFORE it is given that name), or check the HF
        repo ($HF_REPO) and OpenBeast issues for a vetted update."
-  fi
-else
-  ob_offline && die "OFFLINE=true and $WEIGHT_FILE is not in $WEIGHTS_DIR.
+    fi
+  else
+    ob_offline && die "OFFLINE=true and $WEIGHT_FILE is not in $WEIGHTS_DIR.
        The ~20 GB weight is the third of the four fetches a closed network
        cannot do, and the stack has nothing to serve without a weight. Copy
        one in and verify it:
@@ -958,20 +1141,21 @@ else
          ./scripts/verify-weights.sh --file <name>   (checks size + sha256)
        Any registry weight works, not just this default — set SERVE_SCRIPT in
        openbeast.conf to match what you brought."
-  warn "downloading the default 27B model — this is the long step, grab coffee."
-  # fetch-weight.sh, not a second copy of it: it downloads into a staging dir
-  # INSIDE the weights dir, verifies size + sha256 there, and DELETES a
-  # mismatch — so a file that failed its pin never exists under the name a
-  # serve script (or the check above) looks for. An interrupted download
-  # keeps its partial, and the next run resumes it.
-  "$REPO_DIR/scripts/fetch-weight.sh" "$WEIGHT_FILE" \
-    || die "the default weight was not installed (fetch-weight.sh says why,
+    warn "downloading the default 27B model — this is the long step, grab coffee."
+    # fetch-weight.sh, not a second copy of it: it downloads into a staging dir
+    # INSIDE the weights dir, verifies size + sha256 there, and DELETES a
+    # mismatch — so a file that failed its pin never exists under the name a
+    # serve script (or the check above) looks for. An interrupted download
+    # keeps its partial, and the next run resumes it.
+    "$REPO_DIR/scripts/fetch-weight.sh" "$WEIGHT_FILE" \
+      || die "the default weight was not installed (fetch-weight.sh says why,
        above). Nothing that failed verification was left under $WEIGHT_FILE.
        Re-run this script to retry (an interrupted download resumes). If the
        pin failed, the upstream file changed since OpenBeast pinned it: check
        the HF repo ($HF_REPO) and OpenBeast issues for a vetted update."
-  [[ -f "$WEIGHTS_DIR/$WEIGHT_FILE" ]] || die "download failed"
-  ok "downloaded to $WEIGHTS_DIR (sha256 verified)"
+    [[ -f "$WEIGHTS_DIR/$WEIGHT_FILE" ]] || die "download failed"
+    ok "downloaded to $WEIGHTS_DIR (sha256 verified)"
+  fi
 fi
 
 # ---- executable bits -------------------------------------------------------
@@ -982,6 +1166,11 @@ chmod +x "$REPO_DIR"/*.sh "$REPO_DIR"/scripts/*.sh "$REPO_DIR"/tests/*.sh 2>/dev
 # said nothing about it.
 ob_weights_line() {
   local gb
+  # No local model server, no weight: name the server this stack talks to.
+  if [[ $OB_LOCAL_LLAMA -eq 0 ]]; then
+    echo "  Inference: $INFERENCE_BACKEND at $INFERENCE_URL (not managed here)"
+    return 0
+  fi
   gb="$(stat -c%s "$WEIGHTS_DIR/$WEIGHT_FILE" 2>/dev/null | awk '{printf "%.1f GB", $1/1e9}' || true)"
   echo "  Weights:   $WEIGHTS_DIR/$WEIGHT_FILE${gb:+ ($gb)}"
   echo "             (the directory is WEIGHTS_DIR in openbeast.conf)"
@@ -1016,7 +1205,7 @@ if ob_offline; then
   warn "OFFLINE=true → not pulling the $_n_img frontend image(s); a registry
       pull cannot succeed here. Images already in the local store are used as
       they are. To bring them in from a connected box:
-        connected:  ./scripts/bundle.sh build ./bundle
+        connected, same arch:  ./scripts/bundle.sh build ./bundle
         here:       ./scripts/bundle.sh install ./bundle
       That loads them AND rewrites docker-compose.yml to reference them by
       content id, because a digest-pinned ref cannot be satisfied from a
@@ -1044,8 +1233,16 @@ echo "  secure remote access anytime with ./scripts/setup-tailscale.sh"
 echo "  (which turns on per-user login + RBAC)."
 echo
 echo "  Chat UI:   http://localhost:3000"
-echo "  Model API: http://localhost:8080/v1   (OpenAI-compatible)"
-echo "  Terminal:  run 'opencode' in any project directory"
+if [[ $OB_LOCAL_LLAMA -eq 1 ]]; then
+  echo "  Model API: http://localhost:8080/v1   (OpenAI-compatible)"
+else
+  echo "  Model API: $INFERENCE_URL/v1   (OpenAI-compatible, $INFERENCE_BACKEND)"
+fi
+if [[ $OB_LOCAL_LLAMA -eq 1 ]]; then
+  echo "  Terminal:  run 'opencode' from this checkout (its opencode.json is project-local)"
+else
+  echo "  Terminal:  opencode: add the entry scripts/backends/use-model.sh prints to ~/.config/opencode"
+fi
 ob_weights_line
 echo
 

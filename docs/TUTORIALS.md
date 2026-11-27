@@ -2,10 +2,13 @@
 
 Every walkthrough below is copy-pasteable on a rig that has run
 `./bootstrap.sh`. Each says what you should see, and each stops at the point
-where the deeper document takes over. Nothing here is aspirational: every
-command was run against the scripts as they ship in v1.5.0, and the
-beast-artifact and beast-chat walkthroughs were re-checked against the
-scripts' argument parsers on `main` (2026-09-30).
+where the deeper document takes over. Nothing here is aspirational. When each
+section was last checked: every walkthrough that existed at v1.5.0 was run
+against the scripts as they shipped in v1.5.0 (2026-09-17); beast-artifact
+and beast-chat were re-checked against the scripts' argument parsers on
+`main` (2026-09-30); beast-island postdates v1.5.0 and its commands were
+checked against the argument parsers of `start.sh` and `agents/island.py` on
+`main` (2026-11-15), not run through a real outage.
 
 | Feature | Walkthrough | The full document |
 |---|---|---|
@@ -16,6 +19,7 @@ scripts' argument parsers on `main` (2026-09-30).
 | beast-slot 🎰 | [a laptop that thinks on the rig](#beast-slot--a-laptop-that-thinks-on-the-rig) | [BEAST_SLOT.md](BEAST_SLOT.md) |
 | beast-gate 🛡️ | [per-device keys for the inference port](#beast-gate--per-device-keys-for-the-inference-port) | [BEAST_SLOT.md § beast-gate](BEAST_SLOT.md) |
 | Air-gap 🔌 | [install a rig that has no internet](#air-gap--install-a-rig-that-has-no-internet) | [INSTALL.md § Offline](INSTALL.md) |
+| beast-island 🏝️ | [keep working through a power outage](#beast-island--keep-working-through-a-power-outage) | [BEAST_ISLAND.md](BEAST_ISLAND.md) |
 | beast-campaign 🧪 | [measure something without lying to yourself](#beast-campaign--measure-something-without-lying-to-yourself) | [BEAST_CAMPAIGN_PLAN.md](BEAST_CAMPAIGN_PLAN.md) |
 
 A convention used throughout: `openbeast.conf` keys are shown with `>>`, and
@@ -329,7 +333,7 @@ auth model: [BEAST_CHAT.md](BEAST_CHAT.md).
 
 ## beast-slot — a laptop that thinks on the rig
 
-**What you get:** any Mac or Linux laptop runs OpenCode and the full 18-tool
+**What you get:** any Mac or Linux laptop runs OpenCode and the full 19-tool
 arsenal against *its own* files; only inference crosses the tailnet.
 
 On the rig, put a key in front of inference first. `setup-tailscale.sh`
@@ -361,7 +365,7 @@ openbeast-client status
 ```
 === OpenBeast client status ===
   ✓ env file (~/.openbeast-client.env)
-  ✓ venv imports mcp + openai
+  ✓ venv has mcp + openai
   ✓ tailscale up
   ✓ rig model API reachable (https://beast.tail1234.ts.net:8443/v1)
   …then the rig's actually-loaded model, context and busy slots from /api/slot
@@ -434,6 +438,61 @@ differently offline: [INSTALL.md § Offline](INSTALL.md).
 
 ---
 
+## beast-island — keep working through a power outage
+
+**What you get:** the rig keeps its intelligence running on its UPS when an
+outage takes the router (and the internet) down. Only the web tools stop, and
+they say so at once instead of stalling. Full reference:
+[BEAST_ISLAND.md](BEAST_ISLAND.md).
+
+**Nothing to set up.** `ISLAND=auto` is the default. While the stack runs, a
+watcher probes the internet every 15 s. About 90 to 120 s after the route dies
+the rig islands; when it has been back for two probes in a row, it rejoins:
+
+```bash
+./start.sh -d                      # normal start; islands by itself if the internet drops
+python3 agents/island.py status    # online (watching…) | ISLAND MODE since … — why
+./start.sh --status                # same line, plus the watcher's pid
+```
+
+**Power came back before the router?** Just start normally. A launch that
+finds no route boots islanded: no image pulls, and Open WebUI starts in its
+offline mode so it doesn't stall downloading models.
+
+**Know the internet is gone (or want it ignored)?** Force it:
+
+```bash
+./start.sh -d --offline            # islanded from launch until the stack stops
+./start.sh restart --offline       # a restart forgets --offline: say it again
+./stop.sh && ./start.sh -d         # rejoin: back to auto
+```
+
+**What to expect once islanded:**
+- The model's `web_search` and `fetch` reply *"ISLAND MODE … do not retry"*.
+  The model answers from local knowledge and files and tells you when
+  something would need the web.
+- Everything else works as usual: chat, OpenCode, files, bash, agents, skills,
+  beast-chat, beast-artifact.
+- `./scripts/healthcheck.sh` shows `ISLE Network:`. An offline Tailscale
+  counts as expected, not as a fault.
+
+**Two things island mode doesn't cover:**
+- Open WebUI's own **Web Search** toggle still calls SearXNG and comes back
+  empty after its timeouts.
+- Background agents started with `start_agent` still hit web timeouts rather
+  than the instant refusal. This is held back on purpose until the next eval
+  era roll.
+
+**On battery:** `sudo nvidia-smi -pl <watts>` trades speed for UPS runtime.
+Island mode doesn't do this for you.
+
+**Settings** (`openbeast.conf`): `ISLAND=auto|force|off`, `ISLAND_GRACE=90`,
+`ISLAND_PROBES=1.1.1.1:443 9.9.9.9:443 8.8.8.8:443`. Probes are IP literals
+only. On a network that reaches the internet only through a proxy, point them
+at something reachable or set `ISLAND=off`.
+
+---
+
 ## beast-campaign — measure something without lying to yourself
 
 **What you get:** two small tools that make an eval row mean what it says.
@@ -442,7 +501,7 @@ differently offline: [INSTALL.md § Offline](INSTALL.md).
 ./scripts/gpu-lease.sh status                    # FREE, or HELD by whom since when
 ./scripts/gpu-lease.sh run "my sweep" -- bash my-sweep.sh
 ./scripts/eval-era.sh                            # the hash of what an eval unit sees
-./scripts/eval-era.sh --files                    # the six files behind it
+./scripts/eval-era.sh --files                    # the five files behind it
 ./scripts/eval-era.sh --check 3b7c2adb8da7968d   # exit 1 if it moved
 ```
 

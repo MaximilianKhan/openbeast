@@ -12,8 +12,8 @@ implementations in some subset of `python`, `go`, `c`, `cpp`, `rust`, `zig`.
 Each variant is its own scored test unit; weight per variant =
 `difficulty_weight / num_variants` (so total points per task stay constant).
 
-**Variant ID convention** (stable letter suffix, used across all 13 variant
-tasks in the suite): `a`=python, `b`=go, `c`=c, `d`=cpp, `e`=rust, `f`=zig.
+**Variant ID convention** (stable letter suffix, used by every variant task in
+`evals/tasks/`: 35 on 2026-11-19): `a`=python, `b`=go, `c`=c, `d`=cpp, `e`=rust, `f`=zig.
 Stable letters mean adding new languages doesn't renumber existing variants.
 The exception is `122_gemm_blocked`, which has no Python (perf-flavored), so
 its IDs are `a`=go, `b`=c, `c`=cpp, `d`=rust, `e`=zig.
@@ -61,14 +61,26 @@ outputs).
 
 ### Validation script template
 
+> **v5 rule (the suite since the v5 era break).** The template below is the
+> v4 shape and is kept only to read v4 tasks. A v5 unit never puts the
+> answer on disk: 120 v4 units left `expected.txt` and 53 left `check.py`
+> in the agent's working dir, and a probe that only `cat`s them PASSED. In
+> v5, setup writes 2-5 clearly labelled samples (`sample_input.txt`,
+> `sample_output.txt`) and nothing else; the validator is `type: python`,
+> holds a seeded generator and the oracle, compiles once, feeds the hidden
+> cases over stdin with `subprocess.run(input=..., timeout=...)`, prints only
+> the failing case's INDEX on a mismatch, and stays under 15 s at scale 1
+> including a cold zig compile. No coreutils `timeout` (absent on macOS), no
+> `<bits/stdc++.h>`. Prove it with `tests/prove_task.py` (below).
+
 ```bash
 set -e
 cd /tmp/eval_X
 {build_command}            # no-op for python
 ./sol < input.txt > out.txt   # or python3 sol.py < input.txt > out.txt
-diff -u expected.txt out.txt && echo OK
+diff -u expected.txt out.txt && echo OK      # v4 only: v5 bans this
 # OR for non-deterministic outputs:
-python3 check.py
+python3 check.py                              # v4 only: v5 bans this
 ```
 
 ## JSON skeleton (6-language variant task)
@@ -93,10 +105,30 @@ python3 check.py
     {"id": "c", "language": "c",    "setup": "...", "task": "Create /tmp/eval_X/sol.c. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o sol sol.c`. ...", "validation": {...}, "cleanup": "..."},
     {"id": "d", "language": "cpp",  "setup": "...", "task": "Create /tmp/eval_X/sol.cpp. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o sol sol.cpp`. ...", "validation": {...}, "cleanup": "..."},
     {"id": "e", "language": "rust", "setup": "...", "task": "Create /tmp/eval_X/sol.rs. Idiomatic Rust 2021+; compile with `rustc -O sol.rs -o sol`. ...", "validation": {...}, "cleanup": "..."},
-    {"id": "f", "language": "zig",  "setup": "...", "task": "Create /tmp/eval_X/sol.zig. Zig 0.16+ idioms — see the canonical Zig section below for the full pattern, especially the `&fr.interface` indirection. Compile with `zig build-exe -O ReleaseFast sol.zig`. ...", "validation": {...}, "cleanup": "..."}
+    {"id": "f", "language": "zig",  "setup": "...", "task": "Create /tmp/eval_X/sol.zig for Zig 0.16 (entry point `pub fn main(init: std.process.Init) !void`). It is built with `zig build-exe -O ReleaseFast sol.zig`. ...", "validation": {...}, "cleanup": "..."}
   ]
 }
 ```
+
+**The zig `task` states the contract and teaches no API.** v4 prompts
+carried the stdio recipe (see the sealed authoring recipe), so every "unassisted" zig arm was tutored — the packs-OFF arm of the
+Tier-3 A/B passed 10-11/30 *with* the recipe in its prompt. v5 bans those
+phrases in a zig `task` (`tests/audit_variants.py` ZIG TUTORING BAN LINT,
+enforced on every v5 unit by `tests/test_v5_suite.py`). The version, the
+entry point the validator needs, and the exact compile command are the
+spec; everything else about the stdlib is the model's job, or the
+treatment arms' (`--packs`, `BEAST_ASSIST`, `--escalate`). The canonical
+patterns below are for writing the REFERENCE solution, never the prompt.
+
+**Declare the refs in the JSON.** Each unit (base or variant) names its
+reference as `"ref_stem": "<dir under evals/refs/>/ref"` (no extension; the
+language picks `py go c cpp rs zig sh`) and `"dest"`: the path the task
+says the solution lives at. Wrong solutions (`wrong_<name>.<ext>`, >= 2), a
+slow solution for a timed unit (`slow.<ext>`), an optional leak probe
+(`leak.<ext>`) and their failure classes (`prove.json`:
+`{"expect": {"wrong_<name>.<ext>": "<regex>"}, "slow_expect": "...",
+"timed": true}`) sit next to it in `evals/refs/<task_id>/`. The old hand
+map in `audit_variants.py` (LEGACY_TARGETS) is for v4 tasks only.
 
 The `setup` should be **identical across all variants** of a task — same input,
 same expected output. Only the build/run commands and language-specific
@@ -150,10 +182,8 @@ docstrings legitimately. See `eval-task-author` SKILL pitfall #1.
 - **Rust**: `io::stdin().read_to_string(&mut s).unwrap()` then
   `s.split_ascii_whitespace()`. `BufWriter::new(stdout.lock())` for fast
   output. `u128` for modular-multiply overflow, `i64`/`u64` otherwise.
-- **Zig 0.16** — see the dedicated section below. Quick checklist: `std.Io`
-  (capital I), `&fr.interface` to reach the rich Reader/Writer API, `try
-  w.flush()` before return, prefer `const` over `var`, rename unused params
-  to `_`. Cold compile ~7-8s/file.
+- **Zig 0.16** — see the sealed authoring recipe (section below points to it).
+  Cold compile ~7-8s/file.
 
 ## Common gotchas
 
@@ -174,118 +204,25 @@ docstrings legitimately. See `eval-task-author` SKILL pitfall #1.
 
 ## Zig 0.16 canonical patterns
 
-> **Why this section exists.** The original Zig variant rollout taught the
-> model to call methods like `takeDelimiter` and `appendRemainingUnlimited`
-> directly on `std.Io.File.Reader`. Those methods don't live there — they
-> live on the underlying `std.Io.Reader` *interface*, accessed via
-> `&fr.interface`. The omission scored 0/13 across both 27B models in the
-> first v3 sweep. These templates are the verified fix. Use them in every
-> Zig variant `task` field.
-
-### Critical API rules
-
-1. **Capital `Io`.** `std.Io`, not `std.io`. The lowercase namespace was
-   removed in Zig 0.15+.
-2. **The `.interface` indirection.** `std.Io.File.Reader` and
-   `std.Io.File.Writer` are concrete file readers/writers with ~10 public
-   methods. The rich API (65+ methods including `takeDelimiter`,
-   `appendRemainingUnlimited`, `print`) lives on `std.Io.Reader` /
-   `std.Io.Writer` (the interface). Get there via `const r = &fr.interface;`.
-3. **`init.io` and `init.arena`.** The `Init` param exposes both. Pass
-   `init.io` to `.reader()` / `.writer()`. Use `init.arena.allocator()` for
-   transient heap allocations.
-4. **Always `try w.flush()`** before return — output is buffered and
-   silently dropped on exit if you don't.
-
-### Strict-default footguns (these are *errors*, not warnings)
-
-- **Unused function parameter.** Rename to `_`: `pub fn main(_: std.process.Init) !void { ... }` if you don't need `init`. (You'll need it for stdio though.)
-- **Unused local constant.** Discard with `_ = unused_value;` or just don't bind it.
-- **`var` never mutated.** Use `const` instead. Zig errors if a `var` is never reassigned.
-- **Unused imports** of named items. Prefer `const std = @import("std");` and access fields qualified — `std.foo` doesn't trigger unused-import.
-
-### Template 1 — Line-by-line stdin → stdout (most common)
-
-```zig
-const std = @import("std");
-
-pub fn main(init: std.process.Init) !void {
-    var in_buf: [4096]u8 = undefined;
-    var fr = std.Io.File.stdin().reader(init.io, &in_buf);
-    const r = &fr.interface;
-
-    var out_buf: [4096]u8 = undefined;
-    var fw = std.Io.File.stdout().writer(init.io, &out_buf);
-    const w = &fw.interface;
-
-    while (try r.takeDelimiter('\n')) |line| {
-        // Process `line` (a []u8 slice without the newline)
-        try w.print("{s}\n", .{line});
-    }
-    try w.flush();
-}
-```
-
-### Template 2 — Slurp all stdin → tokenize whitespace
-
-```zig
-const std = @import("std");
-
-pub fn main(init: std.process.Init) !void {
-    const arena = init.arena.allocator();
-
-    var in_buf: [4096]u8 = undefined;
-    var fr = std.Io.File.stdin().reader(init.io, &in_buf);
-    const r = &fr.interface;
-
-    var data: std.ArrayList(u8) = .empty;
-    try r.appendRemainingUnlimited(arena, &data);
-
-    var out_buf: [4096]u8 = undefined;
-    var fw = std.Io.File.stdout().writer(init.io, &out_buf);
-    const w = &fw.interface;
-
-    var it = std.mem.tokenizeAny(u8, data.items, " \n\r\t");
-    while (it.next()) |tok| {
-        const n = try std.fmt.parseInt(i64, tok, 10);
-        try w.print("{d}\n", .{n});
-    }
-    try w.flush();
-}
-```
-
-Both templates verified to compile and run on `zig 0.16.0` (mise install).
-Use Template 1 when input is line-oriented (one record per line); use
-Template 2 when input is a stream of whitespace-separated tokens.
-
-### Useful interface methods (on `std.Io.Reader` via `&fr.interface`)
-
-- `takeDelimiter(byte) !?[]u8` — read up to and excluding delimiter; returns `null` at EOF
-- `takeDelimiterExclusive(byte) ![]u8` — same but errors at EOF instead of returning null
-- `appendRemainingUnlimited(allocator, *ArrayList(u8)) !void` — slurp all remaining bytes
-- `takeByte() !u8` — single byte
-- `readSliceAll([]u8) !void` — fill a fixed-size buffer
-
-### Useful interface methods (on `std.Io.Writer` via `&fw.interface`)
-
-- `print(fmt, args) !void` — formatted output (`{d}`, `{s}`, `{x}`, etc.)
-- `writeAll([]const u8) !void` — write a slice
-- `writeByte(u8) !void` — single byte
-- `flush() !void` — **must call before return**
+The Zig 0.16 stdio/API recipe for writing reference solutions is sealed in
+[`evals/audit/authoring/zig-0.16-reference-recipe.md`](../../evals/audit/authoring/zig-0.16-reference-recipe.md):
+v5 forbids that wording in task prompts as tutoring, and this skill is readable
+by the measured agent. Read it there when authoring a Zig reference.
 
 ## Done criteria for a variant task
 
 - [ ] All variants in the JSON (a–f as appropriate)
-- [ ] Task mapped in `tests/audit_variants.py`: add
-      `'{task_id}': ('<stem>', '/tmp/eval_<x>')` to `TARGETS`. `<stem>` is the
-      file name the variants write (e.g. `prho` for `137_pollard_rho`), and
-      `/tmp/eval_<x>` is the directory they write it to
-- [ ] Reference impl for each language at `evals/refs/<stem>.{ext}` — named by
-      that TARGETS stem, not the task slug (durable; was `/tmp/refs/` pre-2026-05-07)
-- [ ] All variants pass validation with their reference impls — verified via
-      `python3 tests/audit_variants.py {task_id}` exiting 0 with a `[PASS]` line
-      per variant. An id missing from `TARGETS` reports `[MISS]` and exits 1, and
-      so does a missing ref
+- [ ] Reference impl for each language under `evals/refs/{task_id}/`, declared
+      per unit as `ref_stem` + `dest` (v4 tasks: `evals/refs/{slug}.{ext}`)
+- [ ] **PROVEN** by the model-free gate, every variant:
+      `python3 tests/prove_task.py --unit {task_id}_{v}` — ref N/N (5/5 if
+      timed), >= 2 wrong solutions failing for their declared class, empty
+      fails, no oracle file in the fixture dir, slow solution fails by the
+      validator's own limit, ref passes again at `--scale 2.0`
+- [ ] No banned zig tutoring in any zig `task` (`&fr.interface`, `init.io`,
+      `takeDelimiter`)
+- [ ] All variants pass validation with their reference impls — quick smoke:
+      `python3 tests/audit_variants.py {task_id}`
 - [ ] Forbidden-API lints catch obvious cheats in each language
 - [ ] Per-variant runtime <2s with reference impl (Zig <10s acceptable due to
       compile cost)

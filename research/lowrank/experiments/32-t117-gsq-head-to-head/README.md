@@ -1,3 +1,5 @@
+> *Naming (noted 2026-11-19):* "v5-fast" here is the 112-unit fast subset of the **v4** suite, renamed `v4-fast` on 2026-11-15. It is not the 71-unit v5 suite ([reading notes](../../../README.md#reading-notes)).
+
 # E32 / T1.17 — GSQ-RCO head-to-head on Qwen3.8-27B (staged 2026-09-09)
 
 The decisive experiment (CONTRIBUTIONS-PLAN C2; NEXT-STEPS-2026-09-08

@@ -1,0 +1,784 @@
+#!/bin/bash
+# spark-beast: one-word control of the spark-hydra pair, run on spark-1 (the
+# head) as the account that owns the deployment. Installed as
+# ~/.local/bin/beast-spark with the bash aliases beastup / beastdown /
+# beastglm / beastds / beasthy4 / beaststatus. docs/SPARK_HYDRA.md "Everyday shortcuts: beast-spark"
+#
+#   beast-spark up        # beastup:   start the selected model (the other unit stopped first), then the command center
+#   beast-spark down      # beastdown: stop the command center and both inference units
+#   beast-spark glm       # beastglm:  switch to GLM-5.3-Flash (the staged alternative)
+#   beast-spark ds        # beastds:   switch to DeepSeek-V4.1-Flash (Mia EXL3), the pair's default model
+#   beast-spark hy4       # beasthy4:  serve Hy4-flash (NVFP4, vLLM TP2) for now: staged, never a boot default
+#   beast-spark status    # beaststatus: which model is selected, what is running, health
+#   beast-spark NAME      # serve an adopted beast-recipe recipe (beast-recipe adopt NAME --run): like hy4,
+#                         # staged, never a boot default; `beast-spark recipe NAME` is the same
+#   beast-spark aliases   # print the six alias lines for ~/.bashrc
+#   beast-spark install   # install/update beast-spark, the pack tools, the aliases and the boot-check drop-in from the checkout (~/openbeast)
+#   beast-spark boot-check # openbeast.service's ExecStartPre: openbeast.conf back at the selected model when it
+#                         # still names Hy4 or a recipe that does not run (a reboot after beasthy4 / a recipe)
+#
+# The pair serves one model at a time (each needs both GPUs). Two can be SELECTED:
+#   DeepSeek  unit deepseek-v41-inference (recipe ~/openbeast-recipes/deepseek-prep/runtime):
+#             THE DEFAULT (Max, 2026-11-18, after hands-on testing; v5 board 61/71, #1).
+#             Serves DeepSeek-V4.1-Flash-1017 from DeepSeek-V4.1-Flash (Mia EXL3), the pack
+#             whose folder/cache id ends in "-v2", unless ~/.config/openbeast/beast-spark.env
+#             names another (DS_PACK=<folder> and DS_ID=<ORG/NAME>).
+#   GLM       unit spark-hydra-inference (recipe ~/openbeast-recipes/glm53): the staged
+#             alternative (`beastglm`). Serves GLM-5.3-Flash-EXL3.
+# and one more can serve without being selected:
+#   Hy4       unit hy4-vllm-inference (scripts/backends/hy4-vllm, installed into
+#             ~/openbeast-recipes/hy4-vllm by spark-hy4-stage.sh install): Hy4-flash
+#             NVFP4 on vLLM TP2 (`beasthy4`), for measuring it (v5 arm H_T2). Its unit
+#             has no [Install] section, so it is never enabled, never starts at boot,
+#             and `up` never picks it: the selection (and boot) stays DeepSeek or GLM.
+# "Selected" means the ENABLED inference unit: the one that starts at boot and
+# the one `up` starts. `down` leaves the selection as it is.
+#
+# This is THE switch path. The installed helpers it calls are internals:
+#   glm  rollback/restore-glm.sh (stop + disable DeepSeek, GLM's settings in
+#        openbeast.conf, enable + start GLM, restart the command center)
+#   ds   stop GLM; spark-deepseek-pack.sh use DS_PACK --id DS_ID when another
+#        pack is selected; then activate-stock.sh (start DeepSeek, canary,
+#        conformance, use-model.sh writes openbeast.conf, the gate key synced
+#        into openbeast.conf (LLAMA_API_KEY), enable DeepSeek, disable GLM,
+#        and restart the command center LAST; spark-1's copy as of 2026-11-23
+#        19:02). activate-stock.sh never stops GLM itself: never run it while
+#        GLM is active. When it fails after use-model.sh wrote openbeast.conf
+#        (at the key sync, the two enablement lines or the command-center
+#        restart) and DeepSeek serves, beast-spark does the enablement itself
+#        and restarts the command center (cc_up): the switch stands. Any earlier failure (start, canary, conformance), with GLM
+#        serving when `ds` began: restore-glm.sh brings GLM back.
+#   hy4  stop DeepSeek / GLM (whichever runs; their enablement stays), start
+#        hy4-vllm-inference, wait for Hy4-flash-NVFP4, set INFERENCE_BACKEND=vllm
+#        and INFERENCE_MODEL in ~/openbeast/openbeast.conf, restart the command
+#        center. If anything fails, Hy4 is stopped and the model that served
+#        before is started again (its unit; both keys as they were). `ds`, `glm`,
+#        `up` and `down` stop Hy4 when it runs and point openbeast.conf back at
+#        the selected model (tensorfold, its id) when it still names Hy4.
+# INFERENCE_SLOTS (the gate's per-device cap and beast-slot's count) follows
+# every switch: DeepSeek the PARALLEL= line of $PREP/runtime/scripts/local.sh,
+# GLM 4 (the glm53 recipe's PARALLEL on two Sparks), Hy4 4 (its
+# --max-num-seqs), a recipe its SLOTS= line (else 4); DS_SLOTS / GLM_SLOTS /
+# HY4_SLOTS in beast-spark.env override.
+# After a reboot the ENABLED unit serves (DeepSeek or GLM); openbeast.conf
+# is pointed back at it by `beast-spark boot-check`, which `beast-spark
+# install` wires in as openbeast.service's ExecStartPre (a drop-in).
+# Exit codes: 0 done; 1 failed (rolled back where a rollback applies); 2 usage;
+# 3 the model serves and the switch stands, but the command center
+# (openbeast.service, beast-gate with it) did not come up, even on cc_up's
+# second try: journalctl --user -u openbeast -n 50, then systemctl --user
+# start openbeast. `beast-recipe rollback --run` reports 3 as a partial rollback.
+# Every start waits until /v1/models on 127.0.0.1:8000 lists the EXPECTED
+# served id. Switches hold ${XDG_RUNTIME_DIR:-/tmp}/spark-model.lock, which
+# spark-deepseek-pack.sh takes too, so two switches never overlap.
+# Offline: no network beyond the spark-1 <-> spark-2 link.
+set -euo pipefail
+
+# Test seams: SB_PREP, SB_DS_PACK, SB_DS_ID, SB_CONF, SB_URL, SB_KEY_FILE,
+# SB_WAIT_S, SB_HY4_WAIT_S, SB_LOCK, SB_BIN_DIR, SB_BASHRC, SB_OB_CONF, SB_CHECKOUT, SB_RECIPES_D,
+# SB_TENSORFOLD_BIN, SB_UNIT_DIR.
+PREP="${SB_PREP:-$HOME/openbeast-recipes/deepseek-prep}"
+CONF="${SB_CONF:-$HOME/.config/openbeast/beast-spark.env}"
+V2_PACK="$HOME/Documents/Mia-AiLab-DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw-v2"
+V2_ID=Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1.1-2.9-bpw-v2
+DS_UNIT=deepseek-v41-inference.service
+GLM_UNIT=spark-hydra-inference.service
+HY4_UNIT=hy4-vllm-inference.service
+OB_UNIT=openbeast.service
+DS_SERVED=DeepSeek-V4.1-Flash-1017
+GLM_SERVED=GLM-5.3-Flash-EXL3
+HY4_SERVED=Hy4-flash-NVFP4
+URL="${SB_URL:-http://127.0.0.1:8000}"
+KEY_FILE="${SB_KEY_FILE:-$HOME/.config/openbeast/tensorfold-api-key}"
+WAIT_S="${SB_WAIT_S:-1200}"
+# Hy4's first start on a new image autotunes FlashInfer's kernels (~10 min, CLAIMED) after a ~2 min load
+HY4_WAIT_S="${SB_HY4_WAIT_S:-2400}"
+OB_CONF="${SB_OB_CONF:-$HOME/openbeast/openbeast.conf}"
+LOCK="${SB_LOCK:-${XDG_RUNTIME_DIR:-/tmp}/spark-model.lock}"
+BIN_DIR="${SB_BIN_DIR:-$HOME/.local/bin}"
+BASHRC="${SB_BASHRC:-$HOME/.bashrc}"
+# The checkout `install` copies from (and the installed copy is compared with)
+CHECKOUT="${SB_CHECKOUT:-$HOME/openbeast}"
+# Recipes adopted by beast-recipe (scripts/beast-recipe.sh adopt NAME --run): one NAME.env per
+# recipe, KEY=value lines PARSED, never sourced: UNIT (beast-recipe-*.service), SERVED, BACKEND,
+# WAIT_S, and TENSORFOLD_VERSION (the native release the recipe was planned for: checked on this Spark
+# before anything is stopped). .previous records the selection before the last switch to a recipe
+# (beast-recipe rollback).
+RECIPES_D="${SB_RECIPES_D:-$HOME/.config/openbeast/recipes.d}"
+TF_BIN="${SB_TENSORFOLD_BIN:-$HOME/.local/bin/tensorfold}"
+# Where `install` writes openbeast.service's drop-in (the boot-check ExecStartPre)
+UNIT_DIR="${SB_UNIT_DIR:-$HOME/.config/systemd/user}"
+export PATH="$HOME/.local/bin:$PATH"
+
+log() { printf '[beast-spark] %s\n' "$*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+
+# ~/.config/openbeast/beast-spark.env: KEY=value lines, PARSED, never sourced.
+# DS_PACK (the pack folder `ds` selects) and DS_ID (the ORG/NAME it is staged
+# as; `spark-deepseek-pack.sh list` shows it) go together.
+conf_value() {  # KEY
+  [[ -r "$CONF" ]] || return 0
+  sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$CONF" | tail -1 |
+    sed -e 's/[[:space:]]#.*$//' -e 's/[[:space:]]*$//' -e "s/^[\"']\(.*\)[\"']\$/\1/" -e "s|^~/|$HOME/|" -e "s|^\\\$HOME/|$HOME/|"
+}
+DS_PACK="${SB_DS_PACK:-$(conf_value DS_PACK)}"
+DS_ID="${SB_DS_ID:-$(conf_value DS_ID)}"
+if [[ -z "$DS_PACK" ]]; then DS_PACK=$V2_PACK; DS_ID=${DS_ID:-$V2_ID}; fi
+
+sc() { systemctl --user "$@"; }
+
+# cc_up restart|start: the command center (openbeast.service), once the model
+# serves. A failed restart is not a failed switch: the model is up, so nothing
+# is rolled back. It is retried once from a clean stop (`systemctl --user stop`
+# is bounded by the unit's stop timeout; the stack's own unit is reset), and a
+# second failure leaves a WARNING with the command to run and exit 3 (finish),
+# never an exit 1 or a rollback.
+# (2026-11-23: a stop that hung 90 s failed `beast-spark glm` with GLM serving
+# and rolled back a working recipe switch.)
+OB_STACK_UNIT=openbeast-stack.service
+cc_up() {
+  sc "$1" "$OB_UNIT" && return 0
+  log "WARNING: systemctl --user $1 $OB_UNIT failed; stopping it and starting it once more"
+  sc stop "$OB_UNIT" 2>/dev/null || true
+  sc reset-failed "$OB_UNIT" "$OB_STACK_UNIT" 2>/dev/null || true
+  sc start "$OB_UNIT" && { log "the command center is up (second try)"; return 0; }
+  log "WARNING: the command center did not start; the model serves and the switch stands (exit 3: beast-gate is down)."
+  log "  journalctl --user -u $OB_UNIT -n 50; then systemctl --user start openbeast"
+  CC_DOWN=1
+  return 0
+}
+# The command's exit: 3 when cc_up left the command center down (the model serves), else 0.
+CC_DOWN=0
+finish() { (( CC_DOWN )) && exit 3; exit 0; }
+enabled() { [[ "$(sc is-enabled "$1" 2>/dev/null || true)" == enabled ]]; }
+active() { sc is-active --quiet "$1"; }
+# systemctl has no is-activating verb: read the unit's ActiveState
+activating() { [[ "$(sc show -p ActiveState --value "$1" 2>/dev/null)" == activating ]]; }
+
+# The model the pair is set to serve: glm, ds, or none.
+selected() {
+  if enabled "$DS_UNIT"; then echo ds
+  elif enabled "$GLM_UNIT"; then echo glm
+  else echo none; fi
+}
+unit_of() { case "$1" in ds) echo "$DS_UNIT" ;; glm) echo "$GLM_UNIT" ;; esac; }
+other_of() { case "$1" in ds) echo "$GLM_UNIT" ;; glm) echo "$DS_UNIT" ;; esac; }
+# A stale install (~/.local/bin/beast-spark older than the checkout) lacks
+# commands and fixes silently: an old copy answered `hy4` with the usage. One
+# cmp per command (no network, no git): warn when the installed copy and the
+# checkout's differ, whichever of the two is running.
+check_install() {
+  local src="$CHECKOUT/scripts/backends/spark-beast.sh" inst="$BIN_DIR/beast-spark"
+  [[ -f "$src" && -f "$inst" ]] || return 0
+  cmp -s "$src" "$inst" && return 0
+  local who
+  if [[ "$0" -ef "$inst" ]]; then who="this beast-spark ($inst) differs from the checkout's $src"
+  elif [[ "$0" -ef "$src" ]]; then who="the installed $inst (what the beast* aliases run) differs from this checkout's copy"
+  else return 0; fi
+  log "WARNING: $who: it may lack commands or fixes. Update it (from $CHECKOUT, after a git pull there if the checkout is the older one): beast-spark install"
+}
+
+served_of() { case "$1" in "$DS_UNIT") echo "$DS_SERVED" ;; "$GLM_UNIT") echo "$GLM_SERVED" ;; "$HY4_UNIT") echo "$HY4_SERVED" ;;
+  *) recipe_units | awk -v u="$1" '!f && $2 == u { print $3; f = 1 }' ;; esac; }
+# recipe_value FILE KEY: the last KEY=value line, the value as written (no quotes, no comments)
+recipe_value() { sed -n "s/^$2=//p" "$1" | tail -1; }
+# "name unit served backend wait" for every adopted recipe whose file is well formed
+recipe_units() {
+  local f n u s b w
+  for f in "$RECIPES_D"/*.env; do
+    [[ -f "$f" ]] || continue
+    n=$(basename "$f" .env); u=$(recipe_value "$f" UNIT); s=$(recipe_value "$f" SERVED)
+    b=$(recipe_value "$f" BACKEND); w=$(recipe_value "$f" WAIT_S)
+    [[ "$n" =~ ^[a-z0-9][a-z0-9._-]*$ && "$u" =~ ^beast-recipe-[A-Za-z0-9._-]+\.service$ && "$s" =~ ^[A-Za-z0-9._-]+$ ]] || continue
+    [[ "$b" == tensorfold || "$b" == vllm ]] || b=tensorfold
+    [[ "$w" =~ ^[0-9]+$ ]] || w=$HY4_WAIT_S
+    echo "$n $u $s $b $w"
+  done
+}
+hy4_installed() { [[ "$(sc show -p LoadState --value "$HY4_UNIT" 2>/dev/null)" == loaded ]]; }
+# Stop Hy4 when it runs (its stop.sh takes both ranks down), and every adopted
+# recipe that runs (they serve the same way, never selected); then conf_back.
+CONF_BACK=0
+stop_hy4() {
+  if active "$HY4_UNIT"; then log "stopping Hy4 ($HY4_UNIT)"; sc stop "$HY4_UNIT"; fi
+  local n u _rs _b _w
+  while read -r n u _rs _b _w; do
+    [[ -n "$n" ]] || continue
+    if active "$u"; then log "stopping the recipe $n ($u)"; sc stop "$u"; fi
+  done < <(recipe_units)
+  conf_back
+}
+# conf_back: when openbeast.conf still names Hy4 or an adopted recipe whose unit
+# does not run, point it at the SELECTED model (TensorFold, its served id, its
+# slots): CONF_BACK=1 then, and the caller restarts the command center. Never
+# stops or starts a unit (boot-check runs it before the command center starts).
+conf_back() {
+  local m n u rs _b _w was=""; m=$(ob_conf_get INFERENCE_MODEL)
+  [[ "$m" == "$HY4_SERVED" ]] && ! active "$HY4_UNIT" && was=Hy4
+  while read -r n u rs _b _w; do
+    [[ -n "$n" && -z "$was" && "$m" == "$rs" ]] && ! active "$u" && was="the recipe $n"
+  done < <(recipe_units)
+  if [[ -n "$was" ]]; then
+    local s su; s=$(selected); [[ "$s" == none ]] && s=ds
+    su=$(unit_of "$s")
+    log "openbeast.conf: INFERENCE_BACKEND=tensorfold, INFERENCE_MODEL=$(served_of "$su") (it pointed at $was, which does not run)"
+    ob_conf_set INFERENCE_BACKEND tensorfold
+    ob_conf_set INFERENCE_MODEL "$(served_of "$su")"
+    slots_set "$su"
+    CONF_BACK=1
+  fi
+}
+
+# The streams a unit serves (INFERENCE_SLOTS: the gate's per-device cap, beast-slot's count, and
+# run_eval's --jobs clamp). "" when unknown: then INFERENCE_SLOTS is left as it is.
+slots_of() {
+  local v=""
+  case "$1" in
+    "$DS_UNIT") v=$(conf_value DS_SLOTS)
+       [[ -n "$v" ]] || v=$(sed -n 's/^[[:space:]]*PARALLEL=["'\'']\{0,1\}\([0-9][0-9]*\).*/\1/p' "$PREP/runtime/scripts/local.sh" 2>/dev/null | tail -1) ;;
+    "$GLM_UNIT") v=$(conf_value GLM_SLOTS); v=${v:-4} ;;      # the glm53 recipe's PARALLEL on two Sparks
+    "$HY4_UNIT") v=$(conf_value HY4_SLOTS); v=${v:-4} ;;      # hy4-vllm/config.sh HY4_MAX_NUM_SEQS
+    *) local n u _s _b _w
+       while read -r n u _s _b _w; do
+         [[ "$u" == "$1" ]] && { v=$(recipe_value "$RECIPES_D/$n.env" SLOTS); v=${v:-4}; break; }
+       done < <(recipe_units) ;;
+  esac
+  [[ "$v" =~ ^[1-9][0-9]{0,2}$ ]] && echo "$v"
+  return 0
+}
+# slots_set UNIT: INFERENCE_SLOTS in openbeast.conf = what UNIT serves. SLOTS_CHANGED=1 when it moved.
+SLOTS_CHANGED=0
+slots_set() {
+  local v old; v=$(slots_of "$1")
+  [[ -n "$v" && -f "$OB_CONF" ]] || return 0
+  old=$(ob_conf_get INFERENCE_SLOTS)
+  [[ "$old" == "$v" ]] && return 0
+  log "openbeast.conf: INFERENCE_SLOTS=$v (was ${old:-unset}; what $1 serves)"
+  ob_conf_set INFERENCE_SLOTS "$v"
+  SLOTS_CHANGED=1
+}
+
+# GET $URL$1 with the API key as a curl config line on fd 3 (the curl_auth.sh
+# idiom, inlined because the installed copy lives in ~/.local/bin, away from
+# the checkout): the key is never an argument of any process.
+api_get() {
+  local k=""
+  [[ -r "$KEY_FILE" ]] && k=$(<"$KEY_FILE")
+  if [[ -z "$k" ]]; then curl -sf --max-time 3 "$URL$1"; return; fi
+  [[ "$k" =~ ^[A-Za-z0-9._~+/=-]+$ ]] || { log "the key in $KEY_FILE has unexpected characters: not sent"; return 1; }
+  curl -sf --max-time 3 --config /dev/fd/3 "$URL$1" 3<<EOF
+header = "Authorization: Bearer $k"
+EOF
+}
+served_model() {  # the served ids, comma-separated ("" when nothing answers)
+  api_get /v1/models 2>/dev/null |
+    python3 -I -c 'import json,sys; print(",".join(m["id"] for m in json.load(sys.stdin)["data"]))' 2>/dev/null || true
+}
+serving() { [[ ",$(served_model)," == *",$1,"* ]]; }   # serving <served id>
+ds_pack() { "$PREP/spark-deepseek-pack.sh" list 2>/dev/null | sed -n 's/^serving (local.sh): \([^ ]*\) @ \([0-9a-f]*\).*/\1@\2/p'; }
+
+wait_ready() {  # unit [seconds]: until /v1/models lists THAT unit's served id
+  local t=0 want limit=${2:-$WAIT_S}; want=$(served_of "$1")
+  until serving "$want"; do
+    # still starting counts as running: ActiveState "activating" (start-pre, start, and a Restart=on-failure
+    # unit's auto-restart after a rank crash during the load), bounded by the limit below
+    active "$1" || activating "$1" || die "$1 is not running: journalctl --user -u $1 -n 50"
+    (( t >= limit )) && die "$want is not on $URL after ${limit}s (serving: $(served_model | sed 's/^$/nothing/')): journalctl --user -fu $1"
+    (( t % 30 == 0 )) && log "waiting for $1 to serve $want on $URL (${t}s)"
+    sleep 5; t=$((t + 5))
+  done
+  log "serving: $(served_model)"
+}
+
+# One model switch at a time, shared with spark-deepseek-pack.sh (which skips
+# its own flock when SPARK_MODEL_LOCK_HELD=1, i.e. when called from here).
+take_lock() {
+  exec 8>>"$LOCK"
+  flock -n 8 || die "another model switch is running (it holds $LOCK): wait for it to finish, then retry"
+  export SPARK_MODEL_LOCK_HELD=1
+}
+
+cmd_status() {
+  local s; s=$(selected)
+  echo "selected: $s$( [[ $s == ds ]] && echo "  (pack $(ds_pack))")"
+  for u in "$GLM_UNIT" "$DS_UNIT" "$HY4_UNIT" "$OB_UNIT"; do
+    if [[ "$u" == "$HY4_UNIT" ]] && ! active "$u" && ! hy4_installed; then
+      printf '  %-32s %s\n' "$u" "not installed (spark-hy4-stage.sh install)"; continue
+    fi
+    printf '  %-32s %s / %s\n' "$u" "$(sc is-active "$u" 2>/dev/null || true)" "$(sc is-enabled "$u" 2>/dev/null || true)"
+  done
+  if active "$HY4_UNIT"; then echo "hy4: Hy4-flash (NVFP4) serves for now; the selection (and boot) stays $s: beast$s or beastup goes back"; fi
+  local rn ru _rs _rb _rw
+  while read -r rn ru _rs _rb _rw; do
+    [[ -n "$rn" ]] || continue
+    printf '  %-32s %s (recipe %s)\n' "$ru" "$(sc is-active "$ru" 2>/dev/null || true)" "$rn"
+  done < <(recipe_units)
+  echo "serving on $URL: $(served_model | sed 's/^$/nothing/')"
+  echo "ds pack: $DS_ID ($DS_PACK)$( [[ -r "$CONF" ]] && echo "  from $CONF")"
+}
+
+cmd_up() {
+  local s; s=$(selected)
+  [[ "$s" != none ]] || { log "no model selected: selecting DeepSeek-V4.1-Flash (Mia EXL3), the default"; cmd_ds; return; }
+  local u o; u=$(unit_of "$s"); o=$(other_of "$s")
+  stop_hy4
+  slots_set "$u"; (( SLOTS_CHANGED )) && CONF_BACK=1
+  if active "$o"; then log "stopping $o (not selected; both models need both GPUs)"; sc stop "$o"; fi
+  log "starting $s ($u), then the command center"
+  sc start "$u"
+  wait_ready "$u"
+  if (( CONF_BACK )); then cc_up restart; else cc_up start; fi
+  cmd_status
+}
+
+cmd_down() {
+  log "stopping the command center and the inference units (the selection stays: $(selected))"
+  sc stop "$OB_UNIT" || true
+  sc stop "$DS_UNIT" "$GLM_UNIT" || true
+  stop_hy4 || true
+  cmd_status
+}
+
+cmd_glm() {
+  if [[ "$(selected)" == glm ]] && active "$GLM_UNIT" && serving "$GLM_SERVED"; then
+    log "GLM is already selected and serving"; slots_set "$GLM_UNIT"
+    if (( SLOTS_CHANGED )); then cc_up restart; else cc_up start; fi
+    cmd_status; return
+  fi
+  stop_hy4
+  slots_set "$GLM_UNIT"    # before restore-glm.sh, whose last step restarts the command center
+  log "switching to GLM: restore-glm.sh"
+  local rc=0
+  bash "$PREP/rollback/restore-glm.sh" || rc=$?
+  # restore-glm.sh restarts the command center last: when only that failed,
+  # GLM is selected and serves, and the switch stands (cc_up retries it).
+  if (( rc )); then
+    if ! { [[ "$(selected)" == glm ]] && active "$GLM_UNIT"; }; then die "restore-glm.sh failed (exit $rc) and GLM is not selected and running"; fi
+    log "WARNING: restore-glm.sh exited $rc, but GLM is selected and running: waiting for it, then the command center"
+  fi
+  wait_ready "$GLM_UNIT"
+  (( rc )) && cc_up restart
+  cmd_status
+  log "on clients: openbeast-client use spark-hydra"
+}
+
+# On any failure of `ds` that started from a serving GLM: put GLM back.
+DS_DONE=1 GLM_AT_ENTRY=0 DS_STAMP=""
+ds_exit() {
+  local rc=$?
+  trap - EXIT
+  [[ -z "$DS_STAMP" ]] || rm -f "$DS_STAMP"
+  if (( ! DS_DONE && GLM_AT_ENTRY )); then
+    log "the DeepSeek switch failed (exit $rc): GLM was serving when it began, restoring it (restore-glm.sh)"
+    (slots_set "$GLM_UNIT") || true
+    # wait_ready dies (exit 1) on a timeout: in a subshell, so this trap still logs and exits with rc
+    if bash "$PREP/rollback/restore-glm.sh" && (wait_ready "$GLM_UNIT"); then
+      log "GLM is serving again; DeepSeek was NOT activated"
+    else
+      log "GLM did not come back either: journalctl --user -u $GLM_UNIT -n 50"
+    fi
+  fi
+  exit "$rc"
+}
+
+cmd_ds() {
+  [[ -d "$DS_PACK" ]] || die "the DeepSeek pack folder $DS_PACK is missing"
+  [[ "$DS_ID" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
+    die "DS_PACK=$DS_PACK needs DS_ID=<ORG/NAME> beside it in $CONF (spark-deepseek-pack.sh list shows the staged names)"
+  if [[ "$(selected)" == ds ]] && active "$DS_UNIT" && [[ "$(ds_pack)" == "$DS_ID@"* ]] && serving "$DS_SERVED"; then
+    log "DeepSeek ($DS_ID) is already selected and serving"; slots_set "$DS_UNIT"
+    if (( SLOTS_CHANGED )); then cc_up restart; else cc_up start; fi
+    cmd_status; return
+  fi
+  if active "$GLM_UNIT"; then GLM_AT_ENTRY=1; fi
+  DS_DONE=0
+  trap ds_exit EXIT
+  trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
+  stop_hy4
+  if active "$GLM_UNIT"; then log "stopping GLM"; sc stop "$GLM_UNIT"; fi
+  if [[ "$(ds_pack)" != "$DS_ID@"* ]]; then
+    log "selecting the pack $DS_ID (was $(ds_pack)): spark-deepseek-pack.sh use"
+    "$PREP/spark-deepseek-pack.sh" use "$DS_PACK" --id "$DS_ID"
+  fi
+  slots_set "$DS_UNIT"     # before activate-stock.sh, which restarts the command center
+  log "activating DeepSeek: activate-stock.sh (canary, conformance, command center, boot selection)"
+  local rc=0
+  DS_STAMP=$(mktemp "${TMPDIR:-/tmp}/beast-spark-ds.XXXXXX")
+  bash "$PREP/activate-stock.sh" || rc=$?
+  # activate-stock.sh (on spark-1, outside the repo) runs, after use-model.sh, the key sync,
+  # enable DeepSeek, disable GLM and the command-center restart LAST (its copy of 2026-11-23
+  # 19:02; an older copy restarted BEFORE the enablement, and a failed restart (a 90 s stop)
+  # left DeepSeek serving but GLM still the boot selection, so `ds` rolled back to GLM). Under
+  # set -e any of those steps can fail after the switch already stands. Once
+  # use-model.sh has written openbeast.conf in THIS run (its log, newer than the stamp, says so:
+  # the canary and conformance passed) and DeepSeek serves, the rest is done here.
+  if (( rc )); then
+    if active "$DS_UNIT" && serving "$DS_SERVED" && [[ "$PREP/use-model.log" -nt "$DS_STAMP" ]] &&
+       grep -qF "wrote INFERENCE_MODEL=\"$DS_SERVED\"" "$PREP/use-model.log"; then
+      log "WARNING: activate-stock.sh exited $rc after the canary, conformance and openbeast.conf, with DeepSeek serving:"
+      log "  finishing its last steps here (LLAMA_API_KEY, enable DeepSeek, disable GLM, the command center)"
+      key_sync_log
+      sc enable "$DS_UNIT"
+      sc disable "$GLM_UNIT"
+    else
+      rm -f "$DS_STAMP"
+      die "activate-stock.sh failed (exit $rc) before DeepSeek was activated (start, canary or conformance): $PREP/*.log"
+    fi
+  fi
+  rm -f "$DS_STAMP"
+  wait_ready "$DS_UNIT"
+  DS_DONE=1       # DeepSeek serves and is selected: from here on nothing rolls back (cc_up warns instead)
+  (( rc )) && cc_up restart
+  trap - INT TERM HUP
+  cmd_status
+  log "on clients: openbeast-client use spark-hydra"
+}
+
+# ---- Hy4-flash (NVFP4, vLLM TP2): serve it for now, never select it
+# openbeast.conf KEY: the value of its last uncommented line ("" when none).
+ob_conf_get() {
+  [[ -r "$OB_CONF" ]] || return 0
+  sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$OB_CONF" | tail -1 |
+    sed -e 's/[[:space:]]#.*$//' -e 's/[[:space:]]*$//' -e "s/^[\"']\(.*\)[\"']\$/\1/"
+}
+# ob_conf_set KEY VALUE: replace every uncommented KEY= line by one KEY="VALUE"
+# where the first was (appended when there was none); atomic, mode kept.
+ob_conf_set() {
+  [[ -f "$OB_CONF" ]] || die "no $OB_CONF (the command center's checkout): INFERENCE_MODEL not set"
+  python3 -I - "$OB_CONF" "$1" "$2" <<'PY'
+import os, re, sys, tempfile
+path, key, val = sys.argv[1:4]
+lines = open(path).read().splitlines(keepends=True)
+pat = re.compile(r"^\s*" + re.escape(key) + r"\s*=")
+new, done = [], False
+for ln in lines:
+    if pat.match(ln):
+        if not done:
+            new.append(f'{key}="{val}"\n')
+            done = True
+        continue
+    new.append(ln)
+if not done:
+    if new and not new[-1].endswith("\n"):
+        new.append("\n")
+    new.append(f'{key}="{val}"\n')
+d = os.path.dirname(os.path.abspath(path))
+fd, tmp = tempfile.mkstemp(dir=d, prefix=".openbeast.conf.")
+with os.fdopen(fd, "w") as f:
+    f.writelines(new)
+os.chmod(tmp, os.stat(path).st_mode & 0o7777)
+os.replace(tmp, path)
+PY
+}
+
+# ob_conf_key_sync: LLAMA_API_KEY in openbeast.conf = the engine key in KEY_FILE, which the keyed
+# engines serve with (DeepSeek's recipe, native TensorFold recipes via TENSORFOLD_API_KEY_FILE, Hy4's
+# vLLM). The command center and beast-gate send LLAMA_API_KEY upstream; restore-glm.sh clears it
+# (GLM's v0.6.0 has no key and ignores a bearer header), so a keyed model started after GLM got
+# 401s through the gate until this ran (2026-11-23, the first D2 serve). The key is read inside
+# python from the file, never passed on argv; nothing is printed but "set" when the line changed.
+ob_conf_key_sync() {
+  [[ -r "$KEY_FILE" && -f "$OB_CONF" ]] || return 0
+  python3 -I - "$OB_CONF" "$KEY_FILE" <<'PY'
+import os, re, sys, tempfile
+path, kf = sys.argv[1:3]
+key = open(kf).read().strip()
+if not key or not re.fullmatch(r"[A-Za-z0-9._~+/=-]+", key):
+    sys.exit(0)                          # empty or odd: leave the conf alone (api_get refuses it too)
+lines = open(path).read().splitlines(keepends=True)
+pat = re.compile(r"^\s*LLAMA_API_KEY\s*=\s*(.*?)\s*$")
+cur = None
+for ln in lines:
+    m = pat.match(ln)
+    if m:
+        cur = m.group(1).strip("\"'")
+if cur == key:
+    sys.exit(0)
+new, done = [], False
+for ln in lines:
+    if pat.match(ln):
+        if not done:
+            new.append(f'LLAMA_API_KEY="{key}"\n')
+            done = True
+        continue
+    new.append(ln)
+if not done:
+    if new and not new[-1].endswith("\n"):
+        new.append("\n")
+    new.append(f'LLAMA_API_KEY="{key}"\n')
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(path)), prefix=".openbeast.conf.")
+with os.fdopen(fd, "w") as f:
+    f.writelines(new)
+os.chmod(tmp, os.stat(path).st_mode & 0o7777)
+os.replace(tmp, path)
+print("set")
+PY
+}
+key_sync_log() { [[ "$(ob_conf_key_sync)" == set ]] && log "openbeast.conf: LLAMA_API_KEY set from $KEY_FILE (the engine is keyed; it was empty or different)"; return 0; }
+
+# On any failure of `hy4`: Hy4 stopped, the model that served before back.
+HY4_DONE=1 HY4_PREV=none HY4_PREV_UNIT="" HY4_PREV_WAIT="" HY4_PREV_MODEL="" HY4_PREV_BACKEND="" HY4_PREV_SLOTS="" HY4_CONF_SET=0
+hy4_exit() {
+  local rc=$?
+  trap - EXIT
+  if (( ! HY4_DONE )); then
+    log "the Hy4 switch failed (exit $rc): stopping Hy4"
+    sc stop "$HY4_UNIT" 2>/dev/null || true
+    if (( HY4_CONF_SET )); then
+      [[ -n "$HY4_PREV_MODEL" ]] && { ob_conf_set INFERENCE_MODEL "$HY4_PREV_MODEL" || true; }
+      [[ -n "$HY4_PREV_BACKEND" ]] && { ob_conf_set INFERENCE_BACKEND "$HY4_PREV_BACKEND" || true; }
+      [[ -n "$HY4_PREV_SLOTS" ]] && { ob_conf_set INFERENCE_SLOTS "$HY4_PREV_SLOTS" || true; }
+    fi
+    if [[ -n "$HY4_PREV_UNIT" ]]; then
+      local back="beast$HY4_PREV"; [[ "$HY4_PREV" == ds || "$HY4_PREV" == glm ]] || back="beast-spark $HY4_PREV"
+      log "restoring $HY4_PREV ($HY4_PREV_UNIT), which served when hy4 began"
+      if sc start "$HY4_PREV_UNIT" && (wait_ready "$HY4_PREV_UNIT" ${HY4_PREV_WAIT:+"$HY4_PREV_WAIT"}); then log "$HY4_PREV is serving again; Hy4 was NOT activated"
+      else log "$HY4_PREV did not come back either: journalctl --user -u $HY4_PREV_UNIT -n 50; then $back"; fi
+      (( HY4_CONF_SET )) && sc restart "$OB_UNIT" 2>/dev/null || true
+    else
+      log "nothing served when hy4 began: nothing to restore"
+    fi
+  fi
+  exit "$rc"
+}
+
+cmd_hy4() {
+  hy4_installed || die "the unit $HY4_UNIT is not installed: scripts/backends/spark-hy4-stage.sh --check, then install (docs/SPARK_HYDRA.md \"Hy4-flash (NVFP4, vLLM TP2): measured\")"
+  if active "$HY4_UNIT" && serving "$HY4_SERVED"; then
+    log "Hy4 is already serving"
+    local changed=0
+    if [[ "$(ob_conf_get INFERENCE_MODEL)" != "$HY4_SERVED" || "$(ob_conf_get INFERENCE_BACKEND)" != vllm ]]; then
+      ob_conf_set INFERENCE_BACKEND vllm; ob_conf_set INFERENCE_MODEL "$HY4_SERVED"; changed=1
+    fi
+    slots_set "$HY4_UNIT"; (( SLOTS_CHANGED )) && changed=1
+    [[ "$(ob_conf_key_sync)" == set ]] && { log "openbeast.conf: LLAMA_API_KEY set from $KEY_FILE (the engine is keyed; it was empty or different)"; changed=1; }
+    # as glm/ds/recipes do when already serving: the command center comes up (restarted when its conf changed)
+    if (( changed )); then cc_up restart; else cc_up start; fi
+    cmd_status; return
+  fi
+  local n u w
+  if active "$DS_UNIT"; then HY4_PREV=ds HY4_PREV_UNIT=$DS_UNIT
+  elif active "$GLM_UNIT"; then HY4_PREV=glm HY4_PREV_UNIT=$GLM_UNIT
+  else
+    while read -r n u _ _ w; do
+      if [[ -n "$n" ]] && active "$u"; then HY4_PREV=$n HY4_PREV_UNIT=$u HY4_PREV_WAIT=$w; break; fi
+    done < <(recipe_units)
+  fi
+  HY4_PREV_MODEL=$(ob_conf_get INFERENCE_MODEL)
+  HY4_PREV_BACKEND=$(ob_conf_get INFERENCE_BACKEND)
+  HY4_PREV_SLOTS=$(ob_conf_get INFERENCE_SLOTS)
+  HY4_DONE=0
+  trap hy4_exit EXIT
+  trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
+  for u in "$DS_UNIT" "$GLM_UNIT"; do
+    if active "$u"; then log "stopping $u (one model at a time; it stays $(sc is-enabled "$u" 2>/dev/null || echo disabled) for boot)"; sc stop "$u"; fi
+  done
+  # an adopted recipe that serves is stopped here, before Hy4 starts (not left to its unit's Conflicts=)
+  while read -r n u _ _ _; do
+    if [[ -n "$n" ]] && active "$u"; then log "stopping the recipe $n ($u)"; sc stop "$u"; fi
+  done < <(recipe_units)
+  log "starting Hy4-flash (NVFP4, vLLM TP2): $HY4_UNIT (first start on this image: ~10 min of kernel autotune)"
+  sc start "$HY4_UNIT"
+  wait_ready "$HY4_UNIT" "$HY4_WAIT_S"
+  # vllm: the command center's readiness probe for vLLM (/health is an empty 200; TensorFold's says ok)
+  log "INFERENCE_BACKEND=vllm, INFERENCE_MODEL=\"$HY4_SERVED\" in $OB_CONF (was ${HY4_PREV_BACKEND:-unset}, \"$HY4_PREV_MODEL\"), restarting the command center"
+  HY4_CONF_SET=1
+  ob_conf_set INFERENCE_BACKEND vllm
+  ob_conf_set INFERENCE_MODEL "$HY4_SERVED"
+  slots_set "$HY4_UNIT"
+  key_sync_log
+  HY4_DONE=1      # Hy4 serves: from here on nothing rolls back (cc_up warns instead)
+  cc_up restart
+  trap - INT TERM HUP
+  cmd_status
+  log "back to the default: beastds (or beastglm). A reboot serves the selection ($(selected)) again, and openbeast.conf follows it when beast-spark boot-check is installed (beast-spark install)"
+}
+
+# ---- an adopted beast-recipe recipe: serve it for now, never select it (the Hy4 pattern)
+R_DONE=1 R_PREV=none R_PREV_UNIT="" R_PREV_WAIT="" R_PREV_MODEL="" R_PREV_BACKEND="" R_PREV_SLOTS="" R_CONF_SET=0 R_UNIT="" R_NAME=""
+recipe_exit() {
+  local rc=$?
+  trap - EXIT
+  if (( ! R_DONE )); then
+    log "the switch to the recipe $R_NAME failed (exit $rc): stopping $R_UNIT"
+    sc stop "$R_UNIT" 2>/dev/null || true
+    if (( R_CONF_SET )); then
+      [[ -n "$R_PREV_MODEL" ]] && { ob_conf_set INFERENCE_MODEL "$R_PREV_MODEL" || true; }
+      [[ -n "$R_PREV_BACKEND" ]] && { ob_conf_set INFERENCE_BACKEND "$R_PREV_BACKEND" || true; }
+      [[ -n "$R_PREV_SLOTS" ]] && { ob_conf_set INFERENCE_SLOTS "$R_PREV_SLOTS" || true; }
+    fi
+    if [[ -n "$R_PREV_UNIT" ]]; then
+      log "restoring $R_PREV ($R_PREV_UNIT), which served when the switch began"
+      if sc start "$R_PREV_UNIT" && (wait_ready "$R_PREV_UNIT" ${R_PREV_WAIT:+"$R_PREV_WAIT"}); then log "$R_PREV is serving again; $R_NAME was NOT activated"
+      else log "$R_PREV did not come back either: journalctl --user -u $R_PREV_UNIT -n 50; then beast-spark $R_PREV"; fi
+      (( R_CONF_SET )) && sc restart "$OB_UNIT" 2>/dev/null || true
+    else
+      log "nothing served when the switch began: nothing to restore"
+    fi
+  fi
+  exit "$rc"
+}
+
+cmd_recipe() {
+  R_NAME=${1:-}
+  local line served backend wait n u w
+  line=$(recipe_units | awk -v n="$R_NAME" '$1 == n')
+  [[ -n "$R_NAME" && -n "$line" ]] || die "no adopted recipe '$R_NAME' in $RECIPES_D: beast-recipe adopt $R_NAME --run (beast-recipe list shows the recipes)"
+  read -r _ R_UNIT served backend wait <<<"$line"
+  [[ "$(sc show -p LoadState --value "$R_UNIT" 2>/dev/null)" == loaded ]] ||
+    die "the unit $R_UNIT is not installed: beast-recipe up $R_NAME --write-profile, then the install line of beast-recipe up $R_NAME --dry-run"
+  # A recipe planned for one native TensorFold release never starts on another (spark-node.sh refuses
+  # it too, but only after the serving model was stopped): check before anything is stopped.
+  local want have
+  want=$(recipe_value "$RECIPES_D/$R_NAME.env" TENSORFOLD_VERSION)
+  if [[ -n "$want" ]]; then
+    [[ "$want" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "$RECIPES_D/$R_NAME.env: TENSORFOLD_VERSION='$want' is not a release version"
+    have=$( ("$TF_BIN" --version 2>/dev/null || true) | awk '{print $NF}')
+    have=${have#v}
+    [[ "$have" == "$want" ]] || die "the recipe $R_NAME needs native TensorFold $want, $TF_BIN is '${have:-none}': scripts/engine.sh install tensorfold --version $want (or engine.sh rollback tensorfold) on every Spark and TENSORFOLD_VERSION=$want in spark.env, then beast-spark $R_NAME. Nothing was stopped."
+  fi
+  if active "$R_UNIT" && serving "$served"; then
+    log "the recipe $R_NAME is already serving"
+    local changed=0
+    if [[ "$(ob_conf_get INFERENCE_MODEL)" != "$served" || "$(ob_conf_get INFERENCE_BACKEND)" != "$backend" ]]; then
+      ob_conf_set INFERENCE_BACKEND "$backend"; ob_conf_set INFERENCE_MODEL "$served"; changed=1
+    fi
+    slots_set "$R_UNIT"; (( SLOTS_CHANGED )) && changed=1
+    [[ "$(ob_conf_key_sync)" == set ]] && { log "openbeast.conf: LLAMA_API_KEY set from $KEY_FILE (the engine is keyed; it was empty or different)"; changed=1; }
+    # as glm/ds do when already serving: the command center comes up (restarted when its conf changed)
+    if (( changed )); then cc_up restart; else cc_up start; fi
+    cmd_status; return
+  fi
+  if active "$DS_UNIT"; then R_PREV=ds R_PREV_UNIT=$DS_UNIT
+  elif active "$GLM_UNIT"; then R_PREV=glm R_PREV_UNIT=$GLM_UNIT
+  elif active "$HY4_UNIT"; then R_PREV=hy4 R_PREV_UNIT=$HY4_UNIT R_PREV_WAIT=$HY4_WAIT_S
+  else
+    while read -r n u _ _ w; do
+      if [[ "$n" != "$R_NAME" ]] && active "$u"; then R_PREV=$n R_PREV_UNIT=$u R_PREV_WAIT=$w; break; fi
+    done < <(recipe_units)
+  fi
+  R_PREV_MODEL=$(ob_conf_get INFERENCE_MODEL)
+  R_PREV_BACKEND=$(ob_conf_get INFERENCE_BACKEND)
+  R_PREV_SLOTS=$(ob_conf_get INFERENCE_SLOTS)
+  R_DONE=0
+  trap recipe_exit EXIT
+  trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
+  for u in "$DS_UNIT" "$GLM_UNIT" "$HY4_UNIT"; do
+    if active "$u"; then log "stopping $u (one model at a time; it stays $(sc is-enabled "$u" 2>/dev/null || echo disabled) for boot)"; sc stop "$u"; fi
+  done
+  while read -r n u _ _ _; do
+    if [[ "$n" != "$R_NAME" ]] && active "$u"; then log "stopping the recipe $n ($u)"; sc stop "$u"; fi
+  done < <(recipe_units)
+  log "starting the recipe $R_NAME: $R_UNIT"
+  sc start "$R_UNIT"
+  wait_ready "$R_UNIT" "$wait"
+  log "INFERENCE_BACKEND=$backend, INFERENCE_MODEL=\"$served\" in $OB_CONF (was ${R_PREV_BACKEND:-unset}, \"$R_PREV_MODEL\"), restarting the command center"
+  R_CONF_SET=1
+  ob_conf_set INFERENCE_BACKEND "$backend"
+  ob_conf_set INFERENCE_MODEL "$served"
+  slots_set "$R_UNIT"
+  key_sync_log
+  # always recorded (PREVIOUS=none when nothing served: rollback is then beast-spark down)
+  printf 'PREVIOUS=%s\nRECIPE=%s\nWHEN=%s\n' "$R_PREV" "$R_NAME" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RECIPES_D/.previous"
+  R_DONE=1        # the recipe serves: from here on nothing rolls back (cc_up warns instead)
+  cc_up restart
+  trap - INT TERM HUP
+  cmd_status
+  log "back: beast-recipe rollback --run (beast-spark $R_PREV). A reboot serves the selection ($(selected)) again, and openbeast.conf follows it when beast-spark boot-check is installed (beast-spark install)"
+}
+
+# boot-check: openbeast.service's ExecStartPre (the drop-in `install` writes). At boot the enabled
+# unit (DeepSeek or GLM) serves, but openbeast.conf may still name Hy4 or a recipe from before the
+# reboot: point it back (conf_back) before the command center reads it. Starts and stops nothing;
+# skipped while a switch holds the lock (the switch's own command-center restarts land here too).
+cmd_boot_check() {
+  exec 8>>"$LOCK"
+  flock -n 8 || { log "boot-check: a model switch holds $LOCK: openbeast.conf is the switch's to set"; return 0; }
+  [[ -f "$OB_CONF" ]] || return 0
+  conf_back
+  (( CONF_BACK )) || log "boot-check: openbeast.conf names $(ob_conf_get INFERENCE_MODEL | sed 's/^$/no model/'): nothing to point back"
+  return 0
+}
+
+ALIAS_MARK='# beast-spark shortcuts (OpenBeast scripts/backends/spark-beast.sh; docs/SPARK_HYDRA.md)'
+cmd_aliases() {
+  echo "$ALIAS_MARK"
+  local a
+  for a in up down glm ds hy4 status; do
+    # shellcheck disable=SC2016  # $HOME expands when ~/.bashrc runs, not now
+    printf 'alias beast%s="$HOME/.local/bin/beast-spark %s"\n' "$a" "$a"
+  done
+}
+
+# Install from a checkout (scripts/backends/): beast-spark into ~/.local/bin,
+# the two pack tools into the DeepSeek prep directory, the aliases into ~/.bashrc.
+# The installed copy (~/.local/bin/beast-spark install) hands over to the
+# checkout's copy, so `beast-spark install` is the one update command.
+cmd_install() {
+  local here; here="$(cd "$(dirname "$0")" && pwd)"
+  local co="$CHECKOUT/scripts/backends"
+  if [[ ! -f "$here/spark-deepseek-pack.sh" && -f "$co/spark-beast.sh" && -f "$co/spark-deepseek-pack.sh" && -f "$co/spark-deepseek-prepare-local.sh" ]]; then
+    log "installing from the checkout: $co/spark-beast.sh install"
+    exec bash "$co/spark-beast.sh" install
+  fi
+  [[ -f "$here/spark-deepseek-pack.sh" && -f "$here/spark-deepseek-prepare-local.sh" ]] ||
+    die "run install from a checkout: ~/openbeast/scripts/backends/spark-beast.sh install ($here has no pack tools)"
+  put() {  # src dest
+    if cmp -s "$1" "$2"; then log "unchanged: $2"; return; fi
+    mkdir -p "$(dirname "$2")"
+    cp "$1" "$2.new" && chmod 0755 "$2.new" && mv -f "$2.new" "$2"
+    log "installed: $2"
+  }
+  put "$here/spark-beast.sh" "$BIN_DIR/beast-spark"
+  # beast-recipe on PATH: a link, not a copy (it resolves pylib, the data and recipes/ from the checkout)
+  local br; br="$(cd "$here/../.." && pwd)/scripts/beast-recipe.sh"
+  if [[ -f "$br" ]]; then
+    if [[ "$(readlink "$BIN_DIR/beast-recipe" 2>/dev/null)" == "$br" ]]; then log "unchanged: $BIN_DIR/beast-recipe -> $br"
+    else mkdir -p "$BIN_DIR"; ln -sfn "$br" "$BIN_DIR/beast-recipe"; log "linked: $BIN_DIR/beast-recipe -> $br"; fi
+  fi
+  if [[ -d "$PREP" ]]; then
+    put "$here/spark-deepseek-pack.sh" "$PREP/spark-deepseek-pack.sh"
+    put "$here/spark-deepseek-prepare-local.sh" "$PREP/spark-deepseek-prepare-local.sh"
+  else
+    log "no $PREP (the DeepSeek recipe is not on this machine): pack tools not installed"
+  fi
+  # openbeast.service runs boot-check first (a reboot after beasthy4 / a recipe: openbeast.conf back at
+  # the selection). A drop-in, so the unit file itself (scripts/openbeast.service) stays generic.
+  local dd="$UNIT_DIR/openbeast.service.d" di
+  di=$(printf '# Written by beast-spark install (scripts/backends/spark-beast.sh). Before the command center\n# starts: openbeast.conf back at the selected model when it names a model that does not run.\n[Service]\nExecStartPre=-%s boot-check\n' "$BIN_DIR/beast-spark")
+  if [[ "$(cat "$dd/beast-spark.conf" 2>/dev/null)" == "$di" ]]; then log "unchanged: $dd/beast-spark.conf"
+  else
+    mkdir -p "$dd" && printf '%s\n' "$di" > "$dd/beast-spark.conf.new" && mv -f "$dd/beast-spark.conf.new" "$dd/beast-spark.conf"
+    log "installed: $dd/beast-spark.conf (openbeast.service ExecStartPre: beast-spark boot-check)"
+    sc daemon-reload 2>/dev/null || log "WARNING: systemctl --user daemon-reload failed: run it before the next openbeast start"
+  fi
+  if grep -qxF "$ALIAS_MARK" "$BASHRC" 2>/dev/null; then
+    # an older install: add the alias lines it lacks (beasthy4), keep the rest
+    local l added=0
+    while IFS= read -r l; do
+      [[ "$l" == alias* ]] || continue
+      grep -qxF "$l" "$BASHRC" || { echo "$l" >> "$BASHRC"; added=$((added + 1)); }
+    done < <(cmd_aliases)
+    if (( added )); then log "aliases: $added added to $BASHRC"; else log "aliases: already in $BASHRC"; fi
+  else
+    { echo; cmd_aliases; } >> "$BASHRC"
+    log "aliases: appended to $BASHRC (open a new shell, or: source $BASHRC)"
+  fi
+}
+
+[[ "${1:-}" == install ]] || check_install
+case "${1:-}" in
+  up) take_lock; cmd_up; finish ;;
+  down) take_lock; cmd_down ;;
+  glm) take_lock; cmd_glm; finish ;;
+  ds|deepseek) take_lock; cmd_ds; finish ;;
+  hy4) take_lock; cmd_hy4; finish ;;
+  status) cmd_status ;;
+  boot-check) cmd_boot_check ;;
+  aliases) cmd_aliases ;;
+  install) cmd_install ;;
+  recipe) take_lock; cmd_recipe "${2:-}"; finish ;;
+  *) if [[ -n "${1:-}" && -f "$RECIPES_D/${1}.env" && "$1" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then take_lock; cmd_recipe "$1"; finish; fi
+     [[ -n "${1:-}" ]] && log "ERROR: unknown command: $1 (an older install? beast-spark install updates it from $CHECKOUT)"
+     sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

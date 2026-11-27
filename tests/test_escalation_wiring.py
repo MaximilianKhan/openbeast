@@ -69,6 +69,23 @@ def test_off_is_byte_identical_and_the_facade_is_never_asked(facade):
         assert tools._diag_format(*args) == tools._diag_format(*args, escalation="")
 
 
+def test_python_is_not_mapped_because_py_compile_cannot_reach_a_card(facade, monkeypatch):
+    """The .py checker only parses, so all it can report is a SyntaxError —
+    and the index records every python SyntaxError shape as generic. A
+    mapping for python was dead code that over-claimed coverage. If the
+    index ever learns a SyntaxError shape that selects (a py2 `print "x"`
+    claim, say), this fails: map python again."""
+    stub, calls = facade
+    monkeypatch.setenv("BEAST_ESCALATE", "1")
+    assert tools._escalation_for("python", 1, "SyntaxError: invalid syntax") == ""
+    assert calls == []
+    idx = json.load(open(os.path.join(ROOT, "agents", "lang", "escalate-index.json")))
+    py = idx["langs"]["python"]
+    selecting = [s for s in py["signatures"]
+                 if "SyntaxError" in s and s not in set(py["generic"])]
+    assert selecting == [], f"py_compile can now reach a card: {selecting}"
+
+
 @pytest.mark.parametrize("flag", ["BEAST_ESCALATE", "OPENBEAST_ESCALATE"])
 def test_a_failed_check_gets_its_card_inside_the_block(facade, monkeypatch, flag):
     stub, calls = facade

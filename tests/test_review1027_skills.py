@@ -1,8 +1,8 @@
 """Review 2026-10-27, skills tooling (R9-09, R9-10).
 
 R9-09: generate-skill-index.py treated every argument except --check as "rewrite
-system-prompt-tools.md in place" — `--help` or a typo like `--chek` rewrote an
-era-hashed file. Each case runs a COPY of the script in a temp repo layout
+system-prompt-tools.md in place" — `--help` or a typo like `--chek` rewrote
+the shipped prompt. Each case runs a COPY of the script in a temp repo layout
 (the script finds its repo from __file__), so the real prompt is never touched.
 
 R9-10: the SKILL.md validator in tests/test_scripts.sh accepted

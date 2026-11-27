@@ -1,0 +1,262 @@
+[
+ {
+  "name": "get_printer_status",
+  "description": "Get the current status of the 3D printer"
+ },
+ {
+  "name": "list_printer_files",
+  "description": "List files available on the 3D printer"
+ },
+ {
+  "name": "upload_gcode",
+  "description": "Upload G-code content or a local G-code file path to the printer. With print=true the exact uploaded bytes are inspected first (every S/R heater target, tool changes, hardware and material ceilings) and printer state is checked before the print starts."
+ },
+ {
+  "name": "start_print",
+  "description": "Start printing a G-code file already stored on the printer. The server downloads and inspects the exact file, then starts a uniquely named checked copy after printer-state checks. Printers whose API cannot download files (Repetier, Prusa, Creality) refuse; use upload_gcode with print=true instead."
+ },
+ {
+  "name": "cancel_print",
+  "description": "Cancel the current print job"
+ },
+ {
+  "name": "camera_stream_start",
+  "description": "Start or renew one persistent camera connection for this printer. Call only while watched; it closes automatically after idle_timeout_ms without a viewer request. camera_snapshot then reuses its latest frame. No printer motion or print commands."
+ },
+ {
+  "name": "camera_frame",
+  "description": "Read the shared camera stream, optionally waiting up to 10 seconds. Returns JPEG only when newer than since_seq and visibly changed (32\u00d718 grayscale difference). Retain the last delivered frame's seq on unchanged. max_width resizes JPEG to the viewer. Does not start a stopped stream."
+ },
+ {
+  "name": "camera_stream_stop",
+  "description": "Close this printer's camera connection and free its cached frames. Other printers keep their own streams. Active viewers may restart it; normally let the idle timeout close a shared stream."
+ },
+ {
+  "name": "counterpart_print_route",
+  "description": "Counterpart contract (counterpart/1), Bambu: how this server reaches the printer for prints and for Stop/Pause/Resume. route is \"lan\" (the local network through FULU's BambuNetwork bridge), \"cloud\" (Bambu Cloud through FULU's bridge) or \"developer\" (the local network straight to a printer in LAN Only + Developer Mode, whose Pause, Resume and Stop need no Bambu app). options lists each with its label, whether it can be chosen here (and why not) and what controls do on it; choices lists the ids that can be chosen. mode and type are BAMBU_DEFAULT_CONNECTION_MODE and BAMBU_DEFAULT_CONNECTION_TYPE as resolved. Pass route to change it: the change applies to the next print and control at once, and is saved to the .env file in this server's working directory when that file exists (savedTo; null otherwise). Sends nothing to the printer."
+ },
+ {
+  "name": "counterpart_printer_info",
+  "description": "Describe this printer for the counterpart/1 contract: server name and version, printer kind and identity, and which features work (progress, layers, camera, filaments, pause, resume, cancel, print_3mf, G-code), detected from the firmware. Read-only."
+ },
+ {
+  "name": "counterpart_self_check",
+  "description": "Counterpart contract (counterpart/1): whether this install's own runtime dependencies and its Web Crypto shim loaded, each with its installed version. Run it after an update; ok is false when a required check failed, with a message saying which. Contacts no printer."
+ },
+ {
+  "name": "counterpart_diagnostics",
+  "description": "Counterpart contract (counterpart/1): this server's own diagnostics for a bug report, as files for the client to add to its export: the configured printer (kind, host, model, serial, connection; firmware is not read), this server's settings, slicer path and version, CAD runtime status, recent tool errors, this run's stderr log (printer connection messages, Bambu MQTT included). The Bambu network plug-in logs are not included. Redaction fails closed: configured secrets go in their encoded forms, JSON is redacted by key, and any log line that names a secret is withheld whole; serial numbers, error codes and whether a secret is set stay. Names, contents and notes stay within max_bytes; anything missing is listed in notes. Contacts no printer."
+ },
+ {
+  "name": "counterpart_print_record",
+  "description": "Counterpart contract (counterpart/1): read a bounded persistent per-job flight record from disk, including dispatched SHA-256, selected mapping, timestamped allowlisted printer-report changes, expected sliced layer geometry and sampled camera evidence. Survives restart. No printer connection, polling or controls. Firmware FINISH is separate from physical unknown/consistent/suspect_no_growth/suspect_no_extrusion. Inspect pending visual assessment requests with the client worker; clear empty-footprint observations can flag no extrusion without an empty-bed reference. Missing history is unavailable, never fetched from the printer."
+ },
+ {
+  "name": "counterpart_print_assess",
+  "description": "Counterpart contract (counterpart/1): save a client vision worker observation against an exact saved job/artifact/frame hash. Local evidence only; no camera request, model call or printer controls. Clear visible empty expected footprint after attempted deposition reports suspect_no_extrusion, even without a usable baseline. Dark/occluded/unknown stays unknown; visible material does not verify success. Persists across restart; repeat observations are idempotent."
+ },
+ {
+  "name": "counterpart_print_progress",
+  "description": "Read the printer's state and current job in the counterpart/1 shape: state, job name, progress (0-100), elapsed and remaining seconds, layers when the firmware reports them, temperatures and problems. job.name matches the jobName that upload_gcode and start_print return. Read-only."
+ },
+ {
+  "name": "camera_snapshot",
+  "description": "Capture one JPEG frame from the printer's camera: OctoPrint's configured snapshot URL (Classic Webcam on 1.9+, webcam.snapshotUrl on 1.8, then /webcam/?action=snapshot), Moonraker's first enabled webcam, or Repetier's webcam staticUrl. PrusaLink and Duet have no local snapshot API. PRINTER_CAMERA_SNAPSHOT_URL overrides the source for any printer. Returns the JPEG as base64; pass save_path to also write it to disk."
+ },
+ {
+  "name": "counterpart_discover_printers",
+  "description": "Counterpart contract (counterpart/1): printers on the local network. Bambu Lab printers from their own SSDP announcements (UDP 2021), with serial, model (as bambu_model names it), name and firmware; OctoPrint, Klipper (Moonraker) and PrusaLink hosts from their Bonjour adverts (dns-sd on macOS, avahi-browse on Linux), with host and port. Listens for duration_ms (default 4000). network is \"unavailable\" when another app holds the Bambu port. Never connects to or authenticates with a printer."
+ },
+ {
+  "name": "counterpart_setup_fields",
+  "description": "Counterpart contract (counterpart/1): the printers this server drives (each PRINTER_TYPE) and the settings it reads for each, by .env variable name: label, hint, whether required, the fixed values a kind needs (PRINTER_TYPE), the Bambu model choices and the model each serial-number prefix names, and whether camera_snapshot reads the printer's camera with only those settings (cameraSnapshot). Pass serial to get the model it names. Sends nothing to a printer and returns no configured values."
+ },
+ {
+  "name": "counterpart_propose_filaments",
+  "description": "Counterpart contract (counterpart/1): which loaded spool prints each of a model's colours, before slicing. Reads the printer's filaments once (Bambu: the AMS and external spools). trays lists the spools a person may choose (label like \"A2\" or \"External\", a person-readable name, colour, material, feed, and the filament profile slice_stl takes). proposal gives each filament its nearest spool in OKLab colour with the asked-for material preferred, and a verdict: same-colour, closest (that colour isn't loaded; note says so), no-colour or none. One print feeds from one source: the AMS or the external spool. Pass chosen to check the person's spools against what is loaded now; mapping then lists every filament slot's spool (painted slots included), and problems says why a choice can't print."
+ },
+ {
+  "name": "counterpart_make_3mf",
+  "description": "Counterpart contract (counterpart/1): combine STL parts exported separately (for example each body of a design) into one new 3MF for multi-colour printing. The parts keep their relative positions as one assembly, and each part prints with its filament number (default: part 1 uses filament 1, part 2 filament 2, and so on). Slice it with slice_stl, passing one load_filaments profile per filament number, then print it with print_3mf and ams_mapping or ams_slots. Never overwrites a file."
+ },
+ {
+  "name": "get_printer_filaments",
+  "description": "Report the loaded filament. Bambu: the live AMS and external-spool inventory over MQTT, as bambu-printer-mcp reports it (trays with absolute slot, loaded state, material, colour, tray_info_idx and resolved slicer profile path; summary; recommended load_filaments), plus counterpart/1 slots for every loaded tray and external spool (254, and 255 on dual-nozzle printers). Other printers: one external slot (id \"ext\"); Moonraker printers with Spoolman report the active spool's material, colour and name, others source \"unknown\". Read-only."
+ },
+ {
+  "name": "pause_print",
+  "description": "Pause the current print (Bambu Lab, OctoPrint, Klipper/Moonraker, PrusaLink, Duet M25, Repetier, and Creality printers that run Moonraker). Bambu pauses over the same connection that prints. Pause is never gated."
+ },
+ {
+  "name": "connect_printer",
+  "description": "OctoPrint only: connect OctoPrint to the printer when it is running but not connected (counterpart_print_progress reports octoprint.disconnected). Uses OctoPrint's own saved serial port, baud rate and printer profile (OctoPrint's AUTO detection when none is saved) unless given, and waits up to wait_ms (default 20000) for it to settle. With power_on, first switches the printer on through the PSU Control plugin when it reports the power off. Already connected: nothing is sent. Connecting runs only OctoPrint's own after-connection script."
+ },
+ {
+  "name": "octoprint_request_api_key",
+  "description": "OctoPrint's Application Keys approval: instead of copying an API key, the person clicks Allow in OctoPrint. Call without request_id to start (host and port of the OctoPrint; app names this app in OctoPrint's prompt); the result has request_id and approve_url (OctoPrint's own approval page). Call again with request_id and wait_ms (up to 120000) to wait for the answer: status approved returns api_key and env {API_KEY}, the setting this server reads. This server keeps the request open between calls (OctoPrint drops one that isn't polled every 5 s) for up to 10 minutes. status unsupported means this OctoPrint has no Application Keys plugin: copy the key from OctoPrint's settings instead. OctoPrint allows 3 requests a minute, 5 in 10 minutes and 10 an hour. host and port name the OctoPrint being added; without port, a host given here uses port 80 (or its URL's own port), not this server's PRINTER_PORT."
+ },
+ {
+  "name": "resume_print",
+  "description": "Resume a paused print. Resume reheats and moves the printer, so it only resumes a job this server instance inspected and started, and only when the printer freshly reports that job paused. Bambu re-reads the job over FTPS (or the plate G-code the printer extracted) and compares its SHA-256, and resumes over the same connection that printed. When the file cannot be re-read, a person confirms through MCP elicitation first (Bambu: only for files Bambu's plug-in placed; a file this server uploaded must re-read). Resume other jobs at the printer."
+ },
+ {
+  "name": "set_printer_temperature",
+  "description": "Set the temperature of a printer component. Temperature 0 switches a heater off and is never gated. Positive targets are validated before connecting, limited by independent hardware and material ceilings, and require a ready printer."
+ },
+ {
+  "name": "extend_stl_base",
+  "description": "Extend the base of an STL file by a specified amount"
+ },
+ {
+  "name": "slice_stl",
+  "description": "Slice an STL or 3MF file to generate G-code or a sliced 3MF. For Bambu-compatible CLI slicing (bambustudio, orcaslicer-bambulab, or orcaslicer with bambu_model), the exact bambu_model/nozzle machine preset from the selected slicer installation is required, profile inheritance is resolved before the CLI runs, and the result must contain plate G-code. Failures stop with the slicer's exit status and output. A 3MF that carries its own process settings (a designer's Bambu Studio or Orca project) slices with them unless slicer_profile, template_name or template_3mf_path is given; the machine still comes from bambu_model. quality and strength adjust that process, and strength never lowers its walls or infill."
+ },
+ {
+  "name": "slice_with_template",
+  "description": "Slice an STL or 3MF with a named template from the local template registry (BAMBU_TEMPLATE_DIR). The template supplies process settings; the machine preset still comes from bambu_model and nozzle_diameter."
+ },
+ {
+  "name": "list_templates",
+  "description": "List saved slicing templates (.3mf, .json, .config) in the local template registry directory."
+ },
+ {
+  "name": "save_template",
+  "description": "Copy a .3mf, .json, or .config file into the local template registry under a template name."
+ },
+ {
+  "name": "get_slice_settings",
+  "description": "Inspect slicer settings in a 3MF template or JSON/config profile without slicing (layer height, infill, walls, supports, brim, bed, printer, filaments). For a 3MF given as source_path, own_process is true when slice_stl, given this call's other arguments as it would take them (slicer_type, bambu_model, slicer_profile, template_name, template_3mf_path, layer_height, wall_loops, sparse_infill_density, quality, strength), prints the process the file carries (a designer's Bambu Studio or Orca project) unchanged. A 3MF with no slicer settings reports raw_key_count 0; a file that can't be read is an error."
+ },
+ {
+  "name": "confirm_temperatures",
+  "description": "Report every heater target in a G-code file (S and R forms, tool-addressed, RepRapFirmware G10/M568 and Klipper SET_HEATER_TEMPERATURE). An expected temperature matches only when it equals the file's highest target. Read-only; printing tools enforce their own safety gate."
+ },
+ {
+  "name": "process_and_print_stl",
+  "description": "Process an STL file (extend base), slice it, and start printing through the same checked print gate as upload_gcode/print_3mf. Expected temperatures are enforced: a mismatch refuses before upload."
+ },
+ {
+  "name": "get_stl_info",
+  "description": "Get detailed information about an STL file"
+ },
+ {
+  "name": "scale_stl",
+  "description": "Scale an STL model uniformly or along specific axes"
+ },
+ {
+  "name": "rotate_stl",
+  "description": "Rotate an STL model around specific axes"
+ },
+ {
+  "name": "translate_stl",
+  "description": "Move an STL model along specific axes"
+ },
+ {
+  "name": "modify_stl_section",
+  "description": "Apply a specific transformation to a selected section of an STL file"
+ },
+ {
+  "name": "generate_stl_visualization",
+  "description": "Generate an SVG visualization of an STL file from multiple angles"
+ },
+ {
+  "name": "list_3mf_plates",
+  "description": "List a Bambu Studio or OrcaSlicer 3MF's plates as its designer laid them out, before slicing: plate_count, and for each plate its index (from 0; slice_stl's slice_plate is index + 1, inspect_print_file's plate_index is index), name, the objects on it, each object copy's identify_id (instances: the ids slice_stl's skip_objects takes) whether the file already holds its G-code (sliced), and filaments: the project filaments that plate prints with and only those (index from 1 = slice_stl's load_filaments/filament_colours position and print_3mf's ams_mapping position + 1; colour, material, filament_id, and the first part using it), from the slice when there is one, otherwise worked out as Bambu Studio does from the plate's parts, painting, support, layer ranges and tool changes. filaments_complete is false when a part's mesh was too large to read its painting: that plate then lists every declared filament, so offer them all rather than miss one that prints. project_filaments lists every filament the project declares, used or not (slice_stl takes one load_filaments profile per declared filament). build_items: the root 3D/3dmodel.model build items on the plate (0-based, build order); parts: each model part of the plate's objects once, with object_id (the mesh object), path when that mesh is in another model part (p:path), build_object_id (the root object a build item places), name, filament (1-based) and painted: true when slicer painting recolours some facets; draw a plate from these with the 3MF's own meshes. A plain 3MF without plate metadata is one plate. include_thumbnails adds each plate's own preview from the file (thumbnail_png_base64). Read-only."
+ },
+ {
+  "name": "list_3mf_plate_objects",
+  "description": "List the objects of a sliced 3MF plate that the printer can skip, one per copy, as Bambu Studio's skip dialog lists them: identify_id (id), name, whether it is already skipped, and labelObjectEnabled (the plate was sliced with object labels, which skipping needs). These are the identify_ids slice_stl's skip_objects takes. Read-only."
+ },
+ {
+  "name": "inspect_print_file",
+  "description": "Inspect an exact private snapshot of a prepared sliced 3MF or textual G-code file and selected plate without contacting a printer. Returns versioned file-only evidence; no printer readiness or permission to dispatch is established. Does not auto-slice."
+ },
+ {
+  "name": "print_3mf",
+  "description": "Print a 3MF file on a Bambu Lab printer. The exact selected plate is inspected (model, nozzle, bed type, materials, every heater target) and checked against a fresh MQTT report of the printer's identity, nozzle, state, errors and loaded filament before upload and start."
+ },
+ {
+  "name": "check_fulu_orca_setup",
+  "description": "Inspect a FULU OrcaSlicer-bambulab install, platform runtime payload, setup commands, and optionally probe the BambuNetwork bridge."
+ },
+ {
+  "name": "fulu_bambu_network_rpc",
+  "description": "Advanced FULU bridge RPC for BambuNetwork diagnostics and development. Read-only methods are allowed by default. Agent/session setup methods require allow_mutating_method=true. Raw print methods, printer messages, file transfers and unknown methods are refused because they would bypass the print safety gate; use print_3mf for checked printing."
+ },
+ {
+  "name": "merge_vertices",
+  "description": "Merge vertices in an STL file that are closer than the specified tolerance."
+ },
+ {
+  "name": "center_model",
+  "description": "Translate the model so its geometric center is at the origin (0,0,0)."
+ },
+ {
+  "name": "lay_flat",
+  "description": "Rotate the model so a face rests on the bed (Z=0), choosing the orientation with the least part and support volume per mm\u00b2 of bed contact. A face counts only if nothing hangs below it. Returns the new STL path; structuredContent.laid_flat is false, with the input path, when no orientation qualifies."
+ },
+ {
+  "name": "design_guidance",
+  "description": "Read one piece of this MCP's design guidance by name: fdm_fit (when a part meets a real object or another part); fdm_flexures (when a part must flex, grip, snap, clip, spring, or hold something by bending); fdm_assembly (when a split, joint, insert or printed thread could improve the result); fdm_multicolor (when several colours or support materials share a print); fdm_after_slice (when a candidate has been sliced, before recommending it); fdm_capability (when a bridge or overhang decides the plan and no measured capability is at hand). The same texts as the prompts of those names, for a worker that has tools but not prompts. Read-only."
+ },
+ {
+  "name": "cad_status",
+  "description": "Read the optional code-CAD runtime's readiness and pinned version. Never installs or downloads anything. When only this MCP's own engine files changed since the runtime was last verified (an update) and the installed runtime still matches the pinned lock exactly, it re-runs setup's confined build, STL and STEP round trip (about 15 to 20 seconds) and reports ready; a changed runtime still needs cad_setup with install: true."
+ },
+ {
+  "name": "cad_setup",
+  "description": "Check the optional confined build123d runtime. With install: true, use uv to install pinned Python/packages in this MCP's data directory and prove a confined build plus STL/STEP round trip. On macOS, the data directory must be on an internal disk with file ownership enabled; external/network volumes are refused before installation. Native signatures are never modified. Never starts Blender, Fusion or a printer."
+ },
+ {
+  "name": "cad_run",
+  "description": "Build parametric CAD headlessly in OS confinement. Read cad_design first: declare literal P = {...} and build() returning a build123d Shape. Supply script OR script_path; parameters overrides saved named values in one call before derived dimensions. Calls wait for the environment\u2019s exclusive execution slot up to their own deadline and report queue_wait_ms. Each call creates a private immutable subfolder under allowed output_dir, never overwriting previous artifacts. The saved .py and .parameters.json are the recovery checkpoint even after cancellation. Returns independently measured geometry, STL/STEP, six orthographic renders, a perspective view and a contact sheet (with next: read the perspective view before the next change), the closest approach between every pair of solids (bodies), problems, what was checked and not checked, printed: whatever the script wrote with print(), capped at 4000 characters, so a design can report a number it computed, and, in solid mode, purpose and ready: the script's PURPOSE compiled into requirements and evaluated on its use() assembly (held objects, mounts, loads computed from the geometry, facing the user). valid means only that the exported geometry is sound; final: true is recorded only when the design is ready (final_refused says why not)."
+ },
+ {
+  "name": "cad_examples",
+  "description": "The code engine's cookbook: worked build123d designs from simple to complex, each modelled on the best bought version of the thing, with its concept, published sizes and script. Without arguments, lists them by purpose (name, title, use_for: the requests it suits, the pattern it shows, the product it is modelled on): choose by use_for before choosing a mechanism. With name, returns that example's record and full script to adapt. Read-only; starts no process."
+ },
+ {
+  "name": "cad_check_fit",
+  "description": "Check two allowed watertight manifold STL meshes in millimetres. Applies only the explicit rigid transform to reference: XYZ rotation in degrees about the origin, then translation. Never silently scales a scan. Reports Boolean interference volume and minimum surface gap (zero on contact/intersection), plus a clearance verdict; intentional support contact also has zero gap. Like cad_run, a call waits for the environment's exclusive execution slot up to its timeout_ms and reports queue_wait_ms, so several checks may be sent at once. Fails rather than guessing for open meshes or excessive triangle workload."
+ },
+ {
+  "name": "blender_mcp_status",
+  "description": "Inspect Blender MCP configuration or connect and discover the remote server's tools. Lists tool names and summaries; pass tool_names for the full input schemas of the tools you will call. Connecting does not edit the scene; use get_scene_info through blender_mcp_call to check the Blender addon."
+ },
+ {
+  "name": "blender_mcp_call",
+  "description": "Call a discovered tool on the configured Blender MCP server, preserving its full MCP content and errors. Discover tool schemas with blender_mcp_status first; execute_blender_code accepts Python code and user_prompt. Calls can modify the active Blender scene and are never automatically retried."
+ },
+ {
+  "name": "blender_mcp_export_stl",
+  "description": "Export named objects from the live Blender scene to a new, verified STL for slicing. Writes world-space geometry with modifiers applied, without changing the scene, selection, or mode, and reports triangle count and bounding-box dimensions from the written file. Use this after editing or modelling through blender_mcp_call; Blender MCP's own export_scene writes GLB/FBX only. Requires standard Blender MCP and a shared local filesystem."
+ },
+ {
+  "name": "blender_mcp_edit_model",
+  "description": "Import, edit, and export a local STL through standard Blender MCP with verified output and existing scene objects preserved. Requires a shared local filesystem and Blender Object Mode. Also supports a separately configured legacy executable bridge."
+ },
+ {
+  "name": "blender_mcp_setup",
+  "description": "Check or update the MCP for Blender add-on that the configured Blender bridge (BLENDER_MCP_COMMAND uvx, BLENDER_MCP_ARGS naming mcp-for-blender or blender-mcp) needs. Without update: which add-on file Blender loads, its protocol and the protocol the package expects, whether Blender is listening and the running add-on's own handshake. Changes nothing. With update: true, stages the add-on with the package's own installer (mcp-for-blender install-addon) at the inspected version, checks it, keeps the old file as a backup next to it and renames the new one into place. Never starts, stops or edits Blender; a running Blender uses the new add-on once it is re-enabled or restarted. A custom bridge returns supported false."
+ },
+ {
+  "name": "fusion_mcp_setup",
+  "description": "Check or install what the Fusion bridge needs on macOS: Autodesk Fusion itself (found, never installed), the Fusion360MCP add-in from DMontgomery40/fusion360-mcp-server at 86a3016a5a5b (every file checked against its pinned SHA-256) set to run on startup, a login item that sets FUSION_MCP_PORT for Fusion however it is opened, and this server's FUSION_MCP_* settings. Without install: reports them and changes nothing. With install: true, installs what is missing and adds the missing settings to this server's own .env (after a copy of it), never rewriting one it already has. Never starts or quits Fusion; check the connection with fusion_mcp_status."
+ },
+ {
+  "name": "fusion_mcp_status",
+  "description": "Check the Autodesk Fusion bridge: whether the Fusion MCP server is configured (by default DMontgomery40/fusion360-mcp-server@86a3016a5a5b, faust-machines' server with document binding; fusion_mcp_setup installs it), whether Fusion is running, whether its Fusion360MCP add-in answers on its port, and the server's tools and schemas. connected is true only when the add-in answered. With launch: true and Fusion not running on this Mac, opens Autodesk Fusion and waits up to 90 s for the add-in."
+ },
+ {
+  "name": "fusion_mcp_call",
+  "description": "Call a discovered tool on the Fusion MCP server (create_sketch, extrude, fillet, set_parameter, export_stl, execute_code, and others), preserving its full MCP content and errors. Discover tool schemas with fusion_mcp_status first. Calls change the active Fusion design and are never automatically retried. Most tools need an active design: call fusion_mcp_new_design first."
+ },
+ {
+  "name": "fusion_mcp_new_design",
+  "description": "Open a new parametric design document in Fusion, so the Fusion tools have an active design. Fusion must already have some document open: at the pinned faust-machines commit no tool works from Fusion's home screen (issue #12)."
+ },
+ {
+  "name": "fusion_mcp_export",
+  "description": "Export the active Fusion design into output_dir as <name>.stl (export_stl), <name>.f3d (export_f3d) and <name>.parameters.json (the design's user parameters), and return their absolute paths. The STL is checked as a finite triangle mesh and its size compared with the Fusion body to report its units. Existing files are never overwritten. Fusion and this server must share the computer's file system."
+ }
+]

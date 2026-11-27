@@ -242,23 +242,46 @@ def lease_status() -> str:
 def _main_tree_run_dir(repo: str) -> str | None:
     """The .run/ of the MAIN tree that `repo` belongs to.
 
-    "" — `repo` is not a git worktree (a plain checkout or an install without
-    git): its own .run/ is the right one and gpu-lease.sh finds it unaided.
-    None — `repo` IS a linked worktree (its .git is a file) but the main tree
-    cannot be resolved: unknown, which check_lease treats as not free."""
+    "" — `repo` is not a linked worktree (the main tree, a plain checkout or
+    an install without git): its own .run/ is the right one and gpu-lease.sh
+    finds it unaided. None — `repo` IS a linked worktree (its .git is a file)
+    but the main tree cannot be resolved: unknown, which check_lease treats
+    as not free. Plain `--git-common-dir`, resolved against `repo` here, for
+    the reason evals/benchmark_all.py's _git_common_dir gives (old git echoes
+    `--path-format` back as a line of output)."""
     linked = os.path.isfile(os.path.join(repo, ".git"))
+    unknown = None if linked else ""
     try:
-        r = subprocess.run(["git", "-C", repo, "rev-parse", "--path-format=absolute",
-                            "--git-common-dir"], capture_output=True, text=True,
-                           timeout=10, check=False)
+        r = subprocess.run(["git", "-C", repo, "rev-parse", "--git-common-dir"],
+                           capture_output=True, text=True, timeout=10, check=False)
     except (OSError, subprocess.SubprocessError):
-        return None if linked else ""
-    common = (r.stdout or "").strip()
-    if r.returncode != 0 or not common:
-        return None if linked else ""
-    if os.path.basename(common.rstrip("/")) != ".git":
-        return None if linked else ""      # a bare repository has no main tree
-    return os.path.join(os.path.dirname(common.rstrip("/")), ".run")
+        return unknown
+    lines = r.stdout.strip().splitlines() if r.returncode == 0 else []
+    if len(lines) != 1 or not lines[0].strip() or lines[0].startswith("-"):
+        return unknown
+    common = os.path.normpath(os.path.join(os.path.abspath(repo), lines[0].strip()))
+    if os.path.basename(common) != ".git":
+        return unknown                     # a bare repository has no main tree
+    return os.path.join(os.path.dirname(common), ".run")
+
+
+def _parent_pid(pid: int) -> int | None:
+    """`pid`'s parent: /proc on Linux, `ps` where there is no /proc (macOS,
+    whose lease check used to see only this process), None if unknown."""
+    try:
+        with open(f"/proc/{pid}/stat") as fh:
+            return int(fh.read().rsplit(") ", 1)[1].split()[1])
+    except (ValueError, IndexError):
+        return None
+    except OSError:
+        if os.path.isdir("/proc/self"):
+            return None                  # Linux, and that pid is gone
+    try:
+        out = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)],
+                             capture_output=True, text=True, timeout=5).stdout
+        return int(out.strip())
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
 
 
 def _ancestors(pid: int | None = None) -> set[int]:
@@ -266,13 +289,9 @@ def _ancestors(pid: int | None = None) -> set[int]:
     the HOLDER our ancestor, and that lease is ours, not somebody else's."""
     seen: set[int] = set()
     cur = os.getpid() if pid is None else pid
-    while cur > 1 and cur not in seen:
+    while cur and cur > 1 and cur not in seen:
         seen.add(cur)
-        try:
-            with open(f"/proc/{cur}/stat") as fh:
-                cur = int(fh.read().rsplit(") ", 1)[1].split()[1])
-        except (OSError, ValueError, IndexError):
-            break
+        cur = _parent_pid(cur)
     return seen
 
 

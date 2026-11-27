@@ -207,12 +207,21 @@
   },
   "zig": {
    "toolchain": "0.16.0",
-   "fixtures_with_diagnostics": 39,
+   "fixtures_with_diagnostics": 57,
    "fixtures_that_compiled_anyway": 0,
    "decoys_that_compiled_anyway": 0,
    "signatures": {
+    "ident:(": [
+     "syntax"
+    ],
     "ident:))": [
      "pq_hashmap"
+    ],
+    "ident:*claim.Ctx": [
+     "thread_spawn"
+    ],
+    "ident:;": [
+     "syntax"
     ],
     "ident:?i32": [
      "arraylist"
@@ -226,6 +235,9 @@
     "ident:@floatToInt": [
      "casts"
     ],
+    "ident:@intClz": [
+     "clz_shift"
+    ],
     "ident:@intToFloat": [
      "casts"
     ],
@@ -233,14 +245,33 @@
      "arraylist",
      "arraylist_writer"
     ],
+    "ident:Allocator": [
+     "thread_spawn"
+    ],
+    "ident:Ctx": [
+     "thread_spawn"
+    ],
+    "ident:Dir": [
+     "io_arity"
+    ],
     "ident:File": [
-     "stdout"
+     "stdout",
+     "io_arity"
     ],
     "ident:GeneralPurposeAllocator": [
      "alloc_exit"
     ],
+    "ident:Io.Dir": [
+     "io_arity"
+    ],
+    "ident:Io.File": [
+     "io_arity"
+    ],
     "ident:Io.Reader": [
      "stdin"
+    ],
+    "ident:Mutex": [
+     "thread_sync"
     ],
     "ident:PriorityQueue": [
      "pq_hashmap"
@@ -248,14 +279,27 @@
     "ident:Reader": [
      "stdin"
     ],
+    "ident:ResetEvent": [
+     "thread_sync"
+    ],
+    "ident:SpawnConfig": [
+     "thread_spawn"
+    ],
     "ident:Thread": [
-     "time_random"
+     "time_random",
+     "thread_sync"
+    ],
+    "ident:Thread.SpawnConfig": [
+     "thread_spawn"
     ],
     "ident:abs": [
      "math"
     ],
     "ident:absInt": [
      "math"
+    ],
+    "ident:an identifier": [
+     "syntax"
     ],
     "ident:argsAlloc": [
      "args"
@@ -273,6 +317,9 @@
     "ident:ascii": [
      "ascii"
     ],
+    "ident:claim.Ctx": [
+     "thread_spawn"
+    ],
     "ident:copy": [
      "mem"
     ],
@@ -281,6 +328,9 @@
     ],
     "ident:cwd": [
      "files"
+    ],
+    "ident:erf": [
+     "erf"
     ],
     "ident:exit": [
      "alloc_exit"
@@ -304,6 +354,9 @@
     "ident:heap": [
      "alloc_exit"
     ],
+    "ident:i0": [
+     "lint"
+    ],
     "ident:i32": [
      "arraylist"
     ],
@@ -322,7 +375,8 @@
      "ascii"
     ],
     "ident:math": [
-     "math"
+     "math",
+     "erf"
     ],
     "ident:max": [
      "math"
@@ -330,14 +384,23 @@
     "ident:mem": [
      "mem"
     ],
+    "ident:mem.Allocator": [
+     "thread_spawn"
+    ],
     "ident:min": [
      "math"
     ],
     "ident:nanoTimestamp": [
      "time_random"
     ],
+    "ident:openFileIo": [
+     "io_arity"
+    ],
     "ident:os": [
      "alloc_exit"
+    ],
+    "ident:posix": [
+     "posix_write"
     ],
     "ident:priority_queue.PriorityQueue": [
      "pq_hashmap"
@@ -385,24 +448,64 @@
     "ident:trimRight": [
      "mem"
     ],
+    "ident:u5": [
+     "clz_shift"
+    ],
+    "ident:u6": [
+     "clz_shift"
+    ],
+    "ident:write": [
+     "posix_write"
+    ],
+    "ident:writeAll": [
+     "io_arity"
+    ],
     "ident:writer": [
      "arraylist_writer"
+    ],
+    "shape:expected 'X', found 'X'": [
+     "syntax"
+    ],
+    "shape:expected N argument(s), found N": [
+     "io_arity"
     ],
     "shape:expected N argument, found N": [
      "casts"
     ],
+    "shape:expected a tuple, found 'X'": [
+     "thread_spawn"
+    ],
+    "shape:expected parameter list, found 'X'": [
+     "syntax"
+    ],
     "shape:expected type 'X', found 'X'": [
-     "arraylist"
+     "arraylist",
+     "thread_spawn",
+     "clz_shift"
     ],
     "shape:invalid builtin function: 'X'": [
-     "casts"
+     "casts",
+     "clz_shift"
+    ],
+    "shape:local variable is never mutated": [
+     "lint"
+    ],
+    "shape:member function expected N argument(s), found N": [
+     "io_arity"
     ],
     "shape:missing struct field: items": [
      "arraylist"
     ],
+    "shape:name shadows primitive 'X'": [
+     "lint"
+    ],
     "shape:no field or member function named 'X' in 'X'": [
      "stdin",
-     "arraylist_writer"
+     "arraylist_writer",
+     "io_arity"
+    ],
+    "shape:pointless discard of local constant": [
+     "lint"
     ],
     "shape:root source file struct 'X' has no member named 'X'": [
      "stdout",
@@ -414,13 +517,19 @@
      "mem",
      "fmt",
      "alloc_exit",
-     "ascii"
+     "ascii",
+     "thread_sync",
+     "posix_write",
+     "erf"
     ],
     "shape:struct 'X' has no member named 'X'": [
      "arraylist"
     ],
     "shape:struct 'X'lt'X' has no member named 'X'": [
      "pq_hashmap"
+    ],
+    "shape:unused local constant": [
+     "lint"
     ]
    },
    "generic": [

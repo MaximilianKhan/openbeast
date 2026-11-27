@@ -117,6 +117,7 @@ def test_a_remote_base_url_never_describes_a_local_server(re_, tmp_path, monkeyp
     assert re_.capture_server_config("http://127.0.0.1:8080/v1")["reasoning_budget"] == "20480"
 
 
+@pytest.mark.linux_only(reason="/proc/net/tcp")
 def test_real_proc_resolves_a_real_listening_socket(re_):
     """Against the real /proc: THIS process listens; the stub pgrep claims a
     stranger's command line is on that port. The socket wins."""

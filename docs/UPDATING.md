@@ -1,5 +1,14 @@
 # Updating
 
+> **Updating the DGX Spark pair?** Do not use the `./stop.sh` / `./start.sh`
+> lines below there: the stack on spark-1 runs under the `systemctl --user`
+> unit `openbeast`, and a bare `./scripts/update.sh` dies at its first step on
+> a Spark (no `llama.cpp/` clone). The ordered "update everything" checklist,
+> per host, online and offline, with the WebUI backup and every step a recent
+> change added (spark-guard, fabric MTU, `ARTIFACT_LOGIN_FROM`, the seed
+> filter, zig, beast-docs, beast-ark), is
+> [SPARK_HYDRA.md § G6](SPARK_HYDRA.md#g6-updating).
+
 ## Updating OpenBeast itself
 
 `scripts/update.sh` does not update OpenBeast. It has no `git pull` of this
@@ -42,6 +51,14 @@ OpenBeast orchestrates several upstream open source projects (full list and
 credits: [`NOTICE`](../NOTICE) and the README credits section). Upstreams
 move fast — llama.cpp alone lands performance work weekly — so keeping them
 fresh is worth doing periodically.
+
+**Inference engines (llama.cpp, vLLM, TensorFold):** to move to a named
+release rather than `master`, use `scripts/engine.sh update|install <engine>
+[--version V]`. It resolves a release to an immutable pin (commit / image
+digest / signed archive sha256), keeps a history, and rolls back with
+`scripts/engine.sh rollback <engine>`. Offline, use `stage` on a connected box
+and `install --from DIR` on the closed one. For llama it builds through
+`update.sh --llama --force`. See [`ENGINES.md`](ENGINES.md).
 
 ## One command
 
@@ -152,8 +169,16 @@ openbeast-client update      # = scripts/client.sh update
 Two steps: `git pull --ff-only` in `~/.openbeast-client/repo` (the slim
 checkout of `agents/ scripts/ skills/ searxng/`), then re-install the
 hash-pinned closure (`agents/requirements.lock`, via `pydeps.sh`) into the
-client's venv. A client installed from a
-full clone is told to pull that clone itself.
+client's venv. That copy is the client whether it was cloned from GitHub or
+made from a full clone you ran the installer in: its `origin` is that clone's
+upstream, so the pull works the same. A client that an installer older than
+2026-11-27 left running from the clone itself is moved to the copy by this
+command, once: the clone is pulled, the copy is made from it, opencode's
+`openbeast-tools` entry and the `openbeast-client` command are pointed at it,
+and nothing else changes. Restart opencode afterwards. It is skipped, with a
+line saying so, when the clone has uncommitted changes under `agents/`,
+`skills/`, `scripts/` or `searxng/` (commit them and run `openbeast-client
+relocate`), and for a client installed with `setup-client.sh --in-place`.
 
 Worth doing after any rig-side change under `agents/` — the client runs its
 *own* copy of `mcp_server.py` and `tools.py`. `openbeast-client status`
@@ -165,8 +190,8 @@ compares the client's understood contract version against the rig's
 | Component | Mechanism | Notes |
 |---|---|---|
 | **llama.cpp** | `git pull --ff-only` in `llama.cpp/`, then a rebuild of `llama-server`; **after `llama-server` has built**, `scripts/llama.cpp.ref` (a tracked file) is rewritten to the commit just pulled, so the pin follows only an engine that compiled — smoke-test, then commit it. The rebuild uses the same backend bootstrap used — `GPU_BACKEND` from `openbeast.conf` (cuda / hip / sycl / cpu, auto-detected flags via `scripts/lib/hardware.sh`; see `docs/HARDWARE_PROFILES.md`) | Skips the rebuild when already at HEAD and built. **Refuses while another job holds the GPU lease** (`scripts/gpu-lease.sh status`): the binary is the one every campaign cell execs and the eval era does not hash the engine, so a mid-campaign rebuild would split paired cells across two builds — wait, or pass `--ignore-lease`. A running server keeps the old binary until restarted. If the repo directory was ever moved/renamed, the stale CMake cache is detected and the build dir wiped automatically |
-| **Open WebUI** | Pull the release tag `update.sh` names (`OPENWEBUI_TAG` at its top, `v0.12.3`; env `OPENBEAST_OPENWEBUI_TAG` overrides it, never the moving `:main`), read its new digest, rewrite the `@sha256:` pin in `docker-compose.yml`, recreate. On a box installed from an offline bundle (`image: sha256:<content id>` lines), the service is found in `docker-compose.yml.pre-bundle` and re-pinned to the new registry digest; an image line it cannot pin is warned about, never reported as updated | Images are **digest-pinned** for supply-chain safety — a plain `compose pull` would just re-fetch the pin, so `--images` is the sanctioned bump. Commit the compose digest change after verifying. Your data lives in the `open-webui-data` volume and survives. A stopped stack is left stopped |
-| **SearXNG** | Same digest-bump for `searxng/searxng:latest` — **in `docker-compose.yml` only** | Our `searxng/settings.yml` override is bind-mounted, so local settings survive image updates. See the manual second bump below |
+| **Open WebUI** | Pull the moving `:main` tag, read its new digest, rewrite the `@sha256:` pin in `docker-compose.yml`, recreate. On a box installed from an offline bundle (`image: sha256:<content id>` lines), the service is found in `docker-compose.yml.pre-bundle` and re-pinned to the new registry digest; an image line it cannot pin is warned about, never reported as updated | Images are **digest-pinned** for supply-chain safety — a plain `compose pull` would just re-fetch the pin, so `--images` is the sanctioned bump. Commit the compose digest change after verifying. Your data lives in the `open-webui-data` volume and survives. A stopped stack is left stopped. A running WebUI on the new image is then sent a request for an unknown `Host` (`rebind.invalid`): if it is served instead of refused with 400, the DNS-rebinding guard (`scripts/webui/sitecustomize.py`) did not load, and the open-webui pin is rolled back to the previous digest and recreated |
+| **SearXNG** | Same digest-bump for `searxng/searxng:latest` in `docker-compose.yml`, **mirrored into `scripts/client-searxng.compose.yml`** (the client's local SearXNG) | Our `searxng/settings.yml` override is bind-mounted, so local settings survive image updates. See the client pin section below |
 | **Extension images** (`extensions/*/compose.yaml`, e.g. ntfy) | Each fragment's pinned `<repo>:<tag>` is re-pulled and its `@sha256:` rewritten on the `image:` line — the tag is a deliberate version, so a new version stays a reviewed edit to the fragment. Every fragment on disk is checked, enabled or not; an unpinned or bundle-content-ID line is warned about. Running containers are recreated with the ENABLED fragments merged, as `start.sh` composes them | Commit the fragment's digest change with the core's |
 | **MCP SDK / openai / fastapi / uvicorn / PyJWT** | `pip install --user -U <packages>`, then the **gate**: `agents/mcp_server.py` and `agents/openapi_tools.py` must import cleanly against the new versions or the upgrade is rolled back and no pin is rewritten (a 2026-08-14 mcp 1→2 bump deleted the class the MCP server is built on and took the next boot down). On success the `==` pins in `agents/requirements.txt` are rewritten to what is now installed — major jumps are shouted — and **`agents/requirements.lock` is regenerated** (`pydeps.sh lock`) so the hash-pinned closure moves with the pins. If the lock cannot be regenerated (pypi.org unreachable) it is left intact and reported STALE: bootstrap will then say so and use `requirements.txt`, and CI's `pydeps.sh verify` fails — run `./scripts/pydeps.sh lock` before committing. Commit `requirements.txt` and `requirements.lock` **together** | PEP-668 (Arch/newer Debian) handled automatically with `--break-system-packages` (touches `~/.local` only). A running MCP/tool server keeps the old code until restarted |
 | **huggingface_hub (`hf` CLI)** | same pip upgrade | Not in `requirements.txt` (the CLI moved between majors) but pinned in the lock as an explicit extra |
@@ -227,15 +252,61 @@ lock is stale") and stays red. Two pieces close that:
   protection wants an up-to-date branch) → wait for the relock push → approve
   the held runs (only this repo's, for the PR's head commit — never a fork's run
   on a same-named branch) → wait for CI (re-running a *cancelled* run once — a late
-  force-push does that) → squash-merge. **Any red check stops the run before
-  the merge**, required by branch protection or not (the script names the
-  failing checks); it used to merge over a red non-required check. Sequential on purpose: every one of
+  force-push does that) → squash-merge. Sequential on purpose: every one of
   these PRs touches the same two files, so each merge invalidates the next
   PR's lock. It refuses to run twice at once (`flock`), needs `gh`
   authenticated as a maintainer, and touches nothing local — it does **not**
   pip-install the new versions; `./bootstrap.sh` or `update.sh --python`
   does that, on your schedule. Do not run that mid-campaign: `openai` is the
   eval client.
+
+## Upgrade notes: the 2026-11 dependency sweep (Open WebUI 0.11.0 → 0.13.3)
+
+The pins moved in one reviewed sweep, not through `--images`. What changes
+when a box picks it up (update the checkout, then `./start.sh`; on spark-1,
+`systemctl --user stop openbeast` before the backup and `start` after, as in
+[SPARK_HYDRA.md § G6](SPARK_HYDRA.md#g6-updating) step 3):
+
+- **Open WebUI runs its database migrations** (0.11.1, 0.12.1, 0.13.0 and
+  0.13.1 each change the schema) the first time the new image starts.
+  Upstream does not support downgrading past them, so **back up the volume
+  first**; a rollback is the old digest *plus* that backup:
+
+  ```bash
+  docker stop open-webui
+  docker run --rm -v openbeast_open-webui-data:/data:ro -v "$PWD":/backup alpine \
+    tar czf /backup/open-webui-data-$(date +%F).tgz -C /data .
+  ```
+
+- **Why it was urgent.** 37 published Open WebUI advisories affect 0.11.0
+  (10 high: session-token theft via DOCX preview, citation links and the
+  stats message handler; SSRF via DNS rebinding in the Playwright loader;
+  OAuth sign-in as another user; a terminal-proxy policy bypass; and more).
+  All are fixed in 0.13.3. It also clears the "new version available" banner.
+- **The image is Python 3.12 on Debian 13** (was 3.11 / Debian 12).
+  `scripts/webui/sitecustomize.py` (the Host allowlist) loads unchanged —
+  verified: a foreign `Host:` still gets 400, on HTTP and on socket.io.
+- **`configure-webui.sh` works unchanged** against 0.13.3: the `config`
+  table keeps its `(key, value, updated_at)` shape, the `model` table only
+  gained a nullable `version_id`, and the admin `TOOL_SERVER_CONNECTIONS` are
+  not affected by 0.13.0's "Direct Integrations off" change (that applies to
+  connections users save in their *personal* Integrations tab, which
+  OpenBeast does not use). The signed identity JWT still verifies in
+  `agents/router.py`.
+- **Behaviour you may notice:** with native function calling (which
+  `configure-webui.sh` sets) attached files are no longer pasted into the
+  prompt; the model reads them with its Files tool (turn on *Preload files*
+  in a model's Capabilities for the old behaviour). Unless you saved your own
+  values, `RAG_TOP_K` / `RAG_TOP_K_RERANKER` default to 10 (was 3) and
+  `CHUNK_SIZE` to 1024. Chat controls moved into the model menu.
+- **SearXNG 2026.11 needs `general.contact_url`** (Wikimedia's User-Agent
+  policy) or it refuses to load the wikipedia, wikidata and openstreetmap
+  engines. `searxng/settings.yml` now sets it to the project URL; nothing to
+  do unless you want your own contact there.
+- **ntfy 2.28.0 → 2.38.0** (opt-in extension): security fixes (a topic
+  normalization auth bypass on SQLite, subscriptions surviving access
+  revocation, template memory amplification, Go 1.27.4). Its message
+  database migrates (schema 16 → 17); the config keys are the same.
 
 ## Not covered by the script (deliberately)
 

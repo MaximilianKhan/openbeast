@@ -42,3 +42,62 @@ ob_llama_ready() {
   body="$(curl -fsS -m 3 "${1%/}/health" 2>/dev/null)" || return 1
   [[ "$body" =~ \"status\"[[:space:]]*:[[:space:]]*\"ok\" ]]
 }
+
+# ob_ts_8443_raw_to <port> — what `tailscale serve` publishes on :8443:
+#   0  :8443 proxies straight to <port> (a RAW inference mount, no gate)
+#   1  tailscale answered and it does not
+#   2  no answer (not installed, not running, >3 s, unparseable)
+# `serve --bg` mounts persist across reboots and restarts, so a raw :8443
+# made while LLAMA_API_KEY was set outlives that key. serve.sh asks this
+# before it starts a keyless llama-server: the inference counterpart of
+# conf.sh's _ob_webui_on_443.
+ob_ts_8443_raw_to() {
+  local out
+  command -v tailscale >/dev/null 2>&1 || return 2
+  # Captured, not piped: under a caller's pipefail a failing tailscale would
+  # override the parser's answer.
+  if command -v timeout >/dev/null 2>&1; then
+    out="$(timeout 3 tailscale serve status --json 2>/dev/null)" || return 2
+  else
+    out="$(tailscale serve status --json 2>/dev/null)" || return 2
+  fi
+  printf '%s' "$out" | python3 -c '
+import json, re, sys
+try:
+    web = json.load(sys.stdin).get("Web") or {}
+except Exception:
+    sys.exit(2)
+pat = re.compile(r"^https?://[^/]+:" + re.escape(sys.argv[1]) + r"/?$")
+for hp, cfg in web.items():
+    if hp.endswith(":8443") and any(pat.match(str((h or {}).get("Proxy", "")))
+                                    for h in ((cfg or {}).get("Handlers") or {}).values()):
+        sys.exit(0)
+sys.exit(1)' "$1" 2>/dev/null
+}
+
+# ob_webui_host_guard <webui-base-url> — is Open WebUI's Host allowlist
+# (scripts/webui/sitecustomize.py, loaded through PYTHONPATH in compose)
+# actually live in the RUNNING container? It fails open by design (a broken
+# hook must not brick the chat UI on an image bump), and an image whose
+# entrypoint resets PYTHONPATH or runs python -I never loads it at all — so
+# nothing short of asking the container can tell. One request whose Host
+# names a host no allowlist contains; the guard answers 400 (review
+# 2026-11-16). Used by doctor.sh, start.sh and update.sh --images. Prints
+# one word, and returns:
+#   off  0  OPENBEAST_WEBUI_HOSTS is '*': no allowlist, by design (login on,
+#           or the WebUI opened on purpose)
+#   ok   0  the rebound Host was refused (400)
+#   open 1  the rebound Host was SERVED: the guard is not installed
+#   down 2  the WebUI did not answer at all
+ob_webui_host_guard() {
+  local code
+  if [[ "${OPENBEAST_WEBUI_HOSTS:-}" == "*" ]]; then echo off; return 0; fi
+  code="$(curl -s -o /dev/null -m 5 -w '%{http_code}' -H 'Host: rebind.invalid' \
+            "${1%/}/api/version" 2>/dev/null)" || true
+  case "$code" in
+    400)                 echo ok;   return 0 ;;
+    000)                 echo down; return 2 ;;
+    [1-5][0-9][0-9])     echo open; return 1 ;;
+    *)                   echo down; return 2 ;;   # no status at all
+  esac
+}

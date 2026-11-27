@@ -1,0 +1,10 @@
+{
+  "expect": {
+    "wrong_nodrop.py": "AssertionError: key not dropped after completion",
+    "wrong_retryonerror.py": "AssertionError: fn ran \\d+ times, want 1",
+    "wrong_wrapexc.py": "AssertionError: wrong exception type propagated",
+    "wrong_swallow.py": "AssertionError: got \\d+ exceptions"
+  },
+  "timed": false,
+  "note": "v4 validator kept unchanged. Wrongs: finished call never dropped (memoises), followers retry fn when the leader raised, followers get a wrapped RuntimeError, followers get None instead of the exception."
+}

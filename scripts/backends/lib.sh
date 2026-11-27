@@ -53,70 +53,168 @@ sp_err() { echo "Error: $*" >&2; SP_ERRORS=$((SP_ERRORS + 1)); }
 
 sp_is_true() { case "$(printf '%s' "${1:-}" | tr 'A-Z' 'a-z')" in true|yes|1|on) return 0 ;; esac; return 1; }
 
-# sp_offline — true when the network is off by policy: OPENBEAST_OFFLINE,
-# OFFLINE or HF_HUB_OFFLINE is true (first token, the way pylib/hfapi.py reads
-# them). Call sp_backends_hub_env first so spark.env / openbeast.conf count.
-sp_offline() {
-  local k v
-  for k in OPENBEAST_OFFLINE OFFLINE HF_HUB_OFFLINE; do
-    v="${!k:-}"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%%[[:space:]]*}"
-    v="${v#[\"\']}"; v="${v%[\"\']}"
-    sp_is_true "$v" && return 0
-  done
-  return 1
-}
-
-# sp_image <image> <digest> <print-mode 0|1> — sets SP_IMAGE_REF, the
-# reference to run (a global, not stdout: sp_err must count in THIS shell).
-# A real run requires a sha256 digest; --print shows the tag with a warning.
+# sp_image <image> <digest> <print-mode 0|1> [<image-id>] — sets SP_IMAGE_REF,
+# the reference to run (a global, not stdout: sp_err must count in THIS shell).
+# A real run requires a pin. Two kinds:
+#   <image-id>  (*_IMAGE_ID) the local image ID, sha256 of the image config
+#               (which names every layer). It survives docker save | load,
+#               so it is the pin for an offline cluster fed by
+#               spark-cluster.sh sync-image; the run is by ID, which docker
+#               never pulls, and a real run first checks the ID is present.
+#   <digest>    (*_IMAGE_DIGEST) the registry RepoDigest. docker load does
+#               NOT restore it (classic overlay2 store), so on a node that
+#               loaded the image, IMAGE@DIGEST misses locally and docker
+#               tries to pull.
+# The ID wins when both are set. --print shows the tag with a warning.
 sp_image() {
-  local image="$1" digest="$2" printing="$3"
+  local image="$1" digest="$2" printing="$3" id="${4:-}" have
   SP_IMAGE_REF="$image"
-  if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  if [[ -n "$id" ]]; then
+    if [[ ! "$id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+      sp_err "image ID '$id' is not sha256:<64 hex> (docker image inspect -f '{{.Id}}' $image)"
+      return 0
+    fi
+    SP_IMAGE_REF="$id"
+    if [[ "$printing" -ne 1 ]]; then
+      have="$(docker image inspect -f '{{.Id}}' "$id" 2>/dev/null || true)"
+      [[ "$have" == "$id" ]] || sp_err "image $id ($image) is not on this node — docker load it, or run spark-cluster.sh sync-image $image on the head"
+    fi
+  elif [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
     SP_IMAGE_REF="$image@$digest"
   elif [[ "$printing" -eq 1 ]]; then
     echo "Warning: no image digest pinned (placeholder '$digest') — showing the tag only; a real run refuses this." >&2
   else
-    sp_err "image digest is not pinned ('$digest'): docker pull $image, then paste the sha256 from docker inspect --format '{{index .RepoDigests 0}}' $image"
+    sp_err "image digest is not pinned ('$digest'): docker pull $image, then paste the sha256 from docker inspect --format '{{index .RepoDigests 0}}' $image into *_IMAGE_DIGEST — or, for an image that arrived by docker load (no RepoDigest), its docker image inspect -f '{{.Id}}' into *_IMAGE_ID"
   fi
 }
 
-# sp_check_bind <host> — a specific address, never a wildcard unless the
-# operator acknowledged it (vLLM /health + /metrics are open even with a key;
-# TensorFold has no key at all).
+# sp_bind_class <host> — how the socket layer reads a bind host: unspecified
+# (every interface), loopback, address (a specific address or a name) or
+# malformed. Normalised first — brackets stripped, legacy IPv4 spellings
+# expanded — so '0', '::0', '[::0]' and 0:0:0:0:0:0:0:0 are the wildcard they
+# bind, not a "specific address" that slips past a literal match.
+sp_bind_class() {
+  python3 - "$1" <<'PY'
+import ipaddress, socket, sys
+h = sys.argv[1]
+if any(c.isspace() for c in h):
+    print("malformed"); sys.exit()
+if h.startswith("[") and h.endswith("]"):
+    h = h[1:-1]
+if h == "":
+    print("unspecified"); sys.exit()
+if h.lower() in ("localhost", "localhost."):
+    print("loopback"); sys.exit()
+ip = None
+try:
+    ip = ipaddress.ip_address(h.split("%", 1)[0])
+except ValueError:
+    try:
+        ip = ipaddress.IPv4Address(socket.inet_aton(h))   # '0', '0x0', '127.1', ...
+    except OSError:
+        pass
+if ip is None:
+    print("address"); sys.exit()
+if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+    ip = ip.ipv4_mapped
+print("unspecified" if ip.is_unspecified else "loopback" if ip.is_loopback else "address")
+PY
+}
+
+# sp_check_bind <host> [keyless 0|1] — rank 0's HTTP bind. Never a wildcard
+# unless the operator acknowledged it (vLLM /health + /metrics are open even
+# with a key). A server with NO API key (TensorFold's container engine, or
+# SPARK_NO_API_KEY=true) binds loopback only — 127.0.0.1 behind beast-gate —
+# unless SPARK_ALLOW_KEYLESS_BIND=true says someone firewalls it.
 sp_check_bind() {
-  case "$1" in
-    ""|0.0.0.0|::|"[::]")
+  local host="$1" keyless="${2:-0}" cls
+  cls="$(sp_bind_class "$host")"
+  case "$cls" in
+    malformed)
+      sp_err "SPARK_SERVE_HOST='$host' contains whitespace — one address, e.g. 127.0.0.1" ;;
+    unspecified)
       if ! sp_is_true "${SPARK_ALLOW_WILDCARD_BIND:-}"; then
-        sp_err "SPARK_SERVE_HOST='$1' — set it to this Spark's tailnet or private-LAN address (a wildcard needs SPARK_ALLOW_WILDCARD_BIND=true and your own firewall)"
+        sp_err "SPARK_SERVE_HOST='$host' binds every interface — use 127.0.0.1 behind beast-gate, or (for a server with an API key) this Spark's tailnet or private-LAN address. A wildcard needs SPARK_ALLOW_WILDCARD_BIND=true and your own firewall"
       fi ;;
   esac
+  if [[ "$keyless" == 1 && "$cls" != loopback && "$cls" != malformed ]] \
+     && ! sp_is_true "${SPARK_ALLOW_KEYLESS_BIND:-}"; then
+    sp_err "SPARK_SERVE_HOST='$host' is not loopback, and this server has NO API key: anything that reaches it gets unauthenticated generations. Use 127.0.0.1 behind beast-gate (docs/SPARK_HYDRA.md), or set SPARK_ALLOW_KEYLESS_BIND=true and firewall it yourself"
+  fi
+}
+
+# sp_check_guarded_port <port> — on a Spark where spark-guard is installed,
+# a rendezvous port (and its +1, the second line each rank keeps to rank 0)
+# must be one the installed ruleset drops off the fabric. spark-guard runs
+# separately under sudo and reads master ports only from spark.env, so a port
+# moved through the environment or another --env file would otherwise listen
+# unauthenticated on every interface, past the guard. No guard installed: no
+# check (the launcher's own "firewall it" note stands).
+sp_check_guarded_port() {
+  local port="$1" rules="${SPARK_GUARD_RULES:-/etc/openbeast/spark-guard.nft}"
+  local line r lo hi p ok missing=""
+  [[ "$port" =~ ^[0-9]+$ && -r "$rules" ]] || return 0
+  line="$(sed -n 's/^# fabric:.*guarded TCP:[[:space:]]*//p' "$rules" | head -n1)"
+  [[ -n "$line" ]] || return 0
+  for p in "$port" "$((10#$port + 1))"; do
+    ok=0
+    for r in $line; do
+      [[ "$r" =~ ^[0-9]+(-[0-9]+)?$ ]] || continue
+      lo="${r%-*}"; hi="${r#*-}"
+      if (( p >= lo && p <= hi )); then ok=1; break; fi
+    done
+    [[ $ok -eq 1 ]] || missing+="${missing:+ }$p"
+  done
+  [[ -z "$missing" ]] && return 0
+  sp_err "rendezvous port(s) $missing not guarded by spark-guard ($rules guards: $line) — rank 0 binds them on every interface with no authentication. spark-guard reads master ports only from spark.env: set the port there and re-run sudo scripts/backends/spark-guard.sh (or add it by hand: --port $port --port $((10#$port + 1)))"
 }
 
 # sp_check_secret_file <path> — exists, a regular file, owned by us, and not
 # readable by group/other.
-sp_check_secret_file() {   # sp_check_secret_file <file> [what, default "API key"]
-  local f="$1" what="${2:-API key}" mode owner
+sp_check_secret_file() {
+  local f="$1" mode owner
   if [[ ! -f "$f" ]]; then
-    if [[ "$what" == "API key" ]]; then
-      sp_err "API key file '$f' does not exist (create it: (umask 077; openssl rand -hex 32 > '$f'))"
-    else
-      sp_err "$what file '$f' does not exist"
-    fi
+    sp_err "API key file '$f' does not exist (create it: (umask 077; openssl rand -hex 32 > '$f'))"
     return 0
   fi
   mode="$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f" 2>/dev/null || echo "")"
   owner="$(stat -c '%u' "$f" 2>/dev/null || stat -f '%u' "$f" 2>/dev/null || echo "")"
   if [[ -z "$mode" || "${mode: -2}" != "00" ]]; then
-    sp_err "$what file '$f' is mode ${mode:-?} — chmod 600 it"
+    sp_err "API key file '$f' is mode ${mode:-?} — chmod 600 it"
   fi
   if [[ -n "$owner" && "$owner" != "$(id -u)" ]]; then
-    sp_err "$what file '$f' is not owned by $(id -un)"
+    sp_err "API key file '$f' is not owned by $(id -un)"
   fi
   if [[ ! -s "$f" ]]; then
-    sp_err "$what file '$f' is empty"
+    sp_err "API key file '$f' is empty"
   fi
 }
+
+# ── Ranks: one GPU per Spark, so TENSOR_PARALLEL_SIZE N = N Sparks = ranks
+# 0..N-1. Rank 0 serves HTTP; every other rank is a headless worker.
+# sp_rank_syntax <rank> — a plain decimal 0..99 (no sign, no leading zero).
+# Checked before the profile is read (--stop needs only the unit name).
+sp_rank_syntax() { [[ "$1" =~ ^(0|[1-9][0-9]?)$ ]]; }
+
+# sp_check_rank <rank> <tp> — the profile's TP has this rank. Returns 1 when
+# TP itself is not 1..8 (nothing after can do arithmetic on it); a rank
+# outside 0..TP-1 is counted with sp_err like any other refusal.
+sp_check_rank() {
+  local rank="$1" tp="$2"
+  if [[ ! "$tp" =~ ^[1-8]$ ]]; then
+    echo "Error: profile '${PF_PROFILE_NAME:-?}' is TENSOR_PARALLEL_SIZE='$tp' — 1..8 (one rank per Spark)" >&2
+    return 1
+  fi
+  if [[ "$tp" == 1 && "$rank" != 0 ]]; then
+    sp_err "profile '$PF_PROFILE_NAME' is TENSOR_PARALLEL_SIZE=1: it runs on ONE Spark — start --rank 0 only"
+  elif (( rank >= tp )); then
+    sp_err "profile '$PF_PROFILE_NAME' is TENSOR_PARALLEL_SIZE=$tp: its ranks are 0..$((tp - 1)), one per Spark — there is no --rank $rank"
+  fi
+}
+
+# sp_workers <tp> — "rank 1" for TP 2, "ranks 1..N-1" above: the workers,
+# for messages.
+sp_workers() { if [[ "$1" == 2 ]]; then echo "rank 1"; else echo "ranks 1..$(($1 - 1))"; fi; }
 
 # sp_print_cmd <argv...> — the exact command, shell-quoted, one line.
 sp_print_cmd() {
@@ -133,10 +231,11 @@ sp_print_cmd() {
 SP_PYLIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pylib"
 
 # sp_profile_load <name|path> <backend> — sets PF_<KEY> for every profile key
-# and the PF_EXTRA array. Returns 1 (messages on stderr) on any refusal.
+# and the PF_EXTRA and PF_RANK_ENV arrays (PF_RANK_ENV: "<model_type>:<NAME>=<value>",
+# from TENSORFOLD_RANK_ENV). Returns 1 (messages on stderr) on any refusal.
 sp_profile_load() {
   local spec="$1" backend="$2" tmp k v
-  PF_EXTRA=()
+  PF_EXTRA=() PF_RANK_ENV=()
   tmp="$(mktemp "${TMPDIR:-/tmp}/obprofile.XXXXXX")"
   if ! python3 "$SP_PYLIB/obprofile.py" resolve "$spec" --backend "$backend" > "$tmp"; then
     rm -f "$tmp"
@@ -145,6 +244,8 @@ sp_profile_load() {
   while IFS= read -r -d '' k && IFS= read -r -d '' v; do
     if [[ "$k" == EXTRA_ARG ]]; then
       PF_EXTRA+=("$v")
+    elif [[ "$k" == RANK_ENV ]]; then
+      PF_RANK_ENV+=("$v")
     elif [[ "$k" =~ ^[A-Z][A-Z0-9_]*$ ]]; then
       printf -v "PF_$k" '%s' "$v"
     fi

@@ -70,8 +70,8 @@ def raw_config(rig: FakeEngine, sparks: FakeEngine, tf: FakeEngine, tmp: Path, *
         "hydra": {"probe_interval_s": 1, "probe_down_interval_s": 1, "models_interval_s": 10,
                   "down_after": 1, "up_after": 1, "pre_commit_budget_s": 20,
                   # mixes families on purpose to exercise spill/failover
-                  # mechanics; an undeclared mix is a config error
-                  "allowed_families": ["unc", "stock"],
+                  # mechanics, under the default uncensored-preferred policy
+                  "uncensored_families": ["unc"],
                   "audit": str(tmp / "audit.jsonl"),
                   "breaker": {"fail_threshold": 3, "open_s": 30, "success_threshold": 1},
                   "instinct": {"url": "http://127.0.0.1:9", "key_file": str(tmp / "instinct.key")}},
@@ -493,7 +493,7 @@ def test_inbound_key_and_node_keys(fleet):
     post(srv, chat(model="mlx@tf"))
     assert posts(rig)[-1]["headers"]["authorization"] == f"Bearer {RIG_KEY}"
     assert posts(sparks)[-1]["headers"]["authorization"] == f"Bearer {SPARK_KEY}"
-    assert "authorization" not in posts(tf)[-1]["headers"], "never a key to TensorFold"
+    assert "authorization" not in posts(tf)[-1]["headers"], "a TensorFold node with no key sends none"
     for e in (rig, sparks, tf):
         for req in e.requests:
             assert INBOUND not in json.dumps(req), "the inbound key must never travel upstream"
@@ -1247,9 +1247,10 @@ def test_a_failover_target_renamed_mid_request_is_still_tried_on_the_old_snapsho
 
 
 def test_a_reload_that_tightens_the_family_policy_stops_a_stale_failover(fleet, tmp_path):
-    # Max 2026-09-30: never answer from a stock model. The plan for `retry`
-    # (rig -> stock sparks) was made before a reload added
-    # allowed_families = ["unc"]; its failover must honour the NEW policy.
+    # Strict mode (family_policy = "uncensored-only", the 2026-09-30 rule):
+    # the plan for `retry` (rig -> stock sparks) was made under the default
+    # uncensored-preferred policy, before a reload switched to strict; its
+    # failover must honour the NEW policy.
     srv, rig, sparks, _ = fleet(lambda r: r["nodes"]["rig"].update(ttft_timeout_s=3), cfg_file=True)
     got = {}
     before = len(posts(sparks))
@@ -1261,7 +1262,7 @@ def test_a_reload_that_tightens_the_family_policy_stops_a_stale_failover(fleet, 
     t.start()
     time.sleep(0.4)
     raw = copy.deepcopy(srv.raw)
-    raw["hydra"]["allowed_families"] = ["unc"]
+    raw["hydra"].update(family_policy="uncensored-only", uncensored_families=["unc"])
     for r in raw["routes"].values():
         r["targets"] = [tg for tg in r["targets"] if raw["deployments"][tg["d"]]["family"] == "unc"]
     raw["routes"] = {k: v for k, v in raw["routes"].items() if v["targets"]}
@@ -1377,14 +1378,284 @@ def test_an_upstream_cannot_forge_provenance_headers(fleet):
     assert all(len(r.headers.get_list(k)) == 1 for k in r.headers if k.lower().startswith("x-hydra-"))
 
 
-def test_tensorfold_never_gets_a_key_even_past_validation(fleet):
-    # validate() refuses a key on a TensorFold node; this is the runtime guard
-    # behind it (a node edited after validation, or a validator regression).
+def test_tensorfold_node_with_a_key_presents_it(fleet):
+    # Native TensorFold (>= 1.0) guards /v1 with --api-key-file, so a keyed
+    # TensorFold node is presented its key exactly like vLLM.
     import dataclasses
     srv, rig, _, tf = fleet()
     n = dataclasses.replace(srv.hy.cfg.nodes["tf"], key_env="RIG_KEY")
     srv.hy.cfg.nodes["tf"] = n
-    assert srv.hy.node_key(n) is None
+    assert srv.hy.node_key(n) == RIG_KEY
     r = post(srv, chat(model="beast:tf"))
     assert r.status_code == 200 and r.headers["x-hydra-deployment"] == "mlx@tf"
-    assert "authorization" not in posts(tf)[-1]["headers"]
+    assert posts(tf)[-1]["headers"]["authorization"] == f"Bearer {RIG_KEY}"
+
+
+# ───────────────────────── review 2026-11 (beast-hydra sysfix) ─────────────────────────
+
+
+def test_a_request_every_engine_rejects_with_500_never_opens_a_breaker(fleet, tmp_path):
+    """Review 2026-11 F0: a body the engine itself refuses with a JSON 500
+    (llama.cpp's template raise_exception) failed over to every target and
+    counted a breaker failure on each — fail_threshold such requests blacked
+    out the whole route, pins included, for breaker.open_s."""
+    srv, rig, sparks, _ = fleet()
+    poison = {"X-Fake-Fault": "http_500"}                  # every attempt answers 500
+    for _ in range(4):                                     # fail_threshold is 3
+        r = post(srv, chat(), poison)
+        # the engine's own error, not a 502 that hides it
+        assert r.status_code == 500 and r.json()["error"]["message"] == "fake http_500", r.text
+        assert r.headers["x-hydra-request-id"] and r.headers["x-hydra-attempts"] == "unc@rig:500,nvfp4@sparks:500"
+    assert wait_audit(tmp_path, lambda x: x.get("status") == 500)["outcome"] == "upstream_5xx"
+    now = time.monotonic()
+    for d in ("unc@rig", "nvfp4@sparks"):
+        hs = srv.hy.state.health[d]
+        assert hs.breaker_state(now) == core.CLOSED and hs.h.fails == 0, (d, hs.h)
+    assert post(srv, chat()).status_code == 200
+    assert post(srv, chat(model="unc@rig")).status_code == 200
+    # a single-candidate route: passed through, never counted
+    for _ in range(4):
+        assert post(srv, chat(model="solo"), poison).status_code == 500
+    assert srv.hy.state.health["unc@rig"].h.fails == 0
+
+
+def test_a_node_that_500s_what_another_node_serves_is_charged(fleet):
+    # the control: the SAME body was served elsewhere, so the 500 was the node's
+    srv, rig, sparks, _ = fleet()
+    rig.set_fault("http_500")
+    for _ in range(3):
+        r = post(srv, chat())
+        assert r.status_code == 200 and r.headers["x-hydra-deployment"] == "nvfp4@sparks"
+    assert srv.hy.state.health["unc@rig"].breaker_state(time.monotonic()) == core.OPEN
+    rig.set_fault(None)
+
+
+def test_a_bodyless_500_still_counts_at_once(fleet):
+    # a 500 that is no engine JSON error is not attributable to the request
+    srv, rig, _, _ = fleet()
+    rig.set_fault("error_body_stall:10", 1)        # 500 + a truncated body
+    r = post(srv, chat(model="solo"))
+    assert r.status_code == 502
+    assert srv.hy.state.health["unc@rig"].h.fails == 1
+
+
+def test_a_429_passes_through_when_no_later_attempt_ran(fleet):
+    """Review 2026-11 F9: a 429 with a planned-but-skipped failover target
+    became a 502 'every attempt failed', and the engine's Retry-After was lost."""
+    srv, rig, sparks, _ = fleet()
+    real = srv.hy.state.try_admit
+
+    def no_sparks(d, node, now):
+        if node == "sparks":
+            return None, "node sparks drained (test)"
+        return real(d, node, now)
+    srv.hy.state.try_admit = no_sparks
+    rig.set_fault("http_429", 1)
+    r = post(srv, chat())
+    assert r.status_code == 429 and r.headers["retry-after"] == "1", r.text
+    assert r.headers["x-hydra-attempts"] == "unc@rig:429,nvfp4@sparks:skipped"
+
+
+def test_more_callers_than_the_pool_on_a_one_slot_node_queue_rather_than_502(fleet, monkeypatch):
+    """Review 2026-11 F2: each node's pool was capped at slots*4 with a 5 s pool
+    timeout, so the 5th concurrent turn on a 1-slot rig got a 502 that counted
+    toward the breaker — where the engine itself would have queued it."""
+    monkeypatch.setattr(hydra, "POOL_TIMEOUT_S", 0.3)        # 5 s in production: same cliff, faster
+    srv, rig, _, _ = fleet(lambda r: r["nodes"]["rig"].update(ttft_timeout_s=15), chunks=10, tok_ms=100)
+    out, lock = [], threading.Lock()
+
+    def go():
+        s = post(srv, chat(model="solo", stream=True)).status_code
+        with lock:
+            out.append(s)
+    ts = [threading.Thread(target=go) for _ in range(7)]          # 1 slot x 4 + 3
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(30)
+    assert sorted(out) == [200] * 7, out
+    assert srv.hy.state.health["unc@rig"].h.fail_total == 0
+
+
+def test_a_half_open_trial_ends_at_the_commit_point(fleet):
+    """Review 2026-11 F3/F7: the single HALF_OPEN trial was held for the whole
+    generation, so one long stream 503'd every other caller (pins included)
+    on a deployment that had just proved it serves."""
+    srv, rig, _, _ = fleet(chunks=40, tok_ms=50)
+    hs = srv.hy.state.health["unc@rig"]
+    hs.h.breaker, hs.h.opened_at = core.OPEN, time.monotonic() - 1000       # due for HALF_OPEN
+    with httpx.stream("POST", srv.url + "/v1/chat/completions", json=chat(model="solo", stream=True),
+                      headers=auth(), timeout=30) as holder:
+        it = holder.iter_raw()
+        next(it)                                                  # committed: first byte is here
+        assert hs.h.trial_inflight == 0
+        assert hs.breaker_state(time.monotonic()) == core.HALF_OPEN, "first byte is not a success"
+        r = post(srv, chat(model="unc@rig"))                      # a pin, during the long trial
+        assert r.status_code == 200, r.text
+        for _ in it:
+            pass
+    assert hs.breaker_state(time.monotonic()) == core.CLOSED
+    assert srv.hy.state.inflight("unc@rig") == 0 and hs.h.trial_inflight == 0
+
+
+def test_a_half_open_stream_that_dies_midway_reopens_the_breaker(fleet):
+    srv, rig, _, _ = fleet()
+    hs = srv.hy.state.health["unc@rig"]
+    hs.h.breaker, hs.h.opened_at = core.OPEN, time.monotonic() - 1000
+    r = post(srv, chat(model="solo", stream=True), {"X-Fake-Fault": "die_after_chunks:3"})
+    assert r.status_code == 200 and "[DONE]" not in r.text
+    assert hs.breaker_state(time.monotonic()) == core.OPEN
+    assert hs.h.trial_inflight == 0 and srv.hy.state.inflight("unc@rig") == 0
+
+
+def test_a_huge_model_id_is_not_kept_in_the_decision_ring(fleet, tmp_path):
+    # Review 2026-11 F4
+    srv, _, _, _ = fleet()
+    r = post(srv, chat(model="x" * 200_000))
+    assert r.status_code == 200 and r.headers["x-hydra-route"] == "beast"
+    assert len(json.dumps(srv.hy.decisions[-1])) < 4096
+    assert len(audit_rows(tmp_path)[-1]["requested"]) <= core.MAX_ID_CHARS + 16
+
+
+@pytest.mark.parametrize("raw,status", [
+    (b'{"model":"beast","max_tokens":1e999,"messages":[{"role":"user","content":"hi"}]}', 200),
+    (b'{"model":"beast","max_tokens":Infinity,"messages":[{"role":"user","content":"hi"}]}', 200),
+    (b'{"model":"beast","messages":[{"role":"user","content":"x\\ud800y"}]}', 200),
+    (b'{"model":"be\\ud800ast","messages":[{"role":"user","content":"hi"}]}', 200),
+    (b"[" * 100_000 + b"]" * 100_000, 400),
+])
+def test_a_malformed_but_parseable_body_is_answered_and_audited(fleet, tmp_path, raw, status):
+    # Review 2026-11 F5: each of these was a bare Starlette 500 with no
+    # X-Hydra-Request-Id and no audit row.
+    srv, _, _, _ = fleet()
+    r = httpx.post(srv.url + "/v1/chat/completions", content=raw,
+                   headers={**auth(), "Content-Type": "application/json"}, timeout=30)
+    assert r.status_code == status, r.text
+    rid = r.headers["x-hydra-request-id"]
+    assert wait_audit(tmp_path, lambda x: x.get("request_id") == rid)["status"] == status
+
+
+@pytest.mark.parametrize("mode", [0o640, 0o604])
+def test_a_caller_token_readable_by_others_is_not_trusted(fleet, tmp_path, mode):
+    # Review 2026-11 F6: hydra_caller's fail-closed rule held for the presenter only.
+    srv, _, _, _ = fleet()
+    who = {"X-OpenBeast-Device": "max-phone", "X-Hydra-Caller": "caller-secret"}
+    assert post(srv, chat(), who).headers["x-hydra-route"] == "beast:fast"      # 0600: trusted
+    (tmp_path / "caller.token").chmod(mode)
+    r = post(srv, chat(), who)
+    assert r.headers["x-hydra-route"] == "beast" and audit_rows(tmp_path)[-1]["trusted"] is False
+    (tmp_path / "caller.token").chmod(0o600)
+    assert post(srv, chat(), who).headers["x-hydra-route"] == "beast:fast"
+
+
+def test_a_caller_token_that_is_not_a_regular_file_is_not_trusted(fleet, tmp_path):
+    srv, _, _, _ = fleet()
+    tok = tmp_path / "caller.token"
+    tok.unlink()
+    tok.mkdir()
+    r = post(srv, chat(), {"X-OpenBeast-Device": "max-phone", "X-Hydra-Caller": "caller-secret"})
+    assert r.status_code == 200 and r.headers["x-hydra-route"] == "beast"
+
+
+def test_a_retired_client_is_closed_once_nothing_uses_it(tmp_path):
+    """Review 2026-11 F10: a reload that changed a node's url/slots parked the
+    old AsyncClient (and its keep-alive sockets) until shutdown."""
+    import asyncio
+    import dataclasses
+    engines = [type("E", (), {"url": f"http://127.0.0.1:{p}", "model": "m"})() for p in (7, 11, 13)]
+    cfg = core.validate(raw_config(*engines, tmp_path), env_for(tmp_path))
+    hy = hydra.Hydra(cfg, env=env_for(tmp_path), run=tmp_path / "run")
+
+    async def go():
+        n = cfg.nodes["rig"]
+        old = hy.client_for(n)
+        hy.hold(old)
+        new = hy.client_for(dataclasses.replace(n, slots=2))        # retired while in use
+        assert new is not old
+        await asyncio.sleep(0)
+        assert not old.is_closed, "a request still uses it"
+        hy.unhold(old)
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            if old.is_closed:
+                break
+        assert old.is_closed and old not in hy.retired
+        idle = hy.client_for(n)                                       # nobody holds it
+        hy.client_for(dataclasses.replace(n, slots=3))
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            if idle.is_closed:
+                break
+        assert idle.is_closed and hy.retired == []
+        for _, c in hy.clients.values():
+            await c.aclose()
+        await hy.probe_client.aclose()
+        await hy.instinct.aclose()
+    asyncio.run(go())
+
+
+@pytest.mark.parametrize("hdr", [{"Origin": "https://evil.example"}, {"Sec-Fetch-Site": "cross-site"},
+                                 {"Origin": "null"}])
+def test_a_cross_site_browser_request_never_reaches_a_node(fleet, tmp_path, hdr):
+    """Review 2026-11 F1: with the inbound key empty (the conf default) a web
+    page in the operator's browser could POST text/plain to loopback hydra,
+    which signed it with the stored node keys and relayed the engine's CORS
+    headers back so the page could read the answer."""
+    srv, rig, _, _ = fleet(env_extra={"LLAMA_API_KEY": ""})
+    before = len(posts(rig))
+    h = {"Content-Type": "text/plain;charset=UTF-8", **hdr}
+    for path in ("/v1/chat/completions", "/pin/unc@rig/v1/chat/completions"):
+        r = httpx.post(srv.url + path, content=json.dumps(chat()), headers=h, timeout=10)
+        assert r.status_code == 403 and r.json()["error"]["type"] == "hydra_cross_site", r.text
+        assert r.headers["x-hydra-request-id"]
+    r = httpx.get(srv.url + "/v1/models", headers=hdr, timeout=10)
+    assert r.status_code == 403
+    assert len(posts(rig)) == before, "nothing reached the engine"
+    assert wait_audit(tmp_path, lambda x: x.get("outcome") == "cross_site")["status"] == 403
+
+
+def test_an_unauthenticated_cross_site_request_writes_no_audit_row(fleet, tmp_path):
+    """Verifier 2026-11: the cross-site refusal ran before the key check and
+    audited, so a keyless caller adding an Origin header could write rows
+    (and force rotations that flush real audit history). Refuse it, unaudited;
+    an authenticated cross-site request is still audited."""
+    srv, rig, _, _ = fleet()
+    before = len(posts(rig))
+    h = {"Content-Type": "text/plain;charset=UTF-8", "Origin": "http://attacker.example/" + "A" * 300}
+    for _ in range(3):
+        r = httpx.post(srv.url + "/v1/chat/completions", content=json.dumps(chat()), headers=h, timeout=10)
+        assert r.status_code == 403 and r.json()["error"]["type"] == "hydra_cross_site", r.text
+    time.sleep(0.2)
+    assert [x for x in audit_rows(tmp_path) if x.get("outcome") == "cross_site"] == []
+    r = httpx.post(srv.url + "/v1/chat/completions", content=json.dumps(chat()),
+                   headers={**h, "Authorization": f"Bearer {INBOUND}"}, timeout=10)
+    assert r.status_code == 403
+    assert wait_audit(tmp_path, lambda x: x.get("outcome") == "cross_site")["status"] == 403
+    assert len(posts(rig)) == before, "nothing reached the engine"
+
+
+def test_own_frontends_are_not_cross_site(fleet):
+    srv, _, _, _ = fleet()
+    assert post(srv, chat()).status_code == 200                                   # no browser headers
+    assert post(srv, chat(), {"Origin": "http://localhost:3000",
+                              "Sec-Fetch-Site": "same-site"}).status_code == 200  # our own host
+
+
+def test_an_engines_cors_headers_are_not_relayed_to_an_unvouched_caller(fleet):
+    srv, _, _, _ = fleet(env_extra={"LLAMA_API_KEY": ""})
+    fault = {"X-Fake-Fault": "cors_headers"}
+    r = post(srv, chat(model="solo"), {**fault, "Origin": "http://localhost:3000"})
+    assert r.status_code == 200 and r.json()["choices"]
+    assert not [k for k in r.headers if k.lower().startswith("access-control-")], dict(r.headers)
+    # the router / gate vouch with the caller token and did their own browser check
+    r = post(srv, chat(model="solo"), {**fault, "X-Hydra-Caller": "caller-secret",
+                                       "Origin": "https://app.example"})
+    assert r.status_code == 200 and r.headers["access-control-allow-origin"] == "https://app.example"
+
+
+def test_an_open_inbound_in_front_of_keyed_nodes_is_warned_about(fleet):
+    srv, _, _, _ = fleet(env_extra={"LLAMA_API_KEY": ""})
+    w = hydra.inbound_warnings(srv.hy)
+    assert w and "LLAMA_API_KEY" in w[0] and "rig" in w[0]
+    keyed, _, _, _ = fleet()
+    assert hydra.inbound_warnings(keyed.hy) == []

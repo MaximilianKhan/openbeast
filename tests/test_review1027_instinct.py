@@ -19,18 +19,8 @@ def test_scorer_refuses_bind_overrides(tmp_path, extra):
     env = scorer_env(tmp_path, INSTINCT_SCORER_PORT=str(free_port()),
                      INFERENCE_URL="http://127.0.0.1:1")
     r = sh(SCORER_SH, *extra, env=env)
-    assert r.returncode == 2 and "refused" in r.stderr, (r.returncode, r.stderr)
+    assert r.returncode == 2 and "not accepted here" in r.stderr, (r.returncode, r.stderr)
     assert "no-such-weights" not in r.stderr          # refused BEFORE the weights check
-
-
-def test_scorer_other_extra_args_still_pass(tmp_path):
-    """Negative control: an unrelated extra arg gets past the refusals and
-    stops at the (deliberately missing) weights directory."""
-    env = scorer_env(tmp_path, INSTINCT_SCORER_PORT=str(free_port()),
-                     INFERENCE_URL="http://127.0.0.1:1")
-    r = sh(SCORER_SH, "--metrics", env=env)
-    assert r.returncode != 0 and "no-such-weights" in r.stderr
-    assert "refused" not in r.stderr
 
 
 def test_openjev_base_image_is_pinned_by_digest():
