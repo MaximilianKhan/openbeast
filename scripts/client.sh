@@ -25,6 +25,10 @@
 #                                from a bundle, --wheelhouse (or
 #                                $OPENBEAST_WHEELHOUSE) to install the pinned
 #                                deps with no index contacted
+#   client.sh relocate           move a client that still runs from the checkout
+#                                it was installed in to its own copy,
+#                                ~/.openbeast-client/repo (`update` does this
+#                                by itself; scripts/lib/client_copy.sh says why)
 #   client.sh rigs [--json] [--no-probe]
 #                                every registered rig, reachability and health
 #                                (each rig's :8444/api/slot), * = active
@@ -130,6 +134,77 @@ _as_snapshot() {
     [ -f "$REPO/$_f" ] || continue
     cp "$REPO/$_f" "$AS_SNAP/$_f.new" && mv -f "$AS_SNAP/$_f.new" "$AS_SNAP/$_f" || return 1
   done
+}
+
+# The client runs from its own copy, $CLIENT_DIR/repo, never from the checkout
+# it was installed from (scripts/lib/client_copy.sh: macOS denies background
+# processes ~/Documents and friends, and opencode's background service is what
+# starts the tool server). setup-client.sh installs that way; this moves a
+# client that an OLDER installer left running in place. Exactly what moves:
+# the copy is seeded from this checkout's HEAD commit (no network), the
+# openbeast-tools entry in opencode.json is pointed at it, and the
+# openbeast-client symlink follows. The rig, the key, the venv, the catalog
+# and the user's own opencode config are not touched; the old checkout is
+# left exactly as it is.
+#   _relocate auto    from `update` and from client_rigs.py's sync: silent
+#                     when there is nothing to do, and a checkout with
+#                     uncommitted changes under the copied directories is
+#                     left in place (the copy would not carry them)
+#   _relocate asked   `openbeast-client relocate`: says why when it does not move
+# Returns 0 when the client moved, 1 otherwise.
+_COPY_LIB="$REPO/scripts/lib/client_copy.sh"
+# This client.sh relocates by itself (`update`): client_rigs.py's sync need
+# not ask a second time (it does so only for an older client.sh, which does
+# not set this).
+export OB_CLIENT_RELOCATES=1
+# shellcheck source=lib/client_copy.sh
+[ -f "$_COPY_LIB" ] && . "$_COPY_LIB"
+_relocate() {
+  _rl_mode="${1:-auto}"; _rl_dest="$CLIENT_DIR/repo"
+  _rl_say() { [ "$_rl_mode" = "asked" ] && echo "$1"; return 0; }
+  [ -f "$_COPY_LIB" ] || { _rl_say "  ! $_COPY_LIB missing (partial checkout?) — nothing moved"; return 1; }
+  if [ "$(ob_copy_phys "$REPO")" = "$(ob_copy_phys "$_rl_dest")" ]; then
+    _rl_say "  ✓ the client already runs from its own copy ($_rl_dest)"; return 1
+  fi
+  if [ "$_rl_mode" = "auto" ] && [ -f "$CLIENT_DIR/in-place" ]; then return 1; fi
+  # Only an INSTALLED client moves, and only the one installed from here: the
+  # tool server opencode runs must be this checkout's.
+  _rl_tools="$(ob_copy_tools_repo "$PY_BIN" "$OC_CONFIG")"
+  if [ -z "$_rl_tools" ] || [ "$(ob_copy_phys "$_rl_tools")" != "$(ob_copy_phys "$REPO")" ]; then
+    _rl_say "  - opencode's openbeast-tools does not run from $REPO (${_rl_tools:-not wired}) — nothing to move"
+    return 1
+  fi
+  if ! ob_copy_is_checkout "$REPO"; then
+    _rl_say "  ! $REPO is not a git checkout — no commit to make the copy from; nothing moved"
+    return 1
+  fi
+  _rl_dirty="$(ob_copy_dirty "$REPO" | sed -n '1,5p')"
+  if [ -n "$_rl_dirty" ] && [ "$_rl_mode" = "auto" ]; then
+    echo "  ! the client still runs in place from $REPO: it has uncommitted changes that"
+    echo "    a copy would not carry. Commit them and run 'openbeast-client relocate', or"
+    echo "    keep it this way for good: $REPO/scripts/setup-client.sh --in-place"
+    return 1
+  fi
+  ob_copy_seed "$REPO" "$_rl_dest" || { echo "  ! could not make the client copy — still running from $REPO"; return 1; }
+  _rl_wired="$(ob_copy_rewire "$PY_BIN" "$OC_CONFIG" "$REPO" "$_rl_dest" 2>/dev/null || true)"
+  # The CLI symlink follows, when it is ours (it resolves into this checkout).
+  _rl_bin="$HOME/.local/bin/openbeast-client"
+  if [ -L "$_rl_bin" ]; then
+    _rl_t="$(readlink "$_rl_bin")"
+    if [ "$(ob_copy_phys "$(dirname "$_rl_t")")" = "$(ob_copy_phys "$REPO/scripts")" ]; then
+      ln -sf "$_rl_dest/scripts/client.sh" "$_rl_bin" 2>/dev/null || true
+    fi
+  fi
+  rm -f "$CLIENT_DIR/in-place"
+  [ "$_rl_wired" = "rewired" ] && echo "  ✓ opencode's openbeast-tools now runs from the copy"
+  echo "  ✓ the client runs from its own copy now ($_rl_dest), not from $REPO."
+  echo "    Restart opencode to pick it up. $REPO is untouched and no longer needed by"
+  echo "    the client; agent transcripts written so far stay in $REPO/agents/logs."
+  if [ -n "$_rl_dirty" ]; then
+    echo "  ! uncommitted changes in $REPO are NOT in the copy:"
+    printf '%s\n' "$_rl_dirty" | sed 's/^/      /'
+  fi
+  return 0
 }
 
 _refresh_oc_catalog() {
@@ -425,6 +500,17 @@ if backend != "llama" and served:
     else
       echo "  ✗ opencode.json not wired — re-run scripts/setup-client.sh"; bad=$((bad+1))
     fi
+    # Wired is not enough on macOS: a tool server under ~/Documents (and the
+    # like) cannot be opened by the background process that starts it, while
+    # everything checked from this terminal passes.
+    if [ -f "$_COPY_LIB" ] && [ -f "$OC_CONFIG" ]; then
+      _tr="$(ob_copy_tools_repo "$PY_BIN" "$OC_CONFIG")"
+      if [ -n "$_tr" ] && ob_copy_protected "$(ob_copy_phys "$_tr")"; then
+        echo "  ✗ the tool server runs from $_tr, a folder macOS keeps from"
+        echo "    background processes (opencode shows 'Operation not permitted')."
+        echo "    Fix: openbeast-client relocate"; bad=$((bad+1))
+      fi
+    fi
     # The soul (the rig's WebUI system prompt, via opencode `instructions`).
     # Informational: a session without it still works, it just is not OpenBeast.
     if [ -f "$OC_CONFIG" ] && [ -f "$RIGS_PY" ]; then
@@ -530,6 +616,12 @@ if backend != "llama" and served:
       fi
     else
       echo "  ! $REPO is not a git checkout, so the source cannot be updated." >&2
+    fi
+    # A client an older installer left running from this checkout moves to its
+    # own copy now, seeded from what was just pulled; the rest of the update
+    # (deps, catalog, the autosync copy) then runs from there.
+    if _relocate auto; then
+      REPO="$CLIENT_DIR/repo"; RIGS_PY="$REPO/scripts/lib/client_rigs.py"
     fi
     # Same install as setup-client.sh step 3: the hash-pinned closure from
     # agents/requirements.lock via pydeps.sh. A plain `pip install -r
@@ -733,16 +825,25 @@ PLIST
     esac
     ;;
 
+  relocate)
+    # --auto: what client_rigs.py's sync runs, so that a client installed in
+    # place moves on its first `update` even though that update is still
+    # executing the OLD client.sh (bash had read it before the pull).
+    if [ "${1:-}" = "--auto" ]; then _relocate auto || true; exit 0; fi
+    [ $# -eq 0 ] || { echo "usage: openbeast-client relocate" >&2; exit 2; }
+    _relocate asked || true
+    ;;
+
   uninstall)
     exec "$REPO/scripts/setup-client.sh" --uninstall
     ;;
 
   -h|--help|help)
-    sed -n '2,48p' "$_self" | sed 's/^# \{0,1\}//'
+    sed -n '2,52p' "$_self" | sed 's/^# \{0,1\}//'
     ;;
 
   *)
-    echo "unknown command: $CMD (status|rigs|use|rig|agent|search|update|refresh-config|autosync|uninstall)" >&2
+    echo "unknown command: $CMD (status|rigs|use|rig|agent|search|update|refresh-config|autosync|relocate|uninstall)" >&2
     exit 2
     ;;
 esac

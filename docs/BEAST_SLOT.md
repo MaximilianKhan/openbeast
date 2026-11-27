@@ -400,6 +400,11 @@ git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
 ./scripts/setup-client.sh                        # auto-detects the rig ('beast')
 ```
 
+Either way the client runs from its own copy, `~/.openbeast-client/repo`, not
+from the clone: made from the clone's checked-out commit (no network), so the
+clone can live anywhere, including `~/Documents` on a Mac, where a background
+process (what starts the tool server) is denied access. `--in-place` runs the
+clone itself instead, for developing OpenBeast.
 Or without a clone: fetch just the script and it makes its own slim checkout.
 Flags: `--host <fqdn>` (multiple rigs / non-default name), `--api-key-stdin`
 (keyed rig: paste the key, it stays out of `ps`; `--api-key <key>` also works), `--name <rig>` (its
@@ -645,7 +650,7 @@ run. Exact commands and the end-to-end check `scripts/client-e2e.sh`:
 — the default on macOS. Either use the full path, which always works:
 
 ```bash
-<checkout>/scripts/client.sh status
+~/.openbeast-client/repo/scripts/client.sh status
 ```
 
 or add the directory (the installer prints this line for your shell):
@@ -683,8 +688,9 @@ preserved — only entries matching *our* install are touched.
 **What it deliberately does NOT remove:**
 
 - **Your git checkout.** It's yours; delete it manually if you want.
-- **Agent transcripts** (`agents/logs/agent-*.jsonl`) when you installed from
-  an in-place clone. These hold full prompts *and* the contents of every file
+- **Agent transcripts** (`agents/logs/agent-*.jsonl`) in a clone the client
+  ran from in place (`--in-place`, or an install older than 2026-11-27; a
+  client on its own copy keeps them under `~/.openbeast-client`, which goes). These hold full prompts *and* the contents of every file
   an agent read on that machine, so uninstall names the path and leaves them
   rather than deleting data inside your own repo. Add `--purge-logs` to
   delete them.

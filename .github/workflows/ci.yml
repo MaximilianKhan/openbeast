@@ -432,6 +432,12 @@ jobs:
       - name: Client installer tests (scripts/setup-client.sh)
         run: bash tests/test_setup_client.sh
 
+      # The installed client runs from ~/.openbeast-client/repo, never from the
+      # checkout: the copy, the installer's use of it, and relocating a client
+      # an older installer left in place. Throwaway HOME and git checkouts.
+      - name: Client copy tests (scripts/lib/client_copy.sh)
+        run: bash tests/test_client_copy.sh
+
       - name: Operator script tests
         run: bash tests/test_operator_scripts.sh
 

@@ -1134,7 +1134,43 @@ def _autosync_ready(a):
     return reg, None
 
 
+def _relocate_in_place_client():
+    """Move a client that still runs from its checkout to its own copy.
+
+    scripts/client.sh `update` does this itself. This is the bridge for the
+    one update that cannot: on a client installed before the copy existed,
+    `openbeast-client update` is the OLD client.sh, read by bash before its
+    own `git pull` replaced it, and the first new code it runs is this file
+    (its catalog sync). So the sync asks the checkout's NEW client.sh to
+    relocate; that script decides (it moves only the client opencode really
+    runs from this checkout, never one with uncommitted changes or installed
+    with --in-place). Skipped when the caller is a client.sh that relocates
+    by itself, and when this is already a copy under ~/.openbeast-client
+    (which is also where autosync's snapshot lives)."""
+    if os.environ.get("OB_CLIENT_RELOCATES"):
+        return
+    repo = os.path.realpath(REPO)
+    home = os.path.realpath(os.path.join(os.path.expanduser("~"), ".openbeast-client"))
+    if repo == home or repo.startswith(home + os.sep):
+        return
+    cli = os.path.join(repo, "scripts", "client.sh")
+    if not (os.path.isfile(cli) and os.path.isfile(os.path.join(repo, "scripts", "lib", "client_copy.sh"))):
+        return
+    try:
+        subprocess.run(["bash", cli, "relocate", "--auto"], timeout=120, check=False,
+                       env=dict(os.environ, OB_CLIENT_RELOCATES="1"))
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def cmd_sync(a):
+    rc = _cmd_sync(a)
+    if not getattr(a, "if_changed", False):
+        _relocate_in_place_client()
+    return rc
+
+
+def _cmd_sync(a):
     if getattr(a, "if_changed", False):
         _cap_log()
         reg, rc = _autosync_ready(a)
@@ -1186,6 +1222,12 @@ def _report_live(reg, live, res):
 
 
 def cmd_sync_legacy(a):
+    rc = _cmd_sync_legacy(a)
+    _relocate_in_place_client()
+    return rc
+
+
+def _cmd_sync_legacy(a):
     """refresh-config for a config with no registry behind it: only the
     openbeast-rig provider's rows and the default, from that provider's own
     baseURL/key. Reads and writes nothing but the opencode file."""

@@ -169,8 +169,16 @@ openbeast-client update      # = scripts/client.sh update
 Two steps: `git pull --ff-only` in `~/.openbeast-client/repo` (the slim
 checkout of `agents/ scripts/ skills/ searxng/`), then re-install the
 hash-pinned closure (`agents/requirements.lock`, via `pydeps.sh`) into the
-client's venv. A client installed from a
-full clone is told to pull that clone itself.
+client's venv. That copy is the client whether it was cloned from GitHub or
+made from a full clone you ran the installer in: its `origin` is that clone's
+upstream, so the pull works the same. A client that an installer older than
+2026-11-27 left running from the clone itself is moved to the copy by this
+command, once: the clone is pulled, the copy is made from it, opencode's
+`openbeast-tools` entry and the `openbeast-client` command are pointed at it,
+and nothing else changes. Restart opencode afterwards. It is skipped, with a
+line saying so, when the clone has uncommitted changes under `agents/`,
+`skills/`, `scripts/` or `searxng/` (commit them and run `openbeast-client
+relocate`), and for a client installed with `setup-client.sh --in-place`.
 
 Worth doing after any rig-side change under `agents/` — the client runs its
 *own* copy of `mcp_server.py` and `tools.py`. `openbeast-client status`

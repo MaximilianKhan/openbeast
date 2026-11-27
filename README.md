@@ -204,7 +204,7 @@ openbeast-client agent "refactor utils.py" # autonomous agent, local files
 openbeast-client status                    # rig's real model, context, busy slots
 openbeast-client rigs                      # every registered rig, * = active
 openbeast-client use <rig>                 # switch OpenCode, tools and search to another rig
-openbeast-client update                    # git pull this checkout, reinstall pinned deps, refresh models
+openbeast-client update                    # git pull the client's copy, reinstall pinned deps, refresh models
 ```
 
 **On your phone:** the chat UI is a PWA ("Add to Home Screen"), and with

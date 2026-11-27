@@ -60,6 +60,9 @@ openbeast-client use spark-hydra         # switch opencode, tools and search to 
 openbeast-client use beast               # switch to the 5090 rig
 openbeast-client refresh-config          # re-sync the opencode model catalog only
 openbeast-client update --no-pull        # refresh deps + catalog after updating the checkout yourself (offline: from a bundle)
+openbeast-client relocate                # move a client that still runs from its clone to its own copy,
+                                         #   ~/.openbeast-client/repo (update does it by itself; needed by hand only
+                                         #   when the clone has uncommitted changes). New installs start on the copy
 openbeast-client agent "<task>"          # a CLI agent HERE against the rig's model (files and shell act on the Mac)
 openbeast-client search up|down          # the local SearXNG container
 openbeast-client autosync install        # every 30 s (launchd on macOS, a systemd user timer on Linux) re-sync
