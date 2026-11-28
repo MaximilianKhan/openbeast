@@ -605,7 +605,7 @@ code.
 
 ---
 
-### beast-video on the 5090 (experiment; CHANGES STATE: it takes the whole card)
+### beast-video and beast-image on the 5090 (experiment; CHANGES STATE: it takes the whole card)
 
 Run on the rig with the LLM stack stopped. Guide: [BEAST_VIDEO.md](BEAST_VIDEO.md).
 
@@ -618,7 +618,8 @@ scripts/video.sh down                                     # stop both and free t
 ```
 
 It does not start by itself after a reboot: run `up` again. Clips are in
-`/mnt/9100s4tb/beast-video/data/jobs/<id>/clip.mp4`.
+`/mnt/9100s4tb/beast-video/data/jobs/<id>/clip.mp4`, pictures in `…/<id>/image.png`.
+The page's Image tab is beast-image; both modes share the one queue.
 
 ## 14. Emergency recovery
 

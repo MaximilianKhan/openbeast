@@ -45,6 +45,11 @@ input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-
 .drop img { max-width: 100%; max-height: 190px; border-radius: 6px; display: block; }
 .drop .clear { position: absolute; top: 6px; right: 6px; }
 .frames { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+/* Both boxes the same size and on the same line, whatever their captions or pictures. */
+.frames > label { min-width: 0; }
+.frames small { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.frames .drop { height: 190px; min-height: 0; }
+.frames .drop img { max-height: 100%; object-fit: contain; }
 button { font: inherit; font-weight: 600; border-radius: 7px; border: 1px solid var(--line); background: var(--surface);
   color: var(--fg); padding: 7px 12px; cursor: pointer; }
 button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); padding: 10px 14px; font-size: 15px; }
@@ -77,41 +82,51 @@ details .inner { display: flex; flex-direction: column; gap: 12px; margin-top: 1
 .bar { height: 7px; border-radius: 99px; background: var(--sunk); overflow: hidden; }
 .bar i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .6s linear; }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 2px; }
+.tabs { display: inline-flex; gap: 4px; background: var(--sunk); border: 1px solid var(--line); border-radius: 9px; padding: 3px; }
+.tabs button { border: 0; background: transparent; color: var(--muted); padding: 6px 16px; border-radius: 6px; font: inherit; font-weight: 600; cursor: pointer; }
+.tabs button[aria-selected="true"] { background: var(--accent); color: #fff; }
+.job img.out { width: 100%; max-height: 520px; object-fit: contain; border-radius: 8px; background: #000; display: block; }
+.check { flex-direction: row !important; align-items: center; gap: 8px !important; }
+.check input { width: auto; }
 .empty { color: var(--muted); font-size: 14px; padding: 26px 8px; text-align: center; }
 [hidden] { display: none !important; }
 </style>
 </head>
 <body>
 <header class="top">
-  <h1>beast-video</h1>
-  <span class="hint">Sulphur-3 on the RTX 5090: a picture and a prompt in, a clip with sound out.</span>
+  <h1 id="title">beast-video</h1>
+  <span class="tabs" role="tablist" aria-label="What to make">
+    <button type="button" role="tab" data-mode="video" aria-selected="true">Video</button>
+    <button type="button" role="tab" data-mode="image" aria-selected="false">Image</button>
+  </span>
+  <span class="hint" id="tagline">Sulphur-3 on the RTX 5090: a picture and a prompt in, a clip with sound out.</span>
   <span class="state"><span class="dot" id="dot"></span><span id="state">checking the rig…</span></span>
 </header>
 
 <main>
   <section class="panel">
-    <h2>New clip</h2>
+    <h2 id="new-title">New clip</h2>
     <form id="form" novalidate>
       <div class="frames">
-        <label>First frame <small>the picture to animate</small>
+        <label><span id="first-label">First frame <small>the picture to animate</small></span>
           <div class="drop" id="drop-first" tabindex="0" role="button" aria-label="Choose the first frame">
             <span>Drop a picture here,<br>or click to choose</span></div>
           <input type="file" id="file-first" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
         </label>
-        <label>Last frame <small>optional end picture</small>
+        <label><span id="last-label">Last frame <small>optional end picture</small></span>
           <div class="drop" id="drop-last" tabindex="0" role="button" aria-label="Choose the last frame">
             <span>Optional</span></div>
           <input type="file" id="file-last" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
         </label>
       </div>
-      <label>Prompt <small>what happens, what the camera does, and what it sounds like</small>
+      <label><span id="prompt-label">Prompt <small>what happens, what the camera does, and what it sounds like</small></span>
         <textarea id="prompt" placeholder="A slow push-in as she turns toward the window. Rain on glass, a kettle starting to boil."></textarea>
       </label>
       <div class="row">
         <label>Size <small id="size-hint"></small>
           <select id="size"></select>
         </label>
-        <label>Length <small id="frames-hint">124 frames</small>
+        <label id="length-field">Length <small id="frames-hint">124 frames</small>
           <select id="seconds">
             <option value="3">3 s</option><option value="5" selected>5 s</option><option value="8">8 s</option>
             <option value="10">10 s</option><option value="15">15 s</option>
@@ -126,6 +141,9 @@ details .inner { display: flex; flex-direction: column; gap: 12px; margin-top: 1
           <input type="text" id="seed" inputmode="numeric" placeholder="random">
         </label>
       </div>
+      <label class="check" id="turbo-field" hidden><input type="checkbox" id="turbo">
+        <span>Turbo <small>8 steps without guidance: about 6 times faster, close in quality</small></span></label>
+      <div class="msg bad" id="image-missing" hidden></div>
       <details id="adv">
         <summary>Advanced</summary>
         <div class="inner">
@@ -136,7 +154,7 @@ details .inner { display: flex; flex-direction: column; gap: 12px; margin-top: 1
             <label>Custom width <input type="number" id="width" min="256" max="1536" step="32"></label>
             <label>Custom height <input type="number" id="height" min="256" max="1536" step="32"></label>
           </div>
-          <div class="row">
+          <div class="row" id="shift-row">
             <label>Video shift <input type="number" id="shift_video" min="0.01" max="100" step="any" value="12"></label>
             <label>Audio shift <input type="number" id="shift_audio" min="0.01" max="100" step="any" value="3"></label>
           </div>
@@ -144,7 +162,7 @@ details .inner { display: flex; flex-direction: column; gap: 12px; margin-top: 1
             <label>Sampler <select id="sampler"></select></label>
             <label>Scheduler <select id="scheduler"></select></label>
           </div>
-          <label>Guidance <small>1 is what Sulphur-3 is built for. Above 1 doubles the time and uses the negative prompt.</small>
+          <label>Guidance <small id="cfg-hint">1 is what Sulphur-3 is built for. Above 1 doubles the time and uses the negative prompt.</small>
             <input type="number" id="cfg" min="1" max="15" step="any" value="1">
           </label>
           <label>Negative prompt <small>only used when guidance is above 1</small>
@@ -160,10 +178,10 @@ details .inner { display: flex; flex-direction: column; gap: 12px; margin-top: 1
 
   <section>
     <div class="panel" style="margin-bottom:14px" id="offline" hidden>
-      <div class="msg bad">The video engine is not running on the rig. Start it there with <code>scripts/video.sh up</code>. Clips you already made still play and download.</div>
+      <div class="msg bad">The engine is not running on the rig. Start it there with <code>scripts/video.sh up</code>. What you already made still plays and downloads.</div>
     </div>
-    <h2 style="padding-left:4px">Clips</h2>
-    <div id="jobs"><div class="empty">Nothing yet. Your clips appear here, newest first.</div></div>
+    <h2 style="padding-left:4px">Made on the rig</h2>
+    <div id="jobs"><div class="empty">Nothing yet. Your clips and pictures appear here, newest first.</div></div>
   </section>
 </main>
 
@@ -172,6 +190,58 @@ details .inner { display: flex; flex-direction: column; gap: 12px; margin-top: 1
 const $ = (id) => document.getElementById(id);
 const picked = { first: null, last: null };
 let cfg = null, timer = null, known = "";
+// Two modes on one page, one queue and one card: "video" (Sulphur-3) and "image" (Qwen-Image 2.1).
+let mode = "video";
+try { if (localStorage.getItem("beast-mode") === "image") mode = "image"; } catch (_) {}
+const M = () => (mode === "image" ? cfg.image : cfg);          // the active mode's models, sizes, limits
+const kept = { video: null, image: null };                     // each mode's form, kept while the other shows
+const FIELDS = ["prompt", "negative", "steps", "seed", "cfg", "sampler", "scheduler", "model", "width", "height", "size"];
+const TEXT = {
+  video: { title: "beast-video", tag: "Sulphur-3 on the RTX 5090: a picture and a prompt in, a clip with sound out.", fresh: "New clip",
+    first: "First frame <small>the picture to animate</small>", last: "Last frame <small>optional end picture</small>",
+    prompt: "Prompt <small>what happens, what the camera does, and what it sounds like</small>",
+    cfg: "1 is what Sulphur-3 is built for. Above 1 doubles the time and uses the negative prompt.",
+    ph: "A slow push-in as she turns toward the window. Rain on glass, a kettle starting to boil." },
+  image: { title: "beast-image", tag: "Qwen-Image 2.1 on the RTX 5090: a prompt in, a picture out. Add a picture to edit or restage it.", fresh: "New picture",
+    first: "Reference picture <small>optional, to edit or restage</small>", last: "Second reference <small>optional</small>",
+    prompt: "Prompt <small>what to draw, or what to change in the reference picture</small>",
+    cfg: "5 is the model's own setting; Turbo uses 1. Above 1 doubles the time and uses the negative prompt.",
+    ph: "A blue ceramic mug on a wooden table by a window, soft morning light, product photography." },
+};
+function readForm() { const o = {}; for (const f of FIELDS) o[f] = $(f).value; o.turbo = $("turbo").checked; return o; }
+function fillChoices() {
+  const m = M();
+  $("size").innerHTML = m.sizes.map((s) => "<option>" + esc(s.label) + "</option>").join("");
+  $("sampler").innerHTML = m.samplers.map((s) => "<option>" + esc(s) + "</option>").join("");
+  $("scheduler").innerHTML = m.schedulers.map((s) => "<option>" + esc(s) + "</option>").join("");
+  $("model").innerHTML = m.models.map((x) => "<option" + (x === m.default_model ? " selected" : "") + ">" + esc(x) + "</option>").join("");
+}
+function showMode(next) {
+  if (cfg && next !== mode) kept[mode] = readForm();
+  mode = next;
+  try { localStorage.setItem("beast-mode", mode); } catch (_) {}
+  const t = TEXT[mode], image = mode === "image";
+  document.title = t.title; $("title").textContent = t.title; $("tagline").textContent = t.tag; $("new-title").textContent = t.fresh;
+  $("first-label").innerHTML = t.first; $("last-label").innerHTML = t.last; $("prompt-label").innerHTML = t.prompt;
+  $("cfg-hint").textContent = t.cfg; $("prompt").placeholder = t.ph;
+  $("length-field").hidden = image; $("shift-row").hidden = image; $("turbo-field").hidden = !image;
+  document.querySelectorAll(".tabs button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.mode === mode)));
+  if (!cfg) return;
+  fillChoices();
+  const k = kept[mode], d = M().defaults;
+  if (k) { for (const f of FIELDS) $(f).value = k[f]; $("turbo").checked = k.turbo; }
+  else { $("prompt").value = ""; $("negative").value = ""; $("seed").value = ""; $("width").value = ""; $("height").value = "";
+    $("steps").value = d.steps; $("cfg").value = d.cfg; $("sampler").value = d.sampler; $("scheduler").value = d.scheduler; $("turbo").checked = false; }
+  $("turbo").disabled = image && !cfg.image.turbo;
+  setPicture("first", null); setPicture("last", null);
+  const miss = image ? cfg.image.missing : [];
+  $("image-missing").hidden = !miss.length;
+  $("image-missing").textContent = miss.length ? "Image mode is not set up on the rig yet: missing " + miss.join(", ") + "." : "";
+  showError(""); sizeHint();
+}
+document.querySelectorAll(".tabs button").forEach((b) => { b.onclick = () => showMode(b.dataset.mode); });
+// Turbo swaps in its own steps and guidance, and gives the model's back when cleared.
+$("turbo").onchange = () => { const v = $("turbo").checked ? cfg.image.turbo_settings : cfg.image.standard; $("steps").value = v.steps; $("cfg").value = v.cfg; };
 
 function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 function framesFor(sec) { const want = Math.max(5, Math.round(sec * 24)); return 5 + 17 * Math.max(0, Math.ceil((want - 5) / 17)); }
@@ -209,7 +279,10 @@ function fitSize(w, h, lim) {
 let fitted = null;
 function suggestSize(w, h) {
   if (!cfg || !w || !h) return;
-  fitted = fitSize(w, h, Object.assign({ size_step: 32, min_side: 256, max_side: 1536, max_pixels: 1032192 }, cfg.limits)); fitted.from = w + " × " + h;
+  const lim = Object.assign({ size_step: 32, min_side: 256, max_side: 1536, max_pixels: 1032192 }, M().limits);
+  // Image mode: the picture's own size when the model takes it, and never below the size it was trained around.
+  if (lim.fit_pixels) lim.max_pixels = Math.min(lim.max_pixels, Math.max(lim.fit_pixels, Math.round(w * h * 1.03)));
+  fitted = fitSize(w, h, lim); fitted.from = w + " × " + h;
   $("width").value = fitted.width; $("height").value = fitted.height;
   sizeHint();
 }
@@ -242,13 +315,10 @@ async function loadConfig() {
   try {
     cfg = await (await fetch("api/config")).json();
   } catch (e) { $("state").textContent = "cannot reach beast-video"; $("dot").className = "dot off"; return; }
-  if (!$("size").options.length) {
-    $("size").innerHTML = cfg.sizes.map((s) => "<option>" + esc(s.label) + "</option>").join("");
-    $("sampler").innerHTML = cfg.samplers.map((s) => "<option>" + esc(s) + "</option>").join("");
-    $("scheduler").innerHTML = cfg.schedulers.map((s) => "<option>" + esc(s) + "</option>").join("");
-  }
-  const sel = $("model"), had = sel.value;
-  sel.innerHTML = cfg.models.map((m) => "<option" + (m === (had || cfg.default_model) ? " selected" : "") + ">" + esc(m) + "</option>").join("");
+  if (!cfg.image) cfg.image = { models: [], sizes: cfg.sizes, samplers: cfg.samplers, schedulers: cfg.schedulers, defaults: cfg.defaults, limits: cfg.limits, missing: ["a newer beast-video service (restart it)"], turbo: false };
+  if (!$("size").options.length) showMode(mode);
+  else { const sel = $("model"), had = sel.value, m = M();
+    sel.innerHTML = m.models.map((x) => "<option" + (x === (had || m.default_model) ? " selected" : "") + ">" + esc(x) + "</option>").join(""); }
   $("dot").className = "dot " + (cfg.engine ? "on" : "off");
   let text = cfg.engine ? "engine ready" : "engine stopped";
   if (cfg.engine && cfg.gpu && cfg.gpu.vram_total) text += " · " + (cfg.gpu.vram_free / 1073741824).toFixed(1) + " of " + (cfg.gpu.vram_total / 1073741824).toFixed(0) + " GB free on the card";
@@ -264,11 +334,14 @@ $("form").onsubmit = async (e) => {
   let width, height;
   if ($("width").value || $("height").value) { width = +$("width").value; height = +$("height").value;
     if (!width || !height) return showError("Give both a custom width and a custom height, or neither."); }
-  else { const s = cfg.sizes[$("size").selectedIndex]; width = s.width; height = s.height; }
-  const params = { prompt: $("prompt").value, negative: $("negative").value, width, height, seconds: +$("seconds").value,
-    steps: +$("steps").value, cfg: +$("cfg").value, shift_video: +$("shift_video").value, shift_audio: +$("shift_audio").value,
+  else { const s = M().sizes[$("size").selectedIndex]; width = s.width; height = s.height; }
+  const params = { kind: mode, prompt: $("prompt").value, negative: $("negative").value, width, height,
+    steps: +$("steps").value, cfg: +$("cfg").value,
     sampler: $("sampler").value, scheduler: $("scheduler").value, seed: seed ? +seed : -1, model: $("model").value };
-  if (!picked.first && !picked.last && !params.prompt.trim()) return showError("Give it a first frame, a prompt, or both.");
+  if (mode === "image") { params.turbo = $("turbo").checked;
+    if (!params.prompt.trim()) return showError("Give it a prompt: what to draw, or what to change in the reference picture."); }
+  else { params.seconds = +$("seconds").value; params.shift_video = +$("shift_video").value; params.shift_audio = +$("shift_audio").value;
+    if (!picked.first && !picked.last && !params.prompt.trim()) return showError("Give it a first frame, a prompt, or both."); }
   const body = new FormData();
   body.append("params", JSON.stringify(params));
   if (picked.first) body.append("first", picked.first.file);
@@ -283,10 +356,12 @@ $("form").onsubmit = async (e) => {
 };
 
 function jobHtml(j) {
-  const p = j.params, live = j.status === "running" || j.status === "queued";
+  const p = j.params, live = j.status === "running" || j.status === "queued", image = j.kind === "image", out = image ? j.image : j.video;
   let left;
-  if (j.status === "done") left = '<video controls preload="metadata" playsinline src="' + esc(j.video) + '#t=0.1"></video>';
-  else left = '<div class="ph">' + (j.has_first ? '<img alt="first frame" src="files/' + j.id + '/first">' : (j.status === "failed" ? "No clip" : "Text to video")) + "</div>";
+  if (j.status === "done" && image) left = '<a href="' + esc(out) + '" target="_blank" rel="noopener"><img class="out" alt="the picture" src="' + esc(out) + '"></a>';
+  else if (j.status === "done") left = '<video controls preload="metadata" playsinline src="' + esc(out) + '#t=0.1"></video>';
+  else left = '<div class="ph">' + (j.has_first ? '<img alt="' + (image ? "reference picture" : "first frame") + '" src="files/' + j.id + '/first">'
+    : (j.status === "failed" ? (image ? "No picture" : "No clip") : (image ? "Text to image" : "Text to video"))) + "</div>";
   const label = { queued: "Waiting", running: "Rendering", done: "Done", failed: "Failed", cancelled: "Stopped" }[j.status] || j.status;
   let h = '<div class="job" data-id="' + j.id + '"><div>' + left + '</div><div class="meta"><div class="line1"><span class="pill ' + j.status + '">' + label + "</span>" +
     '<span class="when">' + ago(j.created) + (j.seconds_taken ? " · took " + dur(j.seconds_taken) : "") + (j.bytes ? " · " + mb(j.bytes) : "") + "</span></div>";
@@ -294,10 +369,11 @@ function jobHtml(j) {
     (j.started ? " · " + dur(Date.now() / 1000 - j.started) : "") + "</div>";
   if (j.error) h += '<div class="msg bad">' + esc(j.error) + "</div>";
   h += '<div class="prompt">' + (p.prompt ? esc(p.prompt) : '<span class="when">no prompt</span>') + "</div>";
-  h += '<div class="facts">' + p.width + "×" + p.height + " · " + p.frames + " frames (" + (p.frames / 24).toFixed(1) + " s) · " + p.steps + " steps · seed " + p.seed +
-    " · " + esc(p.model) + (p.cfg > 1 ? " · guidance " + p.cfg : "") + (j.has_last ? " · last frame given" : "") + "</div>";
+  h += '<div class="facts">' + p.width + "×" + p.height + (image ? "" : " · " + p.frames + " frames (" + (p.frames / 24).toFixed(1) + " s)") + " · " + p.steps + " steps" + (p.turbo ? " (Turbo)" : "") + " · seed " + p.seed +
+    " · " + esc(p.model) + (p.cfg > 1 ? " · guidance " + p.cfg : "") +
+    (image ? (j.has_first ? " · from " + (j.has_last ? "two reference pictures" : "a reference picture") : "") : (j.has_last ? " · last frame given" : "")) + "</div>";
   h += '<div class="actions">';
-  if (j.status === "done") h += '<a class="btn" href="' + esc(j.video) + '?download=1">Download</a>';
+  if (j.status === "done") h += '<a class="btn" href="' + esc(out) + '?download=1">Download</a>';
   if (live) h += '<button class="small" data-act="cancel">Stop</button>';
   h += '<button class="small" data-act="reuse">Use these settings</button>';
   if (!live || j.status === "queued") h += '<button class="small" data-act="delete">Delete</button>';
@@ -312,7 +388,7 @@ async function refresh() {
   if (sig !== known) {
     // Leave a clip that is playing alone: only rebuild cards whose state changed.
     const box = $("jobs"), have = new Map([...box.querySelectorAll(".job")].map((n) => [n.dataset.id, n]));
-    if (!jobs.length) box.innerHTML = '<div class="empty">Nothing yet. Your clips appear here, newest first.</div>';
+    if (!jobs.length) box.innerHTML = '<div class="empty">Nothing yet. Your clips and pictures appear here, newest first.</div>';
     else {
       box.querySelectorAll(".empty").forEach((n) => n.remove());
       let prev = null;
@@ -330,7 +406,7 @@ async function refresh() {
     known = sig;
   }
   const waiting = jobs.filter((j) => j.status === "queued").length;
-  $("eta").textContent = live ? (waiting ? waiting + " waiting behind the clip that is rendering. " : "") + "Clips render one at a time." : "";
+  $("eta").textContent = live ? (waiting ? waiting + " waiting behind the one that is rendering. " : "") + "Clips and pictures render one at a time." : "";
   clearTimeout(timer);
   timer = setTimeout(refresh, live ? 1500 : 8000);
 }
@@ -339,14 +415,15 @@ $("jobs").onclick = async (e) => {
   const btn = e.target.closest("button[data-act]"); if (!btn) return;
   const card = btn.closest(".job"), id = card.dataset.id, act = btn.dataset.act;
   if (act === "reuse") {
-    const p = card._job.params;
+    const p = card._job.params, image = card._job.kind === "image";
+    if ((image ? "image" : "video") !== mode) showMode(image ? "image" : "video");
     $("prompt").value = p.prompt; $("negative").value = p.negative || ""; $("steps").value = p.steps; $("seed").value = p.seed;
-    $("cfg").value = p.cfg; $("shift_video").value = p.shift_video; $("shift_audio").value = p.shift_audio;
-    $("sampler").value = p.sampler; $("scheduler").value = p.scheduler; $("model").value = p.model;
-    const i = cfg.sizes.findIndex((s) => s.width === p.width && s.height === p.height);
+    $("cfg").value = p.cfg; $("sampler").value = p.sampler; $("scheduler").value = p.scheduler; $("model").value = p.model;
+    if (image) $("turbo").checked = !!p.turbo; else { $("shift_video").value = p.shift_video; $("shift_audio").value = p.shift_audio; }
+    const i = M().sizes.findIndex((s) => s.width === p.width && s.height === p.height);
     if (i >= 0) { $("size").selectedIndex = i; $("width").value = ""; $("height").value = ""; } else { $("width").value = p.width; $("height").value = p.height; $("adv").open = true; }
     sizeHint();
-    const sec = [...$("seconds").options].find((o) => framesFor(+o.value) === p.frames); if (sec) { $("seconds").value = sec.value; $("seconds").onchange(); }
+    const sec = image ? null : [...$("seconds").options].find((o) => framesFor(+o.value) === p.frames); if (sec) { $("seconds").value = sec.value; $("seconds").onchange(); }
     window.scrollTo({ top: 0, behavior: "smooth" });
     return;
   }

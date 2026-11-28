@@ -17,6 +17,7 @@ pytest.importorskip("httpx")
 from fastapi.testclient import TestClient  # noqa: E402
 
 import video_server as vs  # noqa: E402
+from video import image as im  # noqa: E402
 from video import workflow as wf  # noqa: E402
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 64
@@ -102,9 +103,13 @@ def test_only_real_pictures_are_accepted(head, ext):
 
 # ── the service, against a stand-in engine ───────────────────────────────────
 
+IMAGE_MODELS = ["qwen-image-2.1-step90000-BF16/diffusion_pytorch_model.safetensors",
+                "qwen-image-2.1-step90000-FP8-comfy.safetensors"]
+
+
 class FakeEngine:
-    def __init__(self, fail=None, hang=False):
-        self.fail, self.hang = fail, hang
+    def __init__(self, fail=None, hang=False, no_turbo=False):
+        self.fail, self.hang, self.no_turbo = fail, hang, no_turbo
         self.uploaded, self.graphs, self.interrupted = [], [], 0
         self.up = True
 
@@ -113,6 +118,16 @@ class FakeEngine:
 
     def models(self):
         return list(MODELS) if self.up else []
+
+    def image_models(self):
+        return list(IMAGE_MODELS) if self.up else []
+
+    def image_parts(self):
+        if not self.up:
+            return {"text_encoders": [], "vaes": [], "loras": []}
+        return {"text_encoders": ["qwen3vl_8b_bf16.safetensors"],
+                "vaes": ["qwen_image_2.1_vae_bf16.safetensors"],
+                "loras": [] if self.no_turbo else ["chatrlabs-omni-turbo-8step-fp32.safetensors"]}
 
     def upload_image(self, path, name):
         self.uploaded.append((Path(path).name, name))
@@ -133,8 +148,9 @@ class FakeEngine:
         if self.fail == "render":
             return {"status": {"status_str": "error", "messages": [
                 ["execution_error", {"exception_type": "OOM", "exception_message": "out of memory"}]]}}
+        ext = "png" if self.graphs[-1]["save"]["class_type"] == "SaveImage" else "mp4"
         return {"status": {"status_str": "success", "completed": True},
-                "outputs": {"save": {"images": [{"filename": "x_00001_.mp4",
+                "outputs": {"save": {"images": [{"filename": f"x_00001_.{ext}",
                                                  "subfolder": "beast-video", "type": "output"}]}}}
 
     def interrupt(self):
@@ -391,3 +407,138 @@ def test_the_launcher_points_the_service_at_the_engines_real_folders():
     assert env["BEAST_VIDEO_DIR"] == "/clips/data"
     assert '--input-directory "$BEAST_VIDEO_DIR/engine-input"' in sh
     assert '--output-directory "$BEAST_VIDEO_DIR/engine-output"' in sh
+
+
+# ── beast-image: the second mode ─────────────────────────────────────────────
+
+def test_image_defaults_follow_the_models_own_settings_and_turbo():
+    p = im.clean_params({"prompt": " a mug "})
+    assert (p["kind"], p["prompt"], p["width"], p["height"]) == ("image", "a mug", 1024, 1024)
+    assert (p["steps"], p["cfg"], p["sampler"], p["scheduler"], p["turbo"]) == (35, 5.0, "euler", "simple", False)
+    t = im.clean_params({"prompt": "a", "turbo": True})
+    assert (t["steps"], t["cfg"]) == (8, 1.0)
+    assert im.clean_params({"prompt": "a", "turbo": True, "steps": 12})["steps"] == 12
+
+
+@pytest.mark.parametrize("bad, word", [
+    ({"width": 1000}, "multiples"), ({"width": 2048, "height": 2048}, "larger"),
+    ({"height": 4096}, "height"), ({"steps": 0}, "steps"), ({"cfg": 0.2}, "cfg"),
+    ({"turbo": "yes"}, "turbo"), ({"sampler": "nope"}, "sampler"), ({"seed": "x"}, "seed"),
+    ({"model": "other.safetensors"}, "not installed"),
+])
+def test_image_params_are_refused_by_name(bad, word):
+    with pytest.raises(wf.ParamError) as e:
+        im.clean_params({"prompt": "a", **bad}, models=IMAGE_MODELS, default_model=IMAGE_MODELS[0])
+    assert word in str(e.value)
+
+
+def test_turbo_is_refused_when_its_lora_is_not_on_the_rig():
+    with pytest.raises(wf.ParamError):
+        im.clean_params({"prompt": "a", "turbo": True}, turbo_available=False)
+
+
+def _image_graph(**kw):
+    p = im.clean_params({"prompt": "a mug", **kw.pop("params", {})}, default_model=IMAGE_MODELS[0])
+    p["seed"] = 7
+    return im.build(p, text_encoder="te.safetensors", vae="vae.safetensors",
+                    turbo_lora="turbo.safetensors", **kw)
+
+
+def test_the_text_to_image_graph_is_the_models_example_workflow():
+    g = _image_graph()
+    assert g["clip"]["inputs"]["type"] == "qwen_image"
+    assert g["cond"]["class_type"] == "TextEncodeQwenImage21"
+    assert g["cond"]["inputs"]["negative_prompt"] == " "       # empty would switch guidance off
+    assert "vae" not in g["cond"]["inputs"] and "lora" not in g
+    assert g["cache"]["inputs"]["model"] == ["unet", 0]
+    assert g["shift"]["class_type"] == "ModelSamplingFlux" and g["shift"]["inputs"]["width"] == 1024
+    k = g["sample"]["inputs"]
+    assert (k["steps"], k["cfg"], k["seed"], k["denoise"]) == (35, 5.0, 7, 1.0)
+    assert k["positive"] == ["cond", 0] and k["negative"] == ["cond", 1]
+    assert g["save"]["class_type"] == "SaveImage"
+    for node in g.values():                                    # every link points at a real node
+        for v in node["inputs"].values():
+            if isinstance(v, list):
+                assert v[0] in g
+
+
+def test_references_and_turbo_change_the_graph():
+    g = _image_graph(refs=["a.png", "b.png"], params={"turbo": True})
+    assert g["lora"]["inputs"] == {"model": ["unet", 0], "lora_name": "turbo.safetensors",
+                                   "strength_model": 1.0}
+    assert g["cache"]["inputs"]["model"] == ["lora", 0]
+    c = g["cond"]["inputs"]
+    assert c["images.image_1"] == ["rgba1", 0] and c["images.image_2"] == ["rgba2", 0]
+    assert c["vae"] == ["vae", 0]
+    assert g["rgba2"]["inputs"] == {"image": ["ref2", 0], "alpha": ["ref2", 1]}
+    assert g["ref1"]["inputs"]["image"] == "a.png"
+    with pytest.raises(wf.ParamError):
+        _image_graph(refs=["a", "b", "c"])
+
+
+def test_video_and_image_models_are_told_apart():
+    assert not vs.usable_model("qwen-image-2.1-step90000-FP8-comfy.safetensors")
+    assert vs.usable_model("s3_w4a8.safetensors")
+    assert vs.usable_image_model("qwen-image-2.1-step90000-BF16/diffusion_pytorch_model.safetensors")
+    assert vs.usable_image_model("qwen-image-2.1-step90000-NVFP4-comfy.safetensors")
+    for other in ("qwen-image-2.1-step90000-FP8-torchao/diffusion_pytorch_model.safetensors",
+                  "qwen-image-2.1-step90000-NF4-bnb/diffusion_pytorch_model.safetensors",
+                  "s3_w4a8.safetensors", "qwen_image_2.1_fun_controlnet_union_bf16.safetensors"):
+        assert not vs.usable_image_model(other)
+
+
+def test_an_image_job_runs_to_a_downloadable_png(svc):
+    client, engine = svc()
+    cfg = client.get("/api/config").json()
+    assert cfg["image"]["models"] == IMAGE_MODELS and cfg["image"]["default_model"] == IMAGE_MODELS[0]
+    assert cfg["image"]["missing"] == [] and cfg["image"]["turbo"] is True
+    assert cfg["models"] == MODELS                              # video's list is untouched
+    r = _post(client, {"kind": "image", "prompt": "a mug", "turbo": True}, first=PNG)
+    assert r.status_code == 201, r.text
+    j = _wait(client, r.json()["id"], {"done"})
+    assert j["kind"] == "image" and j["image"].endswith("/image.png") and "video" not in j
+    assert j["params"]["steps"] == 8 and j["has_first"]
+    g = engine.graphs[-1]
+    assert g["save"]["class_type"] == "SaveImage" and "lora" in g and "ref1" in g
+    assert g["unet"]["inputs"]["unet_name"] == IMAGE_MODELS[0]
+    got = client.get(j["image"] + "?download=1")
+    assert got.status_code == 200 and got.headers["content-type"] == "image/png"
+    assert f"beast-image-{j['id']}.png" in got.headers["content-disposition"]
+    assert client.get(f"/files/{j['id']}/clip.mp4").status_code == 404
+
+
+def test_image_and_video_jobs_share_one_queue(svc):
+    client, engine = svc()
+    a = _post(client, {"kind": "image", "prompt": "a mug"}).json()
+    b = _post(client, {"prompt": "a fox"}).json()
+    assert _wait(client, a["id"], {"done"})["kind"] == "image"
+    assert _wait(client, b["id"], {"done"})["kind"] == "video"
+    kinds = [g["save"]["class_type"] for g in engine.graphs]
+    assert kinds == ["SaveImage", "SaveVideo"]
+
+
+def test_image_jobs_are_refused_clearly(svc):
+    client, _ = svc(no_turbo=True)
+    assert _post(client, {"kind": "image"}).status_code == 400              # no prompt
+    assert _post(client, {"kind": "image"}, first=PNG).status_code == 400   # a picture alone is not enough
+    r = _post(client, {"kind": "image", "prompt": "a", "turbo": True})
+    assert r.status_code == 400 and "Turbo" in r.json()["detail"]
+    assert _post(client, {"kind": "film", "prompt": "a"}).status_code == 400
+    assert client.get("/api/config").json()["image"]["turbo"] is False
+
+
+def test_a_job_from_before_image_mode_is_a_video(svc, tmp_path):
+    client, _ = svc()
+    client.app.state.store.save({"id": "20260101-000000-abcdef", "status": "done",
+                                 "params": {}, "created": 1})
+    j = client.get("/api/jobs/20260101-000000-abcdef").json()
+    assert j["kind"] == "video" and j["video"].endswith("clip.mp4")
+
+
+def test_the_page_has_both_modes_and_sizes_a_reference_like_a_first_frame():
+    page = (REPO / "agents" / "video" / "page.html").read_text()
+    assert 'data-mode="video"' in page and 'data-mode="image"' in page
+    assert "kind: mode" in page                               # every submit says which
+    # image mode: the picture's own size when the model takes it
+    assert "Math.min(lim.max_pixels, Math.max(lim.fit_pixels, Math.round(w * h * 1.03)))" in page
+    assert ".frames .drop { height: 190px;" in page           # the two boxes stay level

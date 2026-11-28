@@ -52,6 +52,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from video import image as im
 from video import workflow as wf  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
@@ -79,6 +80,12 @@ class Settings:
         self.video_vae = _env("BEAST_VIDEO_VAE", "minimax_h3_video_vae_fp16.safetensors")
         self.audio_vae = _env("BEAST_VIDEO_AUDIO_VAE", "minimax_h3_audio_vae_fp32.safetensors")
         self.jobs = self.data / "jobs"
+        # beast-image: the second mode of the same service and the same engine.
+        self.image_model = _env("BEAST_IMAGE_MODEL",
+                                "qwen-image-2.1-step90000-BF16/diffusion_pytorch_model.safetensors")
+        self.image_text_encoder = _env("BEAST_IMAGE_TEXT_ENCODER", "qwen3vl_8b_bf16.safetensors")
+        self.image_vae = _env("BEAST_IMAGE_VAE", "qwen_image_2.1_vae_bf16.safetensors")
+        self.image_turbo = _env("BEAST_IMAGE_TURBO_LORA", "chatrlabs-omni-turbo-8step-fp32.safetensors")
         # The engine's own input and output folders, when it runs on this host
         # (scripts/video.sh sets both). The engine keeps a copy of every picture
         # it is handed and every clip it writes, and has no call to delete one.
@@ -103,7 +110,21 @@ def usable_model(name: str) -> bool:
     The reference-to-video variant (ref2va) is a different graph, not built here."""
     low = name.lower()
     return ("/" not in name and "\\" not in name and low.endswith(".safetensors")
-            and not any(w in low for w in ("lora", "corrector", "ref2va")))
+            and not any(w in low for w in ("lora", "corrector", "ref2va"))
+            and not _is_image_model(low))
+
+
+def _is_image_model(low: str) -> bool:
+    return "qwen-image" in low or "qwen_image" in low
+
+
+def usable_image_model(name: str) -> bool:
+    """An image denoiser the page should offer: the Qwen-Image files ComfyUI's
+    own loader reads. A model repo also ships builds for other runtimes
+    (torchao, bitsandbytes) as .safetensors; those do not load here."""
+    low = name.lower()
+    return (_is_image_model(low) and low.endswith(".safetensors")
+            and not any(w in low for w in ("torchao", "-bnb", "lora", "controlnet")))
 
 
 def new_job_id() -> str:
@@ -132,16 +153,30 @@ class Engine:
         except (httpx.HTTPError, ValueError):
             return None
 
-    def models(self) -> list[str]:
-        """Denoiser files ComfyUI can see (its diffusion_models folders)."""
+    def choices(self, node: str, field: str) -> list[str]:
+        """The file names one of ComfyUI's loader nodes offers."""
         try:
-            r = self.http.get(self.base + "/object_info/UNETLoader", timeout=20.0)
-            names = r.json()["UNETLoader"]["input"]["required"]["unet_name"][0]
+            r = self.http.get(f"{self.base}/object_info/{node}", timeout=20.0)
+            spec = r.json()[node]["input"]["required"][field]
+            names = spec[0]
             if isinstance(names, str):          # newer shape: ["COMBO", {"options": [...]}]
-                names = r.json()["UNETLoader"]["input"]["required"]["unet_name"][1]["options"]
-            return [n for n in names if isinstance(n, str) and usable_model(n)]
+                names = spec[1]["options"]
+            return [n for n in names if isinstance(n, str)]
         except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
             return []
+
+    def models(self) -> list[str]:
+        """Video denoiser files ComfyUI can see (its diffusion_models folders)."""
+        return [n for n in self.choices("UNETLoader", "unet_name") if usable_model(n)]
+
+    def image_models(self) -> list[str]:
+        return [n for n in self.choices("UNETLoader", "unet_name") if usable_image_model(n)]
+
+    def image_parts(self) -> dict:
+        """Which of the image mode's other files the engine can see."""
+        return {"text_encoders": self.choices("CLIPLoader", "clip_name"),
+                "vaes": self.choices("VAELoader", "vae_name"),
+                "loras": self.choices("LoraLoaderModelOnly", "lora_name")}
 
     def upload_image(self, path: Path, name: str) -> str:
         with open(path, "rb") as fh:
@@ -358,9 +393,18 @@ def public(job: dict) -> dict:
     out = {k: job.get(k) for k in ("id", "status", "params", "created", "started", "finished",
                                     "error", "progress", "phase", "seconds_taken", "has_first",
                                     "has_last", "bytes")}
+    out["kind"] = job_kind(job)
     if job.get("status") == "done":
-        out["video"] = f"files/{job['id']}/clip.mp4"
+        if out["kind"] == "image":
+            out["image"] = f"files/{job['id']}/image.png"
+        else:
+            out["video"] = f"files/{job['id']}/clip.mp4"
     return out
+
+
+def job_kind(job: dict) -> str:
+    """"video" or "image". Jobs made before beast-image carry no kind."""
+    return "image" if job.get("kind") == "image" else "video"
 
 
 class Worker(threading.Thread):
@@ -443,15 +487,21 @@ class Worker(threading.Thread):
                     raise EngineError(f"the {key} frame is missing from the job folder")
                 name = self.engine.upload_image(src, f"beast-video-{jid}-{src.name}")
                 first, last = (name, last) if key == "first" else (first, name)
-        graph = wf.build(params, text_encoder=self.cfg.text_encoder, video_vae=self.cfg.video_vae,
-                         audio_vae=self.cfg.audio_vae, first_frame=first, last_frame=last,
-                         prefix=f"beast-video/{jid}")
+        image = job_kind(job) == "image"
+        if image:
+            graph = im.build(params, text_encoder=self.cfg.image_text_encoder,
+                             vae=self.cfg.image_vae, turbo_lora=self.cfg.image_turbo,
+                             refs=[n for n in (first, last) if n], prefix=f"beast-video/{jid}")
+        else:
+            graph = wf.build(params, text_encoder=self.cfg.text_encoder,
+                             video_vae=self.cfg.video_vae, audio_vae=self.cfg.audio_vae,
+                             first_frame=first, last_frame=last, prefix=f"beast-video/{jid}")
         client_id = secrets.token_hex(8)
         stream = self.engine.progress_stream(client_id)
         try:
             prompt_id = self.engine.submit(graph, client_id)
             self.store.update(jid, prompt_id=prompt_id)
-            result = self._wait(jid, prompt_id, stream)
+            result = self._wait(jid, prompt_id, stream, image)
         finally:
             if stream is not None:
                 stream.close()
@@ -462,12 +512,14 @@ class Worker(threading.Thread):
         for out in (result.get("outputs") or {}).values():
             for group in out.values():
                 for item in group if isinstance(group, list) else []:
-                    if isinstance(item, dict) and str(item.get("filename", "")).endswith(".mp4"):
+                    if isinstance(item, dict) and str(item.get("filename", "")).endswith(
+                            ".png" if image else ".mp4"):
                         ref = item
         if ref is None:
-            raise EngineError("the engine finished without producing a clip")
-        self.store.update(jid, phase="saving the clip")
-        clip = d / "clip.mp4"
+            raise EngineError("the engine finished without producing a "
+                              + ("picture" if image else "clip"))
+        self.store.update(jid, phase="saving the picture" if image else "saving the clip")
+        clip = d / ("image.png" if image else "clip.mp4")
         self.engine.fetch(ref, clip)
         done = time.time()
         self.store.update(jid, status="done", finished=done, phase=None, progress=1.0,
@@ -478,9 +530,13 @@ class Worker(threading.Thread):
               "neg": "reading the prompt", "unet": "loading the model",
               "sample": "rendering", "frames": "decoding the frames",
               "audio": "decoding the sound", "video": "writing the clip",
-              "save": "writing the clip"}
+              "save": "writing the clip",
+              # beast-image's graph (agents/video/image.py); "save" is relabelled below
+              "lora": "loading the model", "cache": "loading the model",
+              "ref1": "reading the pictures", "ref2": "reading the pictures",
+              "decode": "decoding the picture"}
 
-    def _wait(self, jid: str, prompt_id: str, stream) -> dict | None:
+    def _wait(self, jid: str, prompt_id: str, stream, image: bool = False) -> dict | None:
         """Block until the engine finishes this prompt. None means cancelled."""
         last_poll = last_save = 0.0
         phase, progress = "loading the model", 0.0
@@ -501,6 +557,8 @@ class Worker(threading.Thread):
                 if data.get("prompt_id") in (None, prompt_id):
                     if msg.get("type") == "executing" and data.get("node"):
                         phase = self.PHASES.get(str(data["node"]), phase)
+                        if image and phase == "writing the clip":
+                            phase = "writing the picture"
                     elif msg.get("type") == "progress" and data.get("max"):
                         if phase == "rendering":
                             progress = min(0.99, float(data["value"]) / float(data["max"]))
@@ -565,6 +623,7 @@ def create_app(cfg: Settings | None = None, engine: Engine | None = None,
     def config():
         models = engine.models()
         stats = engine.alive()
+        imodels, parts = image_state()
         gpu = None
         if stats and stats.get("devices"):
             dev = stats["devices"][0]
@@ -578,7 +637,32 @@ def create_app(cfg: Settings | None = None, engine: Engine | None = None,
                 "limits": {"min_seconds": wf.MIN_SECONDS, "max_seconds": wf.MAX_SECONDS,
                            "fps": wf.FPS, "size_step": wf.SIZE_STEP, "min_side": wf.MIN_SIDE,
                            "max_side": wf.MAX_SIDE, "max_pixels": wf.MAX_PIXELS,
-                           "max_image_mb": MAX_IMAGE_BYTES // (1024 * 1024)}}
+                           "max_image_mb": MAX_IMAGE_BYTES // (1024 * 1024)},
+                "image": {
+                    "models": imodels,
+                    "default_model": cfg.image_model if cfg.image_model in imodels
+                    else (imodels[0] if imodels else ""),
+                    "missing": parts["missing"], "turbo": parts["turbo"],
+                    "defaults": im.DEFAULTS, "standard": im.STANDARD, "turbo_settings": im.TURBO,
+                    "sizes": [{"label": s[0], "width": s[1], "height": s[2]}
+                              for s in im.SIZE_PRESETS],
+                    "samplers": im.SAMPLERS, "schedulers": im.SCHEDULERS,
+                    "limits": {"size_step": im.SIZE_STEP, "min_side": im.MIN_SIDE,
+                               "max_side": im.MAX_SIDE, "max_pixels": im.MAX_PIXELS,
+                               "fit_pixels": im.FIT_PIXELS, "max_refs": im.MAX_REFS}}}
+
+    def image_state() -> tuple[list[str], dict]:
+        """The image denoisers on the rig, and what else the mode needs."""
+        imodels = engine.image_models()
+        have = engine.image_parts()
+        missing = []
+        if not imodels:
+            missing.append("an image model")
+        if cfg.image_text_encoder not in have["text_encoders"]:
+            missing.append(f"the text encoder {cfg.image_text_encoder}")
+        if cfg.image_vae not in have["vaes"]:
+            missing.append(f"the VAE {cfg.image_vae}")
+        return imodels, {"missing": missing, "turbo": cfg.image_turbo in have["loras"]}
 
     def _keep_image(upload: UploadFile | None, d: Path, stem: str) -> bool:
         if upload is None or not (upload.filename or ""):
@@ -610,14 +694,27 @@ def create_app(cfg: Settings | None = None, engine: Engine | None = None,
                 raise ValueError
         except ValueError:
             raise HTTPException(400, "params must be a JSON object") from None
-        models = engine.models()
-        default = cfg.model if cfg.model in models else (models[0] if models else "")
+        kind = raw.get("kind", "video")
+        if kind not in ("video", "image"):
+            raise HTTPException(400, "kind must be video or image")
         try:
-            clean = wf.clean_params(raw, models=models or None, default_model=default)
+            if kind == "image":
+                models, parts = image_state()
+                if parts["missing"] and engine.alive() is not None:
+                    raise HTTPException(503, "image mode is not set up on the rig: missing "
+                                             + ", ".join(parts["missing"]))
+                default = cfg.image_model if cfg.image_model in models else (
+                    models[0] if models else "")
+                clean = im.clean_params(raw, models=models or None, default_model=default,
+                                        turbo_available=parts["turbo"] or not models)
+            else:
+                models = engine.models()
+                default = cfg.model if cfg.model in models else (models[0] if models else "")
+                clean = wf.clean_params(raw, models=models or None, default_model=default)
         except wf.ParamError as e:
             raise HTTPException(400, str(e)) from None
         if sum(1 for j in store.all() if j.get("status") == "queued") >= MAX_QUEUED:
-            raise HTTPException(429, f"{MAX_QUEUED} clips are already waiting; let some finish")
+            raise HTTPException(429, f"{MAX_QUEUED} jobs are already waiting; let some finish")
         if clean["seed"] < 0:
             clean["seed"] = random.SystemRandom().randrange(0, 2 ** 48)
         jid = new_job_id()
@@ -626,12 +723,16 @@ def create_app(cfg: Settings | None = None, engine: Engine | None = None,
         try:
             has_first = _keep_image(first, d, "first")
             has_last = _keep_image(last, d, "last")
+            if kind == "image" and not clean["prompt"]:
+                raise HTTPException(400, "give it a prompt: what to draw, or what to change "
+                                         "in the reference picture")
             if not has_first and not has_last and not clean["prompt"]:
                 raise HTTPException(400, "give it a first frame, a prompt, or both")
         except HTTPException:
             shutil.rmtree(d, ignore_errors=True)
             raise
-        job = {"id": jid, "status": "queued", "params": clean, "created": time.time(),
+        job = {"id": jid, "kind": kind, "status": "queued", "params": clean,
+               "created": time.time(),
                "has_first": has_first, "has_last": has_last, "progress": 0.0}
         store.save(job)
         worker.wake.set()
@@ -674,6 +775,8 @@ def create_app(cfg: Settings | None = None, engine: Engine | None = None,
         d = store.dir(job_id)
         if name == "clip.mp4":
             path, media = d / "clip.mp4", "video/mp4"
+        elif name == "image.png":
+            path, media = d / "image.png", "image/png"
         elif name in ("first", "last"):
             path = next(d.glob(f"{name}.*"), d / "missing")
             media = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp",
@@ -685,7 +788,8 @@ def create_app(cfg: Settings | None = None, engine: Engine | None = None,
         headers = {"Cache-Control": "private, max-age=3600"}
         if download:
             return FileResponse(path, media_type=media, headers=headers,
-                                filename=f"beast-video-{job_id}{path.suffix}")
+                                filename=f"beast-{'image' if name == 'image.png' else 'video'}"
+                                         f"-{job_id}{path.suffix}")
         return FileResponse(path, media_type=media, headers=headers)
 
     @app.get("/healthz")

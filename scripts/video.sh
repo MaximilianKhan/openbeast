@@ -70,8 +70,14 @@ beast:
   diffusion_models: |
     SulphurAI-Sulphur-3
     SulphurAI-Sulphur-3/quantized
-  text_encoders: Comfy-Org-MiniMax-H3/text_encoders
-  vae: unsloth-MiniMax-H3-GGUF/vae
+    chatrlabs-Qwen-Image-2.1-Uncensored-Omni-Quantized
+  text_encoders: |
+    Comfy-Org-MiniMax-H3/text_encoders
+    Comfy-Org-Qwen-Image-2.1/text_encoders
+  vae: |
+    unsloth-MiniMax-H3-GGUF/vae
+    Comfy-Org-Qwen-Image-2.1/vae
+  loras: chatrlabs-Qwen-Image-2.1-Uncensored-Omni-LoRA-v0.1
 EOF
 }
 
@@ -129,7 +135,7 @@ cmd_up() {
   [[ -x "$BV_HOME/venv/bin/python" && -d "$BV_HOME/ComfyUI" && -x "$BV_HOME/app-venv/bin/python" ]] \
     || die "not installed yet: scripts/video.sh install"
   mkdir -p "$RUN" "$BEAST_VIDEO_DIR/engine-output" "$BEAST_VIDEO_DIR/engine-input" "$BEAST_VIDEO_DIR/data"
-  [[ -f "$BV_HOME/extra_model_paths.yaml" ]] || write_model_paths
+  write_model_paths      # every time: the file is ours, and the folder list grows
   if ! alive "$RUN/engine.pid"; then
     local held; held="$(gpu_holders)"
     if [[ -n "$held" ]]; then
