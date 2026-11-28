@@ -5,7 +5,7 @@ an LLM. Open a page from any device on the tailnet, give it a first frame, a
 prompt and a few settings, and submit. The clip is rendered and stored on the
 rig, plays in the page, and downloads as an mp4.
 
-**Status: an experiment** (2026-11-27, branch `feat/beast-video`). It is not
+**Status: an experiment** (2026-11-27). It is not
 wired into `start.sh`, `openbeast.conf` or the dashboard, and it has no
 accounts: whoever can reach its port can use it. Keep it on a tailnet you own.
 
