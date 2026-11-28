@@ -605,6 +605,21 @@ code.
 
 ---
 
+### beast-video on the 5090 (experiment; CHANGES STATE: it takes the whole card)
+
+Run on the rig with the LLM stack stopped. Guide: [BEAST_VIDEO.md](BEAST_VIDEO.md).
+
+```bash
+scripts/video.sh install                                  # once: engine, PyTorch, the service venv (needs internet)
+BEAST_VIDEO_BIND=tailnet scripts/video.sh up              # start the engine and the page; prints the address
+scripts/video.sh status                                   # what runs, where, how many clips are stored
+scripts/video.sh logs                                     # the engine and service logs
+scripts/video.sh down                                     # stop both and free the card, then ./start.sh
+```
+
+It does not start by itself after a reboot: run `up` again. Clips are in
+`/mnt/9100s4tb/beast-video/data/jobs/<id>/clip.mp4`.
+
 ## 14. Emergency recovery
 
 Read [SPARK_HYDRA.md §G8](SPARK_HYDRA.md#g8-when-x-fails-troubleshooting) first.
