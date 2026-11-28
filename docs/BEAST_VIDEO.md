@@ -141,6 +141,12 @@ restart of the engine (`down`, `up`) is what makes new folders visible.
 | Turbo | off | Adds the 8-step LoRA and sets guidance to 1 |
 | Advanced | guidance 5, euler, simple | The model's example workflows. An empty negative prompt is sent as a single space, which keeps guidance on |
 
+To iterate, each finished picture has **Edit this** (it becomes the reference
+of a new image job, with the same model and Turbo choice, and the prompt box
+waits for what to change) and **Animate this** (it becomes the first frame of
+a clip). **Use these settings** brings back a job's prompt, seed, size and the
+pictures it started from.
+
 One mode at a time: the card holds one model, and the queue runs one job at a
 time, so a picture queued behind a clip waits for it. The engine swaps models
 by itself; the first job after a change of mode pays for the load.

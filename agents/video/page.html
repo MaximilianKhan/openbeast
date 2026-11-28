@@ -250,7 +250,7 @@ function ago(t) { const s = Math.max(0, Date.now() / 1000 - t); if (s < 90) retu
 function dur(s) { s = Math.round(s); return s < 90 ? s + " s" : Math.floor(s / 60) + " min " + (s % 60) + " s"; }
 function mb(b) { return (b / 1048576).toFixed(1) + " MB"; }
 
-function setPicture(which, file) {
+function setPicture(which, file, keepSize) {
   const drop = $("drop-" + which);
   if (picked[which] && picked[which].url) URL.revokeObjectURL(picked[which].url);
   if (!file) { picked[which] = null; if (which === "first") clearFit(); drop.innerHTML = "<span>" + (which === "first" ? "Drop a picture here,<br>or click to choose" : "Optional") + "</span>"; $("file-" + which).value = ""; return; }
@@ -259,7 +259,7 @@ function setPicture(which, file) {
   drop.innerHTML = '<img alt="' + which + ' frame preview"><button type="button" class="small clear">Remove</button>';
   const img = drop.querySelector("img");
   img.src = url;
-  if (which === "first") img.onload = () => suggestSize(img.naturalWidth, img.naturalHeight);
+  if (which === "first" && !keepSize) img.onload = () => suggestSize(img.naturalWidth, img.naturalHeight);
   drop.querySelector(".clear").onclick = (e) => { e.stopPropagation(); e.preventDefault(); setPicture(which, null); };
 }
 // The largest size the model takes that keeps the picture's shape: sides in multiples of
@@ -309,6 +309,10 @@ $("size").onchange = () => { $("width").value = ""; $("height").value = ""; size
 $("width").oninput = $("height").oninput = sizeHint;
 $("seconds").onchange = () => { $("frames-hint").textContent = framesFor(+$("seconds").value) + " frames"; };
 
+async function pictureFrom(url, name) {
+  const r = await fetch(url); if (!r.ok) throw new Error(String(r.status));
+  const b = await r.blob(); return new File([b], name, { type: b.type || "image/png" });
+}
 function showError(text) { const el = $("error"); el.textContent = text || ""; el.hidden = !text; }
 
 async function loadConfig() {
@@ -375,6 +379,7 @@ function jobHtml(j) {
   h += '<div class="actions">';
   if (j.status === "done") h += '<a class="btn" href="' + esc(out) + '?download=1">Download</a>';
   if (live) h += '<button class="small" data-act="cancel">Stop</button>';
+  if (j.status === "done" && image) h += '<button class="small" data-act="edit">Edit this</button><button class="small" data-act="animate">Animate this</button>';
   h += '<button class="small" data-act="reuse">Use these settings</button>';
   if (!live || j.status === "queued") h += '<button class="small" data-act="delete">Delete</button>';
   return h + "</div></div></div>";
@@ -414,14 +419,37 @@ async function refresh() {
 $("jobs").onclick = async (e) => {
   const btn = e.target.closest("button[data-act]"); if (!btn) return;
   const card = btn.closest(".job"), id = card.dataset.id, act = btn.dataset.act;
+  if (act === "edit" || act === "animate") {
+    // A finished picture becomes the next job's starting picture: the reference of an
+    // edit (same model and Turbo choice), or the first frame of a clip.
+    const job = card._job, p = job.params, to = act === "edit" ? "image" : "video";
+    btn.disabled = true;
+    let file;
+    try { file = await pictureFrom(job.image, "beast-image-" + id + ".png"); }
+    catch (_) { btn.disabled = false; showError("Could not read that picture from the rig."); return; }
+    btn.disabled = false;
+    if (to !== mode) showMode(to);
+    setPicture("last", null); setPicture("first", file);       // sets the custom size from the picture
+    if (to === "image") { $("model").value = p.model; $("turbo").checked = !!p.turbo; $("steps").value = p.steps; $("cfg").value = p.cfg; $("sampler").value = p.sampler; $("scheduler").value = p.scheduler; }
+    $("prompt").value = ""; $("seed").value = ""; showError("");
+    $("prompt").placeholder = to === "image" ? "What to change. For example: make the mug green, keep everything else unchanged." : "What happens next, what the camera does, and what it sounds like.";
+    window.scrollTo({ top: 0, behavior: "smooth" }); $("prompt").focus({ preventScroll: true });
+    return;
+  }
   if (act === "reuse") {
-    const p = card._job.params, image = card._job.kind === "image";
+    const job = card._job, p = card._job.params, image = card._job.kind === "image";
     if ((image ? "image" : "video") !== mode) showMode(image ? "image" : "video");
     $("prompt").value = p.prompt; $("negative").value = p.negative || ""; $("steps").value = p.steps; $("seed").value = p.seed;
     $("cfg").value = p.cfg; $("sampler").value = p.sampler; $("scheduler").value = p.scheduler; $("model").value = p.model;
     if (image) $("turbo").checked = !!p.turbo; else { $("shift_video").value = p.shift_video; $("shift_audio").value = p.shift_audio; }
     const i = M().sizes.findIndex((s) => s.width === p.width && s.height === p.height);
     if (i >= 0) { $("size").selectedIndex = i; $("width").value = ""; $("height").value = ""; } else { $("width").value = p.width; $("height").value = p.height; $("adv").open = true; }
+    sizeHint();
+    // The pictures the job started from come back too, at the job's size.
+    for (const which of ["first", "last"]) {
+      setPicture(which, null);
+      if (job["has_" + which]) pictureFrom("files/" + id + "/" + which, which).then((f) => setPicture(which, f, true), () => {});
+    }
     sizeHint();
     const sec = image ? null : [...$("seconds").options].find((o) => framesFor(+o.value) === p.frames); if (sec) { $("seconds").value = sec.value; $("seconds").onchange(); }
     window.scrollTo({ top: 0, behavior: "smooth" });
