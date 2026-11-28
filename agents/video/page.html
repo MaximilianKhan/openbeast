@@ -108,7 +108,7 @@ details .inner { display: flex; flex-direction: column; gap: 12px; margin-top: 1
         <textarea id="prompt" placeholder="A slow push-in as she turns toward the window. Rain on glass, a kettle starting to boil."></textarea>
       </label>
       <div class="row">
-        <label>Size
+        <label>Size <small id="size-hint"></small>
           <select id="size"></select>
         </label>
         <label>Length <small id="frames-hint">124 frames</small>
@@ -120,7 +120,7 @@ details .inner { display: flex; flex-direction: column; gap: 12px; margin-top: 1
       </div>
       <div class="row">
         <label>Steps <small>more is slower and cleaner</small>
-          <input type="number" id="steps" min="1" max="80" step="1" value="20">
+          <input type="number" id="steps" min="1" max="80" step="1" value="40">
         </label>
         <label>Seed <small>empty for a random one</small>
           <input type="text" id="seed" inputmode="numeric" placeholder="random">
@@ -183,7 +183,7 @@ function mb(b) { return (b / 1048576).toFixed(1) + " MB"; }
 function setPicture(which, file) {
   const drop = $("drop-" + which);
   if (picked[which] && picked[which].url) URL.revokeObjectURL(picked[which].url);
-  if (!file) { picked[which] = null; drop.innerHTML = "<span>" + (which === "first" ? "Drop a picture here,<br>or click to choose" : "Optional") + "</span>"; $("file-" + which).value = ""; return; }
+  if (!file) { picked[which] = null; if (which === "first") clearFit(); drop.innerHTML = "<span>" + (which === "first" ? "Drop a picture here,<br>or click to choose" : "Optional") + "</span>"; $("file-" + which).value = ""; return; }
   const url = URL.createObjectURL(file);
   picked[which] = { file, url };
   drop.innerHTML = '<img alt="' + which + ' frame preview"><button type="button" class="small clear">Remove</button>';
@@ -192,13 +192,35 @@ function setPicture(which, file) {
   if (which === "first") img.onload = () => suggestSize(img.naturalWidth, img.naturalHeight);
   drop.querySelector(".clear").onclick = (e) => { e.stopPropagation(); e.preventDefault(); setPicture(which, null); };
 }
-// Pick the preset whose shape is closest to the picture's, at the size already chosen.
+// The largest size the model takes that keeps the picture's shape: sides in multiples of
+// `step`, each within min..max, area within the canvas. Within 1% of the shape the
+// largest wins; when nothing is that close, the closest shape does.
+function fitSize(w, h, lim) {
+  const want = Math.log(w / h); let best = null;
+  for (let a = lim.min_side; a <= lim.max_side; a += lim.size_step) for (let b = lim.min_side; b <= lim.max_side; b += lim.size_step) {
+    if (a * b > lim.max_pixels) break;
+    const off = Math.abs(Math.log(a / b) - want), c = { width: a, height: b, off, near: off <= 0.01 };
+    if (!best || (c.near !== best.near ? c.near : c.near ? a * b > best.width * best.height
+      : off < best.off - 1e-9 || (off < best.off + 1e-9 && a * b > best.width * best.height))) best = c;
+  }
+  return best;
+}
+// A first frame sets the custom size, every time one is chosen.
+let fitted = null;
 function suggestSize(w, h) {
-  if (!cfg || !w || !h || $("width").value) return;
-  const cur = cfg.sizes[$("size").selectedIndex] || cfg.sizes[0], area = cur.width * cur.height, want = w / h;
-  let best = 0, score = Infinity;
-  cfg.sizes.forEach((s, i) => { const d = Math.abs(Math.log((s.width / s.height) / want)) * 4 + Math.abs(Math.log((s.width * s.height) / area)); if (d < score) { score = d; best = i; } });
-  $("size").selectedIndex = best;
+  if (!cfg || !w || !h) return;
+  fitted = fitSize(w, h, Object.assign({ size_step: 32, min_side: 256, max_side: 1536, max_pixels: 1032192 }, cfg.limits)); fitted.from = w + " × " + h;
+  $("width").value = fitted.width; $("height").value = fitted.height;
+  sizeHint();
+}
+function clearFit() {
+  if (fitted && +$("width").value === fitted.width && +$("height").value === fitted.height) { $("width").value = ""; $("height").value = ""; }
+  fitted = null; sizeHint();
+}
+function sizeHint() {
+  const w = $("width").value, h = $("height").value, own = fitted && +w === fitted.width && +h === fitted.height;
+  $("size-hint").textContent = w && h ? "using " + w + " × " + h + (own ? ", fitted to your " + fitted.from + " picture" : " (custom)") : "";
+  $("size").style.opacity = w || h ? ".5" : "";
 }
 for (const which of ["first", "last"]) {
   const drop = $("drop-" + which), input = $("file-" + which);
@@ -210,6 +232,8 @@ for (const which of ["first", "last"]) {
   drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); const f = e.dataTransfer.files[0]; if (f) setPicture(which, f); };
 }
 window.addEventListener("paste", (e) => { const f = [...(e.clipboardData || {}).files || []].find((x) => x.type.startsWith("image/")); if (f) setPicture("first", f); });
+$("size").onchange = () => { $("width").value = ""; $("height").value = ""; sizeHint(); };
+$("width").oninput = $("height").oninput = sizeHint;
 $("seconds").onchange = () => { $("frames-hint").textContent = framesFor(+$("seconds").value) + " frames"; };
 
 function showError(text) { const el = $("error"); el.textContent = text || ""; el.hidden = !text; }
@@ -321,6 +345,7 @@ $("jobs").onclick = async (e) => {
     $("sampler").value = p.sampler; $("scheduler").value = p.scheduler; $("model").value = p.model;
     const i = cfg.sizes.findIndex((s) => s.width === p.width && s.height === p.height);
     if (i >= 0) { $("size").selectedIndex = i; $("width").value = ""; $("height").value = ""; } else { $("width").value = p.width; $("height").value = p.height; $("adv").open = true; }
+    sizeHint();
     const sec = [...$("seconds").options].find((o) => framesFor(+o.value) === p.frames); if (sec) { $("seconds").value = sec.value; $("seconds").onchange(); }
     window.scrollTo({ top: 0, behavior: "smooth" });
     return;

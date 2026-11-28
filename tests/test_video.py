@@ -35,7 +35,7 @@ def test_defaults_are_sulphurs_recommended_settings():
     p = wf.clean_params({"prompt": "x"}, models=MODELS, default_model=MODELS[0])
     assert (p["cfg"], p["shift_video"], p["shift_audio"], p["sampler"], p["scheduler"]) == \
         (1.0, 12.0, 3.0, "euler", "simple")
-    assert (p["width"], p["height"], p["frames"], p["steps"]) == (672, 384, 124, 20)
+    assert (p["width"], p["height"], p["frames"], p["steps"]) == (672, 384, 124, 40)
     assert p["model"] == MODELS[0] and p["seed"] == -1
 
 
@@ -310,3 +310,26 @@ def test_the_browser_never_blocks_generate_by_itself():
         if "value" in m and m.get("step", "any") != "any":
             lo, step, val = float(m.get("min", 0)), float(m["step"]), float(m["value"])
             assert abs((val - lo) / step - round((val - lo) / step)) < 1e-9, tag
+
+
+def test_a_first_frame_fills_the_custom_size():
+    """Choosing a first frame sets Custom width and height to the largest size
+    the model takes in the picture's shape, replacing what was there."""
+    import json, re, shutil, subprocess
+    page = (REPO / "agents" / "video" / "page.html").read_text()
+    assert 'id="steps" min="1" max="80" step="1" value="40"' in page
+    assert '$("width").value = fitted.width; $("height").value = fitted.height;' in page
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    fn = re.search(r"function fitSize\(.*?\n}\n", page, re.S).group(0)
+    lim = {"size_step": wf.SIZE_STEP, "min_side": wf.MIN_SIDE, "max_side": wf.MAX_SIDE,
+           "max_pixels": wf.MAX_PIXELS}
+    cases = [(1094, 1437), (1088, 1446), (1028, 1530), (1209, 1301), (1086, 1448),
+             (1920, 1080), (4000, 3000), (300, 300), (6000, 500)]
+    js = fn + f"const lim={json.dumps(lim)};console.log(JSON.stringify({json.dumps(cases)}.map(([w,h])=>{{const f=fitSize(w,h,lim);return [f.width,f.height];}})))"
+    got = json.loads(subprocess.run([node, "-e", js], capture_output=True, text=True, check=True).stdout)
+    assert got[:4] == [[832, 1088], [864, 1152], [800, 1184], [960, 1024]]
+    for (w, h), (a, b) in zip(cases, got):
+        wf.clean_params({"width": a, "height": b})          # the server accepts every one
+    assert got[5] == [1344, 768] or abs((got[5][0] / got[5][1]) / (16 / 9) - 1) < 0.011

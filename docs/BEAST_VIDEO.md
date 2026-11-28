@@ -71,12 +71,12 @@ internet. `install` needs GitHub and the PyTorch index once.
 
 | Field | Default | Notes |
 |---|---|---|
-| First frame | none | The picture to animate. It is stretched to the chosen size, so pick a size of the same shape (choosing a picture selects the closest preset). Empty means text-to-video. Paste works too |
+| First frame | none | The picture to animate. Choosing one fills Custom width and height (under Advanced) with the largest size the model takes in the picture's shape, every time, so the picture is scaled and not squeezed. Picking a Size preset afterwards overrides that. Empty means text-to-video. Paste works too |
 | Last frame | none | Optional picture to end on |
 | Prompt | empty | What happens, what the camera does, what it sounds like |
 | Size | 672 × 384 | Up to 1344 × 768, the model's native canvas. Multiples of 32 |
 | Length | 5 s | 1 to 15 s. Frame counts are 17k + 5: 5 s is 124 frames |
-| Steps | 20 | 8 is a quick draft |
+| Steps | 40 | 20 is Sulphur-3's own recommendation and takes half the time; 8 is a quick draft |
 | Seed | random | Shown on the result; give it again to repeat a clip |
 | Advanced | shift 12 / 3, guidance 1, euler, simple | Sulphur-3's recommended settings. It is guidance-distilled: above 1 the time doubles and the negative prompt applies. The model picker lists the other whole denoisers on the drive |
 

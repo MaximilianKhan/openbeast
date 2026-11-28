@@ -546,7 +546,9 @@ def create_app(cfg: Settings | None = None, engine: Engine | None = None,
                 "sizes": [{"label": s[0], "width": s[1], "height": s[2]} for s in wf.SIZE_PRESETS],
                 "samplers": wf.SAMPLERS, "schedulers": wf.SCHEDULERS,
                 "limits": {"min_seconds": wf.MIN_SECONDS, "max_seconds": wf.MAX_SECONDS,
-                           "fps": wf.FPS, "max_image_mb": MAX_IMAGE_BYTES // (1024 * 1024)}}
+                           "fps": wf.FPS, "size_step": wf.SIZE_STEP, "min_side": wf.MIN_SIDE,
+                           "max_side": wf.MAX_SIDE, "max_pixels": wf.MAX_PIXELS,
+                           "max_image_mb": MAX_IMAGE_BYTES // (1024 * 1024)}}
 
     def _keep_image(upload: UploadFile | None, d: Path, stem: str) -> bool:
         if upload is None or not (upload.filename or ""):

@@ -41,7 +41,7 @@ DEFAULTS = {
     "width": 672,
     "height": 384,
     "seconds": 5.0,
-    "steps": 20,
+    "steps": 40,
     "cfg": 1.0,                 # Sulphur-3 is guidance-distilled: 1 = one pass per step
     "shift_video": 12.0,
     "shift_audio": 3.0,
