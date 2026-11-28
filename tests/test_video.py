@@ -373,3 +373,21 @@ def test_the_engines_copies_of_a_job_are_deleted(svc, tmp_path, monkeypatch):
     assert [p.name for p in eout.iterdir()] == ["smoke_00001_.mp4"]
     assert all(f.exists() for f in kept)
     assert client.get(f"/files/{jid['id']}/clip.mp4").status_code == 200
+
+
+def test_the_launcher_points_the_service_at_the_engines_real_folders():
+    """`A="$A/data" B="$A/engine-input" cmd` gives B the already-changed A.
+    The service was started looking in data/engine-input, which does not
+    exist, so nothing was deleted (seen on the rig, 2026-11-27)."""
+    import subprocess
+    sh = (REPO / "scripts" / "video.sh").read_text()
+    start = sh.index('BEAST_VIDEO_ENGINE_INPUT="$BEAST_VIDEO_DIR/engine-input"')
+    prefix = sh[start:sh.index("setsid nohup", start)]
+    out = subprocess.run(["bash", "-c", 'BEAST_VIDEO_DIR=/clips PORT=1 ENGINE_PORT=2 BIND=x\n'
+                          + prefix + "env"], capture_output=True, text=True, check=True).stdout
+    env = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+    assert env["BEAST_VIDEO_ENGINE_INPUT"] == "/clips/engine-input"
+    assert env["BEAST_VIDEO_ENGINE_OUTPUT"] == "/clips/engine-output"
+    assert env["BEAST_VIDEO_DIR"] == "/clips/data"
+    assert '--input-directory "$BEAST_VIDEO_DIR/engine-input"' in sh
+    assert '--output-directory "$BEAST_VIDEO_DIR/engine-output"' in sh
