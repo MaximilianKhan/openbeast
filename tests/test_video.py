@@ -542,3 +542,26 @@ def test_the_page_has_both_modes_and_sizes_a_reference_like_a_first_frame():
     # image mode: the picture's own size when the model takes it
     assert "Math.min(lim.max_pixels, Math.max(lim.fit_pixels, Math.round(w * h * 1.03)))" in page
     assert ".frames .drop { height: 190px;" in page           # the two boxes stay level
+
+
+def test_a_finished_picture_can_start_the_next_job(svc):
+    """Edit this / Animate this fetch the picture back and submit it as the
+    reference or the first frame; Use these settings brings back the pictures
+    a job started from. All three need the files served as pictures."""
+    page = (REPO / "agents" / "video" / "page.html").read_text()
+    for act in ("edit", "animate"):
+        assert f'data-act="{act}"' in page
+    client, engine = svc()
+    a = _wait(client, _post(client, {"kind": "image", "prompt": "a mug"}).json()["id"], {"done"})
+    out = client.get(a["image"])
+    assert out.status_code == 200 and out.headers["content-type"] == "image/png"
+    # the edit: the result goes back in as the reference
+    b = client.post("/api/jobs", data={"params": json.dumps({"kind": "image", "prompt": "make it green"})},
+                    files={"first": ("beast-image.png", PNG, "image/png")})
+    b = _wait(client, b.json()["id"], {"done"})
+    assert b["has_first"] and "ref1" in engine.graphs[-1]
+    ref = client.get(f"/files/{b['id']}/first")
+    assert ref.status_code == 200 and ref.headers["content-type"] == "image/png"
+    # the clip: the same picture as a first frame
+    c = _wait(client, _post(client, {"prompt": "it starts to steam"}, first=PNG).json()["id"], {"done"})
+    assert c["kind"] == "video" and "first" in engine.graphs[-1]
