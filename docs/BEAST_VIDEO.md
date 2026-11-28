@@ -30,6 +30,11 @@ The model folders are read where they are under `/mnt/9100s4tb/weights`
 (`BEAST_VIDEO_WEIGHTS`); nothing is copied. Clips go to
 `/mnt/9100s4tb/beast-video/data/jobs` (`BEAST_VIDEO_DIR`).
 
+The engine keeps its own copy of each picture it is handed and each clip it
+writes (`engine-input/`, `engine-output/` beside `data/`). The service deletes
+a job's copies when the job ends, and any left over when it starts, so the job
+folder is the one place a clip lives.
+
 ComfyUI is never published. Its API runs any workflow and its extensions run
 code. beast-video builds one fixed graph from validated numbers and strings
 (`agents/video/workflow.py`), and the only files it hands the engine are the

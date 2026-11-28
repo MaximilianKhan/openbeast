@@ -79,6 +79,11 @@ class Settings:
         self.video_vae = _env("BEAST_VIDEO_VAE", "minimax_h3_video_vae_fp16.safetensors")
         self.audio_vae = _env("BEAST_VIDEO_AUDIO_VAE", "minimax_h3_audio_vae_fp32.safetensors")
         self.jobs = self.data / "jobs"
+        # The engine's own input and output folders, when it runs on this host
+        # (scripts/video.sh sets both). The engine keeps a copy of every picture
+        # it is handed and every clip it writes, and has no call to delete one.
+        self.engine_input = _env("BEAST_VIDEO_ENGINE_INPUT", "")
+        self.engine_output = _env("BEAST_VIDEO_ENGINE_OUTPUT", "")
 
 
 def sniff_image(head: bytes) -> str | None:
@@ -369,8 +374,32 @@ class Worker(threading.Thread):
         self.running: str | None = None
         self.stopping = False
 
+    def tidy(self, job_id: str | None = None) -> int:
+        """Delete the engine's copies of one job's files, or of every job's.
+
+        The clip and the pictures that count are in the job folder. Only files
+        this service named are touched: beast-video-<id>-first.* in the
+        engine's input folder, <id>_<n>_.* under beast-video/ in its output.
+        """
+        one = re.escape(job_id) if job_id else JOB_ID_RE.pattern.strip("^$")
+        gone = 0
+        for root, shape in ((self.cfg.engine_input, rf"^beast-video-{one}-(first|last)\.\w+$"),
+                            (self.cfg.engine_output and os.path.join(self.cfg.engine_output, "beast-video"),
+                             rf"^{one}_\d+_\.\w+$")):
+            if not root or not os.path.isdir(root):
+                continue
+            for entry in os.scandir(root):
+                if re.match(shape, entry.name) and entry.is_file(follow_symlinks=False):
+                    try:
+                        os.unlink(entry.path)
+                        gone += 1
+                    except OSError:
+                        pass
+        return gone
+
     def recover(self) -> None:
         """A job that was running when the service stopped did not finish."""
+        self.tidy()
         for job in self.store.all():
             if job.get("status") == "running":
                 self.store.update(job["id"], status="failed", finished=time.time(),
@@ -391,6 +420,7 @@ class Worker(threading.Thread):
                 self.store.update(job["id"], status="failed", finished=time.time(),
                                   error=str(e)[:600] or e.__class__.__name__)
             finally:
+                self.tidy(job["id"])
                 self.cancel.discard(job["id"])
                 self.running = None
 

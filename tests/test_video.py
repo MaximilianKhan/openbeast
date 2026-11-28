@@ -333,3 +333,43 @@ def test_a_first_frame_fills_the_custom_size():
     for (w, h), (a, b) in zip(cases, got):
         wf.clean_params({"width": a, "height": b})          # the server accepts every one
     assert got[5] == [1344, 768] or abs((got[5][0] / got[5][1]) / (16 / 9) - 1) < 0.011
+
+
+def test_the_engines_copies_of_a_job_are_deleted(svc, tmp_path, monkeypatch):
+    """ComfyUI keeps every picture it is handed and every clip it writes, and
+    has no call to delete one: the drive filled with a second copy of each."""
+    ein, eout = tmp_path / "engine-input", tmp_path / "engine-output" / "beast-video"
+    ein.mkdir()
+    eout.mkdir(parents=True)
+    monkeypatch.setenv("BEAST_VIDEO_ENGINE_INPUT", str(ein))
+    monkeypatch.setenv("BEAST_VIDEO_ENGINE_OUTPUT", str(eout.parent))
+    old = "20260101-000000-abcdef"
+    stale = [ein / f"beast-video-{old}-first.png", eout / f"{old}_00001_.mp4"]
+    kept = [ein / "holiday.png", ein / f"beast-video-{old}-first.png.txt", eout / "smoke_00001_.mp4",
+            eout.parent / f"{old}_00001_.mp4"]
+    for f in stale + kept:
+        f.write_bytes(b"x")
+    (ein / "3d").mkdir()
+    client, engine = svc()
+    assert not any(f.exists() for f in stale)                 # left by an earlier run
+    orig_upload, orig_fetch = engine.upload_image, engine.fetch
+
+    def upload(path, name):
+        (ein / name).write_bytes(b"x")
+        return orig_upload(path, name)
+
+    def fetch(ref, dest):
+        (eout / f"{jid['id']}_00001_.mp4").write_bytes(b"x")
+        orig_fetch(ref, dest)
+    engine.upload_image, engine.fetch = upload, fetch
+    jid = {}
+    r = _post(client, {"prompt": "a"}, first=PNG)
+    jid["id"] = r.json()["id"]
+    _wait(client, jid["id"], {"done"})
+    end = time.time() + 5
+    while time.time() < end and (list(ein.glob("beast-video-*.png")) or list(eout.glob("2*_.mp4"))):
+        time.sleep(0.05)
+    assert sorted(p.name for p in ein.iterdir()) == ["3d", f"beast-video-{old}-first.png.txt", "holiday.png"]
+    assert [p.name for p in eout.iterdir()] == ["smoke_00001_.mp4"]
+    assert all(f.exists() for f in kept)
+    assert client.get(f"/files/{jid['id']}/clip.mp4").status_code == 200
