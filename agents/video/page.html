@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>beast-video</title>
+<style>
+:root {
+  --bg: #f4f5f2; --surface: #ffffff; --sunk: #eceee9; --fg: #1a1f1c; --muted: #5e6962; --line: #d7dcd4;
+  --accent: #0f6b4f; --accent-fg: #ffffff; --accent-soft: #e0efe8; --bad: #a3271b; --bad-soft: #f8e4e1;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root {
+  --bg: #101412; --surface: #181d1a; --sunk: #131715; --fg: #e5eae5; --muted: #98a49b; --line: #2a332e;
+  --accent: #57c39d; --accent-fg: #06231a; --accent-soft: #1a3129; --bad: #f08a7c; --bad-soft: #3a1c18;
+  color-scheme: dark; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header.top { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 14px 20px;
+  border-bottom: 1px solid var(--line); background: var(--surface); }
+header.top h1 { font-size: 18px; margin: 0; letter-spacing: -.01em; }
+.state { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+.dot.on { background: var(--accent); } .dot.off { background: var(--bad); }
+main { display: grid; grid-template-columns: minmax(300px, 400px) minmax(0, 1fr); gap: 20px;
+  padding: 20px; max-width: 1400px; margin: 0 auto; align-items: start; }
+@media (max-width: 860px) { main { grid-template-columns: 1fr; padding: 14px; } }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; min-width: 0; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+form { display: flex; flex-direction: column; gap: 14px; }
+label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; font-weight: 600; }
+label small, .hint { font-weight: 400; color: var(--muted); font-size: 12.5px; }
+input[type=text], input[type=number], select, textarea { font: inherit; color: var(--fg); background: var(--sunk);
+  border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; width: 100%; }
+textarea { min-height: 110px; resize: vertical; }
+input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible, .drop:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px; }
+.row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.row > label { justify-content: flex-end; }
+.drop { border: 1.5px dashed var(--line); border-radius: 9px; background: var(--sunk); min-height: 112px;
+  display: flex; align-items: center; justify-content: center; text-align: center; padding: 10px; cursor: pointer;
+  color: var(--muted); font-weight: 400; font-size: 13px; position: relative; overflow: hidden; }
+.drop.over { border-color: var(--accent); background: var(--accent-soft); }
+.drop img { max-width: 100%; max-height: 190px; border-radius: 6px; display: block; }
+.drop .clear { position: absolute; top: 6px; right: 6px; }
+.frames { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+button { font: inherit; font-weight: 600; border-radius: 7px; border: 1px solid var(--line); background: var(--surface);
+  color: var(--fg); padding: 7px 12px; cursor: pointer; }
+button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); padding: 10px 14px; font-size: 15px; }
+button.small { padding: 3px 9px; font-size: 12.5px; font-weight: 500; }
+button:disabled { opacity: .55; cursor: default; }
+a.btn { display: inline-block; font-weight: 600; text-decoration: none; border-radius: 7px; padding: 7px 12px;
+  background: var(--accent); color: var(--accent-fg); font-size: 14px; }
+details summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--muted); }
+details .inner { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
+.msg { font-size: 13.5px; border-radius: 7px; padding: 9px 11px; }
+.msg.bad { background: var(--bad-soft); color: var(--bad); }
+.msg.info { background: var(--accent-soft); }
+#jobs { display: flex; flex-direction: column; gap: 14px; }
+.job { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 14px; display: grid;
+  grid-template-columns: minmax(0, 420px) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 1100px) { .job { grid-template-columns: 1fr; } }
+.job video, .job .ph { width: 100%; border-radius: 8px; background: #000; display: block; aspect-ratio: 16 / 9; }
+.job .ph { background: var(--sunk); display: flex; align-items: center; justify-content: center; color: var(--muted);
+  font-size: 13.5px; text-align: center; padding: 12px; }
+.job .ph img { max-width: 100%; max-height: 100%; border-radius: 6px; opacity: .55; }
+.meta { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.meta .line1 { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.pill { font-size: 12px; font-weight: 600; border-radius: 99px; padding: 2px 9px; background: var(--sunk); color: var(--muted); }
+.pill.running { background: var(--accent-soft); color: var(--accent); }
+.pill.done { background: var(--accent); color: var(--accent-fg); }
+.pill.failed { background: var(--bad-soft); color: var(--bad); }
+.when { font-size: 12.5px; color: var(--muted); }
+.prompt { font-size: 14px; overflow-wrap: anywhere; white-space: pre-wrap; max-height: 6.2em; overflow: auto; }
+.facts { font-family: var(--mono); font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.bar { height: 7px; border-radius: 99px; background: var(--sunk); overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .6s linear; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 2px; }
+.empty { color: var(--muted); font-size: 14px; padding: 26px 8px; text-align: center; }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>beast-video</h1>
+  <span class="hint">Sulphur-3 on the RTX 5090: a picture and a prompt in, a clip with sound out.</span>
+  <span class="state"><span class="dot" id="dot"></span><span id="state">checking the rig…</span></span>
+</header>
+
+<main>
+  <section class="panel">
+    <h2>New clip</h2>
+    <form id="form" novalidate>
+      <div class="frames">
+        <label>First frame <small>the picture to animate</small>
+          <div class="drop" id="drop-first" tabindex="0" role="button" aria-label="Choose the first frame">
+            <span>Drop a picture here,<br>or click to choose</span></div>
+          <input type="file" id="file-first" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
+        </label>
+        <label>Last frame <small>optional end picture</small>
+          <div class="drop" id="drop-last" tabindex="0" role="button" aria-label="Choose the last frame">
+            <span>Optional</span></div>
+          <input type="file" id="file-last" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
+        </label>
+      </div>
+      <label>Prompt <small>what happens, what the camera does, and what it sounds like</small>
+        <textarea id="prompt" placeholder="A slow push-in as she turns toward the window. Rain on glass, a kettle starting to boil."></textarea>
+      </label>
+      <div class="row">
+        <label>Size <small id="size-hint"></small>
+          <select id="size"></select>
+        </label>
+        <label>Length <small id="frames-hint">124 frames</small>
+          <select id="seconds">
+            <option value="3">3 s</option><option value="5" selected>5 s</option><option value="8">8 s</option>
+            <option value="10">10 s</option><option value="15">15 s</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <label>Steps <small>more is slower and cleaner</small>
+          <input type="number" id="steps" min="1" max="80" step="1" value="40">
+        </label>
+        <label>Seed <small>empty for a random one</small>
+          <input type="text" id="seed" inputmode="numeric" placeholder="random">
+        </label>
+      </div>
+      <details id="adv">
+        <summary>Advanced</summary>
+        <div class="inner">
+          <label>Model <small>the denoiser file on the rig</small>
+            <select id="model"></select>
+          </label>
+          <div class="row">
+            <label>Custom width <input type="number" id="width" min="256" max="1536" step="32"></label>
+            <label>Custom height <input type="number" id="height" min="256" max="1536" step="32"></label>
+          </div>
+          <div class="row">
+            <label>Video shift <input type="number" id="shift_video" min="0.01" max="100" step="any" value="12"></label>
+            <label>Audio shift <input type="number" id="shift_audio" min="0.01" max="100" step="any" value="3"></label>
+          </div>
+          <div class="row">
+            <label>Sampler <select id="sampler"></select></label>
+            <label>Scheduler <select id="scheduler"></select></label>
+          </div>
+          <label>Guidance <small>1 is what Sulphur-3 is built for. Above 1 doubles the time and uses the negative prompt.</small>
+            <input type="number" id="cfg" min="1" max="15" step="any" value="1">
+          </label>
+          <label>Negative prompt <small>only used when guidance is above 1</small>
+            <input type="text" id="negative">
+          </label>
+        </div>
+      </details>
+      <div class="msg bad" id="error" hidden></div>
+      <button class="primary" id="go" type="submit">Generate</button>
+      <div class="hint" id="eta"></div>
+    </form>
+  </section>
+
+  <section>
+    <div class="panel" style="margin-bottom:14px" id="offline" hidden>
+      <div class="msg bad">The video engine is not running on the rig. Start it there with <code>scripts/video.sh up</code>. Clips you already made still play and download.</div>
+    </div>
+    <h2 style="padding-left:4px">Clips</h2>
+    <div id="jobs"><div class="empty">Nothing yet. Your clips appear here, newest first.</div></div>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const picked = { first: null, last: null };
+let cfg = null, timer = null, known = "";
+
+function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+function framesFor(sec) { const want = Math.max(5, Math.round(sec * 24)); return 5 + 17 * Math.max(0, Math.ceil((want - 5) / 17)); }
+function ago(t) { const s = Math.max(0, Date.now() / 1000 - t); if (s < 90) return "just now"; if (s < 5400) return Math.round(s / 60) + " min ago";
+  if (s < 129600) return Math.round(s / 3600) + " h ago"; return new Date(t * 1000).toLocaleDateString(); }
+function dur(s) { s = Math.round(s); return s < 90 ? s + " s" : Math.floor(s / 60) + " min " + (s % 60) + " s"; }
+function mb(b) { return (b / 1048576).toFixed(1) + " MB"; }
+
+function setPicture(which, file) {
+  const drop = $("drop-" + which);
+  if (picked[which] && picked[which].url) URL.revokeObjectURL(picked[which].url);
+  if (!file) { picked[which] = null; if (which === "first") clearFit(); drop.innerHTML = "<span>" + (which === "first" ? "Drop a picture here,<br>or click to choose" : "Optional") + "</span>"; $("file-" + which).value = ""; return; }
+  const url = URL.createObjectURL(file);
+  picked[which] = { file, url };
+  drop.innerHTML = '<img alt="' + which + ' frame preview"><button type="button" class="small clear">Remove</button>';
+  const img = drop.querySelector("img");
+  img.src = url;
+  if (which === "first") img.onload = () => suggestSize(img.naturalWidth, img.naturalHeight);
+  drop.querySelector(".clear").onclick = (e) => { e.stopPropagation(); e.preventDefault(); setPicture(which, null); };
+}
+// The largest size the model takes that keeps the picture's shape: sides in multiples of
+// `step`, each within min..max, area within the canvas. Within 1% of the shape the
+// largest wins; when nothing is that close, the closest shape does.
+function fitSize(w, h, lim) {
+  const want = Math.log(w / h); let best = null;
+  for (let a = lim.min_side; a <= lim.max_side; a += lim.size_step) for (let b = lim.min_side; b <= lim.max_side; b += lim.size_step) {
+    if (a * b > lim.max_pixels) break;
+    const off = Math.abs(Math.log(a / b) - want), c = { width: a, height: b, off, near: off <= 0.01 };
+    if (!best || (c.near !== best.near ? c.near : c.near ? a * b > best.width * best.height
+      : off < best.off - 1e-9 || (off < best.off + 1e-9 && a * b > best.width * best.height))) best = c;
+  }
+  return best;
+}
+// A first frame sets the custom size, every time one is chosen.
+let fitted = null;
+function suggestSize(w, h) {
+  if (!cfg || !w || !h) return;
+  fitted = fitSize(w, h, Object.assign({ size_step: 32, min_side: 256, max_side: 1536, max_pixels: 1032192 }, cfg.limits)); fitted.from = w + " × " + h;
+  $("width").value = fitted.width; $("height").value = fitted.height;
+  sizeHint();
+}
+function clearFit() {
+  if (fitted && +$("width").value === fitted.width && +$("height").value === fitted.height) { $("width").value = ""; $("height").value = ""; }
+  fitted = null; sizeHint();
+}
+function sizeHint() {
+  const w = $("width").value, h = $("height").value, own = fitted && +w === fitted.width && +h === fitted.height;
+  $("size-hint").textContent = w && h ? "using " + w + " × " + h + (own ? ", fitted to your " + fitted.from + " picture" : " (custom)") : "";
+  $("size").style.opacity = w || h ? ".5" : "";
+}
+for (const which of ["first", "last"]) {
+  const drop = $("drop-" + which), input = $("file-" + which);
+  drop.onclick = (e) => { e.preventDefault(); input.click(); };
+  drop.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input.click(); } };
+  input.onchange = () => setPicture(which, input.files[0] || null);
+  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
+  drop.ondragleave = () => drop.classList.remove("over");
+  drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); const f = e.dataTransfer.files[0]; if (f) setPicture(which, f); };
+}
+window.addEventListener("paste", (e) => { const f = [...(e.clipboardData || {}).files || []].find((x) => x.type.startsWith("image/")); if (f) setPicture("first", f); });
+$("size").onchange = () => { $("width").value = ""; $("height").value = ""; sizeHint(); };
+$("width").oninput = $("height").oninput = sizeHint;
+$("seconds").onchange = () => { $("frames-hint").textContent = framesFor(+$("seconds").value) + " frames"; };
+
+function showError(text) { const el = $("error"); el.textContent = text || ""; el.hidden = !text; }
+
+async function loadConfig() {
+  try {
+    cfg = await (await fetch("api/config")).json();
+  } catch (e) { $("state").textContent = "cannot reach beast-video"; $("dot").className = "dot off"; return; }
+  if (!$("size").options.length) {
+    $("size").innerHTML = cfg.sizes.map((s) => "<option>" + esc(s.label) + "</option>").join("");
+    $("sampler").innerHTML = cfg.samplers.map((s) => "<option>" + esc(s) + "</option>").join("");
+    $("scheduler").innerHTML = cfg.schedulers.map((s) => "<option>" + esc(s) + "</option>").join("");
+  }
+  const sel = $("model"), had = sel.value;
+  sel.innerHTML = cfg.models.map((m) => "<option" + (m === (had || cfg.default_model) ? " selected" : "") + ">" + esc(m) + "</option>").join("");
+  $("dot").className = "dot " + (cfg.engine ? "on" : "off");
+  let text = cfg.engine ? "engine ready" : "engine stopped";
+  if (cfg.engine && cfg.gpu && cfg.gpu.vram_total) text += " · " + (cfg.gpu.vram_free / 1073741824).toFixed(1) + " of " + (cfg.gpu.vram_total / 1073741824).toFixed(0) + " GB free on the card";
+  $("state").textContent = text;
+  $("offline").hidden = cfg.engine;
+}
+
+$("form").onsubmit = async (e) => {
+  e.preventDefault();
+  showError("");
+  const seed = $("seed").value.trim();
+  if (seed && !/^\d+$/.test(seed)) return showError("The seed must be a whole number, or empty for a random one.");
+  let width, height;
+  if ($("width").value || $("height").value) { width = +$("width").value; height = +$("height").value;
+    if (!width || !height) return showError("Give both a custom width and a custom height, or neither."); }
+  else { const s = cfg.sizes[$("size").selectedIndex]; width = s.width; height = s.height; }
+  const params = { prompt: $("prompt").value, negative: $("negative").value, width, height, seconds: +$("seconds").value,
+    steps: +$("steps").value, cfg: +$("cfg").value, shift_video: +$("shift_video").value, shift_audio: +$("shift_audio").value,
+    sampler: $("sampler").value, scheduler: $("scheduler").value, seed: seed ? +seed : -1, model: $("model").value };
+  if (!picked.first && !picked.last && !params.prompt.trim()) return showError("Give it a first frame, a prompt, or both.");
+  const body = new FormData();
+  body.append("params", JSON.stringify(params));
+  if (picked.first) body.append("first", picked.first.file);
+  if (picked.last) body.append("last", picked.last.file);
+  $("go").disabled = true; $("go").textContent = "Sending…";
+  try {
+    const r = await fetch("api/jobs", { method: "POST", body });
+    if (!r.ok) { let d = "The rig refused the job (" + r.status + ")."; try { d = (await r.json()).detail || d; } catch (_) {} showError(d); }
+    else { known = ""; await refresh(); }
+  } catch (err) { showError("Could not reach the rig. Is this Mac on the tailnet?"); }
+  $("go").disabled = false; $("go").textContent = "Generate";
+};
+
+function jobHtml(j) {
+  const p = j.params, live = j.status === "running" || j.status === "queued";
+  let left;
+  if (j.status === "done") left = '<video controls preload="metadata" playsinline src="' + esc(j.video) + '#t=0.1"></video>';
+  else left = '<div class="ph">' + (j.has_first ? '<img alt="first frame" src="files/' + j.id + '/first">' : (j.status === "failed" ? "No clip" : "Text to video")) + "</div>";
+  const label = { queued: "Waiting", running: "Rendering", done: "Done", failed: "Failed", cancelled: "Stopped" }[j.status] || j.status;
+  let h = '<div class="job" data-id="' + j.id + '"><div>' + left + '</div><div class="meta"><div class="line1"><span class="pill ' + j.status + '">' + label + "</span>" +
+    '<span class="when">' + ago(j.created) + (j.seconds_taken ? " · took " + dur(j.seconds_taken) : "") + (j.bytes ? " · " + mb(j.bytes) : "") + "</span></div>";
+  if (j.status === "running") h += '<div class="bar"><i style="width:' + Math.round((j.progress || 0) * 100) + '%"></i></div><div class="when">' + esc(j.phase || "working") +
+    (j.started ? " · " + dur(Date.now() / 1000 - j.started) : "") + "</div>";
+  if (j.error) h += '<div class="msg bad">' + esc(j.error) + "</div>";
+  h += '<div class="prompt">' + (p.prompt ? esc(p.prompt) : '<span class="when">no prompt</span>') + "</div>";
+  h += '<div class="facts">' + p.width + "×" + p.height + " · " + p.frames + " frames (" + (p.frames / 24).toFixed(1) + " s) · " + p.steps + " steps · seed " + p.seed +
+    " · " + esc(p.model) + (p.cfg > 1 ? " · guidance " + p.cfg : "") + (j.has_last ? " · last frame given" : "") + "</div>";
+  h += '<div class="actions">';
+  if (j.status === "done") h += '<a class="btn" href="' + esc(j.video) + '?download=1">Download</a>';
+  if (live) h += '<button class="small" data-act="cancel">Stop</button>';
+  h += '<button class="small" data-act="reuse">Use these settings</button>';
+  if (!live || j.status === "queued") h += '<button class="small" data-act="delete">Delete</button>';
+  return h + "</div></div></div>";
+}
+
+async function refresh() {
+  let data;
+  try { data = await (await fetch("api/jobs")).json(); } catch (e) { return; }
+  const jobs = data.jobs || [], sig = JSON.stringify(jobs.map((j) => [j.id, j.status, j.progress, j.phase, j.error]));
+  const live = jobs.some((j) => j.status === "running" || j.status === "queued");
+  if (sig !== known) {
+    // Leave a clip that is playing alone: only rebuild cards whose state changed.
+    const box = $("jobs"), have = new Map([...box.querySelectorAll(".job")].map((n) => [n.dataset.id, n]));
+    if (!jobs.length) box.innerHTML = '<div class="empty">Nothing yet. Your clips appear here, newest first.</div>';
+    else {
+      box.querySelectorAll(".empty").forEach((n) => n.remove());
+      let prev = null;
+      for (const j of jobs) {
+        const old = have.get(j.id), state = j.status + "|" + (j.error || "");
+        let node = old;
+        if (!old || old.dataset.state !== state || j.status === "running") {
+          const t = document.createElement("div"); t.innerHTML = jobHtml(j); node = t.firstChild; node.dataset.state = state; node._job = j;
+          if (old) old.replaceWith(node); else if (prev) prev.after(node); else box.prepend(node);
+        }
+        have.delete(j.id); prev = node;
+      }
+      for (const gone of have.values()) gone.remove();
+    }
+    known = sig;
+  }
+  const waiting = jobs.filter((j) => j.status === "queued").length;
+  $("eta").textContent = live ? (waiting ? waiting + " waiting behind the clip that is rendering. " : "") + "Clips render one at a time." : "";
+  clearTimeout(timer);
+  timer = setTimeout(refresh, live ? 1500 : 8000);
+}
+
+$("jobs").onclick = async (e) => {
+  const btn = e.target.closest("button[data-act]"); if (!btn) return;
+  const card = btn.closest(".job"), id = card.dataset.id, act = btn.dataset.act;
+  if (act === "reuse") {
+    const p = card._job.params;
+    $("prompt").value = p.prompt; $("negative").value = p.negative || ""; $("steps").value = p.steps; $("seed").value = p.seed;
+    $("cfg").value = p.cfg; $("shift_video").value = p.shift_video; $("shift_audio").value = p.shift_audio;
+    $("sampler").value = p.sampler; $("scheduler").value = p.scheduler; $("model").value = p.model;
+    const i = cfg.sizes.findIndex((s) => s.width === p.width && s.height === p.height);
+    if (i >= 0) { $("size").selectedIndex = i; $("width").value = ""; $("height").value = ""; } else { $("width").value = p.width; $("height").value = p.height; $("adv").open = true; }
+    sizeHint();
+    const sec = [...$("seconds").options].find((o) => framesFor(+o.value) === p.frames); if (sec) { $("seconds").value = sec.value; $("seconds").onchange(); }
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    return;
+  }
+  if (act === "delete") {
+    if (btn.dataset.sure !== "1") { btn.dataset.sure = "1"; btn.textContent = "Delete for good?"; setTimeout(() => { btn.dataset.sure = ""; btn.textContent = "Delete"; }, 4000); return; }
+    await fetch("api/jobs/" + id, { method: "DELETE" });
+  } else if (act === "cancel") { btn.disabled = true; await fetch("api/jobs/" + id + "/cancel", { method: "POST" }); }
+  known = ""; refresh();
+};
+
+loadConfig().then(refresh);
+setInterval(loadConfig, 15000);
+</script>
+</body>
+</html>

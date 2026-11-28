@@ -128,6 +128,7 @@ backing it up, restoring it after an OS reinstall).
 | [BEAST_DOCS.md](BEAST_DOCS.md) | beast-docs: platform docs mirrored offline |
 | [BEAST_APPS.md](BEAST_APPS.md) | beast-apps: external apps through MCP servers |
 | [BEAST_ARK.md](BEAST_ARK.md) | beast-ark: pinned open-source software on a drive |
+| [BEAST_VIDEO.md](BEAST_VIDEO.md) | beast-video (experiment): video with sound from a picture and a prompt on the 5090, in place of the LLM |
 | [LANG_AWARENESS_PLAN.md](LANG_AWARENESS_PLAN.md) | beast-assist: push-diagnostics and awareness packs (*plan* with results) |
 | [BEAST_LANG_PLAN.md](BEAST_LANG_PLAN.md) | beast-lang: the offline language library (*plan* with status) |
 | [BEAST_CAMPAIGN_PLAN.md](BEAST_CAMPAIGN_PLAN.md) | beast-campaign: the GPU lease and the eval era (*plan*) |
