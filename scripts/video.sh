@@ -152,10 +152,12 @@ cmd_up() {
   say "engine up on 127.0.0.1:$ENGINE_PORT"
   if ! alive "$RUN/server.pid"; then
     ( cd "$REPO" || exit 1
-      BEAST_VIDEO_DIR="$BEAST_VIDEO_DIR/data" BEAST_VIDEO_PORT="$PORT" \
-        BEAST_VIDEO_COMFY="http://127.0.0.1:$ENGINE_PORT" OPENBEAST_BIND="$BIND" \
-        BEAST_VIDEO_ENGINE_INPUT="$BEAST_VIDEO_DIR/engine-input" \
+      # The engine folders first: these assignments run left to right, and
+      # BEAST_VIDEO_DIR means the data folder from the next line on.
+      BEAST_VIDEO_ENGINE_INPUT="$BEAST_VIDEO_DIR/engine-input" \
         BEAST_VIDEO_ENGINE_OUTPUT="$BEAST_VIDEO_DIR/engine-output" \
+        BEAST_VIDEO_DIR="$BEAST_VIDEO_DIR/data" BEAST_VIDEO_PORT="$PORT" \
+        BEAST_VIDEO_COMFY="http://127.0.0.1:$ENGINE_PORT" OPENBEAST_BIND="$BIND" \
         setsid nohup "$BV_HOME/app-venv/bin/python" "$REPO/agents/video_server.py" \
         > "$RUN/server.log" 2>&1 < /dev/null & echo $! > "$RUN/server.pid" )
     printf '%s\n' "$BIND" > "$RUN/server.bind"
